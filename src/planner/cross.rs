@@ -373,7 +373,7 @@ fn project_branch_for_union(
                 alias: attr_path.clone(),
             });
         } else if let Some(path) = path_segments {
-            let belongs = model.grain_sets_under_path(path).iter().any(|gs| gs.name == grain_set.name);
+            let belongs = model.grain_set_under_path(path, &grain_set.name);
             if belongs {
                 let semantic_name = format!("{}.{}", dim_name, attr_name);
                 projections.push(ProjectExpr {

@@ -47,6 +47,24 @@ pub struct DatasetWithMeasures<'a> {
     pub measures: Vec<String>,
 }
 
+/// Result of partial selection (tier 3): best dataset for a grain set with some required
+/// dimensions/measures missing; planner fills those with NULL.
+#[derive(Debug)]
+pub struct PartialSelection<'a> {
+    /// The grain set
+    pub group: &'a GrainSet,
+    /// The chosen dataset (best overlap with requirements)
+    pub dataset: &'a Dataset,
+    /// Dimension attributes this dataset provides (subset of required)
+    pub present_dimensions: Vec<String>,
+    /// Dimension attributes to fill with NULL
+    pub missing_dimensions: Vec<String>,
+    /// Measures this dataset provides (subset of required)
+    pub present_measures: Vec<String>,
+    /// Measures to fill with NULL
+    pub missing_measures: Vec<String>,
+}
+
 /// Select the optimal dataset(s) to serve a query
 /// 
 /// Aggregate awareness is scoped to a single grain set:
@@ -76,21 +94,18 @@ pub fn select_datasets<'a>(
         });
     }
     
-    // Extract grain set qualifiers from path-qualified dimension paths:
-    // - 3-part "adwords.dates.year" -> grain set name "adwords"
-    // - 4+ part "facebookads.facebookads_111.dates.date" -> resolve path, grain set name from leaf
+    // Extract grain set qualifiers from path-qualified dimension paths.
+    // Path may be a leaf or group; use grain_sets_under_path to get all leaf names.
     let mut qualified_groups: HashSet<String> = HashSet::new();
     for path in required_dimensions {
         if path.starts_with("_dataset.") {
             continue;
         }
         let parts: Vec<&str> = path.split('.').collect();
-        if parts.len() == 3 {
-            qualified_groups.insert(parts[0].to_string());
-        } else if parts.len() >= 4 {
-            let path_segments: Vec<&str> = parts[0..parts.len() - 2].to_vec();
-            if let Some(gs) = model.get_grain_set_by_path(&path_segments) {
-                qualified_groups.insert(gs.name.clone());
+        if parts.len() >= 3 {
+            let path_segments = &parts[0..parts.len() - 2];
+            for gs in model.grain_sets_under_path(path_segments) {
+                qualified_groups.insert(gs.name);
             }
         }
     }
@@ -175,19 +190,17 @@ pub fn select_datasets_for_join<'a>(
         });
     }
     
-    // Extract grain set qualifiers (same logic as select_datasets: 3-part and 4+ part paths)
+    // Extract grain set qualifiers (same as select_datasets: path may be leaf or group)
     let mut qualified_groups: HashSet<String> = HashSet::new();
     for path in required_dimensions {
         if path.starts_with("_dataset.") {
             continue;
         }
         let parts: Vec<&str> = path.split('.').collect();
-        if parts.len() == 3 {
-            qualified_groups.insert(parts[0].to_string());
-        } else if parts.len() >= 4 {
-            let path_segments: Vec<&str> = parts[0..parts.len() - 2].to_vec();
-            if let Some(gs) = model.get_grain_set_by_path(&path_segments) {
-                qualified_groups.insert(gs.name.clone());
+        if parts.len() >= 3 {
+            let path_segments = &parts[0..parts.len() - 2];
+            for gs in model.grain_sets_under_path(path_segments) {
+                qualified_groups.insert(gs.name);
             }
         }
     }
@@ -296,28 +309,15 @@ fn has_all_dimensions(
         }
         
         let parts: Vec<&str> = dim_attr.split('.').collect();
-        if parts.len() == 3 {
-            let (tg_qualifier, dim_name, attr_name) = (parts[0], parts[1], parts[2]);
-            if tg_qualifier != group.name {
+        if parts.len() >= 3 {
+            let path_segments: &[&str] = &parts[0..parts.len() - 2];
+            let dim_name = parts[parts.len() - 2];
+            let attr_name = parts[parts.len() - 1];
+            if !model.grain_set_under_path(path_segments, &group.name) {
                 continue;
             }
             let two_part = format!("{}.{}", dim_name, attr_name);
             if !dataset_has_attribute(model, group, dataset, &two_part) {
-                return false;
-            }
-        } else if parts.len() >= 4 {
-            let path_segments: &[&str] = &parts[0..parts.len() - 2];
-            let dim_name = parts[parts.len() - 2];
-            let attr_name = parts[parts.len() - 1];
-            if let Some(gs) = model.get_grain_set_by_path(path_segments) {
-                if gs.name != group.name {
-                    continue;
-                }
-                let two_part = format!("{}.{}", dim_name, attr_name);
-                if !dataset_has_attribute(model, group, dataset, &two_part) {
-                    return false;
-                }
-            } else {
                 return false;
             }
         } else if parts.len() == 2 {
@@ -345,30 +345,17 @@ fn is_feasible(
             continue;
         }
         
-        // Handle path-qualified paths: 3-part "adwords.dates.year", 4+ part "facebookads.facebookads_111.dates.date"
+        // Handle path-qualified paths: path may be leaf or group
         let parts: Vec<&str> = dim_attr.split('.').collect();
-        if parts.len() == 3 {
-            let (tg_qualifier, dim_name, attr_name) = (parts[0], parts[1], parts[2]);
-            if tg_qualifier != group.name {
+        if parts.len() >= 3 {
+            let path_segments: &[&str] = &parts[0..parts.len() - 2];
+            let dim_name = parts[parts.len() - 2];
+            let attr_name = parts[parts.len() - 1];
+            if !model.grain_set_under_path(path_segments, &group.name) {
                 continue;
             }
             let two_part = format!("{}.{}", dim_name, attr_name);
             if !dataset_has_attribute(model, group, dataset, &two_part) {
-                return false;
-            }
-        } else if parts.len() >= 4 {
-            let path_segments: &[&str] = &parts[0..parts.len() - 2];
-            let dim_name = parts[parts.len() - 2];
-            let attr_name = parts[parts.len() - 1];
-            if let Some(gs) = model.get_grain_set_by_path(path_segments) {
-                if gs.name != group.name {
-                    continue;
-                }
-                let two_part = format!("{}.{}", dim_name, attr_name);
-                if !dataset_has_attribute(model, group, dataset, &two_part) {
-                    return false;
-                }
-            } else {
                 return false;
             }
         } else {
@@ -436,6 +423,98 @@ fn dataset_has_attribute(
     }
 }
 
+/// Check if a dataset has a single dimension.attribute path (handles _dataset and path-qualified).
+fn dataset_has_dimension_attr(
+    model: &SemanticModel,
+    group: &GrainSet,
+    dataset: &Dataset,
+    dim_attr: &str,
+) -> bool {
+    if dim_attr.starts_with("_dataset.") {
+        return true;
+    }
+    let parts: Vec<&str> = dim_attr.split('.').collect();
+    if parts.len() >= 3 {
+        let path_segments: &[&str] = &parts[0..parts.len() - 2];
+        let dim_name = parts[parts.len() - 2];
+        let attr_name = parts[parts.len() - 1];
+        if !model.grain_set_under_path(path_segments, &group.name) {
+            return true;
+        }
+        let two_part = format!("{}.{}", dim_name, attr_name);
+        dataset_has_attribute(model, group, dataset, &two_part)
+    } else {
+        dataset_has_attribute(model, group, dataset, dim_attr)
+    }
+}
+
+/// Partial selection for one grain set (tier 3): pick the dataset with the most overlap
+/// with required dimensions and measures; return present/missing lists for NULL fill.
+/// Returns None if the grain set has no datasets or no dataset has any overlap.
+pub fn select_partial_for_grain_set<'a>(
+    model: &'a SemanticModel,
+    grain_set: &'a GrainSet,
+    required_dimensions: &[String],
+    required_measures: &[String],
+) -> Option<PartialSelection<'a>> {
+    if grain_set.datasets.is_empty() {
+        return None;
+    }
+    let mut best: Option<(usize, usize, &Dataset)> = None;
+    for dataset in &grain_set.datasets {
+        let present_dims: Vec<String> = required_dimensions
+            .iter()
+            .filter(|d| dataset_has_dimension_attr(model, grain_set, dataset, d))
+            .cloned()
+            .collect();
+        let present_measures: Vec<String> = required_measures
+            .iter()
+            .filter(|m| grain_set.get_measure(m).is_some() && dataset.has_measure(m))
+            .cloned()
+            .collect();
+        let score = (present_measures.len(), present_dims.len());
+        let better = match best {
+            None => true,
+            Some((bm, bd, _)) => score.0 > bm || (score.0 == bm && score.1 > bd),
+        };
+        if better {
+            best = Some((score.0, score.1, dataset));
+        }
+    }
+    let (n_measures, n_dims, dataset) = best?;
+    if n_measures == 0 && n_dims == 0 {
+        return None;
+    }
+    let present_dimensions: Vec<String> = required_dimensions
+        .iter()
+        .filter(|d| dataset_has_dimension_attr(model, grain_set, dataset, d))
+        .cloned()
+        .collect();
+    let missing_dimensions: Vec<String> = required_dimensions
+        .iter()
+        .filter(|d| !dataset_has_dimension_attr(model, grain_set, dataset, d))
+        .cloned()
+        .collect();
+    let present_measures: Vec<String> = required_measures
+        .iter()
+        .filter(|m| grain_set.get_measure(m).is_some() && dataset.has_measure(m))
+        .cloned()
+        .collect();
+    let missing_measures: Vec<String> = required_measures
+        .iter()
+        .filter(|m| !(grain_set.get_measure(m).is_some() && dataset.has_measure(m)))
+        .cloned()
+        .collect();
+    Some(PartialSelection {
+        group: grain_set,
+        dataset,
+        present_dimensions,
+        missing_dimensions,
+        present_measures,
+        missing_measures,
+    })
+}
+
 /// Build a helpful error message about what's missing
 fn find_missing_requirements(
     _schema: &Schema,
@@ -451,26 +530,16 @@ fn find_missing_requirements(
             continue;
         }
         
-        // Handle path-qualified paths: 3-part or 4+ part
+        // Handle path-qualified paths: path may be leaf or group
         let parts: Vec<&str> = dim_attr.split('.').collect();
-        let available_in_any = if parts.len() == 3 {
-            let (tg_qualifier, dim_name, attr_name) = (parts[0], parts[1], parts[2]);
-            let two_part = format!("{}.{}", dim_name, attr_name);
-            model.grain_sets().iter()
-                .filter(|group| group.name == tg_qualifier)
-                .any(|group| {
-                    group.datasets.iter().any(|dataset| {
-                        dataset_has_attribute(model, group, dataset, &two_part)
-                    })
-                })
-        } else if parts.len() >= 4 {
-            let path_segments: Vec<&str> = parts[0..parts.len() - 2].to_vec();
+        let available_in_any = if parts.len() >= 3 {
+            let path_segments: &[&str] = &parts[0..parts.len() - 2];
             let dim_name = parts[parts.len() - 2];
             let attr_name = parts[parts.len() - 1];
             let two_part = format!("{}.{}", dim_name, attr_name);
-            model.get_grain_set_by_path(&path_segments).map_or(false, |group| {
-                group.datasets.iter().any(|dataset| {
-                    dataset_has_attribute(model, &group, dataset, &two_part)
+            model.grain_sets_under_path(path_segments).iter().any(|gs| {
+                gs.datasets.iter().any(|dataset| {
+                    dataset_has_attribute(model, gs, dataset, &two_part)
                 })
             })
         } else {

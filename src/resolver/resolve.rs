@@ -445,6 +445,21 @@ fn collect_arg_measure_deps<'a>(arg: &'a MetricExprArg, measures: &mut HashSet<&
     }
 }
 
+/// Collect all measure names referenced by the given metrics (including structured metrics).
+/// Used to build required_measures for selection and conformed union so that grain sets
+/// without every measure are correctly handled (tier 2/3).
+pub fn collect_required_measure_names(model: &SemanticModel, metric_names: &[String]) -> Vec<String> {
+    let mut names = HashSet::new();
+    for name in metric_names {
+        if let Some(metric) = model.get_metric(name) {
+            collect_metric_measure_deps(&metric.expr, &mut names);
+        }
+    }
+    let mut out: Vec<String> = names.into_iter().map(String::from).collect();
+    out.sort();
+    out
+}
+
 /// Collect unique dimensions needed for this query
 fn collect_dimensions<'a>(
     row_attrs: &[AttributeRef<'a>],

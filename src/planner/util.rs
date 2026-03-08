@@ -361,10 +361,7 @@ impl ParsedDimensionAttr {
         match self {
             ParsedDimensionAttr::Qualified { container_path, .. } => {
                 let path_refs: Vec<&str> = container_path.iter().map(String::as_str).collect();
-                model
-                    .grain_sets_under_path(&path_refs)
-                    .iter()
-                    .any(|gs| gs.name == gs_name)
+                model.grain_set_under_path(&path_refs, gs_name)
             }
             ParsedDimensionAttr::Standard { .. } | ParsedDimensionAttr::Virtual { .. } => true,
         }

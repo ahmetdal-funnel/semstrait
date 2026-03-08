@@ -122,6 +122,14 @@ The planner and emitter never inspect `Source` -- they use `dataset.dataset` and
 | Container-scoped | Path + two-part | `adwords.campaign.name` (leaf) or `facebookads.campaign.name` (group) | Path may be a leaf grain set or a union group; group path UNIONs all leaves under it |
 | Virtual (model-level) | Two-part | `_dataset.path` | Literal values across all grain sets |
 
+### Path resolution APIs
+
+Use the right API depending on whether the path is required to be a single leaf or may be a group:
+
+- **`get_grain_set_by_path(path)`** – Use when the path must resolve to a **single leaf** grain set (e.g. resolver for path-qualified attributes, metric resolution). Returns `Option<&GrainSet>`; `None` if path is a group or not found.
+- **`grain_sets_under_path(path)`** – Use when the path may be a **leaf or group** and you need all leaf grain sets at or under that path (e.g. planner routing, selector `qualified_groups`, building union branches). Returns all leaves under the path.
+- **`grain_set_under_path(path, grain_set_name)`** – Use when you only need to check whether a given grain set is under a path (e.g. feasibility, projection, `belongs_to_grain_set`). Handles both leaf and group paths.
+
 ## Testing
 
 ```bash

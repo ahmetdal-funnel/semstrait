@@ -132,7 +132,13 @@ impl SemanticModel {
     pub fn grain_sets_under_path(&self, path: &[&str]) -> Vec<GrainSet> {
         self.root.grain_sets_under_path(path)
     }
-    
+
+    /// True if the given grain set (by name) is at or under the given container path.
+    /// Use when checking whether a qualified dimension path applies to a specific grain set.
+    pub fn grain_set_under_path(&self, path: &[&str], grain_set_name: &str) -> bool {
+        self.grain_sets_under_path(path).iter().any(|gs| gs.name == grain_set_name)
+    }
+
     /// Get the first grain set (convenience for single-grain-set models)
     pub fn first_grain_set(&self) -> Option<GrainSet> {
         self.grain_sets().into_iter().next()
