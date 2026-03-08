@@ -5,9 +5,9 @@
 ## Goals
 
 - **Engine-Agnostic**: Compile semantic models to Substrait compute plans executable on any compatible engine (DataFusion, DuckDB, Velox, etc.)
-- **Multi-Source**: Support multiple data sources (datasetGroups) in a single model with automatic UNION handling
+- **Multi-Source**: Support multiple data sources (grain sets) in a single model with automatic UNION handling
 - **Aggregate Awareness**: Automatically select optimal pre-aggregated datasets based on query requirements
-- **Conformed Dimensions**: Query dimensions across datasetGroups with simple two-part paths
+- **Conformed Dimensions**: Query dimensions across grain sets with simple two-part paths
 - **Metrics-First API**: Expose metrics as the public interface; measures are internal implementation details
 
 ## Table of Contents
@@ -15,7 +15,7 @@
 1. [Enumerations](#enumerations)
 2. [Semantic Model](#semantic-model)
 3. [Dimensions](#dimensions)
-4. [Dataset Groups](#dataset-groups)
+4. [Grain sets](#grain-sets)
 5. [Measures](#measures)
 6. [Metrics](#metrics)
 7. [Query Request](#query-request)
@@ -84,7 +84,7 @@ The top-level container representing a complete semantic model.
 | `namespace` | string | No | Organization/tenant identifier |
 | `dimensions` | array | No | Model-level dimensions (queryable with 2-part paths) |
 | `metrics` | array | No | Derived calculations (model-level) |
-| `datasetGroups` | array | Yes | Groups of datasets sharing field definitions |
+| `union_set` | array | Yes | Grain sets (groups of datasets sharing field definitions) |
 | `dataFilter` | array | No | Row-level security filters |
 
 ### Example
@@ -95,7 +95,7 @@ semantic_models:
     namespace: "tenant-123"
     dimensions: []
     metrics: []
-    datasetGroups: []
+    union_set: []
 ```
 
 ---
@@ -173,7 +173,7 @@ dimensions:
     attributes:
       - name: model
         type: string
-      - name: datasetGroup
+      - name: path
         type: string
       - name: dataset
         type: string
@@ -187,25 +187,25 @@ The location where a dimension is defined determines how it can be queried:
 
 | Defined At | Path Format | Example | Behavior |
 |------------|-------------|---------|----------|
-| Model-level `dimensions` | Two-part | `dates.year` | UNION across all datasetGroups |
-| Inline in datasetGroup | Three-part | `adwords.campaign.name` | Single datasetGroup only |
-| Virtual (model-level) | Two-part | `_dataset.datasetGroup` | Literal values across all datasetGroups |
+| Model-level `dimensions` | Two-part | `dates.year` | UNION across all grain sets |
+| Inline in grain set | Three-part | `adwords.campaign.name` | Single grain set only |
+| Virtual (model-level) | Two-part | `_dataset.path` | Literal values across all grain sets |
 
-**Model-level dimensions** are shared concepts that can be queried across datasetGroups. The planner automatically UNIONs results from all datasetGroups that reference the dimension.
+**Model-level dimensions** are shared concepts that can be queried across grain sets. The planner automatically UNIONs results from all grain sets that reference the dimension.
 
-**Inline dimensions** are datasetGroup-specific and must be queried with the three-part path `datasetGroup.dimension.attribute`.
+**Inline dimensions** are grain-set-specific and must be queried with the three-part path `grain_set.dimension.attribute`.
 
 ---
 
-## Dataset Groups
+## Grain sets
 
-A datasetGroup defines a collection of datasets sharing dimension and measure definitions. Multiple datasetGroups enable multi-source analytics (e.g., Google Ads + Facebook Ads).
+A grain set defines a collection of datasets sharing dimension and measure definitions. Multiple grain sets enable multi-source analytics (e.g., Google Ads + Facebook Ads).
 
 ### DatasetGroup Schema
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | Yes | Unique identifier for the datasetGroup |
+| `name` | string | Yes | Unique identifier for the grain set |
 | `dimensions` | array | Yes | Dimension references available in this group |
 | `measures` | array | Yes | Measure definitions shared by datasets |
 | `datasets` | array | Yes | Physical datasets in this group |
@@ -241,7 +241,7 @@ A datasetGroup defines a collection of datasets sharing dimension and measure de
 ### Example
 
 ```yaml
-datasetGroups:
+union_set:
   - name: orders
     dimensions:
       - name: dates
@@ -276,7 +276,7 @@ datasetGroups:
 
 ## Measures
 
-Measures are aggregated calculations defined at the datasetGroup level. They are internal implementation details—users query metrics, not measures directly.
+Measures are aggregated calculations defined at the grain set level. They are internal implementation details—users query metrics, not measures directly.
 
 ### Measure Schema
 
@@ -358,10 +358,10 @@ Metrics are the public query interface. They can be pass-through (exposing a mea
     case:
       when:
         - condition:
-            eq: [datasetGroup.name, "google_ads"]
+            eq: [_dataset.path, "google_ads"]
           then: ad_cost
         - condition:
-            eq: [datasetGroup.name, "meta_ads"]
+            eq: [_dataset.path, "meta_ads"]
           then: media_spend
       else: 0
 ```
@@ -427,14 +427,14 @@ semantic_models:
       - name: _dataset
         virtual: true
         attributes:
-          - { name: datasetGroup, type: string }
+          - { name: path, type: string }
     
     metrics:
       - name: total_cost
         expr: cost
         type: f64
     
-    datasetGroups:
+    union_set:
       - name: adwords
         dimensions:
           - name: dates
@@ -511,8 +511,8 @@ semstrait supports metadata fields for AI consumption:
   - Core semantic model structure
   - Dataset groups with aggregate awareness
   - Conformed and virtual dimensions
-  - DatasetGroup-qualified dimension paths
-  - Cross-datasetGroup UNION with typed NULLs
+  - DatasetGroup-qualified dimension paths (path may be a leaf grain set or a union group; group path UNIONs all leaves under it)
+  - Cross-grain-set UNION with typed NULLs
   - Metrics as public API
 
 ---

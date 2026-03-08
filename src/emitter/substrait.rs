@@ -557,7 +557,7 @@ fn emit_sort(sort: &Sort, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitErr
 /// Emit a Union relation (UNION ALL)
 /// 
 /// Combines multiple input relations with compatible schemas.
-/// Used for cross-tableGroup queries and partitioned table queries.
+/// Used for cross-tableGroup queries and multi-grain-set union queries.
 fn emit_union(union: &Union, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitError> {
     if union.inputs.len() < 2 {
         return Err(EmitError::InvalidPlan(
@@ -1162,12 +1162,13 @@ mod tests {
             filter: None,
         };
 
-        let selected = select_datasets(&schema, model, &["dates.year".to_string()], &["sales".to_string()])
+        let grain_sets = model.grain_sets();
+        let selected = select_datasets(&schema, model, &grain_sets, &["dates.year".to_string()], &["sales".to_string()])
             .unwrap()
             .into_iter()
             .next()
             .unwrap();
-        let resolved = resolve_query(&schema, &request, &selected).unwrap();
+        let resolved = resolve_query(&schema, &request, &selected, &grain_sets).unwrap();
         let plan_node = plan_query(&resolved).unwrap();
         
         let plan = emit_plan(&plan_node, None).unwrap();
@@ -1342,7 +1343,7 @@ mod tests {
                 },
                 ProjectExpr {
                     expr: Expr::Literal(Literal::String("test_group".to_string())),
-                    alias: "_dataset.datasetGroup".to_string(),
+                    alias: "_dataset.path".to_string(),
                 },
                 ProjectExpr {
                     expr: Expr::Column(Column::unqualified("total")),

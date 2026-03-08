@@ -1,6 +1,6 @@
 //! Types for resolved query components
 
-use crate::semantic_model::{Attribute, Dimension, Measure, Metric, SemanticModel, DatasetGroup, DatasetGroupDimension, Dataset};
+use crate::semantic_model::{Attribute, Dataset, Dimension, GrainSet, GrainSetDimension, Measure, Metric, SemanticModel};
 
 /// A resolved attribute reference (dimension.attribute)
 /// 
@@ -11,25 +11,25 @@ use crate::semantic_model::{Attribute, Dimension, Measure, Metric, SemanticModel
 pub enum AttributeRef<'a> {
     /// Attribute from a joined dimension table
     Joined {
-        group_dim: &'a DatasetGroupDimension,
+        group_dim: &'a GrainSetDimension,
         dimension: &'a Dimension,
         attribute: &'a Attribute,
-        /// Optional datasetGroup qualifier (e.g., "adwords" in "adwords.campaign.name")
-        /// When set, this attribute is explicitly scoped to a specific datasetGroup
-        dataset_group_qualifier: Option<String>,
+        /// Optional grain set qualifier (e.g., "adwords" in "adwords.campaign.name")
+        /// When set, this attribute is explicitly scoped to a specific grain set
+        grain_set_qualifier: Option<String>,
     },
     /// Attribute from a degenerate dimension (columns on fact dataset)
     Degenerate {
-        group_dim: &'a DatasetGroupDimension,
+        group_dim: &'a GrainSetDimension,
         attribute: &'a Attribute,
-        /// Optional datasetGroup qualifier (e.g., "adwords" in "adwords.campaign.name")
-        /// When set, this attribute is explicitly scoped to a specific datasetGroup
-        dataset_group_qualifier: Option<String>,
+        /// Optional grain set qualifier (e.g., "adwords" in "adwords.campaign.name")
+        /// When set, this attribute is explicitly scoped to a specific grain set
+        grain_set_qualifier: Option<String>,
     },
     /// Virtual metadata attribute from the `_dataset` dimension
     /// Emits as a constant literal value, not a column reference
     Meta {
-        /// The attribute name (e.g., "datasetGroup", "uuid", or a property key)
+        /// The attribute name (e.g., "grainSet", "uuid", or a property key)
         name: String,
         /// The resolved value to emit as a literal
         value: String,
@@ -37,8 +37,8 @@ pub enum AttributeRef<'a> {
 }
 
 impl<'a> AttributeRef<'a> {
-    /// Get the dataset group dimension reference (None for Meta)
-    pub fn group_dim(&self) -> Option<&'a DatasetGroupDimension> {
+    /// Get the grain set dimension reference (None for Meta)
+    pub fn group_dim(&self) -> Option<&'a GrainSetDimension> {
         match self {
             Self::Joined { group_dim, .. } => Some(group_dim),
             Self::Degenerate { group_dim, .. } => Some(group_dim),
@@ -119,24 +119,24 @@ impl<'a> AttributeRef<'a> {
         }
     }
     
-    /// Get the datasetGroup qualifier if this attribute is explicitly scoped
-    pub fn dataset_group_qualifier(&self) -> Option<&str> {
+    /// Get the grain set qualifier if this attribute is explicitly scoped
+    pub fn grain_set_qualifier(&self) -> Option<&str> {
         match self {
-            Self::Joined { dataset_group_qualifier, .. } => dataset_group_qualifier.as_deref(),
-            Self::Degenerate { dataset_group_qualifier, .. } => dataset_group_qualifier.as_deref(),
+            Self::Joined { grain_set_qualifier, .. } => grain_set_qualifier.as_deref(),
+            Self::Degenerate { grain_set_qualifier, .. } => grain_set_qualifier.as_deref(),
             Self::Meta { .. } => None,
         }
     }
     
-    /// Is this attribute qualified with a specific datasetGroup?
-    pub fn is_dataset_group_qualified(&self) -> bool {
-        self.dataset_group_qualifier().is_some()
+    /// Is this attribute qualified with a specific grain set?
+    pub fn is_grain_set_qualified(&self) -> bool {
+        self.grain_set_qualifier().is_some()
     }
     
     /// Get the semantic name for this attribute
-    /// Returns "datasetGroup.dimension.attribute" if qualified, "dimension.attribute" otherwise
+    /// Returns "grainSet.dimension.attribute" if qualified, "dimension.attribute" otherwise
     pub fn semantic_name(&self) -> String {
-        match self.dataset_group_qualifier() {
+        match self.grain_set_qualifier() {
             Some(tg) => format!("{}.{}.{}", tg, self.dimension_name(), self.attribute_name()),
             None => format!("{}.{}", self.dimension_name(), self.attribute_name()),
         }
@@ -156,8 +156,8 @@ pub struct ResolvedFilter<'a> {
 pub struct ResolvedQuery<'a> {
     /// The semantic model (for metrics and model-level config)
     pub model: &'a SemanticModel,
-    /// The selected dataset group (for dimensions and measures)
-    pub dataset_group: &'a DatasetGroup,
+    /// The selected grain set (for dimensions and measures)
+    pub grain_set: &'a GrainSet,
     /// The selected dataset (for physical dataset name and columns)
     pub dataset: &'a Dataset,
     /// Dimensions needed for this query (from rows, columns, and filters)
@@ -180,12 +180,12 @@ impl<'a> ResolvedQuery<'a> {
     pub fn output_names(&self) -> Vec<String> {
         let mut names = Vec::new();
         
-        // Row attributes: "dimension.attribute", "_dataset.attribute", or "datasetGroup.dimension.attribute"
+        // Row attributes: "dimension.attribute", "_dataset.attribute", or "grainSet.dimension.attribute"
         for attr in &self.row_attributes {
             names.push(attr.semantic_name());
         }
         
-        // Column attributes: "dimension.attribute", "_dataset.attribute", or "datasetGroup.dimension.attribute"
+        // Column attributes: "dimension.attribute", "_dataset.attribute", or "grainSet.dimension.attribute"
         for attr in &self.column_attributes {
             names.push(attr.semantic_name());
         }
@@ -204,12 +204,12 @@ impl<'a> ResolvedQuery<'a> {
 pub enum ResolvedDimension<'a> {
     /// Dimension from a joined table
     Joined {
-        group_dim: &'a DatasetGroupDimension,
+        group_dim: &'a GrainSetDimension,
         dimension: &'a Dimension,
     },
     /// Degenerate dimension (columns on fact dataset)
     Degenerate {
-        group_dim: &'a DatasetGroupDimension,
+        group_dim: &'a GrainSetDimension,
     },
     /// Virtual `_dataset` metadata dimension
     /// No physical table - all attributes are constant literals
@@ -217,8 +217,8 @@ pub enum ResolvedDimension<'a> {
 }
 
 impl<'a> ResolvedDimension<'a> {
-    /// Get the dataset group dimension reference (None for Meta)
-    pub fn group_dim(&self) -> Option<&'a DatasetGroupDimension> {
+    /// Get the grain set dimension reference (None for Meta)
+    pub fn group_dim(&self) -> Option<&'a GrainSetDimension> {
         match self {
             Self::Joined { group_dim, .. } => Some(group_dim),
             Self::Degenerate { group_dim } => Some(group_dim),

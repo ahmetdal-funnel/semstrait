@@ -1,7 +1,11 @@
+# Same scenario as before but modeled with nested union_set instead of partition.
+# Facebook Ads "partitions" (accounts 111, 222, 333) are three sibling grain sets
+# under a shared parent; adwords is a single grain set.
+
 semantic_models:
   - name: partitioned_ads
     namespace: "test-namespace-123"
-    
+
     dimensions:
       - name: _dataset
         virtual: true
@@ -11,13 +15,11 @@ semantic_models:
             type: string
           - name: namespace
             type: string
-          - name: datasetGroup
+          - name: path
             type: string
           - name: dataset
             type: string
-          - name: partition
-            type: string
-      
+
       - name: dates
         source:
           type: parquet
@@ -28,10 +30,10 @@ semantic_models:
             type: date
           - name: year
             type: i32
-    
-    dataset_groups:
+
+    union_set:
       - name: facebookads
-        partition_label: Account ID
+        label: Facebook Ads
         dimensions:
           - name: dates
             join:
@@ -43,7 +45,6 @@ semantic_models:
                 column: campaign_name
                 type: string
           - name: _dataset
-        
         measures:
           - name: spend
             aggregation: sum
@@ -57,74 +58,82 @@ semantic_models:
             aggregation: sum
             expr: impressions
             type: i64
-        
-        datasets:
-          - name: fb-account-111
-            source:
-              type: parquet
-              path: /data/facebookads/account_111.parquet
-            partition: "111"
-            dimensions:
-              dates: [date, year]
-              campaign: [campaign_name]
-              _dataset: [model, namespace, datasetGroup, dataset, partition]
-            measures: [spend, clicks, impressions]
-          
-          - name: fb-account-222
-            source:
-              type: parquet
-              path: /data/facebookads/account_222.parquet
-            partition: "222"
-            dimensions:
-              dates: [date, year]
-              campaign: [campaign_name]
-              _dataset: [model, namespace, datasetGroup, dataset, partition]
-            measures: [spend, clicks, impressions]
-          
-          - name: fb-account-333
-            source:
-              type: parquet
-              path: /data/facebookads/account_333.parquet
-            partition: "333"
-            dimensions:
-              dates: [date, year]
-              campaign: [campaign_name]
-              _dataset: [model, namespace, datasetGroup, dataset, partition]
-            measures: [spend, clicks, impressions]
+        union_set:
+          - grain_set:
+              name: facebookads_111
+              dimensions: []
+              measures: []
+              datasets:
+                - name: fb-account-111
+                  source:
+                    type: parquet
+                    path: /data/facebookads/account_111.parquet
+                  dimensions:
+                    dates: [date, year]
+                    campaign: [campaign_name]
+                    _dataset: [model, namespace, path, dataset]
+                  measures: [spend, clicks, impressions]
+          - grain_set:
+              name: facebookads_222
+              dimensions: []
+              measures: []
+              datasets:
+                - name: fb-account-222
+                  source:
+                    type: parquet
+                    path: /data/facebookads/account_222.parquet
+                  dimensions:
+                    dates: [date, year]
+                    campaign: [campaign_name]
+                    _dataset: [model, namespace, path, dataset]
+                  measures: [spend, clicks, impressions]
+          - grain_set:
+              name: facebookads_333
+              dimensions: []
+              measures: []
+              datasets:
+                - name: fb-account-333
+                  source:
+                    type: parquet
+                    path: /data/facebookads/account_333.parquet
+                  dimensions:
+                    dates: [date, year]
+                    campaign: [campaign_name]
+                    _dataset: [model, namespace, path, dataset]
+                  measures: [spend, clicks, impressions]
 
-      - name: adwords
-        dimensions:
-          - name: dates
-            join:
-              left_key: date_id
-              right_key: date_id
-          - name: campaign
-            attributes:
-              - name: campaign_name
-                column: adwords_campaign
-                type: string
-          - name: _dataset
-        
-        measures:
-          - name: cost
-            aggregation: sum
-            expr: cost
-            type: f64
-          - name: clicks
-            aggregation: sum
-            expr: clicks
-            type: i64
-        
-        datasets:
-          - name: adwords-daily
-            source:
-              type: parquet
-              path: /data/adwords/daily.parquet
-            dimensions:
-              dates: [date, year]
-              campaign: [campaign_name]
-              _dataset: [model, namespace, datasetGroup, dataset]
-            measures: [cost, clicks]
+      - grain_set:
+          name: adwords
+          dimensions:
+            - name: dates
+              join:
+                left_key: date_id
+                right_key: date_id
+            - name: campaign
+              attributes:
+                - name: campaign_name
+                  column: adwords_campaign
+                  type: string
+            - name: _dataset
+          measures:
+            - name: cost
+              aggregation: sum
+              expr: cost
+              type: f64
+            - name: clicks
+              aggregation: sum
+              expr: clicks
+              type: i64
+          datasets:
+            - name: adwords-daily
+              source:
+                type: parquet
+                path: /data/adwords/daily.parquet
+              dimensions:
+                dates: [date, year]
+                campaign: [campaign_name]
+                _dataset: [model, namespace, path, dataset]
+              measures: [cost, clicks]
 
     metrics:
       - name: spend
@@ -145,9 +154,15 @@ semantic_models:
           case:
             when:
               - condition:
-                  eq: [datasetGroup.name, "facebookads"]
+                  eq: [_dataset.path, "facebookads.facebookads_111"]
                 then: clicks
               - condition:
-                  eq: [datasetGroup.name, "adwords"]
+                  eq: [_dataset.path, "facebookads.facebookads_222"]
+                then: clicks
+              - condition:
+                  eq: [_dataset.path, "facebookads.facebookads_333"]
+                then: clicks
+              - condition:
+                  eq: [_dataset.path, "adwords"]
                 then: clicks
             else: 0

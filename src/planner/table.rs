@@ -1,13 +1,13 @@
-//! Resolver-based single-table planning and the unified tableGroup branch builder
+//! Resolver-based single-table planning and the unified grain-set branch builder
 //!
 //! Contains:
 //! - `plan_query` — builds a plan from a ResolvedQuery (single dataset)
-//! - `build_tablegroup_branch` / `build_tablegroup_branch_for_dataset` — the unified
-//!   builder for within-datasetGroup plans (auto-selects single or multi-table)
+//! - `build_grain_set_branch` / `build_grain_set_branch_for_dataset` — the unified
+//!   builder for within-grain-set plans (auto-selects single or multi-table)
 //! - `build_single_table_aggregate` / `build_multi_table_aggregate` — lower-level builders
 
 use std::collections::{HashMap, HashSet};
-use crate::semantic_model::{MeasureExpr, Dataset, DatasetGroup, SemanticModel};
+use crate::semantic_model::{Dataset, GrainSet, MeasureExpr, SemanticModel};
 use crate::plan::{
     Aggregate, AggregateExpr, Column, CrossJoin, Expr, Filter, Join, JoinType,
     PlanNode, Scan, Project, ProjectExpr, Sort,
@@ -140,25 +140,25 @@ pub fn plan_query(resolved: &ResolvedQuery<'_>) -> Result<PlanNode, PlanError> {
 }
 
 // ============================================================================
-// UNIFIED TABLEGROUP BRANCH BUILDER
+// UNIFIED GRAIN SET BRANCH BUILDER
 // ============================================================================
 
-/// Build an aggregated plan for a single tableGroup.
+/// Build an aggregated plan for a single grain set.
 ///
 /// Handles single table selection, multi-table JOIN, dimension JOINs, and aggregation.
-pub fn build_tablegroup_branch(
+pub fn build_grain_set_branch(
     model: &SemanticModel,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     dimension_attrs: &[String],
     measure_aliases: &[(String, String)],
 ) -> Result<PlanNode, PlanError> {
-    build_tablegroup_branch_for_dataset(model, dataset_group, None, dimension_attrs, measure_aliases)
+    build_grain_set_branch_for_dataset(model, grain_set, None, dimension_attrs, measure_aliases)
 }
 
 /// Build an aggregated branch, optionally targeting a specific dataset.
-pub fn build_tablegroup_branch_for_dataset(
+pub fn build_grain_set_branch_for_dataset(
     model: &SemanticModel,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     target_dataset: Option<&Dataset>,
     dimension_attrs: &[String],
     measure_aliases: &[(String, String)],
@@ -170,15 +170,15 @@ pub fn build_tablegroup_branch_for_dataset(
         .collect();
 
     if let Some(table) = target_dataset {
-        build_single_table_aggregate(model, dataset_group, table, &physical_dims, measure_aliases, None)
+        build_single_table_aggregate(model, grain_set, table, &physical_dims, measure_aliases, None)
     } else {
-        let single_table = dataset_group.datasets.iter()
+        let single_table = grain_set.datasets.iter()
             .find(|t| measure_names.iter().all(|m| t.has_measure(m)));
 
         if let Some(table) = single_table {
-            build_single_table_aggregate(model, dataset_group, table, &physical_dims, measure_aliases, None)
+            build_single_table_aggregate(model, grain_set, table, &physical_dims, measure_aliases, None)
         } else {
-            build_multi_table_aggregate(model, dataset_group, &physical_dims, measure_aliases)
+            build_multi_table_aggregate(model, grain_set, &physical_dims, measure_aliases)
         }
     }
 }
@@ -186,7 +186,7 @@ pub fn build_tablegroup_branch_for_dataset(
 /// Build an aggregated plan from a single table.
 pub fn build_single_table_aggregate(
     model: &SemanticModel,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     table: &Dataset,
     physical_dims: &[(String, String)],
     measure_aliases: &[(String, String)],
@@ -198,7 +198,7 @@ pub fn build_single_table_aggregate(
     let mut joined_dimensions: HashSet<String> = HashSet::new();
 
     for (dim_name, attr_name) in physical_dims {
-        if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+        if let Some(group_dim) = grain_set.get_dimension(dim_name) {
             if group_dim.is_degenerate() {
                 if let Some(attr) = group_dim.get_attribute(attr_name) {
                     let col_name = attr.column_name().to_string();
@@ -212,7 +212,7 @@ pub fn build_single_table_aggregate(
     }
 
     for (_, measure_name) in measure_aliases {
-        if let Some(measure) = dataset_group.get_measure(measure_name) {
+        if let Some(measure) = grain_set.get_measure(measure_name) {
             if let MeasureExpr::Column(col) = &measure.expr {
                 if !columns.contains(col) {
                     columns.push(col.clone());
@@ -232,7 +232,7 @@ pub fn build_single_table_aggregate(
         if joined_dimensions.contains(dim_name) {
             continue;
         }
-        if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+        if let Some(group_dim) = grain_set.get_dimension(dim_name) {
             if let Some(join_spec) = &group_dim.join {
                 if let Some(dimension) = model.get_dimension(dim_name) {
                     if needs_join_for_dimension(table, group_dim, dimension) {
@@ -271,7 +271,7 @@ pub fn build_single_table_aggregate(
 
     let group_by: Vec<Column> = physical_dims.iter()
         .filter_map(|(dim_name, attr_name)| {
-            if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+            if let Some(group_dim) = grain_set.get_dimension(dim_name) {
                 if group_dim.is_degenerate() {
                     if let Some(attr) = group_dim.get_attribute(attr_name) {
                         return Some(Column::new(fact_alias, attr.column_name()));
@@ -289,7 +289,7 @@ pub fn build_single_table_aggregate(
 
     let aggregates: Vec<AggregateExpr> = measure_aliases.iter()
         .filter_map(|(alias, measure_name)| {
-            dataset_group.get_measure(measure_name).map(|measure| {
+            grain_set.get_measure(measure_name).map(|measure| {
                 AggregateExpr {
                     func: measure.aggregation,
                     expr: convert_measure_expr(&measure.expr),
@@ -340,14 +340,14 @@ pub fn build_single_table_aggregate(
     }))
 }
 
-/// Build an aggregated plan by JOINing multiple tables within one datasetGroup.
+/// Build an aggregated plan by JOINing multiple tables within one grain set.
 fn build_multi_table_aggregate(
     model: &SemanticModel,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     physical_dims: &[(String, String)],
     measure_aliases: &[(String, String)],
 ) -> Result<PlanNode, PlanError> {
-    let mut tables_sorted: Vec<&Dataset> = dataset_group.datasets.iter().collect();
+    let mut tables_sorted: Vec<&Dataset> = grain_set.datasets.iter().collect();
     tables_sorted.sort_by_key(|t| t.attribute_count());
 
     let mut table_measures: HashMap<usize, Vec<(String, String)>> = HashMap::new();
@@ -380,7 +380,7 @@ fn build_multi_table_aggregate(
         let table = tables_sorted[*idx];
         let table_alias = format!("t{}", idx);
         let sub_plan = build_single_table_aggregate(
-            model, dataset_group, table, physical_dims, measures, Some(&table_alias),
+            model, grain_set, table, physical_dims, measures, Some(&table_alias),
         )?;
         sub_queries.push((sub_plan, table_alias));
     }

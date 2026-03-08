@@ -47,12 +47,12 @@ pub enum MetricExprNode {
     Multiply(Vec<MetricExprArg>),
     /// Division
     Divide(Vec<MetricExprArg>),
-    /// CASE WHEN expression - for cross-datasetGroup metrics
+    /// CASE WHEN expression - for cross-grain-set metrics
     Case(MetricCaseExpr),
 }
 
 /// CASE WHEN expression for metrics
-/// Used for cross-datasetGroup metrics that select different measures based on datasetGroup
+/// Used for cross-grain-set metrics that select different measures based on _dataset.path
 #[derive(Debug, Clone, Deserialize)]
 pub struct MetricCaseExpr {
     /// List of WHEN...THEN branches
@@ -72,7 +72,7 @@ pub struct MetricCaseWhen {
 }
 
 /// Condition expression for metric CASE WHEN
-/// Currently supports datasetGroup.name comparisons for cross-datasetGroup metrics
+/// Supports _dataset.path comparisons for cross-grain-set metrics
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricCondition {
@@ -80,13 +80,15 @@ pub enum MetricCondition {
     Eq(Vec<MetricConditionArg>),
     /// Not equal: ne: [a, b]
     Ne(Vec<MetricConditionArg>),
+    /// Glob match: match: [_dataset.path, "*.facebookads.*"] — pattern uses * for any run of characters
+    Match(Vec<MetricConditionArg>),
 }
 
 /// Argument in a metric condition
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum MetricConditionArg {
-    /// String value (e.g., "datasetGroup.name" or "adwords")
+    /// String value (e.g., "_dataset.path" or a path literal like "google_ads")
     String(String),
     /// Literal number
     Number(f64),
@@ -110,31 +112,36 @@ impl Metric {
         self.data_type.clone().unwrap_or(DataType::F64)
     }
 
-    /// Check if this metric is a cross-datasetGroup metric
-    /// 
-    /// A cross-datasetGroup metric uses `datasetGroup.name`
-    /// in CASE conditions to select different measures based on the active datasetGroup.
-    pub fn is_cross_dataset_group(&self) -> bool {
+    /// Check if this metric is a cross-grain-set metric
+    ///
+    /// A cross-grain-set metric uses `_dataset.path` in CASE conditions
+    /// to select different measures based on the active grain set.
+    pub fn is_cross_grain_set(&self) -> bool {
         match &self.expr {
             MetricExpr::Structured(MetricExprNode::Case(case_expr)) => {
-                case_expr.when.iter().any(|w| w.condition.references_dataset_group())
+                case_expr.when.iter().any(|w| w.condition.references_grain_set())
             }
             _ => false,
         }
     }
 
-    /// Extract datasetGroup-to-measure mappings from a cross-datasetGroup metric
-    /// 
-    /// Returns a vec of (datasetGroup_name, measure_name) tuples.
-    /// Returns empty vec if not a cross-datasetGroup metric.
-    pub fn dataset_group_measures(&self) -> Vec<(String, String)> {
+    /// Extract grain-set-to-measure mappings from a cross-grain-set metric (eq/ne only).
+    /// For metrics that use `match` conditions, use the planner's expanded mapping instead.
+    ///
+    /// Returns a vec of (grain_set_path, measure_name) tuples.
+    /// Returns empty vec if not a cross-grain-set metric or if any WHEN uses `match`.
+    pub fn grain_set_measures(&self) -> Vec<(String, String)> {
         match &self.expr {
             MetricExpr::Structured(MetricExprNode::Case(case_expr)) => {
+                let has_match = case_expr.when.iter().any(|w| w.condition.grain_set_pattern().is_some());
+                if has_match {
+                    return vec![];
+                }
                 case_expr.when.iter()
                     .filter_map(|w| {
-                        let dataset_group = w.condition.dataset_group_value()?;
+                        let grain_set = w.condition.grain_set_value()?;
                         let measure = w.then.measure_name()?;
-                        Some((dataset_group, measure))
+                        Some((grain_set, measure))
                     })
                     .collect()
             }
@@ -142,34 +149,36 @@ impl Metric {
         }
     }
 
+    /// CASE WHEN list for cross-grain-set metrics (for expansion in planner).
+    pub fn case_when_branches(&self) -> Option<&[MetricCaseWhen]> {
+        match &self.expr {
+            MetricExpr::Structured(MetricExprNode::Case(case_expr)) => Some(case_expr.when.as_slice()),
+            _ => None,
+        }
+    }
+
 }
 
 impl MetricCondition {
-    /// Check if this condition references datasetGroup.name
-    pub fn references_dataset_group(&self) -> bool {
+    /// Check if this condition references _dataset.path in CASE (cross-grain-set metric).
+    pub fn references_grain_set(&self) -> bool {
         match self {
-            MetricCondition::Eq(args) | MetricCondition::Ne(args) => {
-                args.iter().any(|arg| {
-                    matches!(arg, MetricConditionArg::String(s) if s == "datasetGroup.name")
-                })
+            MetricCondition::Eq(args) | MetricCondition::Ne(args) | MetricCondition::Match(args) => {
+                args.iter().any(|arg| matches!(arg, MetricConditionArg::String(s) if s == "_dataset.path"))
             }
         }
     }
 
-    /// Extract the datasetGroup name value from a condition like eq: [datasetGroup.name, "adwords"]
-    pub fn dataset_group_value(&self) -> Option<String> {
+    /// Extract the path/grain set value from a condition like eq: [_dataset.path, "google_ads"].
+    /// Returns None for Match (use grain_set_pattern and expand against model).
+    pub fn grain_set_value(&self) -> Option<String> {
         match self {
             MetricCondition::Eq(args) if args.len() == 2 => {
-                // Check if one arg is "datasetGroup.name" and get the other
-                let has_dataset_group = args.iter().any(|a| {
-                    matches!(a, MetricConditionArg::String(s) if s == "datasetGroup.name")
-                });
-                if has_dataset_group {
-                    args.iter().find_map(|a| {
-                        match a {
-                            MetricConditionArg::String(s) if s != "datasetGroup.name" => Some(s.clone()),
-                            _ => None,
-                        }
+                let has_path_ref = args.iter().any(|a| matches!(a, MetricConditionArg::String(s) if s == "_dataset.path"));
+                if has_path_ref {
+                    args.iter().find_map(|a| match a {
+                        MetricConditionArg::String(s) if s != "_dataset.path" => Some(s.clone()),
+                        _ => None,
                     })
                 } else {
                     None
@@ -179,6 +188,23 @@ impl MetricCondition {
         }
     }
 
+    /// Extract the glob pattern from a condition like match: [_dataset.path, "*.facebookads.*"].
+    pub fn grain_set_pattern(&self) -> Option<String> {
+        match self {
+            MetricCondition::Match(args) if args.len() == 2 => {
+                let has_path_ref = args.iter().any(|a| matches!(a, MetricConditionArg::String(s) if s == "_dataset.path"));
+                if has_path_ref {
+                    args.iter().find_map(|a| match a {
+                        MetricConditionArg::String(s) if s != "_dataset.path" => Some(s.clone()),
+                        _ => None,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
 }
 
 impl MetricExprArg {

@@ -4,7 +4,7 @@
 //!
 //! Supports two selection modes:
 //! - Single dataset: When one dataset can satisfy all query requirements
-//! - Multi-dataset JOIN: When measures span multiple datasets in the same datasetGroup
+//! - Multi-dataset JOIN: When measures span multiple datasets in the same grain set
 
 mod error;
 mod select;

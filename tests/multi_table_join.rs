@@ -1,4 +1,4 @@
-//! Integration tests for multi-dataset JOIN within same datasetGroup
+//! Integration tests for multi-dataset JOIN within same grain set
 //!
 //! Tests the scenario where a query requires measures from multiple datasets
 //! that share common dimensions, resulting in a JOIN plan.
@@ -19,9 +19,11 @@ fn test_single_dataset_selection_when_possible() {
     let model = schema.get_model("multi-table-test").unwrap();
     
     // Query for impressions + clicks - both on campaign_summary
+    let grain_sets = model.grain_sets();
     let result = select_datasets(
         &schema,
         model,
+        &grain_sets,
         &["campaign.name".to_string(), "dates.date".to_string()],
         &["impressions".to_string(), "clicks".to_string()],
     );
@@ -39,9 +41,11 @@ fn test_single_dataset_selection_fails_for_cross_dataset_measures() {
     let model = schema.get_model("multi-table-test").unwrap();
     
     // Query for clicks + cost - clicks on summary, cost on details
+    let grain_sets = model.grain_sets();
     let result = select_datasets(
         &schema,
         model,
+        &grain_sets,
         &["campaign.name".to_string()],
         &["clicks".to_string(), "cost".to_string()],
     );
@@ -56,9 +60,11 @@ fn test_multi_dataset_selection_for_cross_dataset_measures() {
     let model = schema.get_model("multi-table-test").unwrap();
     
     // Query for clicks + cost - clicks on summary, cost on details
+    let grain_sets = model.grain_sets();
     let result = select_datasets_for_join(
         &schema,
         model,
+        &grain_sets,
         &["campaign.name".to_string()],
         &["clicks".to_string(), "cost".to_string()],
     );
@@ -128,9 +134,11 @@ fn test_smallest_dataset_first_assignment() {
     let model = schema.get_model("multi-table-test").unwrap();
     
     // Query for impressions + cost
+    let grain_sets = model.grain_sets();
     let result = select_datasets_for_join(
         &schema,
         model,
+        &grain_sets,
         &["campaign.name".to_string()],
         &["impressions".to_string(), "cost".to_string()],
     );
@@ -185,7 +193,7 @@ fn test_cross_join_with_virtual_dimension_only() {
     let request = QueryRequest {
         model: "multi-table-test".to_string(),
         dimensions: None,
-        rows: Some(vec!["_dataset.datasetGroup".to_string()]),
+        rows: Some(vec!["_dataset.path".to_string()]),
         columns: None,
         metrics: Some(vec!["clicks".to_string(), "cost".to_string()]),
         filter: None,

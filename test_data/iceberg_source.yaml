@@ -37,31 +37,31 @@ semantic_models:
           divide: [sales, quantity]
         type: f64
 
-    dataset_groups:
-      - name: orders
-        dimensions:
-          - name: dates
-            join:
-              left_key: time_id
-              right_key: time_id
+    grain_set:
+      name: orders
+      dimensions:
+        - name: dates
+          join:
+            left_key: time_id
+            right_key: time_id
 
-        measures:
-          - name: quantity
-            aggregation: sum
-            expr: quantityordered
-            type: i32
+      measures:
+        - name: quantity
+          aggregation: sum
+          expr: quantityordered
+          type: i32
 
-          - name: sales
-            aggregation: sum
-            expr: totalprice
-            type: f64
+        - name: sales
+          aggregation: sum
+          expr: totalprice
+          type: f64
 
-        datasets:
-          - name: warehouse.orderfact
-            source:
-              type: iceberg
-              table: warehouse.orderfact
-            uuid: "iceberg-uuid-001"
-            dimensions:
-              dates: [date, year]
-            measures: [quantity, sales]
+      datasets:
+        - name: warehouse.orderfact
+          source:
+            type: iceberg
+            table: warehouse.orderfact
+          uuid: "iceberg-uuid-001"
+          dimensions:
+            dates: [date, year]
+          measures: [quantity, sales]

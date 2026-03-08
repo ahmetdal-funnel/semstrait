@@ -34,9 +34,9 @@ mod tests {
         assert_eq!(schema.semantic_models.len(), 1);
         let model = schema.get_model("steelwheels").unwrap();
         
-        // Check dataset groups
-        assert_eq!(model.dataset_groups.len(), 1);
-        let group = model.first_dataset_group().unwrap();
+        // Check grain sets
+        assert_eq!(model.grain_sets().len(), 1);
+        let group = model.first_grain_set().unwrap();
         assert_eq!(group.name, "orders");
         
         // Check datasets within group
@@ -111,7 +111,7 @@ mod tests {
         assert_eq!(dates.source_ref(), Some("warehouse.dates"));
 
         // Dataset should have Iceberg source
-        let group = model.first_dataset_group().unwrap();
+        let group = model.first_grain_set().unwrap();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
         assert_eq!(dataset.iceberg_table(), Some("warehouse.orderfact"));
         assert!(dataset.parquet_path().is_none());
@@ -125,34 +125,26 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_marketing_cross_dataset_group_metric() {
+    fn test_parse_marketing_cross_grain_set_metric() {
         let schema = parse_file("test_data/marketing.yaml").unwrap();
-        
-        // Check models
+
         assert_eq!(schema.semantic_models.len(), 1);
         let model = schema.get_model("-ObDoDFVQGxxCGa5vw_Z").unwrap();
-        
-        // Check dataset groups (should have adwords and facebookads)
-        assert_eq!(model.dataset_groups.len(), 2);
-        
-        // Check adwords group
-        let adwords = model.get_dataset_group("adwords").unwrap();
+
+        assert_eq!(model.grain_sets().len(), 2);
+
+        let adwords = model.get_grain_set("adwords").unwrap();
         assert!(adwords.get_measure("cost").is_some());
-        
-        // Check facebookads group
-        let facebookads = model.get_dataset_group("facebookads").unwrap();
+
+        let facebookads = model.get_grain_set("facebookads").unwrap();
         assert!(facebookads.get_measure("spend").is_some());
-        
-        // Check cross-datasetGroup metric
+
         let fun_cost = model.get_metric("fun-cost").unwrap();
-        
-        // Verify it's detected as a cross-datasetGroup metric
-        assert!(fun_cost.is_cross_dataset_group());
-        
-        // Verify datasetGroup-to-measure mappings
-        let mappings = fun_cost.dataset_group_measures();
+        assert!(fun_cost.is_cross_grain_set());
+
+        let mappings = fun_cost.grain_set_measures();
         assert_eq!(mappings.len(), 2);
-        assert!(mappings.iter().any(|(tg, m)| tg == "adwords" && m == "cost"));
-        assert!(mappings.iter().any(|(tg, m)| tg == "facebookads" && m == "spend"));
+        assert!(mappings.iter().any(|(gs, m)| gs == "adwords" && m == "cost"));
+        assert!(mappings.iter().any(|(gs, m)| gs == "facebookads" && m == "spend"));
     }
 }

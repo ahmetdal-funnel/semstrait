@@ -34,52 +34,52 @@ semantic_models:
         expr: order_count
         type: i64
     
-    dataset_groups:
-      - name: order_facts
-        dimensions:
-          # Denormalized - columns are on fact table, no join needed
-          # Note: no join spec = degenerate dimension
-          - name: dates
-            attributes:
-              - name: order_date
-                type: date
-              - name: year
-                type: i32
-              - name: quarter
-                type: string
+    grain_set:
+      name: order_facts
+      dimensions:
+        # Denormalized - columns are on fact table, no join needed
+        # Note: no join spec = degenerate dimension
+        - name: dates
+          attributes:
+            - name: order_date
+              type: date
+            - name: year
+              type: i32
+            - name: quarter
+              type: string
 
-          # Joined dimension - need to join for name, city
-          - name: customers
-            join:
-              left_key: customer_id
-              right_key: customer_id
-            attributes:
-              - name: customer_id
-                type: i32
-              - name: name
-                type: string
-              - name: city
-                type: string
+        # Joined dimension - need to join for name, city
+        - name: customers
+          join:
+            left_key: customer_id
+            right_key: customer_id
+          attributes:
+            - name: customer_id
+              type: i32
+            - name: name
+              type: string
+            - name: city
+              type: string
 
-        measures:
-          - name: order_total
-            aggregation: sum
-            expr: total_amount
-            type: f64
+      measures:
+        - name: order_total
+          aggregation: sum
+          expr: total_amount
+          type: f64
 
-          - name: order_count
-            aggregation: count
-            expr: order_id
-            type: i64
+        - name: order_count
+          aggregation: count
+          expr: order_id
+          type: i64
 
-        datasets:
-          - name: sales.orders
-            source:
-              type: parquet
-              path: /data/sales/orders.parquet
-            dimensions:
-              # Denormalized: all date columns are on fact table
-              dates: [order_date, year, quarter]
-              # Joined: only customer_id on fact, need join for name/city
-              customers: [customer_id, name, city]
-            measures: [order_total, order_count]
+      datasets:
+        - name: sales.orders
+          source:
+            type: parquet
+            path: /data/sales/orders.parquet
+          dimensions:
+            # Denormalized: all date columns are on fact table
+            dates: [order_date, year, quarter]
+            # Joined: only customer_id on fact, need join for name/city
+            customers: [customer_id, name, city]
+          measures: [order_total, order_count]

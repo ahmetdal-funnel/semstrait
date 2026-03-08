@@ -1,0 +1,123 @@
+# Test fixture for group-qualified dimension paths.
+# Structure: adwords (leaf) + facebookads (group) with two leaf grain sets.
+# Query "facebookads.campaign.campaign" should resolve to both leaves and UNION.
+
+semantic_models:
+  - name: marketing
+    dimensions:
+      - name: _dataset
+        virtual: true
+        attributes:
+          - name: path
+            type: string
+
+      - name: campaign
+        attributes:
+          - name: campaign
+            type: string
+
+    union_set:
+      - grain_set:
+          name: adwords
+          dimensions:
+            - name: campaign
+              attributes:
+                - name: campaign
+                  column: adwords_campaign
+                  type: string
+            - name: _dataset
+          measures:
+            - name: cost
+              aggregation: sum
+              expr: cost
+              type: f64
+            - name: clicks
+              aggregation: sum
+              expr: clicks
+              type: i64
+            - name: impressions
+              aggregation: sum
+              expr: impressions
+              type: i64
+          datasets:
+            - name: adwords_daily
+              source:
+                type: parquet
+                path: /data/adwords.parquet
+              dimensions:
+                campaign: [campaign]
+                _dataset: [path]
+              measures: [cost, clicks, impressions]
+
+      - name: facebookads
+        label: Facebook Ads
+        dimensions:
+          - name: campaign
+            attributes:
+              - name: campaign
+                column: campaign_name
+                type: string
+        measures:
+          - name: spend
+            aggregation: sum
+            expr: spend
+            type: f64
+          - name: clicks
+            aggregation: sum
+            expr: clicks
+            type: i64
+          - name: impressions
+            aggregation: sum
+            expr: impressions
+            type: i64
+        union_set:
+          - grain_set:
+              name: facebookads_account_a
+              dimensions: []
+              measures: []
+              datasets:
+                - name: fads_a
+                  source:
+                    type: parquet
+                    path: /data/fads_a.parquet
+                  dimensions:
+                    campaign: [campaign]
+                  measures: [spend, clicks, impressions]
+          - grain_set:
+              name: facebookads_account_b
+              dimensions: []
+              measures: []
+              datasets:
+                - name: fads_b
+                  source:
+                    type: parquet
+                    path: /data/fads_b.parquet
+                  dimensions:
+                    campaign: [campaign]
+                  measures: [clicks, impressions]
+
+    metrics:
+      - name: clicks
+        type: i64
+        expr:
+          case:
+            when:
+              - condition:
+                  eq: [_dataset.path, "adwords"]
+                then: clicks
+              - condition:
+                  match: [_dataset.path, "facebookads.*"]
+                then: clicks
+            else: 0
+      - name: impressions
+        type: i64
+        expr:
+          case:
+            when:
+              - condition:
+                  eq: [_dataset.path, "adwords"]
+                then: impressions
+              - condition:
+                  match: [_dataset.path, "facebookads.*"]
+                then: impressions
+            else: 0

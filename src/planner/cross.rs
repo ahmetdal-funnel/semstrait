@@ -1,11 +1,11 @@
-//! Cross-datasetGroup query planning
+//! Cross-grain-set query planning
 //!
-//! Handles metrics that span multiple datasetGroups. These produce UNION plans
-//! where each branch aggregates its own datasetGroup, then a re-aggregation
+//! Handles metrics that span multiple grain sets. These produce UNION plans
+//! where each branch aggregates its own grain set, then a re-aggregation
 //! combines the results.
 
 use std::collections::{HashMap, HashSet};
-use crate::semantic_model::{MeasureExpr, Dataset, DatasetGroup, Schema, SemanticModel, Metric, Measure, Aggregation};
+use crate::semantic_model::{Aggregation, Dataset, GrainSet, Measure, MeasureExpr, Metric, Schema, SemanticModel};
 use crate::plan::{
     Aggregate, AggregateExpr, Column, Expr, Join, JoinType,
     Literal, PlanNode, Scan, Project, ProjectExpr, Sort, SortKey, SortDirection, Union,
@@ -14,18 +14,100 @@ use crate::plan::{
 use super::error::PlanError;
 use super::util::{needs_join_for_dimension, ParsedDimensionAttr, get_virtual_attribute_value_with_dataset};
 use super::expr::convert_measure_expr;
-use super::table::{build_tablegroup_branch, build_tablegroup_branch_for_dataset};
+use super::table::build_grain_set_branch;
 
-/// A branch in a cross-datasetGroup query
+/// Glob match: * matches zero or more characters. Pattern is matched against the whole value.
+fn glob_match(pattern: &str, value: &str) -> bool {
+    if pattern.is_empty() {
+        return value.is_empty();
+    }
+    if !pattern.contains('*') {
+        return value == pattern;
+    }
+    let segments: Vec<&str> = pattern.split('*').collect();
+    let mut pos = 0usize;
+    for (i, seg) in segments.iter().enumerate() {
+        if seg.is_empty() {
+            continue;
+        }
+        if i == 0 {
+            if !value.starts_with(seg) {
+                return false;
+            }
+            pos = seg.len();
+        } else {
+            match value[pos..].find(seg) {
+                None => return false,
+                Some(j) => pos = pos + j + seg.len(),
+            }
+        }
+    }
+    if !pattern.ends_with('*') {
+        if let Some(last) = segments.last().filter(|s| !s.is_empty()) {
+            if !value.ends_with(last) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Expand metric CASE WHEN (eq + match) to (path, measure) with first-match-wins per grain set.
+fn expanded_grain_set_measures(metric: &Metric, model: &SemanticModel) -> Vec<(String, String)> {
+    let Some(when_branches) = metric.case_when_branches() else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    for gs in model.grain_sets() {
+        let path = gs
+            .container_path
+            .as_ref()
+            .map(|p| p.join("."))
+            .unwrap_or_else(|| gs.name.clone());
+        for w in when_branches {
+            let measure = match w.then.measure_name() {
+                Some(m) => m,
+                None => continue,
+            };
+            if let Some(exact) = w.condition.grain_set_value() {
+                if path == exact {
+                    out.push((path, measure));
+                    break;
+                }
+            } else if let Some(pat) = w.condition.grain_set_pattern() {
+                if glob_match(&pat, &path) {
+                    out.push((path, measure));
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Resolve a grain set from a metric CASE value: either a grain set name (e.g. "adwords")
+/// or a container path string (e.g. "facebookads.facebookads_111").
+fn resolve_grain_set_for_cross(model: &SemanticModel, gs_name: &str) -> Option<GrainSet> {
+    model.get_grain_set(gs_name).or_else(|| {
+        if gs_name.contains('.') {
+            let path: Vec<&str> = gs_name.split('.').collect();
+            model.get_grain_set_by_path(&path)
+        } else {
+            None
+        }
+    })
+}
+
+/// A branch in a cross-grain-set query
 #[derive(Debug)]
-pub struct CrossDatasetGroupBranch<'a> {
-    pub dataset_group: &'a DatasetGroup,
+pub struct CrossGrainSetBranch<'a> {
+    pub grain_set: &'a GrainSet,
     pub measure: &'a Measure,
     pub table: &'a Dataset,
 }
 
-/// Plan a cross-tableGroup query for a single metric.
-pub fn plan_cross_dataset_group_query<'a>(
+/// Plan a cross-grain-set query for a single metric.
+pub fn plan_cross_grain_set_query<'a>(
     _schema: &'a Schema,
     model: &'a SemanticModel,
     metric: &'a Metric,
@@ -33,56 +115,50 @@ pub fn plan_cross_dataset_group_query<'a>(
 ) -> Result<PlanNode, PlanError> {
     for attr_path in dimension_attrs {
         let parts: Vec<&str> = attr_path.split('.').collect();
-        if parts.len() == 3 {
-            let tg_name = parts[0];
-            if model.get_dataset_group(tg_name).is_none() {
+        if parts.len() >= 3 {
+            let path_segments = &parts[0..parts.len() - 2];
+            if model.grain_sets_under_path(path_segments).is_empty() {
                 return Err(PlanError::InvalidQuery(
-                    format!("DatasetGroup '{}' not found in qualified dimension '{}'", tg_name, attr_path)
+                    format!("Container path '{}' not found in qualified dimension '{}'", path_segments.join("."), attr_path)
                 ));
             }
         }
     }
 
-    let mappings = metric.dataset_group_measures();
+    let mappings: Vec<(String, String)> = if !metric.grain_set_measures().is_empty() {
+        metric.grain_set_measures()
+    } else if metric.is_cross_grain_set() {
+        expanded_grain_set_measures(metric, model)
+    } else {
+        vec![]
+    };
     if mappings.is_empty() {
         return Err(PlanError::InvalidQuery(
-            format!("Metric '{}' is not a cross-tableGroup metric", metric.name)
+            format!("Metric '{}' is not a cross-grain-set metric", metric.name)
         ));
     }
 
     let mut branches: Vec<PlanNode> = Vec::new();
 
-    for (tg_name, measure_name) in &mappings {
-        let dataset_group = model.get_dataset_group(tg_name)
+    for (gs_name, measure_name) in &mappings {
+        let grain_set = resolve_grain_set_for_cross(model, gs_name)
             .ok_or_else(|| PlanError::InvalidQuery(
-                format!("DatasetGroup '{}' not found", tg_name)
+                format!("Grain set '{}' not found", gs_name)
             ))?;
-        let measure = dataset_group.get_measure(measure_name)
+        let measure = grain_set.get_measure(measure_name)
             .ok_or_else(|| PlanError::InvalidQuery(
-                format!("Measure '{}' not found in tableGroup '{}'", measure_name, tg_name)
+                format!("Measure '{}' not found in grain set '{}'", measure_name, gs_name)
             ))?;
 
-        if dataset_group.has_partitions() {
-            let partitioned: Vec<&Dataset> = dataset_group.datasets.iter()
-                .filter(|d| d.partition.is_some() && d.has_measure(measure_name))
-                .collect();
-            for table in partitioned {
-                let branch = build_cross_dataset_group_branch(
-                    model, dataset_group, table, measure, dimension_attrs, &metric.name,
-                )?;
-                branches.push(branch);
-            }
-        } else {
-            let table = dataset_group.datasets.iter()
-                .find(|t| t.has_measure(measure_name))
-                .ok_or_else(|| PlanError::InvalidQuery(
-                    format!("No table in tableGroup '{}' has measure '{}'", tg_name, measure_name)
-                ))?;
-            let branch = build_cross_dataset_group_branch(
-                model, dataset_group, table, measure, dimension_attrs, &metric.name,
-            )?;
-            branches.push(branch);
-        }
+        let table = grain_set.datasets.iter()
+            .find(|t| t.has_measure(measure_name))
+            .ok_or_else(|| PlanError::InvalidQuery(
+                format!("No table in grain set '{}' has measure '{}'", gs_name, measure_name)
+            ))?;
+        let branch = build_cross_grain_set_branch(
+            model, &grain_set, table, measure, dimension_attrs, &metric.name,
+        )?;
+        branches.push(branch);
     }
 
     if branches.len() == 1 {
@@ -125,8 +201,8 @@ pub fn plan_cross_dataset_group_query<'a>(
     }
 }
 
-/// Plan a cross-tableGroup query for multiple metrics.
-pub fn plan_multi_cross_dataset_group_query<'a>(
+/// Plan a cross-grain-set query for multiple metrics.
+pub fn plan_multi_cross_grain_set_query<'a>(
     _schema: &'a Schema,
     model: &'a SemanticModel,
     metrics: &[&'a Metric],
@@ -134,55 +210,61 @@ pub fn plan_multi_cross_dataset_group_query<'a>(
 ) -> Result<PlanNode, PlanError> {
     for attr_path in dimension_attrs {
         let parts: Vec<&str> = attr_path.split('.').collect();
-        if parts.len() == 3 {
-            let tg_name = parts[0];
-            if model.get_dataset_group(tg_name).is_none() {
+        if parts.len() >= 3 {
+            let path_segments = &parts[0..parts.len() - 2];
+            if model.grain_sets_under_path(path_segments).is_empty() {
                 return Err(PlanError::InvalidQuery(
-                    format!("DatasetGroup '{}' not found in qualified dimension '{}'", tg_name, attr_path)
+                    format!("Container path '{}' not found in qualified dimension '{}'", path_segments.join("."), attr_path)
                 ));
             }
         }
     }
 
-    let metric_tg_measures: Vec<(String, Vec<(String, String)>)> = metrics.iter()
+    let metric_gs_measures: Vec<(String, Vec<(String, String)>)> = metrics.iter()
         .map(|metric| {
-            let mappings = metric.dataset_group_measures();
+            let mappings: Vec<(String, String)> = if !metric.grain_set_measures().is_empty() {
+                metric.grain_set_measures()
+            } else if metric.is_cross_grain_set() {
+                expanded_grain_set_measures(metric, model)
+            } else {
+                vec![]
+            };
             (metric.name.clone(), mappings)
         })
         .collect();
 
-    for (metric_name, mappings) in &metric_tg_measures {
+    for (metric_name, mappings) in &metric_gs_measures {
         if mappings.is_empty() {
             return Err(PlanError::InvalidQuery(
-                format!("Metric '{}' is not a cross-tableGroup metric", metric_name)
+                format!("Metric '{}' is not a cross-grain-set metric", metric_name)
             ));
         }
     }
 
-    plan_cross_tablegroup_union(model, dimension_attrs, &metric_tg_measures)
+    plan_cross_grain_set_union(model, dimension_attrs, &metric_gs_measures)
 }
 
-/// Unified cross-tableGroup UNION planner.
+/// Unified cross-grain-set UNION planner.
 ///
-/// 1. Build a branch per tableGroup using build_tablegroup_branch
+/// 1. Build a branch per grain set using build_grain_set_branch
 /// 2. Project each branch to common schema (NULLs for missing columns)
 /// 3. UNION all branches
 /// 4. Re-aggregate to combine rows
-pub fn plan_cross_tablegroup_union(
+pub fn plan_cross_grain_set_union(
     model: &SemanticModel,
     dimension_attrs: &[String],
-    metric_tg_measures: &[(String, Vec<(String, String)>)],
+    metric_gs_measures: &[(String, Vec<(String, String)>)],
 ) -> Result<PlanNode, PlanError> {
-    let metric_names: Vec<&str> = metric_tg_measures.iter()
+    let metric_names: Vec<&str> = metric_gs_measures.iter()
         .map(|(name, _)| name.as_str())
         .collect();
 
-    let mut tg_to_metric_measures: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut gs_to_metric_measures: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
-    for (metric_name, tg_measures) in metric_tg_measures {
-        for (tg_name, measure_name) in tg_measures {
-            tg_to_metric_measures
-                .entry(tg_name.clone())
+    for (metric_name, gs_measures) in metric_gs_measures {
+        for (gs_name, measure_name) in gs_measures {
+            gs_to_metric_measures
+                .entry(gs_name.clone())
                 .or_default()
                 .push((metric_name.clone(), measure_name.clone()));
         }
@@ -190,42 +272,26 @@ pub fn plan_cross_tablegroup_union(
 
     let mut branches: Vec<PlanNode> = Vec::new();
 
-    for (tg_name, metric_measure_pairs) in &tg_to_metric_measures {
-        let dataset_group = model.get_dataset_group(tg_name)
+    for (gs_name, metric_measure_pairs) in &gs_to_metric_measures {
+        let grain_set = resolve_grain_set_for_cross(model, gs_name)
             .ok_or_else(|| PlanError::InvalidQuery(
-                format!("DatasetGroup '{}' not found", tg_name)
+                format!("Grain set '{}' not found", gs_name)
             ))?;
 
         let measure_aliases: Vec<(String, String)> = metric_measure_pairs.iter()
             .map(|(metric, measure)| (metric.clone(), measure.clone()))
             .collect();
 
-        let measure_names_for_check: Vec<&str> = measure_aliases.iter()
+        let _measure_names_for_check: Vec<&str> = measure_aliases.iter()
             .map(|(_, m)| m.as_str())
             .collect();
 
-        if dataset_group.has_partitions() {
-            let partitioned_datasets: Vec<&Dataset> = dataset_group.datasets.iter()
-                .filter(|d| d.partition.is_some() && measure_names_for_check.iter().all(|m| d.has_measure(m)))
-                .collect();
-            for dataset in partitioned_datasets {
-                let branch = build_tablegroup_branch_for_dataset(
-                    model, dataset_group, Some(dataset), dimension_attrs, &measure_aliases
-                )?;
-                let projected = project_branch_for_union(
-                    model, dataset_group, Some(dataset), branch,
-                    dimension_attrs, &metric_names, metric_measure_pairs,
-                )?;
-                branches.push(projected);
-            }
-        } else {
-            let branch = build_tablegroup_branch(model, dataset_group, dimension_attrs, &measure_aliases)?;
-            let projected = project_branch_for_union(
-                model, dataset_group, None, branch,
-                dimension_attrs, &metric_names, metric_measure_pairs,
-            )?;
-            branches.push(projected);
-        }
+        let branch = build_grain_set_branch(model, &grain_set, dimension_attrs, &measure_aliases)?;
+        let projected = project_branch_for_union(
+            model, &grain_set, None, branch,
+            dimension_attrs, &metric_names, metric_measure_pairs,
+        )?;
+        branches.push(projected);
     }
 
     if branches.len() == 1 {
@@ -269,17 +335,17 @@ pub fn plan_cross_tablegroup_union(
     }
 }
 
-/// Project a tableGroup branch to the common UNION schema.
+/// Project a grain-set branch to the common UNION schema.
 fn project_branch_for_union(
     model: &SemanticModel,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     dataset: Option<&Dataset>,
     input: PlanNode,
     dimension_attrs: &[String],
     all_metric_names: &[&str],
-    tg_metrics: &[(String, String)],
+    gs_metrics: &[(String, String)],
 ) -> Result<PlanNode, PlanError> {
-    let tg_metric_set: HashSet<&str> = tg_metrics.iter()
+    let gs_metric_set: HashSet<&str> = gs_metrics.iter()
         .map(|(m, _)| m.as_str())
         .collect();
 
@@ -287,14 +353,14 @@ fn project_branch_for_union(
 
     for attr_path in dimension_attrs {
         let parts: Vec<&str> = attr_path.split('.').collect();
-        let (tg_qualifier, dim_name, attr_name) = match parts.len() {
+        let (path_segments, dim_name, attr_name) = match parts.len() {
             2 => (None, parts[0], parts[1]),
-            3 => (Some(parts[0]), parts[1], parts[2]),
+            n if n >= 3 => (Some(&parts[0..n - 2]), parts[n - 2], parts[n - 1]),
             _ => continue,
         };
 
         if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
-            let value = get_virtual_attribute_value_with_dataset(model, dataset_group, dataset, dim_name, attr_name);
+            let value = get_virtual_attribute_value_with_dataset(model, grain_set, dataset, dim_name, attr_name);
             let expr = match value {
                 PlanLiteralValue::String(s) => Expr::Literal(Literal::String(s)),
                 PlanLiteralValue::Int64(i) => Expr::Literal(Literal::Int(i)),
@@ -306,8 +372,9 @@ fn project_branch_for_union(
                 expr,
                 alias: attr_path.clone(),
             });
-        } else if let Some(qualifier) = tg_qualifier {
-            if qualifier == dataset_group.name {
+        } else if let Some(path) = path_segments {
+            let belongs = model.grain_sets_under_path(path).iter().any(|gs| gs.name == grain_set.name);
+            if belongs {
                 let semantic_name = format!("{}.{}", dim_name, attr_name);
                 projections.push(ProjectExpr {
                     expr: Expr::Column(Column::unqualified(&semantic_name)),
@@ -333,7 +400,7 @@ fn project_branch_for_union(
     }
 
     for metric_name in all_metric_names {
-        let expr = if tg_metric_set.contains(metric_name) {
+        let expr = if gs_metric_set.contains(metric_name) {
             Expr::Column(Column::unqualified(*metric_name))
         } else {
             Expr::Literal(Literal::Null("f64".to_string()))
@@ -350,10 +417,10 @@ fn project_branch_for_union(
     }))
 }
 
-/// Build a single branch of a cross-tableGroup query for one measure/tableGroup.
-fn build_cross_dataset_group_branch(
+/// Build a single branch of a cross-grain-set query for one measure/grain set.
+fn build_cross_grain_set_branch(
     model: &SemanticModel,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     table: &Dataset,
     measure: &Measure,
     dimension_attrs: &[String],
@@ -365,7 +432,7 @@ fn build_cross_dataset_group_branch(
 
     let physical_attrs: Vec<&(String, ParsedDimensionAttr)> = parsed_attrs.iter()
         .filter(|(_, parsed)| {
-            !parsed.is_virtual() && parsed.belongs_to_dataset_group(&dataset_group.name)
+            !parsed.is_virtual() && parsed.belongs_to_grain_set(model, &grain_set.name)
         })
         .collect();
 
@@ -387,7 +454,7 @@ fn build_cross_dataset_group_branch(
     let mut joined_dimensions: HashSet<String> = HashSet::new();
 
     for (dim_name, attr_name) in &unique_dim_attrs {
-        if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+        if let Some(group_dim) = grain_set.get_dimension(dim_name) {
             if group_dim.is_degenerate() {
                 if let Some(attr) = group_dim.get_attribute(attr_name) {
                     columns.push(attr.column_name().to_string());
@@ -412,7 +479,7 @@ fn build_cross_dataset_group_branch(
         if joined_dimensions.contains(dim_name) {
             continue;
         }
-        if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+        if let Some(group_dim) = grain_set.get_dimension(dim_name) {
             if let Some(join_spec) = &group_dim.join {
                 if let Some(dimension) = model.get_dimension(dim_name) {
                     if needs_join_for_dimension(table, group_dim, dimension) {
@@ -451,7 +518,7 @@ fn build_cross_dataset_group_branch(
 
     let group_by: Vec<Column> = unique_dim_attrs.iter()
         .filter_map(|(dim_name, attr_name)| {
-            if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+            if let Some(group_dim) = grain_set.get_dimension(dim_name) {
                 if group_dim.is_degenerate() {
                     if let Some(attr) = group_dim.get_attribute(attr_name) {
                         return Some(Column::new(fact_alias, attr.column_name()));
@@ -487,7 +554,7 @@ fn build_cross_dataset_group_branch(
         let expr = if parsed.is_virtual() {
             let dim_name = parsed.dim_name();
             let attr_name = parsed.attr_name();
-            let value = get_virtual_attribute_value_with_dataset(model, dataset_group, Some(table), dim_name, attr_name);
+            let value = get_virtual_attribute_value_with_dataset(model, grain_set, Some(table), dim_name, attr_name);
             match value {
                 PlanLiteralValue::String(s) => Expr::Literal(Literal::String(s)),
                 PlanLiteralValue::Int64(i) => Expr::Literal(Literal::Int(i)),
@@ -496,7 +563,7 @@ fn build_cross_dataset_group_branch(
                 PlanLiteralValue::Null => Expr::Literal(Literal::Null("string".to_string())),
                 _ => Expr::Literal(Literal::Null("string".to_string())),
             }
-        } else if parsed.belongs_to_dataset_group(&dataset_group.name) {
+        } else if parsed.belongs_to_grain_set(model, &grain_set.name) {
             let key = (parsed.dim_name().to_string(), parsed.attr_name().to_string());
             if let Some(&idx) = dim_attr_to_group_idx.get(&key) {
                 let col = group_by.get(idx).cloned()
@@ -526,4 +593,39 @@ fn build_cross_dataset_group_branch(
         input: Box::new(plan),
         expressions: projections,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glob_match_exact() {
+        assert!(glob_match("google_ads", "google_ads"));
+        assert!(!glob_match("google_ads", "meta_ads"));
+        assert!(!glob_match("", "x"));
+        assert!(glob_match("", ""));
+    }
+
+    #[test]
+    fn glob_match_star_prefix() {
+        assert!(glob_match("*.ads", "google_ads"));
+        assert!(glob_match("*.ads", "meta_ads"));
+        assert!(glob_match("*.ads", "ads"));
+        assert!(glob_match("*", "anything"));
+    }
+
+    #[test]
+    fn glob_match_star_suffix() {
+        assert!(glob_match("google*", "google_ads"));
+        assert!(glob_match("meta*", "meta_ads"));
+        assert!(!glob_match("google*", "meta_ads"));
+    }
+
+    #[test]
+    fn glob_match_middle_star() {
+        assert!(glob_match("*.facebookads.*", "facebookads.account_a"));
+        assert!(glob_match("*.facebookads.*", "foo.facebookads.bar"));
+        assert!(!glob_match("*.facebookads.*", "adwords.campaign"));
+    }
 }

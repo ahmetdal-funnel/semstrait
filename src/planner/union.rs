@@ -1,7 +1,7 @@
-//! Union-based planning: conformed, qualified, partitioned, and virtual-only queries
+//! Union-based planning: conformed, qualified, and virtual-only queries
 
 use std::collections::HashSet;
-use crate::semantic_model::{MeasureExpr, MetricExpr, Dataset, DatasetGroup, Schema, SemanticModel};
+use crate::semantic_model::{Dataset, GrainSet, MeasureExpr, MetricExpr, Schema, SemanticModel};
 use crate::plan::{
     Aggregate, AggregateExpr, Column, Expr, Join, JoinType,
     Literal, PlanNode, Scan, Project, ProjectExpr, Union,
@@ -14,35 +14,6 @@ use super::error::PlanError;
 use super::util::{needs_join_for_dimension, ParsedDimensionAttr, get_virtual_attribute_value, get_virtual_attribute_value_with_dataset};
 use super::expr::convert_measure_expr;
 use super::table::plan_query;
-
-/// Plan a UNION ALL query across partitioned datasets within the same datasetGroup.
-pub fn plan_partitioned_union(
-    schema: &Schema,
-    _model: &SemanticModel,
-    request: &QueryRequest,
-    partitions: &[SelectedDataset],
-) -> Result<PlanNode, PlanError> {
-    if partitions.is_empty() {
-        return Err(PlanError::InvalidQuery("No partitioned datasets to union".to_string()));
-    }
-    if partitions.len() == 1 {
-        let resolved = resolve_query(schema, request, &partitions[0])
-            .map_err(|e| PlanError::InvalidQuery(format!("Query resolution error: {:?}", e)))?;
-        return plan_query(&resolved);
-    }
-
-    let mut branch_plans: Vec<PlanNode> = Vec::new();
-    for partition in partitions {
-        let resolved = resolve_query(schema, request, partition)
-            .map_err(|e| PlanError::InvalidQuery(format!("Query resolution error: {:?}", e)))?;
-        let plan = plan_query(&resolved)?;
-        branch_plans.push(plan);
-    }
-
-    Ok(PlanNode::Union(Union {
-        inputs: branch_plans,
-    }))
-}
 
 /// Plan a query on conformed dimensions across multiple tableGroups.
 ///
@@ -94,8 +65,9 @@ pub fn plan_conformed_query(
     }
 
     let mut branches: Vec<PlanNode> = Vec::new();
+    let grain_sets = model.grain_sets();
 
-    let is_feasible_table = |dataset_group: &DatasetGroup, table: &Dataset| -> bool {
+    let is_feasible_table = |grain_set: &GrainSet, table: &Dataset| -> bool {
         for dim_attr in &physical_dims {
             let parts: Vec<&str> = dim_attr.split('.').collect();
             if parts.len() != 2 { return false; }
@@ -107,40 +79,24 @@ pub fn plan_conformed_query(
             }
         }
         for measure_name in &required_measures {
-            if dataset_group.get_measure(measure_name).is_none() { return false; }
+            if grain_set.get_measure(measure_name).is_none() { return false; }
             if !table.has_measure(measure_name) { return false; }
         }
         true
     };
 
-    for dataset_group in &model.dataset_groups {
-        if dataset_group.has_partitions() {
-            let feasible_partitions: Vec<&Dataset> = dataset_group.datasets.iter()
-                .filter(|t| t.partition.is_some() && is_feasible_table(dataset_group, t))
-                .collect();
-            for table in feasible_partitions {
-                let selected = SelectedDataset { group: dataset_group, dataset: table };
-                let resolved = resolve_query(schema, request, &selected)
-                    .map_err(|e| PlanError::InvalidQuery(format!(
-                        "Query resolution error for tableGroup '{}' partition '{}': {:?}",
-                        dataset_group.name, table.partition.as_deref().unwrap_or("?"), e
-                    )))?;
-                let branch = plan_query(&resolved)?;
-                branches.push(branch);
-            }
-        } else {
-            let feasible_table = dataset_group.datasets.iter()
-                .find(|t| is_feasible_table(dataset_group, t));
-            let Some(table) = feasible_table else { continue; };
-            let selected = SelectedDataset { group: dataset_group, dataset: table };
-            let resolved = resolve_query(schema, request, &selected)
-                .map_err(|e| PlanError::InvalidQuery(format!(
-                    "Query resolution error for tableGroup '{}': {:?}",
-                    dataset_group.name, e
-                )))?;
-            let branch = plan_query(&resolved)?;
-            branches.push(branch);
-        }
+    for grain_set in &grain_sets {
+        let feasible_table = grain_set.datasets.iter()
+            .find(|t| is_feasible_table(grain_set, t));
+        let Some(table) = feasible_table else { continue; };
+        let selected = SelectedDataset { group: grain_set, dataset: table };
+        let resolved = resolve_query(schema, request, &selected, &grain_sets)
+            .map_err(|e| PlanError::InvalidQuery(format!(
+                "Query resolution error for tableGroup '{}': {:?}",
+                grain_set.name, e
+            )))?;
+        let branch = plan_query(&resolved)?;
+        branches.push(branch);
     }
 
     if branches.is_empty() {
@@ -156,7 +112,7 @@ pub fn plan_conformed_query(
 }
 
 /// Plan a query with dimensions qualified for multiple different tableGroups.
-pub fn plan_multi_tablegroup_query(
+pub fn plan_multi_grain_set_query(
     _schema: &Schema,
     model: &SemanticModel,
     request: &QueryRequest,
@@ -165,22 +121,23 @@ pub fn plan_multi_tablegroup_query(
 ) -> Result<PlanNode, PlanError> {
     let metric_names: Vec<String> = request.metrics.clone().unwrap_or_default();
     let mut branches: Vec<PlanNode> = Vec::new();
+    let grain_sets = model.grain_sets();
 
-    for dataset_group in &model.dataset_groups {
-        if !qualified_groups.contains(dataset_group.name.as_str()) {
+    for grain_set in &grain_sets {
+        if !qualified_groups.contains(grain_set.name.as_str()) {
             continue;
         }
         let feasible_table = find_feasible_table_for_qualified(
-            model, dataset_group, dimension_attrs, &metric_names
+            model, grain_set, dimension_attrs, &metric_names
         );
         let Some(table) = feasible_table else {
             return Err(PlanError::InvalidQuery(format!(
                 "No table in tableGroup '{}' can serve the qualified dimension query",
-                dataset_group.name
+                grain_set.name
             )));
         };
         let branch = build_union_branch(
-            model, dataset_group, table, dimension_attrs, &metric_names,
+            model, grain_set, table, dimension_attrs, &metric_names,
         )?;
         branches.push(branch);
     }
@@ -198,22 +155,23 @@ pub fn plan_multi_tablegroup_query(
 }
 
 /// Plan a query constrained to a single tableGroup (via qualified dimension).
-pub fn plan_single_tablegroup_query(
+pub fn plan_single_grain_set_query(
     schema: &Schema,
     model: &SemanticModel,
     request: &QueryRequest,
     dimension_attrs: &[String],
     target_group: &str,
 ) -> Result<PlanNode, PlanError> {
-    let dataset_group = model.dataset_groups.iter()
+    let grain_sets = model.grain_sets();
+    let grain_set = grain_sets.iter()
         .find(|tg| tg.name == target_group)
         .ok_or_else(|| PlanError::InvalidQuery(format!(
-            "DatasetGroup '{}' not found in model", target_group
+            "Grain set '{}' not found in model", target_group
         )))?;
 
     let metric_names: Vec<String> = request.metrics.clone().unwrap_or_default();
     let feasible_table = find_feasible_table_for_qualified(
-        model, dataset_group, dimension_attrs, &metric_names
+        model, grain_set, dimension_attrs, &metric_names
     );
     let Some(table) = feasible_table else {
         return Err(PlanError::InvalidQuery(format!(
@@ -225,8 +183,13 @@ pub fn plan_single_tablegroup_query(
     let normalized_dims: Vec<String> = dimension_attrs.iter()
         .map(|path| {
             let parts: Vec<&str> = path.split('.').collect();
-            if parts.len() == 3 && parts[0] == target_group {
-                format!("{}.{}", parts[1], parts[2])
+            if parts.len() >= 3 {
+                let path_segments = &parts[0..parts.len() - 2];
+                if model.grain_sets_under_path(path_segments).iter().any(|gs| gs.name == target_group) {
+                    format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
+                } else {
+                    path.clone()
+                }
             } else {
                 path.clone()
             }
@@ -239,8 +202,10 @@ pub fn plan_single_tablegroup_query(
         rows: Some(normalized_dims.iter()
             .filter(|d| request.rows.as_ref().map(|r| r.iter().any(|rd| {
                 let parts: Vec<&str> = rd.split('.').collect();
-                if parts.len() == 3 {
-                    format!("{}.{}", parts[1], parts[2]) == **d
+                if parts.len() >= 3 {
+                    let path_segments = &parts[0..parts.len() - 2];
+                    let normalized = format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+                    model.grain_sets_under_path(path_segments).iter().any(|gs| gs.name == target_group) && normalized == **d
                 } else {
                     rd == *d
                 }
@@ -251,8 +216,13 @@ pub fn plan_single_tablegroup_query(
             cols.iter()
                 .map(|c| {
                     let parts: Vec<&str> = c.split('.').collect();
-                    if parts.len() == 3 && parts[0] == target_group {
-                        format!("{}.{}", parts[1], parts[2])
+                    if parts.len() >= 3 {
+                        let path_segments = &parts[0..parts.len() - 2];
+                        if model.grain_sets_under_path(path_segments).iter().any(|gs| gs.name == target_group) {
+                            format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
+                        } else {
+                            c.clone()
+                        }
                     } else {
                         c.clone()
                     }
@@ -263,8 +233,8 @@ pub fn plan_single_tablegroup_query(
         filter: request.filter.clone(),
     };
 
-    let selected = SelectedDataset { group: dataset_group, dataset: table };
-    let resolved = resolve_query(schema, &normalized_request, &selected)
+    let selected = SelectedDataset { group: grain_set, dataset: table };
+    let resolved = resolve_query(schema, &normalized_request, &selected, &grain_sets)
         .map_err(|e| PlanError::InvalidQuery(format!(
             "Query resolution error for tableGroup '{}': {:?}",
             target_group, e
@@ -276,7 +246,7 @@ pub fn plan_single_tablegroup_query(
 /// Find a feasible table in a tableGroup for qualified dimension queries.
 pub fn find_feasible_table_for_qualified<'a>(
     model: &SemanticModel,
-    dataset_group: &'a DatasetGroup,
+    grain_set: &'a GrainSet,
     dimension_attrs: &[String],
     metric_names: &[String],
 ) -> Option<&'a Dataset> {
@@ -292,12 +262,12 @@ pub fn find_feasible_table_for_qualified<'a>(
         })
         .collect();
 
-    dataset_group.datasets.iter().find(|table| {
+    grain_set.datasets.iter().find(|table| {
         for dim_attr in dimension_attrs {
             let parts: Vec<&str> = dim_attr.split('.').collect();
             if parts.len() == 3 {
                 let (tg_qualifier, dim_name, attr_name) = (parts[0], parts[1], parts[2]);
-                if tg_qualifier != dataset_group.name { continue; }
+                if tg_qualifier != grain_set.name { continue; }
                 if let Some(attrs) = table.get_dimension_attributes(dim_name) {
                     if !attrs.iter().any(|a| a == attr_name) { return false; }
                 } else {
@@ -316,7 +286,7 @@ pub fn find_feasible_table_for_qualified<'a>(
             }
         }
         for measure_name in &required_measures {
-            if dataset_group.get_measure(measure_name).is_none() { return false; }
+            if grain_set.get_measure(measure_name).is_none() { return false; }
             if !table.has_measure(measure_name) { return false; }
         }
         true
@@ -326,7 +296,7 @@ pub fn find_feasible_table_for_qualified<'a>(
 /// Build a single branch for a multi-tableGroup UNION query with NULL projection.
 fn build_union_branch(
     model: &SemanticModel,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     table: &Dataset,
     dimension_attrs: &[String],
     metric_names: &[String],
@@ -337,7 +307,7 @@ fn build_union_branch(
 
     let physical_attrs: Vec<&(String, ParsedDimensionAttr)> = parsed_attrs.iter()
         .filter(|(_, parsed)| {
-            !parsed.is_virtual() && parsed.belongs_to_dataset_group(&dataset_group.name)
+            !parsed.is_virtual() && parsed.belongs_to_grain_set(model, &grain_set.name)
         })
         .collect();
 
@@ -359,7 +329,7 @@ fn build_union_branch(
     let mut joined_dimensions: HashSet<String> = HashSet::new();
 
     for (dim_name, attr_name) in &unique_dim_attrs {
-        if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+        if let Some(group_dim) = grain_set.get_dimension(dim_name) {
             if group_dim.is_degenerate() {
                 if let Some(attr) = group_dim.get_attribute(attr_name) {
                     columns.push(attr.column_name().to_string());
@@ -374,7 +344,7 @@ fn build_union_branch(
             model.get_metric(metric_name).and_then(|m| {
                 match &m.expr {
                     MetricExpr::MeasureRef(measure_name) => {
-                        dataset_group.get_measure(measure_name)
+                        grain_set.get_measure(measure_name)
                             .map(|measure| (metric_name.as_str(), measure))
                     }
                     MetricExpr::Structured(_) => None,
@@ -398,7 +368,7 @@ fn build_union_branch(
 
     for (dim_name, _) in &unique_dim_attrs {
         if joined_dimensions.contains(dim_name) { continue; }
-        if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+        if let Some(group_dim) = grain_set.get_dimension(dim_name) {
             if let Some(join_spec) = &group_dim.join {
                 if let Some(dimension) = model.get_dimension(dim_name) {
                     if needs_join_for_dimension(table, group_dim, dimension) {
@@ -435,7 +405,7 @@ fn build_union_branch(
 
     let group_by: Vec<Column> = unique_dim_attrs.iter()
         .filter_map(|(dim_name, attr_name)| {
-            if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+            if let Some(group_dim) = grain_set.get_dimension(dim_name) {
                 if group_dim.is_degenerate() {
                     if let Some(attr) = group_dim.get_attribute(attr_name) {
                         return Some(Column::new(fact_alias, attr.column_name()));
@@ -475,7 +445,7 @@ fn build_union_branch(
         let expr = if parsed.is_virtual() {
             let dim_name = parsed.dim_name();
             let attr_name = parsed.attr_name();
-            let value = get_virtual_attribute_value(model, dataset_group, dim_name, attr_name);
+            let value = get_virtual_attribute_value(model, grain_set, dim_name, attr_name);
             match value {
                 PlanLiteralValue::String(s) => Expr::Literal(Literal::String(s)),
                 PlanLiteralValue::Int64(i) => Expr::Literal(Literal::Int(i)),
@@ -484,7 +454,7 @@ fn build_union_branch(
                 PlanLiteralValue::Null => Expr::Literal(Literal::Null("string".to_string())),
                 _ => Expr::Literal(Literal::Null("string".to_string())),
             }
-        } else if parsed.belongs_to_dataset_group(&dataset_group.name) {
+        } else if parsed.belongs_to_grain_set(model, &grain_set.name) {
             let key = (parsed.dim_name().to_string(), parsed.attr_name().to_string());
             if let Some(&idx) = dim_attr_to_group_idx.get(&key) {
                 let col = group_by.get(idx).cloned()
@@ -541,26 +511,17 @@ pub fn plan_virtual_only_query(
 
     let mut rows: Vec<Vec<PlanLiteralValue>> = Vec::new();
 
-    for dataset_group in &model.dataset_groups {
-        if dataset_group.has_partitions() {
-            for dataset in &dataset_group.datasets {
-                if dataset.partition.is_some() {
-                    let row: Vec<PlanLiteralValue> = attrs.iter()
-                        .map(|(dim_name, attr_name)| {
-                            get_virtual_attribute_value_with_dataset(model, dataset_group, Some(dataset), dim_name, attr_name)
-                        })
-                        .collect();
-                    rows.push(row);
+    for grain_set in model.grain_sets() {
+        let first_dataset = grain_set.datasets.first();
+        let row: Vec<PlanLiteralValue> = attrs.iter()
+            .map(|(dim_name, attr_name)| {
+                match first_dataset {
+                    Some(ds) => get_virtual_attribute_value_with_dataset(model, &grain_set, Some(ds), dim_name, attr_name),
+                    None => get_virtual_attribute_value(model, &grain_set, dim_name, attr_name),
                 }
-            }
-        } else {
-            let row: Vec<PlanLiteralValue> = attrs.iter()
-                .map(|(dim_name, attr_name)| {
-                    get_virtual_attribute_value(model, dataset_group, dim_name, attr_name)
-                })
-                .collect();
-            rows.push(row);
-        }
+            })
+            .collect();
+        rows.push(row);
     }
 
     Ok(PlanNode::VirtualTable(VirtualTable {

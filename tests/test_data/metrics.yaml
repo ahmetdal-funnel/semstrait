@@ -15,62 +15,62 @@ semantic_models:
         attributes:
           - name: model
             type: string
-          - name: datasetGroup
+          - name: path
             type: string
           - name: table
             type: string
 
-    dataset_groups:
-      - name: transactions
-        dimensions:
-          - name: dates
-            attributes:
-              - name: date
-                type: date
-              - name: year
-                type: i32
+    grain_set:
+      name: transactions
+      dimensions:
+        - name: dates
+          attributes:
+            - name: date
+              type: date
+            - name: year
+              type: i32
 
-          - name: products
-            attributes:
-              - name: product_id
-                type: string
-              - name: category
-                type: string
-          
-          # Virtual dimension for metadata
-          - name: _dataset
+        - name: products
+          attributes:
+            - name: product_id
+              type: string
+            - name: category
+              type: string
+        
+        # Virtual dimension for metadata
+        - name: _dataset
 
-        measures:
-          - name: revenue
-            aggregation: sum
-            expr: sale_amount
-            type: f64
+      measures:
+        - name: revenue
+          aggregation: sum
+          expr: sale_amount
+          type: f64
 
-          - name: cost
-            aggregation: sum
-            expr: cost_amount
-            type: f64
+        - name: cost
+          aggregation: sum
+          expr: cost_amount
+          type: f64
 
-          - name: quantity
-            aggregation: sum
-            expr: qty
-            type: i64
+        - name: quantity
+          aggregation: sum
+          expr: qty
+          type: i64
 
-          - name: transaction_count
-            aggregation: count
-            expr: transaction_id
-            type: i64
+        - name: transaction_count
+          aggregation: count
+          expr: transaction_id
+          type: i64
 
-        datasets:
-          - name: finance.transactions
-            source:
-              type: parquet
-              path: /data/finance/transactions.parquet
-            dimensions:
-              dates: [date, year]
-              products: [product_id, category]
-              _dataset: [model, datasetGroup, dataset]
-            measures: [revenue, cost, quantity, transaction_count]
+      datasets:
+        - name: finance.transactions
+          source:
+            type: parquet
+            path: /data/finance/transactions.parquet
+          dimensions:
+            dates: [date, year]
+            products: [product_id, category]
+            _dataset: [model, path, dataset]
+          measures: [revenue, cost, quantity, transaction_count]
 
     # Metrics at model level - the public query interface
     metrics:

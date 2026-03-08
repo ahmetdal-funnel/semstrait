@@ -153,7 +153,7 @@ fn convert_metric_node(node: &MetricExprNode) -> Expr {
             Expr::Divide(Box::new(left), Box::new(right))
         }
         MetricExprNode::Case(_) => {
-            panic!("Metric CASE expressions should be resolved before planning. Use plan_cross_dataset_group_query for cross-tableGroup metrics.")
+            panic!("Metric CASE expressions should be resolved before planning. Use plan_cross_grain_set_query for cross-grain-set metrics.")
         }
     }
 }

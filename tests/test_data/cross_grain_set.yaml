@@ -1,0 +1,166 @@
+# Cross-grain-set test fixture
+# Tests: UNION across multiple grain sets with different measures
+#
+# Expected behavior:
+# - unified_cost metric should generate a UNION of both grain sets
+# - Each branch should aggregate its own measure (ad_cost vs media_spend)
+# - Final result should re-aggregate the unioned data
+# - Model-level dimensions (dates) can be queried with 2-part paths across grain sets
+
+semantic_models:
+  - name: marketing
+    # Model-level dimensions - queryable with 2-part paths across all grain sets
+    dimensions:
+      - name: _dataset
+        virtual: true
+        attributes:
+          - name: model
+            type: string
+          - name: path
+            type: string
+          - name: dataset
+            type: string
+
+      # Shared dates dimension - queryable as dates.date, dates.year
+      - name: dates
+        attributes:
+          - name: date
+            type: date
+          - name: year
+            type: i32
+
+    union_set:
+      - grain_set:
+          name: google_ads
+          dimensions:
+            - name: dates
+              attributes:
+                - name: date
+                  type: date
+                - name: year
+                  type: i32
+
+            - name: campaign
+              attributes:
+                - name: campaign_id
+                  type: string
+                - name: campaign_name
+                  type: string
+            
+            # Virtual dimension reference
+            - name: _dataset
+
+          measures:
+            - name: ad_cost
+              aggregation: sum
+              expr: cost
+              type: f64
+
+            - name: clicks
+              aggregation: sum
+              expr: clicks
+              type: i64
+
+            - name: impressions
+              aggregation: sum
+              expr: impressions
+              type: i64
+
+          datasets:
+            - name: marketing.google_ads_daily
+              source:
+                type: parquet
+                path: /data/marketing/google_ads_daily.parquet
+              dimensions:
+                dates: [date, year]
+                campaign: [campaign_id, campaign_name]
+                _dataset: [model, path, dataset]
+              measures: [ad_cost, clicks, impressions]
+
+      - grain_set:
+          name: meta_ads
+          dimensions:
+            - name: dates
+              attributes:
+                - name: date
+                  type: date
+                - name: year
+                  type: i32
+
+            - name: campaign
+              attributes:
+                - name: campaign_id
+                  type: string
+                - name: campaign_name
+                  type: string
+            
+            # Virtual dimension reference
+            - name: _dataset
+
+          measures:
+            - name: media_spend
+              aggregation: sum
+              expr: spend
+              type: f64
+
+            - name: clicks
+              aggregation: sum
+              expr: link_clicks
+              type: i64
+
+            - name: impressions
+              aggregation: sum
+              expr: impressions
+              type: i64
+
+          datasets:
+            - name: marketing.meta_ads_daily
+              source:
+                type: parquet
+                path: /data/marketing/meta_ads_daily.parquet
+              dimensions:
+                dates: [date, year]
+                campaign: [campaign_id, campaign_name]
+                _dataset: [model, path, dataset]
+              measures: [media_spend, clicks, impressions]
+
+    # Metrics
+    metrics:
+      # Simple metric that exists in both grain sets
+      - name: clicks
+        type: i64
+        expr: clicks
+      
+      - name: impressions
+        type: i64
+        expr: impressions
+      
+      # Cross-grain-set metric (different measures per grain set)
+      - name: unified_cost
+        type: f64
+        expr:
+          case:
+            when:
+              - condition:
+                  eq: [_dataset.path, "google_ads"]
+                then: ad_cost
+              - condition:
+                  eq: [_dataset.path, "meta_ads"]
+                then: media_spend
+            else: 0
+
+      # Cross-grain-set metric using match (glob) so one WHEN can match multiple grain sets
+      - name: unified_cost_glob
+        type: f64
+        expr:
+          case:
+            when:
+              - condition:
+                  match: [_dataset.path, "google*"]
+                then: ad_cost
+              - condition:
+                  match: [_dataset.path, "meta*"]
+                then: media_spend
+            else: 0
+
+# No shared dimensions (all dimensions are degenerate/inline)

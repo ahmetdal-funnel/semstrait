@@ -5,8 +5,8 @@
 //! - Measure availability (feasibility)
 //! - Dataset size heuristic: fewer attributes = likely smaller/more aggregated (selection)
 //!
-//! Aggregate awareness is scoped to a single datasetGroup. If multiple datasetGroups
-//! can serve the query, an error is returned - use a cross-datasetGroup metric instead.
+//! Aggregate awareness is scoped to a single grain set. If multiple grain sets
+//! can serve the query, an error is returned - use a cross-grain-set metric instead.
 //!
 //! Multi-dataset JOIN support:
 //! When no single dataset has all required measures, multiple datasets can be selected
@@ -14,14 +14,14 @@
 //! to assign measures to the most aggregated datasets.
 
 use std::collections::{HashMap, HashSet};
-use crate::semantic_model::{SemanticModel, DatasetGroup, Dataset, Schema};
+use crate::semantic_model::{Dataset, GrainSet, Schema, SemanticModel};
 use super::error::SelectError;
 
-/// Result of dataset selection - includes both the group and dataset
+/// Result of dataset selection - includes both the grain set and dataset
 #[derive(Debug, Clone)]
 pub struct SelectedDataset<'a> {
-    /// The dataset group containing the selected dataset
-    pub group: &'a DatasetGroup,
+    /// The grain set containing the selected dataset
+    pub group: &'a GrainSet,
     /// The selected dataset
     pub dataset: &'a Dataset,
 }
@@ -32,8 +32,8 @@ pub struct SelectedDataset<'a> {
 /// and joined on common dimensions. Each dataset is assigned specific measures.
 #[derive(Debug)]
 pub struct MultiDatasetSelection<'a> {
-    /// The dataset group containing all selected datasets
-    pub group: &'a DatasetGroup,
+    /// The grain set containing all selected datasets
+    pub group: &'a GrainSet,
     /// Selected datasets with their assigned measures
     pub datasets: Vec<DatasetWithMeasures<'a>>,
 }
@@ -49,10 +49,10 @@ pub struct DatasetWithMeasures<'a> {
 
 /// Select the optimal dataset(s) to serve a query
 /// 
-/// Aggregate awareness is scoped to a single datasetGroup:
-/// - Finds which datasetGroup(s) can serve the query
-/// - If exactly one datasetGroup matches, selects the optimal dataset within it
-/// - If multiple datasetGroups match, returns an error (use cross-datasetGroup metric)
+/// Aggregate awareness is scoped to a single grain set:
+/// - Finds which grain set(s) can serve the query
+/// - If exactly one grain set matches, selects the optimal dataset within it
+/// - If multiple grain sets match, returns an error (use cross-grain-set metric)
 /// 
 /// # Arguments
 /// * `schema` - The schema containing dimension definitions
@@ -61,40 +61,51 @@ pub struct DatasetWithMeasures<'a> {
 /// * `required_measures` - Measure names needed
 /// 
 /// # Returns
-/// A vector of SelectedDataset (usually 1, but may be multiple
-/// for partitioned/sharded datasets in the future)
+/// A vector of one SelectedDataset (best dataset in the single feasible grain set).
+/// Caller must pass `model.grain_sets()` so returned refs outlive the call.
 pub fn select_datasets<'a>(
     schema: &'a Schema,
     model: &'a SemanticModel,
+    grain_sets: &'a [GrainSet],
     required_dimensions: &[String],
     required_measures: &[String],
 ) -> Result<Vec<SelectedDataset<'a>>, SelectError> {
-    if model.dataset_groups.is_empty() {
+    if grain_sets.is_empty() {
         return Err(SelectError::NoDatasetsInModel {
             model: model.name.clone(),
         });
     }
     
-    // Extract datasetGroup qualifiers from three-part dimension paths
-    // e.g., "adwords.dates.year" -> "adwords"
-    let qualified_groups: HashSet<&str> = required_dimensions.iter()
-        .filter_map(|path| {
-            let parts: Vec<&str> = path.split('.').collect();
-            if parts.len() == 3 { Some(parts[0]) } else { None }
-        })
-        .collect();
-    
-    // If there are qualified dimensions, only consider those specific datasetGroups
-    // Otherwise, consider all datasetGroups
-    let groups_to_check: Vec<&DatasetGroup> = if qualified_groups.is_empty() {
-        model.dataset_groups.iter().collect()
+    // Extract grain set qualifiers from path-qualified dimension paths:
+    // - 3-part "adwords.dates.year" -> grain set name "adwords"
+    // - 4+ part "facebookads.facebookads_111.dates.date" -> resolve path, grain set name from leaf
+    let mut qualified_groups: HashSet<String> = HashSet::new();
+    for path in required_dimensions {
+        if path.starts_with("_dataset.") {
+            continue;
+        }
+        let parts: Vec<&str> = path.split('.').collect();
+        if parts.len() == 3 {
+            qualified_groups.insert(parts[0].to_string());
+        } else if parts.len() >= 4 {
+            let path_segments: Vec<&str> = parts[0..parts.len() - 2].to_vec();
+            if let Some(gs) = model.get_grain_set_by_path(&path_segments) {
+                qualified_groups.insert(gs.name.clone());
+            }
+        }
+    }
+
+    // If there are qualified dimensions, only consider those specific grain sets
+    let groups_to_check: Vec<&GrainSet> = if qualified_groups.is_empty() {
+        grain_sets.iter().collect()
     } else {
-        model.dataset_groups.iter()
-            .filter(|g| qualified_groups.contains(g.name.as_str()))
+        grain_sets
+            .iter()
+            .filter(|g| qualified_groups.contains(&g.name))
             .collect()
     };
     
-    // Find all feasible datasets, grouped by their datasetGroup
+    // Find all feasible datasets, grouped by their grain set
     let mut feasible_by_group: HashMap<&str, Vec<SelectedDataset>> = HashMap::new();
     
     for group in groups_to_check {
@@ -116,62 +127,28 @@ pub fn select_datasets<'a>(
         });
     }
     
-    // Check if multiple datasetGroups can serve the query
+    // Check if multiple grain sets can serve the query
     if feasible_by_group.len() > 1 {
         let group_names: Vec<String> = feasible_by_group.keys().map(|s| s.to_string()).collect();
-        return Err(SelectError::AmbiguousDatasetGroup {
+        return Err(SelectError::AmbiguousGrainSet {
             model: model.name.clone(),
-            dataset_groups: group_names,
+            grain_sets: group_names,
         });
     }
     
-    // Exactly one datasetGroup - apply aggregate awareness within it
+    // Exactly one grain set - select the best dataset (fewest dimensions = most aggregated)
     let (_, feasible) = feasible_by_group.into_iter().next().unwrap();
-    
-    // Check if the feasible datasets include partitioned datasets
-    let has_partitions = feasible.iter().any(|s| s.dataset.partition.is_some());
-    
-    if has_partitions {
-        // Partitioned datasets: return all partitions (optionally pruned by filter)
-        let partition_filter = extract_partition_filter(required_dimensions);
-        
-        let mut partitioned: Vec<SelectedDataset> = feasible.into_iter()
-            .filter(|s| s.dataset.partition.is_some())
-            .collect();
-        
-        // Apply partition pruning if there's a filter on _dataset.partition
-        if let Some(ref filter_value) = partition_filter {
-            partitioned.retain(|s| {
-                s.dataset.partition.as_deref() == Some(filter_value.as_str())
-            });
-        }
-        
-        if partitioned.is_empty() {
-            return Err(SelectError::NoFeasibleDataset {
-                model: model.name.clone(),
-                reason: match partition_filter {
-                    Some(v) => format!("no partition matches filter value '{}'", v),
-                    None => "no partitioned datasets found".to_string(),
-                },
-            });
-        }
-        
-        Ok(partitioned)
-    } else {
-        // Non-partitioned: select the best dataset (fewest dimensions = most aggregated)
-        let best = feasible
-            .into_iter()
-            .min_by_key(|st| st.dataset.attribute_count())
-            .unwrap();
-        
-        Ok(vec![best])
-    }
+    let best = feasible
+        .into_iter()
+        .min_by_key(|st| st.dataset.attribute_count())
+        .unwrap();
+    Ok(vec![best])
 }
 
 /// Select multiple datasets for a JOIN when no single dataset has all measures
 /// 
 /// This is used when:
-/// 1. Query requires measures that exist in different datasets within the same datasetGroup
+/// 1. Query requires measures that exist in different datasets within the same grain set
 /// 2. All datasets share the required common dimensions (JOIN keys)
 /// 
 /// Uses "smallest dataset first" strategy: measures are assigned to the smallest
@@ -188,41 +165,52 @@ pub fn select_datasets<'a>(
 pub fn select_datasets_for_join<'a>(
     _schema: &'a Schema,
     model: &'a SemanticModel,
+    grain_sets: &'a [GrainSet],
     required_dimensions: &[String],
     required_measures: &[String],
 ) -> Result<MultiDatasetSelection<'a>, SelectError> {
-    if model.dataset_groups.is_empty() {
+    if grain_sets.is_empty() {
         return Err(SelectError::NoDatasetsInModel {
             model: model.name.clone(),
         });
     }
     
-    // Extract datasetGroup qualifiers from three-part dimension paths
-    let qualified_groups: HashSet<&str> = required_dimensions.iter()
-        .filter_map(|path| {
-            let parts: Vec<&str> = path.split('.').collect();
-            if parts.len() == 3 { Some(parts[0]) } else { None }
-        })
-        .collect();
-    
-    // Determine which datasetGroup to use
-    // If qualified, use that specific one; otherwise find the one with all measures
+    // Extract grain set qualifiers (same logic as select_datasets: 3-part and 4+ part paths)
+    let mut qualified_groups: HashSet<String> = HashSet::new();
+    for path in required_dimensions {
+        if path.starts_with("_dataset.") {
+            continue;
+        }
+        let parts: Vec<&str> = path.split('.').collect();
+        if parts.len() == 3 {
+            qualified_groups.insert(parts[0].to_string());
+        } else if parts.len() >= 4 {
+            let path_segments: Vec<&str> = parts[0..parts.len() - 2].to_vec();
+            if let Some(gs) = model.get_grain_set_by_path(&path_segments) {
+                qualified_groups.insert(gs.name.clone());
+            }
+        }
+    }
+
+    // Determine which grain set to use
     let target_group = if qualified_groups.len() == 1 {
-        let group_name = *qualified_groups.iter().next().unwrap();
-        model.dataset_groups.iter()
+        let group_name = qualified_groups.into_iter().next().unwrap();
+        grain_sets
+            .iter()
             .find(|g| g.name == group_name)
             .ok_or_else(|| SelectError::NoFeasibleDataset {
                 model: model.name.clone(),
-                reason: format!("DatasetGroup '{}' not found", group_name),
+                reason: format!("Grain set '{}' not found", group_name),
             })?
     } else if qualified_groups.len() > 1 {
-        return Err(SelectError::AmbiguousDatasetGroup {
+        return Err(SelectError::AmbiguousGrainSet {
             model: model.name.clone(),
-            dataset_groups: qualified_groups.iter().map(|s| s.to_string()).collect(),
+            grain_sets: qualified_groups.into_iter().collect(),
         });
     } else {
-        // Find datasetGroup that has all required measures (across any of its datasets)
-        model.dataset_groups.iter()
+        // Find grain set that has all required measures (across any of its datasets)
+        grain_sets
+            .iter()
             .find(|g| {
                 required_measures.iter().all(|m| {
                     g.get_measure(m).is_some() && g.datasets.iter().any(|t| t.has_measure(m))
@@ -230,7 +218,7 @@ pub fn select_datasets_for_join<'a>(
             })
             .ok_or_else(|| SelectError::NoFeasibleDataset {
                 model: model.name.clone(),
-                reason: "No datasetGroup has all required measures".to_string(),
+                reason: "No grain set has all required measures".to_string(),
             })?
     };
     
@@ -297,7 +285,7 @@ pub fn select_datasets_for_join<'a>(
 /// Check if a dataset has all required dimensions (for JOIN participation)
 fn has_all_dimensions(
     model: &SemanticModel,
-    group: &DatasetGroup,
+    group: &GrainSet,
     dataset: &Dataset,
     required_dimensions: &[String],
 ) -> bool {
@@ -309,17 +297,30 @@ fn has_all_dimensions(
         
         let parts: Vec<&str> = dim_attr.split('.').collect();
         if parts.len() == 3 {
-            // Three-part: datasetGroup.dimension.attribute
             let (tg_qualifier, dim_name, attr_name) = (parts[0], parts[1], parts[2]);
             if tg_qualifier != group.name {
-                continue; // Different datasetGroup, not required from this group
+                continue;
             }
             let two_part = format!("{}.{}", dim_name, attr_name);
             if !dataset_has_attribute(model, group, dataset, &two_part) {
                 return false;
             }
+        } else if parts.len() >= 4 {
+            let path_segments: &[&str] = &parts[0..parts.len() - 2];
+            let dim_name = parts[parts.len() - 2];
+            let attr_name = parts[parts.len() - 1];
+            if let Some(gs) = model.get_grain_set_by_path(path_segments) {
+                if gs.name != group.name {
+                    continue;
+                }
+                let two_part = format!("{}.{}", dim_name, attr_name);
+                if !dataset_has_attribute(model, group, dataset, &two_part) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
         } else if parts.len() == 2 {
-            // Two-part: dimension.attribute
             if !dataset_has_attribute(model, group, dataset, dim_attr) {
                 return false;
             }
@@ -328,24 +329,10 @@ fn has_all_dimensions(
     true
 }
 
-/// Extract a partition filter value from required dimensions.
-/// Looks for "_dataset.partition" in the dimension list as a signal that
-/// partition pruning may be needed. The actual filter value comes from
-/// query filters (handled by the planner), but the selector uses this
-/// to detect partition-aware queries.
-/// 
-/// Returns None - actual filter-based pruning is done at the planner level.
-/// This function is reserved for future direct partition filter extraction.
-fn extract_partition_filter(_required_dimensions: &[String]) -> Option<String> {
-    // Partition pruning based on query filters is handled at the planner level.
-    // The selector returns all partitions; the planner applies WHERE _dataset.partition = 'x'.
-    None
-}
-
 /// Check if a dataset can serve a query with the given requirements
 fn is_feasible(
     model: &SemanticModel,
-    group: &DatasetGroup,
+    group: &GrainSet,
     dataset: &Dataset,
     required_dimensions: &[String],
     required_measures: &[String],
@@ -358,18 +345,30 @@ fn is_feasible(
             continue;
         }
         
-        // Handle datasetGroup-qualified paths (e.g., "adwords.dates.year")
+        // Handle path-qualified paths: 3-part "adwords.dates.year", 4+ part "facebookads.facebookads_111.dates.date"
         let parts: Vec<&str> = dim_attr.split('.').collect();
         if parts.len() == 3 {
             let (tg_qualifier, dim_name, attr_name) = (parts[0], parts[1], parts[2]);
-            // If this dimension is qualified for a DIFFERENT datasetGroup, skip it
-            // (it's not required from this group)
             if tg_qualifier != group.name {
                 continue;
             }
-            // Check if this dataset has the dimension.attribute
             let two_part = format!("{}.{}", dim_name, attr_name);
             if !dataset_has_attribute(model, group, dataset, &two_part) {
+                return false;
+            }
+        } else if parts.len() >= 4 {
+            let path_segments: &[&str] = &parts[0..parts.len() - 2];
+            let dim_name = parts[parts.len() - 2];
+            let attr_name = parts[parts.len() - 1];
+            if let Some(gs) = model.get_grain_set_by_path(path_segments) {
+                if gs.name != group.name {
+                    continue;
+                }
+                let two_part = format!("{}.{}", dim_name, attr_name);
+                if !dataset_has_attribute(model, group, dataset, &two_part) {
+                    return false;
+                }
+            } else {
                 return false;
             }
         } else {
@@ -398,7 +397,7 @@ fn is_feasible(
 /// Check if a dataset has access to a dimension.attribute path
 fn dataset_has_attribute(
     model: &SemanticModel,
-    group: &DatasetGroup,
+    group: &GrainSet,
     dataset: &Dataset,
     dim_attr_path: &str,
 ) -> bool {
@@ -452,22 +451,30 @@ fn find_missing_requirements(
             continue;
         }
         
-        // Handle datasetGroup-qualified paths (e.g., "adwords.dates.year")
+        // Handle path-qualified paths: 3-part or 4+ part
         let parts: Vec<&str> = dim_attr.split('.').collect();
         let available_in_any = if parts.len() == 3 {
             let (tg_qualifier, dim_name, attr_name) = (parts[0], parts[1], parts[2]);
             let two_part = format!("{}.{}", dim_name, attr_name);
-            // Only check the specified datasetGroup
-            model.dataset_groups.iter()
+            model.grain_sets().iter()
                 .filter(|group| group.name == tg_qualifier)
                 .any(|group| {
                     group.datasets.iter().any(|dataset| {
                         dataset_has_attribute(model, group, dataset, &two_part)
                     })
                 })
+        } else if parts.len() >= 4 {
+            let path_segments: Vec<&str> = parts[0..parts.len() - 2].to_vec();
+            let dim_name = parts[parts.len() - 2];
+            let attr_name = parts[parts.len() - 1];
+            let two_part = format!("{}.{}", dim_name, attr_name);
+            model.get_grain_set_by_path(&path_segments).map_or(false, |group| {
+                group.datasets.iter().any(|dataset| {
+                    dataset_has_attribute(model, &group, dataset, &two_part)
+                })
+            })
         } else {
-            // Two-part path: check all datasetGroups
-            model.dataset_groups.iter().any(|group| {
+            model.grain_sets().iter().any(|group| {
                 group.datasets.iter().any(|dataset| {
                     dataset_has_attribute(model, group, dataset, dim_attr)
                 })
@@ -480,7 +487,7 @@ fn find_missing_requirements(
     }
     
     for measure_name in required_measures {
-        let available_in_any = model.dataset_groups.iter().any(|group| {
+        let available_in_any = model.grain_sets().iter().any(|group| {
             group.get_measure(measure_name).is_some() &&
             group.datasets.iter().any(|dataset| dataset.has_measure(measure_name))
         });
@@ -513,9 +520,11 @@ mod tests {
         let schema = load_test_schema();
         let model = schema.get_model("steelwheels").unwrap();
         
+        let grain_sets = model.grain_sets();
         let datasets = select_datasets(
             &schema,
             model,
+            &grain_sets,
             &["dates.year".to_string()],
             &["sales".to_string()],
         ).unwrap();
@@ -528,9 +537,11 @@ mod tests {
         let schema = load_test_schema();
         let model = schema.get_model("steelwheels").unwrap();
         
+        let grain_sets = model.grain_sets();
         let result = select_datasets(
             &schema,
             model,
+            &grain_sets,
             &["nonexistent.attr".to_string()],
             &["sales".to_string()],
         );
@@ -543,9 +554,11 @@ mod tests {
         let schema = load_test_schema();
         let model = schema.get_model("steelwheels").unwrap();
         
+        let grain_sets = model.grain_sets();
         let result = select_datasets(
             &schema,
             model,
+            &grain_sets,
             &["dates.year".to_string()],
             &["nonexistent_measure".to_string()],
         );
@@ -554,29 +567,31 @@ mod tests {
     }
     
     #[test]
-    fn test_ambiguous_measure_across_datasetgroups() {
-        // marketing.yaml has both adwords and facebookads datasetGroups
+    fn test_ambiguous_measure_across_grain_sets() {
+        // marketing.yaml has both adwords and facebookads grain sets
         // Both have "clicks" and "impressions" measures
         let schema = load_marketing_schema();
         let model = schema.get_model("-ObDoDFVQGxxCGa5vw_Z").unwrap();
         
-        // Query for "clicks" which exists in both datasetGroups
+        // Query for "clicks" which exists in both grain sets
+        let grain_sets = model.grain_sets();
         let result = select_datasets(
             &schema,
             model,
+            &grain_sets,
             &["dates.date".to_string()],
             &["clicks".to_string()],
         );
         
-        // Should error because multiple datasetGroups can serve this query
+        // Should error because multiple grain sets can serve this query
         assert!(result.is_err());
         match result.unwrap_err() {
-            SelectError::AmbiguousDatasetGroup { dataset_groups, .. } => {
-                assert_eq!(dataset_groups.len(), 2);
-                assert!(dataset_groups.contains(&"adwords".to_string()));
-                assert!(dataset_groups.contains(&"facebookads".to_string()));
+            SelectError::AmbiguousGrainSet { grain_sets, .. } => {
+                assert_eq!(grain_sets.len(), 2);
+                assert!(grain_sets.contains(&"adwords".to_string()));
+                assert!(grain_sets.contains(&"facebookads".to_string()));
             }
-            other => panic!("Expected AmbiguousDatasetGroup error, got: {:?}", other),
+            other => panic!("Expected AmbiguousGrainSet error, got: {:?}", other),
         }
     }
     
@@ -587,9 +602,11 @@ mod tests {
         let model = schema.get_model("-ObDoDFVQGxxCGa5vw_Z").unwrap();
         
         // Query for "cost" which only exists in adwords
+        let grain_sets = model.grain_sets();
         let datasets = select_datasets(
             &schema,
             model,
+            &grain_sets,
             &["dates.date".to_string()],
             &["cost".to_string()],
         ).unwrap();
@@ -601,6 +618,7 @@ mod tests {
         let datasets = select_datasets(
             &schema,
             model,
+            &grain_sets,
             &["dates.date".to_string()],
             &["spend".to_string()],
         ).unwrap();

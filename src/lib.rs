@@ -1,7 +1,7 @@
 //! semstrait - Compile semantic models to Substrait compute plans
 //!
 //! This library provides:
-//! - Schema definition types (SemanticModel, DatasetGroup, Dimension, Measure, etc.)
+//! - Schema definition types (SemanticModel, GrainSet, Dimension, Measure, etc.)
 //! - Schema parsing from YAML
 //! - Dataset selection (aggregate awareness)
 //! - Query resolution
@@ -11,7 +11,7 @@
 //! # Architecture
 //!
 //! **Noun modules** (data structures):
-//! - `semantic_model/` - domain concepts (Schema, SemanticModel, DatasetGroup, Dimension, Measure)
+//! - `semantic_model/` - domain concepts (Schema, SemanticModel, GrainSet, Dimension, Measure)
 //! - `query/` - query request types (QueryRequest, DataFilter)
 //! - `plan/` - logical plan types (PlanNode, Expr, Column)
 //!
@@ -30,7 +30,8 @@
 //! let schema = parser::parse_file("schema.yaml")?;
 //! let request = QueryRequest { model: "sales".into(), ..Default::default() };
 //! let model = schema.get_model(&request.model).unwrap();
-//! let datasets = select_datasets(&schema, model, &dims, &measures)?;
+//! let grain_sets = model.grain_sets();
+//! let datasets = select_datasets(&schema, model, &grain_sets, &dims, &measures)?;
 //! let resolved = resolve_query(&schema, &request, &datasets[0])?;
 //! let plan = plan_query(&resolved)?;
 //! let substrait = emit_plan(&plan)?;
@@ -47,7 +48,7 @@ pub mod parser;
 pub mod error;
 
 // Re-export commonly used types
-pub use semantic_model::{Schema, SemanticModel, DatasetGroup, Dataset, DatasetGroupDimension, DataType, Aggregation, resolve_path_template, resolve_dimension_path_template};
+pub use semantic_model::{Aggregation, DataType, Dataset, GrainSet, GrainSetDimension, resolve_dimension_path_template, resolve_path_template, Schema, SemanticModel};
 pub use query::{QueryRequest, DataFilter};
 pub use selector::{select_datasets, SelectedDataset, SelectError};
 pub use resolver::{resolve_query, ResolvedQuery, ResolveError};

@@ -586,12 +586,13 @@ mod tests {
             filter: None,
         };
 
-        let selected = select_datasets(&schema, model, &["dates.year".into()], &["sales".into()])
+        let grain_sets = model.grain_sets();
+        let selected = select_datasets(&schema, model, &grain_sets, &["dates.year".into()], &["sales".into()])
             .unwrap()
             .into_iter()
             .next()
             .unwrap();
-        let resolved = resolve_query(&schema, &request, &selected).unwrap();
+        let resolved = resolve_query(&schema, &request, &selected, &grain_sets).unwrap();
         let plan_node = plan_query(&resolved).unwrap();
 
         let sql = emit_sql(&plan_node, None).unwrap();

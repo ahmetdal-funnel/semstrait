@@ -1,14 +1,291 @@
-//! Dataset group types for aggregate awareness
+//! Container and grain set types for aggregate awareness
 //!
-//! A DatasetGroup defines a set of datasets that share dimension and measure definitions.
-//! Datasets within a group declare which subset of fields they have, enabling
-//! automatic dataset selection (aggregate awareness).
+//! A model has a root container: either a single GrainSet or a UnionSet of union members.
+//! Union members form a tree: each member is either a grain set (leaf) or a union group
+//! (optional shared dimensions/measures + nested union_set). Dimensions and measures
+//! from ancestor groups are merged into each leaf grain set when resolving "effective" grain sets.
 
 use serde::Deserialize;
 use std::collections::HashMap;
 use super::column::Column;
 use super::dimension::{Attribute, Join};
 use super::measure::Measure;
+
+// ---------------------------------------------------------------------------
+// Root and recursive union tree
+// ---------------------------------------------------------------------------
+
+/// Root container for a semantic model. Exactly one per model.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootContainer {
+    /// Single grain set (one grain, one or more datasets)
+    GrainSet(GrainSet),
+    /// Union of members (each member is a grain set or a nested group with its own union_set)
+    UnionSet(Vec<UnionMember>),
+}
+
+/// A member of a union_set: either a leaf grain set or a nested group with shared dimensions/measures.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum UnionMember {
+    /// Nested group: optional name, dimensions, measures, and child union_set (recursive).
+    /// Deserialized when the object has an "union_set" key.
+    UnionGroup(UnionGroup),
+    /// Leaf: a single grain set. Deserialized when the object has a "grain_set" key.
+    GrainSetLeaf(GrainSetLeaf),
+}
+
+/// A nested group in the union tree. Shares dimensions and measures with all descendant grain sets.
+#[derive(Debug, Deserialize)]
+pub struct UnionGroup {
+    pub name: Option<String>,
+    pub label: Option<String>,
+    pub description: Option<String>,
+    /// Dimensions shared by all grain sets under this group (merged with child definitions).
+    #[serde(default)]
+    pub dimensions: Vec<GrainSetDimension>,
+    /// Measures shared by all grain sets under this group (merged with child definitions).
+    #[serde(default)]
+    pub measures: Vec<Measure>,
+    /// Child members: grain sets or further nested groups.
+    pub union_set: Vec<UnionMember>,
+}
+
+/// Wrapper for a leaf grain set in a union_set (YAML: `grain_set: { name, dimensions, ... }`).
+#[derive(Debug, Deserialize)]
+pub struct GrainSetLeaf {
+    pub grain_set: GrainSet,
+}
+
+// ---------------------------------------------------------------------------
+// Tree walk: collect effective grain sets (with inherited dimensions/measures)
+// ---------------------------------------------------------------------------
+
+/// Merge parent dimensions with child dimensions. Child overrides by name.
+fn merge_dimensions(
+    parent: &[GrainSetDimension],
+    child: &[GrainSetDimension],
+) -> Vec<GrainSetDimension> {
+    let mut out: Vec<GrainSetDimension> = parent.to_vec();
+    for d in child {
+        if let Some(pos) = out.iter().position(|x| x.name == d.name) {
+            out[pos] = d.clone();
+        } else {
+            out.push(d.clone());
+        }
+    }
+    out
+}
+
+/// Merge parent measures with child measures. Child overrides by name.
+fn merge_measures(parent: &[Measure], child: &[Measure]) -> Vec<Measure> {
+    let mut out: Vec<Measure> = parent.to_vec();
+    for m in child {
+        if let Some(pos) = out.iter().position(|x| x.name == m.name) {
+            out[pos] = m.clone();
+        } else {
+            out.push(m.clone());
+        }
+    }
+    out
+}
+
+impl RootContainer {
+    /// Recursively collect all leaf grain sets with dimensions and measures merged from ancestor groups.
+    /// Each grain set gets a `container_path` from root to that leaf (e.g. ["adwords"] or ["facebookads", "facebookads_111"]).
+    pub fn effective_grain_sets(&self) -> Vec<GrainSet> {
+        match self {
+            RootContainer::GrainSet(gs) => {
+                let mut gs = gs.clone();
+                gs.container_path = Some(vec![gs.name.clone()]);
+                vec![gs]
+            }
+            RootContainer::UnionSet(members) => {
+                let mut out = Vec::new();
+                collect_effective_impl(members, &[], &[], &[], &mut out);
+                out
+            }
+        }
+    }
+}
+
+fn collect_effective_impl(
+    members: &[UnionMember],
+    parent_dims: &[GrainSetDimension],
+    parent_measures: &[Measure],
+    path: &[String],
+    out: &mut Vec<GrainSet>,
+) {
+    for member in members {
+        let segment = match member.container_name() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let mut path_here = path.to_vec();
+        path_here.push(segment.clone());
+        match member {
+            UnionMember::GrainSetLeaf(leaf) => {
+                let dims = merge_dimensions(parent_dims, &leaf.grain_set.dimensions);
+                let measures = merge_measures(parent_measures, &leaf.grain_set.measures);
+                let mut gs = leaf.grain_set.clone();
+                gs.dimensions = dims;
+                gs.measures = measures;
+                gs.container_path = Some(path_here);
+                out.push(gs);
+            }
+            UnionMember::UnionGroup(group) => {
+                let dims = merge_dimensions(parent_dims, &group.dimensions);
+                let measures = merge_measures(parent_measures, &group.measures);
+                collect_effective_impl(&group.union_set, &dims, &measures, &path_here, out);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Container path resolution (path reflects levels of nested containers)
+// ---------------------------------------------------------------------------
+
+impl UnionMember {
+    /// Name of this member for path lookup: UnionGroup's name or the grain set's name.
+    pub fn container_name(&self) -> Option<&str> {
+        match self {
+            UnionMember::UnionGroup(g) => g.name.as_deref(),
+            UnionMember::GrainSetLeaf(leaf) => Some(leaf.grain_set.name.as_str()),
+        }
+    }
+}
+
+/// Resolve a grain set by walking the container path. Path must point to a leaf (container with datasets).
+/// full_path is the original path used so that container_path on the returned grain set is the full path (e.g. ["facebookads", "facebookads_111"]), not just the tail.
+fn resolve_grain_set_by_path_impl(
+    members: &[UnionMember],
+    parent_dims: &[GrainSetDimension],
+    parent_measures: &[Measure],
+    path: &[&str],
+    full_path: &[&str],
+) -> Option<GrainSet> {
+    if path.is_empty() {
+        return None;
+    }
+    let segment = path[0];
+    let member = members.iter().find(|m| m.container_name() == Some(segment))?;
+    match member {
+        UnionMember::GrainSetLeaf(leaf) => {
+            if path.len() == 1 {
+                let dims = merge_dimensions(parent_dims, &leaf.grain_set.dimensions);
+                let measures = merge_measures(parent_measures, &leaf.grain_set.measures);
+                let mut gs = leaf.grain_set.clone();
+                gs.dimensions = dims;
+                gs.measures = measures;
+                gs.container_path = Some(full_path.iter().map(|s| s.to_string()).collect());
+                Some(gs)
+            } else {
+                None
+            }
+        }
+        UnionMember::UnionGroup(group) => {
+            if path.len() < 2 {
+                return None;
+            }
+            let dims = merge_dimensions(parent_dims, &group.dimensions);
+            let measures = merge_measures(parent_measures, &group.measures);
+            resolve_grain_set_by_path_impl(&group.union_set, &dims, &measures, &path[1..], full_path)
+        }
+    }
+}
+
+/// Collect all leaf grain sets at or under the given path. Path may point to a leaf (returns one)
+/// or a group (returns all leaves under that group). Used for group-qualified dimension queries.
+fn grain_sets_under_path_impl(
+    members: &[UnionMember],
+    parent_dims: &[GrainSetDimension],
+    parent_measures: &[Measure],
+    path_remaining: &[&str],
+    path_so_far: &[String],
+    out: &mut Vec<GrainSet>,
+) {
+    if path_remaining.is_empty() {
+        collect_effective_impl(members, parent_dims, parent_measures, path_so_far, out);
+        return;
+    }
+    let segment = path_remaining[0];
+    let member = match members.iter().find(|m| m.container_name() == Some(segment)) {
+        Some(m) => m,
+        None => return,
+    };
+    let mut path_here = path_so_far.to_vec();
+    path_here.push(segment.to_string());
+    match member {
+        UnionMember::GrainSetLeaf(leaf) => {
+            if path_remaining.len() == 1 {
+                let dims = merge_dimensions(parent_dims, &leaf.grain_set.dimensions);
+                let measures = merge_measures(parent_measures, &leaf.grain_set.measures);
+                let mut gs = leaf.grain_set.clone();
+                gs.dimensions = dims;
+                gs.measures = measures;
+                gs.container_path = Some(path_here.clone());
+                out.push(gs);
+            }
+        }
+        UnionMember::UnionGroup(group) => {
+            let dims = merge_dimensions(parent_dims, &group.dimensions);
+            let measures = merge_measures(parent_measures, &group.measures);
+            if path_remaining.len() == 1 {
+                collect_effective_impl(&group.union_set, &dims, &measures, &path_here, out);
+            } else {
+                grain_sets_under_path_impl(
+                    &group.union_set,
+                    &dims,
+                    &measures,
+                    &path_remaining[1..],
+                    &path_here,
+                    out,
+                );
+            }
+        }
+    }
+}
+
+impl RootContainer {
+    /// Return all leaf grain sets at or under the given path. Path may be a leaf (one result)
+    /// or a group (all leaves under that group). Empty path returns all grain sets.
+    pub fn grain_sets_under_path(&self, path: &[&str]) -> Vec<GrainSet> {
+        let mut out = Vec::new();
+        match self {
+            RootContainer::GrainSet(gs) => {
+                if path.is_empty() || (path.len() == 1 && path[0] == gs.name) {
+                    let mut gs = gs.clone();
+                    gs.container_path = Some(vec![gs.name.clone()]);
+                    out.push(gs);
+                }
+            }
+            RootContainer::UnionSet(members) => {
+                grain_sets_under_path_impl(members, &[], &[], path, &[], &mut out);
+            }
+        }
+        out
+    }
+
+    /// Resolve a container path to the grain set at that path. Path must point to a leaf
+    /// (a container that has datasets). Returns None if path is invalid or points to a union group.
+    /// For a single root GrainSet, path may be empty or the single segment matching that grain set's name.
+    pub fn get_grain_set_by_path(&self, path: &[&str]) -> Option<GrainSet> {
+        match self {
+            RootContainer::GrainSet(gs) => {
+                if path.is_empty() || (path.len() == 1 && path[0] == gs.name) {
+                    Some(gs.clone())
+                } else {
+                    None
+                }
+            }
+            RootContainer::UnionSet(members) => {
+                resolve_grain_set_by_path_impl(members, &[], &[], path, path)
+            }
+        }
+    }
+}
 
 /// Data source configuration for a dataset
 #[derive(Debug, Deserialize, Clone)]
@@ -27,7 +304,7 @@ pub enum Source {
 /// Supports the following variables:
 /// - `{model.name}` - Model name
 /// - `{model.namespace}` - Model namespace (errors if not set)
-/// - `{datasetGroup.name}` - Dataset group name
+/// - `{container.path}` - Container path from root to grain set (e.g. "adwords" or "facebookads.facebookads_111")
 /// - `{dataset.name}` - Physical dataset name
 /// - `{dataset.uuid}` - Dataset UUID (errors if not set)
 /// 
@@ -47,7 +324,7 @@ pub fn resolve_path_template(
     template: &str,
     model_name: &str,
     model_namespace: Option<&str>,
-    dataset_group_name: &str,
+    container_path: &str,
     dataset_name: &str,
     dataset_uuid: Option<&str>,
 ) -> Result<String, String> {
@@ -55,7 +332,7 @@ pub fn resolve_path_template(
     
     // Required variables (always available)
     path = path.replace("{model.name}", model_name);
-    path = path.replace("{datasetGroup.name}", dataset_group_name);
+    path = path.replace("{container.path}", container_path);
     path = path.replace("{dataset.name}", dataset_name);
     
     
@@ -146,31 +423,32 @@ pub fn resolve_dimension_path_template(
     Ok(path)
 }
 
-/// A dataset group - datasets sharing dimension and measure definitions
-#[derive(Debug, Deserialize)]
-pub struct DatasetGroup {
+/// A grain set - datasets sharing dimension and measure definitions (same grain).
+#[derive(Debug, Deserialize, Clone)]
+pub struct GrainSet {
     pub name: String,
     pub label: Option<String>,
     /// Human-readable description for UIs and LLMs
     pub description: Option<String>,
-    /// Dimensions available to datasets in this group
-    pub dimensions: Vec<DatasetGroupDimension>,
-    /// Measures shared by all datasets in this group
+    /// Dimensions available to datasets in this grain set
+    pub dimensions: Vec<GrainSetDimension>,
+    /// Measures shared by all datasets in this grain set
     pub measures: Vec<Measure>,
     /// Physical datasets, each declaring which subset of fields it has
     pub datasets: Vec<Dataset>,
-    /// UI display label for `_dataset.partition` within this group
-    /// e.g., "Account ID" or "Year" - overrides the generic attribute label
-    pub partition_label: Option<String>,
+    /// Container path from root to this grain set (e.g. ["facebookads", "facebookads_111"]).
+    /// Set when building effective grain sets; not in YAML.
+    #[serde(default)]
+    pub container_path: Option<Vec<String>>,
 }
 
-/// A dimension reference within a dataset group
+/// A dimension reference within a grain set
 /// 
 /// Can be either:
 /// - A reference to a top-level dimension (has join)
 /// - A degenerate dimension (no join, has inline attributes)
 #[derive(Debug, Deserialize, Clone)]
-pub struct DatasetGroupDimension {
+pub struct GrainSetDimension {
     pub name: String,
     pub label: Option<String>,
     /// Join specification - if None, this is a degenerate dimension
@@ -179,8 +457,8 @@ pub struct DatasetGroupDimension {
     pub attributes: Option<Vec<Attribute>>,
 }
 
-/// A physical dataset within a dataset group
-#[derive(Debug, Deserialize)]
+/// A physical dataset within a grain set
+#[derive(Debug, Deserialize, Clone)]
 pub struct Dataset {
     /// Physical dataset name (e.g., "warehouse.orderfact")
     pub name: String,
@@ -202,15 +480,11 @@ pub struct Dataset {
     pub dimensions: HashMap<String, Vec<String>>,
     /// Measure names available on this dataset (references group-level measures)
     pub measures: Vec<String>,
-    /// Partition value for datasets that are partitions of the same logical data.
-    /// Exposed as `_dataset.partition` virtual attribute.
-    /// e.g., "123" for an ad account partition, or "2023" for a year partition
-    pub partition: Option<String>,
 }
 
-impl DatasetGroup {
+impl GrainSet {
     /// Get a dimension by name
-    pub fn get_dimension(&self, name: &str) -> Option<&DatasetGroupDimension> {
+    pub fn get_dimension(&self, name: &str) -> Option<&GrainSetDimension> {
         self.dimensions.iter().find(|d| d.name == name)
     }
 
@@ -228,14 +502,9 @@ impl DatasetGroup {
     pub fn measure_names(&self) -> Vec<&str> {
         self.measures.iter().map(|m| m.name.as_str()).collect()
     }
-
-    /// Returns true if any dataset in this group has a partition value
-    pub fn has_partitions(&self) -> bool {
-        self.datasets.iter().any(|d| d.partition.is_some())
-    }
 }
 
-impl DatasetGroupDimension {
+impl GrainSetDimension {
     /// Returns true if this is a degenerate dimension (no join, has inline attributes)
     pub fn is_degenerate(&self) -> bool {
         self.join.is_none()
@@ -322,7 +591,7 @@ impl Dataset {
     /// If the join key column exists on this dataset, a join is needed.
     /// If the join key is absent, assume attributes are denormalized.
     #[deprecated(note = "Use needs_join_for_dimension instead, which uses attribute-based detection")]
-    pub fn needs_join(&self, dim: &DatasetGroupDimension) -> bool {
+    pub fn needs_join(&self, dim: &GrainSetDimension) -> bool {
         match dim.join_key() {
             Some(key) => self.has_column(key),
             None => false, // Degenerate dimensions never need joins
@@ -342,7 +611,7 @@ impl Dataset {
 mod tests {
     use super::*;
 
-    fn sample_dataset_group() -> DatasetGroup {
+    fn sample_grain_set() -> GrainSet {
         let yaml = r#"
 name: orders
 dimensions:
@@ -373,7 +642,7 @@ datasets:
         serde_yaml::from_str(yaml).unwrap()
     }
 
-    fn sample_dataset_group_with_columns() -> DatasetGroup {
+    fn sample_grain_set_with_columns() -> GrainSet {
         let yaml = r#"
 name: orders
 dimensions:
@@ -412,8 +681,8 @@ datasets:
     }
 
     #[test]
-    fn test_parse_dataset_group() {
-        let group = sample_dataset_group();
+    fn test_parse_grain_set() {
+        let group = sample_grain_set();
         assert_eq!(group.name, "orders");
         assert_eq!(group.dimensions.len(), 2);
         assert_eq!(group.measures.len(), 1);
@@ -421,8 +690,8 @@ datasets:
     }
 
     #[test]
-    fn test_parse_dataset_group_without_columns() {
-        let group = sample_dataset_group();
+    fn test_parse_grain_set_without_columns() {
+        let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
         
         // columns should be None when not specified
@@ -430,8 +699,8 @@ datasets:
     }
 
     #[test]
-    fn test_parse_dataset_group_with_columns() {
-        let group = sample_dataset_group_with_columns();
+    fn test_parse_grain_set_with_columns() {
+        let group = sample_grain_set_with_columns();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
         
         // columns should be Some when specified
@@ -441,7 +710,7 @@ datasets:
 
     #[test]
     fn test_dimension_types() {
-        let group = sample_dataset_group();
+        let group = sample_grain_set();
         
         let dates = group.get_dimension("dates").unwrap();
         assert!(dates.is_reference());
@@ -456,7 +725,7 @@ datasets:
 
     #[test]
     fn test_dataset_columns_optional() {
-        let group = sample_dataset_group();
+        let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
         
         // Without explicit columns, has_column returns false
@@ -467,7 +736,7 @@ datasets:
 
     #[test]
     fn test_dataset_columns_explicit() {
-        let group = sample_dataset_group_with_columns();
+        let group = sample_grain_set_with_columns();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
         
         // With explicit columns, has_column works
@@ -478,7 +747,7 @@ datasets:
 
     #[test]
     fn test_dataset_dimensions() {
-        let group = sample_dataset_group();
+        let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
         
         assert!(dataset.has_dimension("dates"));
@@ -491,7 +760,7 @@ datasets:
 
     #[test]
     fn test_has_dimension_attribute() {
-        let group = sample_dataset_group();
+        let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
         
         assert!(dataset.has_dimension_attribute("dates", "year"));
@@ -503,7 +772,7 @@ datasets:
 
     #[test]
     fn test_dataset_measures() {
-        let group = sample_dataset_group();
+        let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
         
         assert!(dataset.has_measure("sales"));
@@ -512,7 +781,7 @@ datasets:
 
     #[test]
     fn test_attribute_count() {
-        let group = sample_dataset_group();
+        let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
         
         // dates: [year, month] = 2, flags: [is_premium] = 1
@@ -535,7 +804,7 @@ datasets:
     #[test]
     fn test_resolve_path_template_required_only() {
         let result = resolve_path_template(
-            "/data/{model.name}/{datasetGroup.name}/{dataset.name}.parquet",
+            "/data/{model.name}/{container.path}/{dataset.name}.parquet",
             "sales",
             None,
             "orders",
@@ -623,7 +892,7 @@ datasets:
       dates: [year, month]
     measures: [sales]
 "#;
-        let group: DatasetGroup = serde_yaml::from_str(yaml).unwrap();
+        let group: GrainSet = serde_yaml::from_str(yaml).unwrap();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
 
         assert!(dataset.parquet_path().is_none());
@@ -633,7 +902,7 @@ datasets:
 
     #[test]
     fn test_source_ref_parquet() {
-        let group = sample_dataset_group();
+        let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
 
         assert_eq!(dataset.source_ref(), "/data/warehouse/orderfact.parquet");

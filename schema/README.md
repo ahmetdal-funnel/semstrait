@@ -4,7 +4,7 @@ This directory contains a [JSON Schema](https://json-schema.org/) that describes
 
 ## Schema file
 
-- **`semantic-model.json`** – Draft 2020-12 schema for the root document. The document must have a top-level `semantic_models` array; each item is a semantic model with `name`, `dataset_groups`, and optional `dimensions`, `metrics`, `dataFilter`.
+- **`semantic-model.json`** – Draft 2020-12 schema for the root document. The document must have a top-level `semantic_models` array; each item is a semantic model with `name`, exactly one of `grain_set` (single grain set) or `union_set` (array of grain-set leaf containers), and optional `dimensions`, `metrics`, `data_filter`.
 
 ## Using the schema
 

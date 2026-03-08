@@ -15,8 +15,9 @@ fn test_select_yearly_for_year_only() {
     // Query only needs year - should select yearly_summary
     let dims = vec!["dates.year".to_string()];
     let measures = vec!["revenue".to_string()];
+    let grain_sets = model.grain_sets();
 
-    let selected = select_datasets(&schema, model, &dims, &measures).expect("Selection should succeed");
+    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures).expect("Selection should succeed");
 
     assert!(!selected.is_empty(), "Should select at least one dataset");
     assert_eq!(
@@ -33,8 +34,9 @@ fn test_select_monthly_for_month_query() {
     // Query needs month - should select monthly_summary
     let dims = vec!["dates.year".to_string(), "dates.month".to_string()];
     let measures = vec!["revenue".to_string()];
+    let grain_sets = model.grain_sets();
 
-    let selected = select_datasets(&schema, model, &dims, &measures).expect("Selection should succeed");
+    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures).expect("Selection should succeed");
 
     assert!(!selected.is_empty(), "Should select at least one dataset");
     assert_eq!(
@@ -51,8 +53,9 @@ fn test_select_daily_for_day_query() {
     // Query needs day - should select daily_detail
     let dims = vec!["dates.day".to_string()];
     let measures = vec!["revenue".to_string()];
+    let grain_sets = model.grain_sets();
 
-    let selected = select_datasets(&schema, model, &dims, &measures).expect("Selection should succeed");
+    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures).expect("Selection should succeed");
 
     assert!(!selected.is_empty(), "Should select at least one dataset");
     assert_eq!(
@@ -69,8 +72,9 @@ fn test_select_most_aggregated_when_possible() {
     // Query only needs region - all datasets have it, should pick most aggregated
     let dims = vec!["region.region_name".to_string()];
     let measures = vec!["revenue".to_string()];
+    let grain_sets = model.grain_sets();
 
-    let selected = select_datasets(&schema, model, &dims, &measures).expect("Selection should succeed");
+    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures).expect("Selection should succeed");
 
     assert!(!selected.is_empty(), "Should select at least one dataset");
     assert_eq!(

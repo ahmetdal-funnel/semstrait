@@ -4,7 +4,7 @@ use serde::Deserialize;
 use super::types::DataType;
 
 /// A column in the fact table with its data type
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Column {
     pub name: String,
     /// Data type (e.g., i32, i64, f64, decimal(31, 7), string)

@@ -14,11 +14,11 @@ pub enum SelectError {
     NoDatasetsInModel {
         model: String,
     },
-    /// Multiple datasetGroups can serve the query - ambiguous
-    /// Use a cross-datasetGroup metric to disambiguate
-    AmbiguousDatasetGroup {
+    /// Multiple grain sets can serve the query - ambiguous
+    /// Use a cross-grain-set metric to disambiguate
+    AmbiguousGrainSet {
         model: String,
-        dataset_groups: Vec<String>,
+        grain_sets: Vec<String>,
     },
 }
 
@@ -31,12 +31,12 @@ impl fmt::Display for SelectError {
             Self::NoDatasetsInModel { model } => {
                 write!(f, "Model '{}' has no datasets defined", model)
             }
-            Self::AmbiguousDatasetGroup { model, dataset_groups } => {
+            Self::AmbiguousGrainSet { model, grain_sets } => {
                 write!(
-                    f, 
-                    "Query for model '{}' matches multiple datasetGroups: [{}]. Use a cross-datasetGroup metric to combine data from multiple sources.",
+                    f,
+                    "Query for model '{}' matches multiple grain sets: [{}]. Use a cross-grain-set metric to combine data from multiple sources.",
                     model,
-                    dataset_groups.join(", ")
+                    grain_sets.join(", ")
                 )
             }
         }

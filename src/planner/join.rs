@@ -1,9 +1,9 @@
-//! Same-datasetGroup multi-table JOIN planning
+//! Same-grain-set multi-table JOIN planning
 //!
 //! Used when no single table has all required measures but multiple tables
 //! together can satisfy the query. Tables are JOINed on their common dimensions.
 
-use crate::semantic_model::{MeasureExpr, MetricExpr, Dataset, DatasetGroup, SemanticModel};
+use crate::semantic_model::{Dataset, GrainSet, MeasureExpr, MetricExpr, SemanticModel};
 use crate::plan::{
     Aggregate, AggregateExpr, Column, CrossJoin, Expr, Join, JoinType,
     Literal, PlanNode, Scan, Project, ProjectExpr, Sort, SortKey, SortDirection,
@@ -15,13 +15,13 @@ use super::util::{get_virtual_attribute_value, get_dimension_column_name};
 use super::expr::convert_measure_expr;
 
 /// Plan a query that JOINs multiple tables within the same tableGroup.
-pub fn plan_same_tablegroup_join(
+pub fn plan_same_grain_set_join(
     model: &SemanticModel,
     selection: &MultiDatasetSelection<'_>,
     dimension_attrs: &[String],
     metric_names: &[String],
 ) -> Result<PlanNode, PlanError> {
-    let dataset_group = selection.group;
+    let grain_set = selection.group;
 
     let physical_dims: Vec<(String, String)> = dimension_attrs.iter()
         .filter_map(|attr_path| {
@@ -55,7 +55,7 @@ pub fn plan_same_tablegroup_join(
         let measures = &table_with_measures.measures;
         let table_alias = format!("t{}", idx);
         let sub_plan = build_table_subquery(
-            model, dataset_group, table, &physical_dims, measures, &table_alias,
+            model, grain_set, table, &physical_dims, measures, &table_alias,
         )?;
         sub_queries.push((sub_plan, table_alias));
     }
@@ -66,7 +66,7 @@ pub fn plan_same_tablegroup_join(
 
     for (right_plan, right_alias) in sub_queries {
         if let Some((dim_name, attr_name)) = physical_dims.first() {
-            let col_name = get_dimension_column_name(dataset_group, dim_name, attr_name);
+            let col_name = get_dimension_column_name(grain_set, dim_name, attr_name);
             let left_key = Column::new(&left_alias, &col_name);
             let right_key = Column::new(&right_alias, &col_name);
             joined_plan = PlanNode::Join(Join {
@@ -89,7 +89,7 @@ pub fn plan_same_tablegroup_join(
     let mut projections = Vec::new();
 
     for (dim_name, attr_name) in &physical_dims {
-        let col_name = get_dimension_column_name(dataset_group, dim_name, attr_name);
+        let col_name = get_dimension_column_name(grain_set, dim_name, attr_name);
         let semantic_name = format!("{}.{}", dim_name, attr_name);
         let coalesce_args: Vec<Expr> = selection.datasets.iter().enumerate()
             .map(|(idx, _)| Expr::Column(Column::new(&format!("t{}", idx), &col_name)))
@@ -111,7 +111,7 @@ pub fn plan_same_tablegroup_join(
             let dim_name = parts[0];
             let attr_name = parts[1];
             if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
-                let value = get_virtual_attribute_value(model, dataset_group, dim_name, attr_name);
+                let value = get_virtual_attribute_value(model, grain_set, dim_name, attr_name);
                 let expr = match value {
                     PlanLiteralValue::String(s) => Expr::Literal(Literal::String(s)),
                     PlanLiteralValue::Int64(i) => Expr::Literal(Literal::Int(i)),
@@ -173,7 +173,7 @@ pub fn plan_same_tablegroup_join(
 /// Build a sub-query for one table in a multi-table JOIN.
 fn build_table_subquery(
     model: &SemanticModel,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     table: &Dataset,
     physical_dims: &[(String, String)],
     measures: &[String],
@@ -183,7 +183,7 @@ fn build_table_subquery(
     let mut types = Vec::new();
 
     for (dim_name, attr_name) in physical_dims {
-        if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+        if let Some(group_dim) = grain_set.get_dimension(dim_name) {
             if group_dim.is_degenerate() {
                 if let Some(attr) = group_dim.get_attribute(attr_name) {
                     columns.push(attr.column_name().to_string());
@@ -194,7 +194,7 @@ fn build_table_subquery(
     }
 
     for measure_name in measures {
-        if let Some(measure) = dataset_group.get_measure(measure_name) {
+        if let Some(measure) = grain_set.get_measure(measure_name) {
             if let MeasureExpr::Column(col) = &measure.expr {
                 columns.push(col.clone());
                 types.push(measure.data_type().to_string());
@@ -210,7 +210,7 @@ fn build_table_subquery(
 
     let group_by: Vec<Column> = physical_dims.iter()
         .filter_map(|(dim_name, attr_name)| {
-            if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+            if let Some(group_dim) = grain_set.get_dimension(dim_name) {
                 if group_dim.is_degenerate() {
                     if let Some(attr) = group_dim.get_attribute(attr_name) {
                         return Some(Column::new(alias, attr.column_name()));
@@ -228,7 +228,7 @@ fn build_table_subquery(
 
     let aggregates: Vec<AggregateExpr> = measures.iter()
         .filter_map(|measure_name| {
-            dataset_group.get_measure(measure_name).map(|measure| {
+            grain_set.get_measure(measure_name).map(|measure| {
                 let metric_name = model.metrics.as_ref()
                     .and_then(|metrics| {
                         metrics.iter().find(|m| {
@@ -249,7 +249,7 @@ fn build_table_subquery(
     let mut projections = Vec::new();
 
     for (dim_name, attr_name) in physical_dims {
-        let col_name = get_dimension_column_name(dataset_group, dim_name, attr_name);
+        let col_name = get_dimension_column_name(grain_set, dim_name, attr_name);
         projections.push(ProjectExpr {
             expr: Expr::Column(Column::unqualified(&col_name)),
             alias: col_name.clone(),

@@ -1,18 +1,18 @@
 //! Shared utility types and helpers for the planner
 
 use std::collections::HashMap;
-use crate::semantic_model::{MeasureExpr, ExprNode, ExprArg, ConditionExpr, DataType, Dataset, DatasetGroup, DatasetGroupDimension, Dimension, SemanticModel};
+use crate::semantic_model::{ConditionExpr, DataType, Dataset, Dimension, ExprArg, ExprNode, GrainSet, GrainSetDimension, MeasureExpr, SemanticModel};
 use crate::plan::{Column, Expr, Literal, LiteralValue as PlanLiteralValue};
 use crate::resolver::{AttributeRef, ResolvedDimension, ResolvedQuery};
 
 /// Determine if a table needs a join for a given dimension
 ///
-/// - If the datasetGroup dimension has no join spec -> no join (degenerate dimension)
+/// - If the grain set dimension has no join spec -> no join (degenerate dimension)
 /// - If the table's attribute list includes the "key attribute" -> needs join
 /// - If the table's attribute list excludes the key attribute -> denormalized, no join
 pub fn needs_join_for_dimension(
     table: &Dataset,
-    group_dim: &DatasetGroupDimension,
+    group_dim: &GrainSetDimension,
     dimension: &Dimension,
 ) -> bool {
     let Some(join) = &group_dim.join else {
@@ -115,7 +115,7 @@ pub fn collect_required_columns(
         add_attribute_column_with_type(&filter.attribute, resolved.dataset, &mut fact_columns, &mut dimension_columns);
     }
     for measure in &resolved.measures {
-        collect_measure_columns(&measure.expr, &measure.data_type(), resolved.dataset, resolved.dataset_group, &mut fact_columns);
+        collect_measure_columns(&measure.expr, &measure.data_type(), resolved.dataset, resolved.grain_set, &mut fact_columns);
     }
 
     let (fact_cols, fact_types): (Vec<String>, Vec<String>) = fact_columns.into_iter().unzip();
@@ -163,11 +163,11 @@ fn add_attribute_column_with_type(
 }
 
 /// Look up the type of a column from explicit columns, degenerate dimension attributes, or fallback.
-pub fn lookup_column_type(name: &str, table: &Dataset, dataset_group: &DatasetGroup, fallback_type: &DataType) -> String {
+pub fn lookup_column_type(name: &str, table: &Dataset, grain_set: &GrainSet, fallback_type: &DataType) -> String {
     if let Some(col) = table.get_column(name) {
         return col.data_type().to_string();
     }
-    for dim in &dataset_group.dimensions {
+    for dim in &grain_set.dimensions {
         if dim.is_degenerate() {
             if let Some(attrs) = &dim.attributes {
                 for attr in attrs {
@@ -185,15 +185,15 @@ pub fn collect_measure_columns(
     expr: &MeasureExpr,
     fallback_type: &DataType,
     table: &Dataset,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     columns: &mut HashMap<String, String>,
 ) {
     match expr {
         MeasureExpr::Column(name) => {
-            let col_type = lookup_column_type(name, table, dataset_group, fallback_type);
+            let col_type = lookup_column_type(name, table, grain_set, fallback_type);
             columns.entry(name.clone()).or_insert(col_type);
         }
-        MeasureExpr::Structured(node) => collect_node_columns(node, fallback_type, table, dataset_group, columns),
+        MeasureExpr::Structured(node) => collect_node_columns(node, fallback_type, table, grain_set, columns),
     }
 }
 
@@ -201,27 +201,27 @@ fn collect_node_columns(
     node: &ExprNode,
     fallback_type: &DataType,
     table: &Dataset,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     columns: &mut HashMap<String, String>,
 ) {
     match node {
         ExprNode::Column(name) => {
-            let col_type = lookup_column_type(name, table, dataset_group, fallback_type);
+            let col_type = lookup_column_type(name, table, grain_set, fallback_type);
             columns.entry(name.clone()).or_insert(col_type);
         }
         ExprNode::Literal(_) => {}
         ExprNode::Add(args) | ExprNode::Subtract(args) | ExprNode::Multiply(args) | ExprNode::Divide(args) => {
             for arg in args {
-                collect_arg_columns(arg, fallback_type, table, dataset_group, columns);
+                collect_arg_columns(arg, fallback_type, table, grain_set, columns);
             }
         }
         ExprNode::Case(case_expr) => {
             for when_branch in &case_expr.when {
-                collect_condition_columns(&when_branch.condition, fallback_type, table, dataset_group, columns);
-                collect_arg_columns(&when_branch.then, fallback_type, table, dataset_group, columns);
+                collect_condition_columns(&when_branch.condition, fallback_type, table, grain_set, columns);
+                collect_arg_columns(&when_branch.then, fallback_type, table, grain_set, columns);
             }
             if let Some(else_val) = &case_expr.else_value {
-                collect_arg_columns(else_val, fallback_type, table, dataset_group, columns);
+                collect_arg_columns(else_val, fallback_type, table, grain_set, columns);
             }
         }
     }
@@ -231,7 +231,7 @@ fn collect_condition_columns(
     cond: &ConditionExpr,
     fallback_type: &DataType,
     table: &Dataset,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     columns: &mut HashMap<String, String>,
 ) {
     match cond {
@@ -239,16 +239,16 @@ fn collect_condition_columns(
         ConditionExpr::Gt(args) | ConditionExpr::Gte(args) |
         ConditionExpr::Lt(args) | ConditionExpr::Lte(args) => {
             for arg in args {
-                collect_arg_columns(arg, fallback_type, table, dataset_group, columns);
+                collect_arg_columns(arg, fallback_type, table, grain_set, columns);
             }
         }
         ConditionExpr::And(conds) | ConditionExpr::Or(conds) => {
             for c in conds {
-                collect_condition_columns(c, fallback_type, table, dataset_group, columns);
+                collect_condition_columns(c, fallback_type, table, grain_set, columns);
             }
         }
         ConditionExpr::IsNull(name) | ConditionExpr::IsNotNull(name) => {
-            let col_type = lookup_column_type(name, table, dataset_group, fallback_type);
+            let col_type = lookup_column_type(name, table, grain_set, fallback_type);
             columns.entry(name.clone()).or_insert(col_type);
         }
     }
@@ -258,49 +258,49 @@ fn collect_arg_columns(
     arg: &ExprArg,
     fallback_type: &DataType,
     table: &Dataset,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     columns: &mut HashMap<String, String>,
 ) {
     match arg {
         ExprArg::LiteralInt(_) | ExprArg::LiteralFloat(_) => {}
         ExprArg::ColumnName(name) => {
-            let col_type = lookup_column_type(name, table, dataset_group, fallback_type);
+            let col_type = lookup_column_type(name, table, grain_set, fallback_type);
             columns.entry(name.clone()).or_insert(col_type);
         }
-        ExprArg::Node(node) => collect_node_columns(node, fallback_type, table, dataset_group, columns),
+        ExprArg::Node(node) => collect_node_columns(node, fallback_type, table, grain_set, columns),
     }
 }
 
 /// Get the literal value for a virtual dimension attribute.
 pub fn get_virtual_attribute_value(
     model: &SemanticModel,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     dim_name: &str,
     attr_name: &str,
 ) -> PlanLiteralValue {
-    get_virtual_attribute_value_with_dataset(model, dataset_group, None, dim_name, attr_name)
+    get_virtual_attribute_value_with_dataset(model, grain_set, None, dim_name, attr_name)
 }
 
 pub fn get_virtual_attribute_value_with_dataset(
     model: &SemanticModel,
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     dataset: Option<&Dataset>,
     dim_name: &str,
     attr_name: &str,
 ) -> PlanLiteralValue {
     if dim_name == "_dataset" {
         match attr_name {
-            "datasetGroup" => PlanLiteralValue::String(dataset_group.name.clone()),
+            "path" => PlanLiteralValue::String(
+                grain_set.container_path.as_ref()
+                    .map(|p| p.join("."))
+                    .unwrap_or_else(|| grain_set.name.clone()),
+            ),
             "model" => PlanLiteralValue::String(model.name.clone()),
             "namespace" => model.namespace.as_ref()
                 .map(|ns| PlanLiteralValue::String(ns.clone()))
                 .unwrap_or(PlanLiteralValue::Null),
             "dataset" => dataset
                 .map(|d| PlanLiteralValue::String(d.name.clone()))
-                .unwrap_or(PlanLiteralValue::Null),
-            "partition" => dataset
-                .and_then(|d| d.partition.as_ref())
-                .map(|p| PlanLiteralValue::String(p.clone()))
                 .unwrap_or(PlanLiteralValue::Null),
             _ => PlanLiteralValue::Null,
         }
@@ -309,11 +309,13 @@ pub fn get_virtual_attribute_value_with_dataset(
     }
 }
 
-/// Parsed dimension attribute for cross-tableGroup queries.
+/// Parsed dimension attribute for cross-container queries.
 #[derive(Debug, Clone)]
 pub enum ParsedDimensionAttr {
+    /// Conformed: dimension.attribute (declared at highest level of semantic model).
     Standard { dim_name: String, attr_name: String },
-    Qualified { tg_name: String, dim_name: String, attr_name: String },
+    /// Path-qualified: path.dimension.attribute (path reflects container levels).
+    Qualified { container_path: Vec<String>, dim_name: String, attr_name: String },
     Virtual { dim_name: String, attr_name: String },
 }
 
@@ -335,12 +337,14 @@ impl ParsedDimensionAttr {
                     }
                 }
             }
-            3 => {
-                let (tg_name, dim_name, attr_name) = (parts[0], parts[1], parts[2]);
+            n if n >= 3 => {
+                let container_path: Vec<String> = parts[0..n - 2].iter().map(|s| (*s).to_string()).collect();
+                let dim_name = parts[n - 2].to_string();
+                let attr_name = parts[n - 1].to_string();
                 ParsedDimensionAttr::Qualified {
-                    tg_name: tg_name.to_string(),
-                    dim_name: dim_name.to_string(),
-                    attr_name: attr_name.to_string(),
+                    container_path,
+                    dim_name,
+                    attr_name,
                 }
             }
             _ => {
@@ -352,11 +356,17 @@ impl ParsedDimensionAttr {
         }
     }
 
-    pub fn belongs_to_dataset_group(&self, tg_name: &str) -> bool {
+    /// True if this attribute belongs to the given grain set (by name). For qualified attrs, path may be a leaf or group.
+    pub fn belongs_to_grain_set(&self, model: &SemanticModel, gs_name: &str) -> bool {
         match self {
-            ParsedDimensionAttr::Qualified { tg_name: qualified_tg, .. } => qualified_tg == tg_name,
-            ParsedDimensionAttr::Standard { .. } => true,
-            ParsedDimensionAttr::Virtual { .. } => true,
+            ParsedDimensionAttr::Qualified { container_path, .. } => {
+                let path_refs: Vec<&str> = container_path.iter().map(String::as_str).collect();
+                model
+                    .grain_sets_under_path(&path_refs)
+                    .iter()
+                    .any(|gs| gs.name == gs_name)
+            }
+            ParsedDimensionAttr::Standard { .. } | ParsedDimensionAttr::Virtual { .. } => true,
         }
     }
 
@@ -395,11 +405,11 @@ impl ParsedDimensionAttr {
 
 /// Get the physical column name for a dimension attribute.
 pub fn get_dimension_column_name(
-    dataset_group: &DatasetGroup,
+    grain_set: &GrainSet,
     dim_name: &str,
     attr_name: &str,
 ) -> String {
-    if let Some(group_dim) = dataset_group.get_dimension(dim_name) {
+    if let Some(group_dim) = grain_set.get_dimension(dim_name) {
         if group_dim.is_degenerate() {
             if let Some(attr) = group_dim.get_attribute(attr_name) {
                 return attr.column_name().to_string();
@@ -414,23 +424,15 @@ pub fn extract_physical_dims(dimension_attrs: &[String], model: &SemanticModel) 
     dimension_attrs.iter()
         .filter_map(|attr_path| {
             let parts: Vec<&str> = attr_path.split('.').collect();
-            match parts.len() {
-                2 => {
-                    let dim_name = parts[0];
-                    if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
-                        return None;
-                    }
-                    Some((dim_name.to_string(), parts[1].to_string()))
-                }
-                3 => {
-                    let dim_name = parts[1];
-                    if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
-                        return None;
-                    }
-                    Some((dim_name.to_string(), parts[2].to_string()))
-                }
-                _ => None,
+            let (dim_name, attr_name) = match parts.len() {
+                2 => (parts[0], parts[1]),
+                n if n >= 3 => (parts[n - 2], parts[n - 1]),
+                _ => return None,
+            };
+            if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
+                return None;
             }
+            Some((dim_name.to_string(), attr_name.to_string()))
         })
         .collect()
 }

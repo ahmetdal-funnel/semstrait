@@ -105,7 +105,7 @@ pub enum LiteralValue {
 }
 
 /// A measure definition with aggregation
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Measure {
     pub name: String,
     pub label: Option<String>,
@@ -139,7 +139,7 @@ impl Measure {
 }
 
 /// Filter that applies to a specific measure
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct MeasureFilter {
     pub field: String,
     pub user_attribute: Option<String>,

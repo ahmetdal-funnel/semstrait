@@ -9,9 +9,9 @@ as Substrait or SQL.
 planner/
 ├── plan.rs      Router — classifies query, dispatches to builders
 ├── table.rs     Single-dataset plans (Scan → Join → Filter → Aggregate → Project → Sort)
-├── cross.rs     Cross-datasetGroup metrics (UNION branches → re-aggregate)
+├── cross.rs     Cross-grain-set metrics (UNION branches → re-aggregate)
 ├── union.rs     Conformed / qualified / partitioned / virtual-only UNIONs
-├── join.rs      Multi-table JOIN within one datasetGroup
+├── join.rs      Multi-table JOIN within one grain set
 ├── expr.rs      Semantic model expressions → plan expressions
 ├── util.rs      Shared helpers (column builders, dimension parsing, virtual values)
 └── error.rs     PlanError
@@ -25,17 +25,17 @@ query and routes to exactly one planning path:
 ```
 plan_semantic_query
 │
-├─ cross-datasetGroup metric (1)?
-│  └─► cross::plan_cross_dataset_group_query
+├─ cross-grain-set metric (1)?
+│  └─► cross::plan_cross_grain_set_query
 │
-├─ cross-datasetGroup metrics (>1)?
-│  └─► cross::plan_multi_cross_dataset_group_query
+├─ cross-grain-set metrics (>1)?
+│  └─► cross::plan_multi_cross_grain_set_query
 │
 ├─ qualified groups > 1?  (e.g. "adwords.dates.year" + "facebookads.dates.year")
-│  └─► union::plan_multi_tablegroup_query          UNION with NULL projection
+│  └─► union::plan_multi_grain_set_query          UNION with NULL projection
 │
 ├─ qualified group == 1?  (e.g. "adwords.dates.year")
-│  └─► union::plan_single_tablegroup_query          constrain to that group
+│  └─► union::plan_single_grain_set_query          constrain to that group
 │
 └─ unqualified (normal path)
    │
@@ -54,7 +54,7 @@ plan_semantic_query
          ├─ only 1 table needed after all?
          │  └─► resolve → table::plan_query
          └─ multiple tables
-            └─► join::plan_same_tablegroup_join      FULL OUTER JOIN
+            └─► join::plan_same_grain_set_join      FULL OUTER JOIN
 ```
 
 ## Plan Shapes
@@ -71,7 +71,7 @@ Sort
             └── Scan (fact table)
 ```
 
-**Cross-datasetGroup metric**
+**Cross-grain-set metric**
 ```
 Sort
 └── Aggregate (re-aggregate: SUM metric by dimensions)
@@ -114,10 +114,10 @@ VirtualTable (literal rows, one per group/partition)
 
 | Term | Meaning |
 |------|---------|
-| **DatasetGroup** | A logical group of related datasets sharing dimensions and measures |
+| **Grain set** | A logical group of related datasets sharing dimensions and measures |
 | **Conformed dimension** | A dimension defined at the model level, queryable across all groups |
 | **Qualified dimension** | A 3-part path like `adwords.dates.year` scoping a dimension to one group |
-| **Cross-datasetGroup metric** | A metric referencing measures from different groups (e.g. `adwords.cost + facebook.spend`) |
+| **Cross-grain-set metric** | A metric referencing measures from different groups (e.g. `adwords.cost + facebook.spend`) |
 | **Partitioned dataset** | A dataset split into physical partitions, each served by a separate Scan |
 | **Degenerate dimension** | A dimension whose attributes live directly on the fact table (no JOIN) |
 | **Virtual dimension** | `_dataset.*` metadata attributes projected as literals, not columns |
@@ -131,7 +131,7 @@ own; purely a router.
 (single resolved dataset). `build_tablegroup_branch` is the unified builder used
 by `cross.rs` when it needs a per-group aggregate sub-plan.
 
-**`cross.rs`** — Builds UNION plans for metrics that span multiple datasetGroups.
+**`cross.rs`** — Builds UNION plans for metrics that span multiple grain sets.
 Each branch aggregates its own group, projects to a common schema with NULLs for
 missing columns, then a final re-aggregation (SUM) combines everything.
 
