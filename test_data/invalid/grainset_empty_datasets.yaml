@@ -1,0 +1,7 @@
+semantic_model:
+  name: bad_kind
+  kinds:
+    - name: empty_kind
+      type:
+        grainset:
+      datasets: []

@@ -1,0 +1,173 @@
+semantic_model:
+  name: full_model
+  description: "Comprehensive model exercising all v1.2 features"
+  labels:
+    - production
+    - analytics
+
+  # Top-level reusable definitions
+  dimensions:
+    - name: order_date
+      description: "Date the order was placed"
+      data_type: date
+      type:
+        temporal:
+          grains:
+            - day
+            - week
+            - month
+            - quarter
+            - year
+
+  measures:
+    - name: revenue
+      description: "Total revenue"
+      data_type: float64
+      expr: "SUM(amount)"
+      additivity:
+        type:
+          full:
+      constraints:
+        dimensions:
+          one_of:
+            - order_date
+            - created_at
+        aggregations:
+          prohibited:
+            - AVG
+
+  metrics:
+    - name: avg_order_value
+      description: "Average order value"
+      data_type: float64
+      expr: "revenue / order_count"
+
+  # Datasets
+  datasets:
+    - name: orders
+      description: "Raw order fact table"
+      domain: financial.transactions
+      tags:
+        source_type: fact
+        visibility: public
+      keys:
+        primary:
+          - order_id
+      dimensions:
+        - ref: order_date
+        - name: category
+          data_type: string
+          type:
+            categorical:
+              enum:
+                - electronics
+                - clothing
+                - food
+        - name: is_premium
+          data_type: bool
+          type:
+            binary:
+              type: boolean
+        - name: price_bucket
+          data_type: string
+          type:
+            bucketed:
+              column: amount
+              buckets:
+                - name: "low"
+                  start: 0
+                  end: 50
+                - name: "medium"
+                  start: 50
+                  end: 200
+                - name: "high"
+                  start: 200
+                  end: 100000
+      measures:
+        - ref: revenue
+        - name: order_count
+          data_type: int64
+          expr: "COUNT(order_id)"
+      metrics:
+        - ref: avg_order_value
+      filters:
+        - name: active_orders
+          expr: "status != 'cancelled'"
+      extras:
+        temporal:
+          type:
+            timeseries:
+              occurred_at: created_at
+        storage:
+          path: warehouse.orders
+
+    - name: customers
+      description: "Customer dimension table"
+      domain: crm
+      keys:
+        primary:
+          - customer_id
+      dimensions:
+        - name: signup_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+                - month
+        - name: region
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: customer_count
+          data_type: int64
+          expr: "COUNT(customer_id)"
+      extras:
+        temporal:
+          type:
+            scd:
+              type_2:
+                valid_from: effective_date
+                valid_to: expiry_date
+        storage:
+          path: warehouse.customers
+
+  # Kinds
+  kinds:
+    - name: sales_grainset
+      type:
+        grainset:
+      domain: financial
+      dimensions:
+        - ref: order_date
+      measures:
+        - ref: revenue
+      datasets:
+        - name: orders_daily
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount_usd
+            storage:
+              path: warehouse.orders_daily
+        - name: orders_monthly
+          extras:
+            column_mapping:
+              order_date:
+                column: order_month
+                grain: month
+              revenue: total_revenue
+            storage:
+              path: warehouse.orders_monthly
+
+  # Relationships
+  relationships:
+    - name: orders_customers
+      from: orders
+      to: customers
+      type: left
+      columns:
+        - from: customer_id
+          to: customer_id
+      cardinality: many_to_one

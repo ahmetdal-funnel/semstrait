@@ -1,0 +1,35 @@
+semantic_model:
+  name: grainset_measure_filter
+  description: "Grainset with measure-level filters"
+
+  kinds:
+    - name: daily_orders
+      type:
+        grainset:
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+          filters:
+            - name: active_only
+              expr: "status != 'cancelled'"
+        - name: order_count
+          data_type: int64
+          expr: "COUNT(order_id)"
+      datasets:
+        - name: orders_daily
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+              order_count: order_id
+              status: status
+            storage:
+              path: warehouse.orders

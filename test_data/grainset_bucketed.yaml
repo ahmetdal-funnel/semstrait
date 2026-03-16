@@ -1,0 +1,43 @@
+semantic_model:
+  name: grainset_bucketed
+  description: "Grainset with a bucketed dimension"
+
+  kinds:
+    - name: order_buckets
+      type:
+        grainset:
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: price_bucket
+          data_type: string
+          type:
+            bucketed:
+              column: amount
+              buckets:
+                - name: low
+                  start: 0.0
+                  end: 100.0
+                - name: medium
+                  start: 100.0
+                  end: 500.0
+                - name: high
+                  start: 500.0
+                  end: 10000.0
+      measures:
+        - name: order_count
+          data_type: int64
+          expr: "COUNT(order_id)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              amount: amount
+              order_count: order_id
+            storage:
+              path: warehouse.orders

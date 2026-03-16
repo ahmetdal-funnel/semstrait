@@ -1,0 +1,1 @@
+read CONTEXT.md document for each iteration including after conversation compaction.

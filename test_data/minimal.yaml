@@ -1,0 +1,34 @@
+semantic_model:
+  name: minimal_test
+  description: "Minimal model for parser smoke tests"
+
+  datasets:
+    - name: orders
+      description: "Order fact table"
+      extras:
+        storage:
+          path: warehouse.orders
+      dimensions:
+        - name: order_date
+          description: "Date the order was placed"
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+                - month
+                - year
+      measures:
+        - name: revenue
+          description: "Total revenue"
+          data_type: float64
+          expr: "SUM(amount)"
+        - name: order_count
+          description: "Number of orders"
+          data_type: int64
+          expr: "COUNT(order_id)"
+      metrics:
+        - name: avg_order_value
+          description: "Average order value"
+          data_type: float64
+          expr: "revenue / order_count"

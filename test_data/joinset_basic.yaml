@@ -1,0 +1,51 @@
+semantic_model:
+  name: joinset_basic
+  description: "Joinset with two datasets joined via relationship"
+
+  kinds:
+    - name: order_details
+      type:
+        joinset:
+          associativity: left
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: customer_name
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+        - name: customer_count
+          data_type: int64
+          expr: "COUNT(DISTINCT customer_id)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              path: warehouse.orders
+        - name: customers
+          extras:
+            column_mapping:
+              customer_name: name
+              customer_count: id
+            storage:
+              path: warehouse.customers
+      relationships:
+        - name: orders_to_customers
+          from: orders
+          to: customers
+          type: left
+          columns:
+            - from: customer_id
+              to: id
+          cardinality: many_to_one

@@ -1,0 +1,10 @@
+semantic_model:
+  name: bad_ref
+  datasets:
+    - name: orders
+      dimensions:
+        - ref: nonexistent_dimension
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
