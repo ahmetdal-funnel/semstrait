@@ -1,0 +1,21 @@
+[package]
+name = "semstrait-catalog"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+semstrait-core = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# Feature-gated deps
+reqwest = { workspace = true, optional = true }
+
+[features]
+default = []
+iceberg = ["reqwest"]

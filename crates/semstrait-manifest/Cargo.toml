@@ -1,0 +1,20 @@
+[package]
+name = "semstrait-manifest"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Manifest compiler and repository for semstrait semantic models"
+
+[dependencies]
+semstrait-core = { workspace = true }
+semstrait-model = { workspace = true }
+semstrait-catalog = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+petgraph = { workspace = true }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }

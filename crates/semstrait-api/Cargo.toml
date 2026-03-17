@@ -1,0 +1,35 @@
+[package]
+name = "semstrait-api"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "API layer: gRPC, REST, and CLI entry points for semstrait"
+
+[dependencies]
+semstrait-core = { workspace = true }
+semstrait-planner = { workspace = true }
+semstrait-manifest = { workspace = true }
+semstrait-connectors = { workspace = true }
+semstrait-sql = { workspace = true }
+semstrait-catalog = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# CLI (feature-gated)
+clap = { workspace = true, optional = true }
+
+# REST (feature-gated)
+axum = { workspace = true, optional = true }
+
+# gRPC (feature-gated)
+tonic = { workspace = true, optional = true }
+
+[features]
+default = ["cli", "rest"]
+cli = ["dep:clap"]
+rest = ["dep:axum"]
+grpc = ["dep:tonic"]

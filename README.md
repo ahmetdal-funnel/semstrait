@@ -1,213 +1,262 @@
 # semstrait
 
-> Compile semantic models to executable compute plans.
+A **manifest compiler + semantic query engine** written in Rust.
 
-semstrait transforms declarative YAML semantic model definitions into [Substrait](https://substrait.io) compute plans and SQL. It acts as a semantic layer between the way analysts define metrics and dimensions and the way engines execute queries — without coupling either side to the other.
+semstrait resolves semantic models (defined in YAML) into engine-executable plans by:
+1. Compiling YAML model files into a validated `CompiledManifest` artifact (offline)
+2. Planning `QueryRequest`s against that manifest into a `LogicalPlan` IR (online)
+3. Emitting the plan as Substrait bytes or dialect-specific SQL (online)
 
----
-
-## What it does
-
-A semantic model describes *what* data means: which tables exist, how they join, what "revenue" means as an aggregated measure, which dimensions can slice it, and what grain each physical dataset lives at. semstrait takes that definition and a query request (give me `revenue` sliced by `region` and `month`, filtered to `year = 2024`) and produces:
-
-- A **Substrait plan** — a portable, engine-agnostic binary representation of the relational algebra required to answer the query. Hand this to DataFusion, DuckDB, Velox, or any Substrait-capable engine.
-- **SQL** — a dialect-specific SQL string derived from the same internal plan, for engines that prefer SQL over Substrait.
-
-The Substrait plan is the canonical internal representation. SQL is a projection from it, not a parallel path.
+The canonical output is Substrait — a portable, engine-agnostic binary representation of relational algebra. SQL is derived from the same internal plan, for engines that prefer SQL over Substrait.
 
 ---
 
-## Crate map
+## Architecture
+
+The system is organized as a layered crate workspace. Each layer depends only on the layers below it.
+
+### Diagram: Crate Layer Architecture
+![Crate Layer Architecture](docs/D1_crate_layer_architecture.svg)
+
+### Diagram: System Pipeline
+![System Pipeline](docs/D2_system_pipeline.svg)
+
+### Crate Map
 
 ```
-semstrait/                          workspace root
+semstrait/                       Cargo workspace root
 ├── crates/
-│   ├── semstrait-core/             Core compilation pipeline
-│   ├── semstrait-sql/              SQL dialect emission layer
-│   ├── semstrait-connectors/       Engine adapter abstractions
-│   ├── semstrait-http/             HTTP API server (axum)
-│   ├── semstrait-cli/              CLI binary (clap)
-│   └── semstrait/                  Facade crate — public re-exports + feature gates
-├── test_data/                      Shared YAML model fixtures
-└── docs/                           Design documents
+│   ├── semstrait-core/          Foundation — shared primitives, zero internal deps
+│   ├── semstrait-model/         YAML model parsing and ref resolution
+│   ├── semstrait-catalog/       CatalogProvider trait + implementations
+│   ├── semstrait-manifest/      ManifestCompiler + Repository (InMemory v1)
+│   ├── semstrait-ir/            PlanNode IR + Substrait bridge
+│   ├── semstrait-planner/       SemanticPlanner + KindPlanners + Optimizer
+│   ├── semstrait-sql/           SqlEmitter trait + dialect implementations
+│   ├── semstrait-connectors/    Compute traits + feature-gated engine impls
+│   ├── semstrait-api/           gRPC + REST + CLI (submodules, feature-gated)
+│   └── semstrait/               Facade — builder, public API, feature flags
+├── test_data/                   Shared YAML model fixtures
+└── docs/                        Architecture diagrams and design documents
 ```
 
-### Dependency graph
+### Dependency Graph
 
 ```
-semstrait-core
-    └── semstrait-sql         (adds dialect SQL from core's plans)
-            └── semstrait-connectors   (adds engine execution)
-                    ├── semstrait-http
-                    └── semstrait-cli
-
-semstrait  (facade, depends on all, re-exports with feature gates)
+semstrait-core                    (zero internal deps — foundation)
+    ├── semstrait-model           (YAML types, ref resolution)
+    ├── semstrait-catalog         (CatalogProvider trait)
+    └── semstrait-ir              (PlanNode, Substrait bridge)
+            │
+semstrait-manifest                (core + model + catalog)
+            │
+    ├── semstrait-planner         (core + ir + manifest + catalog)
+    └── semstrait-sql             (core + ir)
+            │
+semstrait-connectors              (core + ir + sql)
+            │
+    ├── semstrait-api             (core + planner + manifest + connectors)
+    └── semstrait (facade)        (planner + manifest + connectors + catalog)
 ```
 
-Dependencies flow strictly downward. `semstrait-core` has no knowledge of SQL dialects, engines, HTTP, or CLI. Each layer adds capability without modifying the layer below.
+Dependencies flow strictly downward. No cycles.
 
 ---
 
-## Core concepts
+## Core Concepts
 
-### Semantic model
+### Semantic Model
 
 A semantic model is a YAML file that declares a queryable interface over physical data:
 
 ```yaml
-semantic_models:
-  - name: sales
-    datasets:
-      - name: orders_daily
-        source: warehouse.fact_orders_daily
-        grain: [date, region_id]
-      - name: orders_raw
-        source: warehouse.fact_orders
-        grain: [order_id]
-    dimensions:
-      - name: region
-        column: region_id
-        join_path: dim_region
-      - name: date.year
-        column: order_date
-        derivable_levels: [year, month, week]
-    measures:
-      - name: revenue
-        expr: sum(amount)
-        additive: true
+semantic_model:
+  name: sales
+  kinds:
+    - name: orders
+      type:
+        grainset:
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day, month, year]
+        - name: region
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: revenue
+          data_type: "decimal(18,2)"
+          expr: "SUM(amount)"
+          additivity:
+            type:
+              full:
+      metrics:
+        - name: avg_order_value
+          data_type: "decimal(18,2)"
+          expr: "revenue / COUNT(order_id)"
+      datasets:
+        - name: orders_daily
+          extras:
+            column_mapping:
+              order_date: created_at
+              region: region_code
+              revenue: total_amount
+            storage:
+              path: warehouse.fact_orders_daily
 ```
 
-### QueryRequest
+### Kind Types
 
-A `QueryRequest` names the model, the measures to retrieve, the dimensions to group by, and any filters:
+Kinds define how datasets relate to each other:
+
+| Kind | Strategy | Use Case |
+|------|----------|----------|
+| **Grainset** | Route to cheapest covering dataset | Multiple aggregation levels of the same data |
+| **Unionset** | UNION ALL with NULL-fill | Same schema across multiple sources |
+| **Joinset** | BFS join chain from anchor | Related datasets with different schemas |
+
+### Additional Architecture Diagrams
+
+| Diagram | Description |
+|---------|-------------|
+| [D3 - Planner Evaluation Order](docs/D3_planner_evaluation_order.svg) | Steps within SemanticPlanner.plan() |
+| [D4 - PlanNode Substrait Map](docs/D4_plannode_substrait_map.svg) | PlanNode variant to Substrait Rel correspondence |
+| [D5 - Kind Interface Binding](docs/D5_kind_interface_binding.svg) | Three layers of Kind: interface, strategy, binding |
+| [D6 - Connector Architecture](docs/D6_connector_architecture.svg) | Compute emit/adapt/execute pipeline |
+
+---
+
+## Compilation Pipeline
+
+```
+QueryRequest + CompiledManifest
+       │  ConstraintEvaluator    step 0: pre-resolution validity gate
+       ▼
+ SemanticPlanner
+       │  KindPlanner dispatch   Grainset | Unionset | Joinset
+       │  AdditivityResolver     semi/non-additive measure handling
+       │  Filter injection       dataset → measure → metric → user
+       ▼
+ LogicalPlan (PlanNode IR)
+       │
+       ├─ SubstraitSerializer  → substrait::proto::Plan → Vec<u8>  (always produced)
+       └─ SqlEmitter           → String                             (on demand)
+       ▼
+ CompiledPlan                  ← the public output
+```
+
+---
+
+## DSL Expressions
+
+All computations are expressed via a typed DSL — raw SQL strings are rejected at compile time:
+
+```yaml
+# Aggregations
+expr: "SUM(amount)"
+expr: "COUNT(DISTINCT customer_id)"
+expr: "AVG(price)"
+
+# Arithmetic
+expr: "revenue / order_count"
+
+# Safe division (NULL when divisor is 0)
+expr: "SAFE_DIVIDE(revenue, order_count)"
+
+# Conditional
+expr: "CASE WHEN status = 'active' THEN amount END"
+
+# Date truncation
+expr: "DATE_TRUNC('month', order_date)"
+
+# Guards (measure-scoped filters)
+expr: "SUM(CASE WHEN channel = 'online' THEN amount END)"
+```
+
+---
+
+## Design Principles
+
+**Substrait is the contract, not SQL.** The canonical representation of a compiled query is always Substrait bytes. SQL is a convenience output.
+
+**Proto is an implementation detail.** `substrait::proto::*` types are used only inside the IR crate's serializer. The public API surface contains only `Vec<u8>`.
+
+**PlanNode is internal.** The relational algebra IR is never exposed. Engine integrations work from Substrait bytes or SQL strings only.
+
+**Strict dependency direction.** `semstrait-core` has no I/O, no engine deps, no network. Layers above add capability without modifying layers below.
+
+**DSL only, no raw SQL.** Expressions are parsed from a typed DSL. This enables validation, optimization, and cross-dialect emission.
+
+---
+
+## Quick Start
+
+### Library Usage
 
 ```rust
-QueryRequest {
-    model: "sales".into(),
+use semstrait::{Semstrait, QueryRequest};
+
+let sem = Semstrait::builder()
+    .with_manifest_yaml(yaml_str)
+    .build()
+    .await?;
+
+let result = sem.explain(QueryRequest {
+    kind: "orders".into(),
+    dimensions: vec!["region".into(), "order_date".into()],
     measures: vec!["revenue".into()],
-    dimensions: vec!["date.year".into(), "region".into()],
-    filters: vec![DataFilter::equals("date.year", "2024")],
     ..Default::default()
-}
+}).await?;
+
+println!("SQL: {}", result.sql.unwrap());
+println!("Substrait: {} bytes", result.substrait.len());
 ```
 
-### Compilation pipeline
+### CLI
 
-```
-QueryRequest + Schema
-       ↓  selector     picks the optimal dataset (aggregate-aware)
-SelectedDataset
-       ↓  resolver     resolves dimension paths, join graph, filter predicates
-ResolvedQuery
-       ↓  planner      builds a logical relational plan
-PlanNode               ← private; never leaves the planner boundary
-       ↓  always runs both paths in one pass:
-       ├─ substrait_conv  → proto::Plan → Vec<u8>  (canonical IR, always produced)
-       └─ sql_emitter     → String                  (derived from PlanNode, on demand)
-CompiledPlan           ← the public output
-```
+```bash
+# Compile a model and explain a query
+semstrait explain --model models/sales.yaml \
+  --dimensions region,order_date \
+  --measures revenue
 
-`PlanNode` is a private implementation type. No code outside `semstrait-core`'s planner module ever constructs or inspects it. The public boundary is `CompiledPlan`.
+# Validate a model
+semstrait validate --model models/sales.yaml
 
-### Substrait as canonical IR
-
-Substrait bytes (`Vec<u8>`) are always produced during compilation — regardless of whether the caller asked for them. They are the canonical representation of the query intent. When a caller requests only SQL, the Substrait plan is still built internally but the bytes are not included in the output.
-
-The reason: Substrait is the only format that can be handed directly to a compute engine's physical execution layer. SQL requires the engine to parse and re-plan it. Substrait is also inspectable, versionable, and diffable across engine configurations. Making it optional would undermine its role as the stable semantic contract.
-
-`substrait::proto::Plan` is used only inside the `substrait_conv` module as an in-memory intermediate. Serialization to bytes (`encode_to_vec()`) happens exactly once, at the boundary of `CompiledPlan` construction. No proto types are ever exposed in the public API.
-
----
-
-## Public API (via `semstrait` facade)
-
-```rust
-use semstrait::{SemanticCompiler, StatelessCompiler, FileSystemRegistry,
-                QueryRequest, CompiledPlan, CompileOpts, ModelRef};
-
-// Build a compiler backed by YAML files on disk
-let registry = FileSystemRegistry::new("./models");
-let compiler = StatelessCompiler::new(registry);
-
-// Compile a query
-let plan: CompiledPlan = compiler.compile(
-    &ModelRef::file("sales.yaml"),
-    &QueryRequest::new("sales").measure("revenue").dimension("date.year"),
-    &CompileOpts::default().with_sql(Dialect::DuckDb),
-)?;
-
-// Use outputs
-let substrait_bytes: &[u8] = plan.substrait();   // always present
-let sql: &str = plan.sql().unwrap();              // present when requested
+# Start REST API server
+semstrait serve --model models/ --port 3000
 ```
 
-The `SemanticCompiler` trait is the only type CLI and HTTP depend on. Swapping the compiler implementation (e.g., from `StatelessCompiler` to a future `ManifestCompiler`) requires no changes anywhere else.
-
----
-
-## Integration
-
-### With DataFusion
-
-```rust
-use datafusion::prelude::*;
-use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
-use prost::Message;
-use substrait::proto::Plan;
-
-let compiled = compiler.compile(&model_ref, &request, &opts)?;
-
-let proto_plan = Plan::decode(compiled.substrait())?;
-let ctx = SessionContext::new();
-let logical = from_substrait_plan(&ctx.state(), &proto_plan).await?;
-let df = ctx.execute_logical_plan(logical).await?;
-```
-
-### With DuckDB (SQL path)
-
-```rust
-let opts = CompileOpts::default().with_sql(Dialect::DuckDb);
-let compiled = compiler.compile(&model_ref, &request, &opts)?;
-conn.execute(compiled.sql().unwrap(), [])?;
-```
-
-### Via HTTP
+### REST API
 
 ```bash
 curl -X POST http://localhost:3000/query \
   -H 'Content-Type: application/json' \
-  -d '{"model": "sales.yaml", "measures": ["revenue"], "dimensions": ["date.year"]}'
+  -d '{
+    "kind": "orders",
+    "dimensions": ["region", "order_date"],
+    "measures": ["revenue"],
+    "filters": [{"dimension": "order_date", "op": "gte", "value": "2024-01-01"}]
+  }'
 ```
 
-Returns `{"substrait": "<base64>", "sql": "<dialect sql>"}`.
-
 ---
 
-## Design principles
+## Development
 
-**Substrait is the contract, not SQL.** SQL is a convenience output for engines that need it. The canonical representation of a compiled query is always Substrait bytes.
+```bash
+# Build all crates
+cargo build --workspace
 
-**Proto is an implementation detail.** `substrait::proto::*` types are used only inside the conversion module. The public API surface contains only `Vec<u8>` for Substrait output.
+# Run all tests
+cargo test --workspace
 
-**PlanNode is private.** The internal relational algebra representation is a named-column, domain-aware tree that's ergonomic to build and traverse. It is never exposed. Engine integrations work from Substrait bytes or SQL strings only.
-
-**Strict dependency direction.** `semstrait-core` has no I/O, no engine deps, no network. Layers above it add capability. Nothing in a lower layer ever imports from a higher one.
-
-**Decomposition-ready module boundaries.** The single `semstrait-core` crate is structured so that `schema/`, `parser/`, and `planner/` can each be extracted into independent crates when interface stability warrants it. Module visibility (`pub(crate)`) is the today-boundary; crate visibility is the tomorrow-boundary.
-
----
-
-## Workspace structure (future decomposition target)
-
-The current single-crate `semstrait-core` is structured to eventually split into:
-
-| Module today | Crate tomorrow | Rationale |
-|---|---|---|
-| `schema/` | `semstrait-schema` | Pure types — no parser dep, usable by programmatic model builders, LLM integrations |
-| `parser/` | `semstrait-parser` | Format-specific — enables LookML, Cube.js JSON parsers without changing schema types |
-| `planner/` | stays in core | Selector + resolver + planner are tightly coupled; external benefit of splitting is low |
-
-This split happens when APIs stabilize, not at v1.
+# Run with specific features
+cargo build -p semstrait --features "api-rest,api-cli"
+```
 
 ---
 

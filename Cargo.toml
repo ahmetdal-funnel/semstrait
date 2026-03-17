@@ -3,12 +3,66 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.dependencies]
+# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-substrait = { version = "0.62", features = ["serde"] }
 prost = "0.14"
-thiserror = "2"
+
+# Query IR
+substrait = { version = "0.62", features = ["serde"] }
+arrow = { version = "55", default-features = false, features = ["json"] }
+arrow-schema = "55"
+datafusion = { version = "52", default-features = false, features = ["sql"] }
+
+# SQL generation
+sqlparser = "0.53"
+
+# Graph analysis
 petgraph = "0.7"
-logos = "0.15"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+indexmap = { version = "2", features = ["serde"] }
+thiserror = "2"
 tracing = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+
+# API (optional)
+axum = { version = "0.8" }
+clap = { version = "4", features = ["derive"] }
+tonic = { version = "0.12" }
+
+# Internal workspace crates
+semstrait-core = { path = "crates/semstrait-core" }
+semstrait-model = { path = "crates/semstrait-model" }
+semstrait-catalog = { path = "crates/semstrait-catalog" }
+semstrait-manifest = { path = "crates/semstrait-manifest" }
+semstrait-ir = { path = "crates/semstrait-ir" }
+semstrait-planner = { path = "crates/semstrait-planner" }
+semstrait-sql = { path = "crates/semstrait-sql" }
+semstrait-connectors = { path = "crates/semstrait-connectors" }
+semstrait-api = { path = "crates/semstrait-api" }
+
+# Workspace-level integration tests package
+[package]
+name = "semstrait-integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+semstrait-manifest = { workspace = true }
+semstrait-planner = { workspace = true }
+semstrait-sql = { workspace = true }
+semstrait-ir = { workspace = true }
+semstrait-core = { workspace = true }
+tokio = { workspace = true }

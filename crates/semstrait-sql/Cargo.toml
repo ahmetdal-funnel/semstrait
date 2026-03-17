@@ -3,5 +3,10 @@ name = "semstrait-sql"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
+description = "SQL dialect emission from LogicalPlan IR"
 
 [dependencies]
+semstrait-core = { workspace = true }
+semstrait-ir = { workspace = true }
+sqlparser = { workspace = true }
+thiserror = { workspace = true }

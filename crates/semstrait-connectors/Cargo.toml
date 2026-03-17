@@ -3,5 +3,26 @@ name = "semstrait-connectors"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
+description = "Compute connector traits and feature-gated engine implementations"
 
 [dependencies]
+semstrait-core = { workspace = true }
+semstrait-ir = { workspace = true }
+semstrait-sql = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+
+# Feature-gated engine deps
+datafusion-engine = { package = "datafusion", version = "52", default-features = false, features = ["sql"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[features]
+default = []
+duckdb = []
+datafusion = ["datafusion-engine"]
+trino = []
+spark = []
