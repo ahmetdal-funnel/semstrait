@@ -10,6 +10,7 @@ semstrait-core = { workspace = true }
 semstrait-planner = { workspace = true }
 semstrait-manifest = { workspace = true }
 semstrait-connectors = { workspace = true }
+semstrait-ir = { workspace = true }
 semstrait-sql = { workspace = true }
 semstrait-catalog = { workspace = true }
 serde = { workspace = true }
@@ -33,3 +34,9 @@ default = ["cli", "rest"]
 cli = ["dep:clap"]
 rest = ["dep:axum"]
 grpc = ["dep:tonic"]
+datafusion = ["semstrait-connectors/datafusion"]
+
+[[bin]]
+name = "semstrait"
+path = "src/main.rs"
+required-features = ["cli"]

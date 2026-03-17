@@ -1,110 +1,90 @@
 # semstrait-connectors
 
-Engine execution adapters for semstrait. Takes a `CompiledPlan` and executes it against a real compute engine.
+Compute connector traits and feature-gated engine implementations.
 
 ---
 
 ## Responsibility
 
-`semstrait-connectors` owns the boundary between compiled query representation (Substrait bytes or SQL) and query results (rows or Arrow record batches).
+Defines the three-phase compute pipeline:
 
-It does not own the compilation pipeline. It receives a `CompiledPlan` from `semstrait-core` and routes execution to the appropriate engine adapter.
+1. **`ComputeEmitter`** — `LogicalPlan` → `ComputePayload` (SQL or Substrait bytes)
+2. **`ComputeAdapter`** — adapts payload based on `ConsumerProfile` capabilities
+3. **`ComputeConnector`** — async execution → `ComputeResult`
 
----
-
-## Architecture
-
-```
-CompiledPlan  (from semstrait-core)
-      ↓
-ConnectorAdapter::execute(ExecutableQuery, ExecContext)
-      ↓
-ConnectorResult  { Json(rows) | Arrow(record_batches) }
-```
-
-`ExecutableQuery` carries either the Substrait bytes or the dialect SQL from `CompiledPlan` — whichever the adapter declares it accepts. The adapter declares its accepted input formats via `accepted_inputs()`.
+Does not own the compilation pipeline. Receives a `LogicalPlan` from the planner and routes execution to the appropriate engine.
 
 ---
 
-## Key types
+## Key Types
 
 ```rust
-/// The adapter contract. One implementation per engine.
 #[async_trait]
-pub trait ConnectorAdapter: Send + Sync {
-    /// Unique adapter identifier, e.g. "duckdb-http", "flightsql"
-    fn id(&self) -> &str;
+pub trait ComputeEmitter: Send + Sync {
+    fn name(&self) -> &str;
+    fn supported_payloads(&self) -> Vec<PayloadKind>;
+    fn emit(&self, plan: &LogicalPlan) -> Result<ComputePayload, EmitError>;
+}
 
-    /// Which input formats this adapter can execute
-    fn accepted_inputs(&self) -> &[InputKind];
+#[async_trait]
+pub trait ComputeAdapter: Send + Sync {
+    fn adapt(&self, payload: ComputePayload, profile: &ConsumerProfile)
+        -> Result<ComputeRequest, AdaptError>;
+}
 
-    /// Execute a compiled query and return results
-    async fn execute(
-        &self,
-        query: &ExecutableQuery,
-        ctx: &ExecContext,
-    ) -> Result<ConnectorResult, ConnectorError>;
-
-    /// Verify the engine is reachable
+#[async_trait]
+pub trait ComputeConnector: Send + Sync {
+    fn name(&self) -> &str;
     async fn health_check(&self) -> Result<(), ConnectorError>;
-}
-
-/// What the adapter receives for execution
-pub enum InputKind {
-    Sql(Dialect),         // SQL string in the specified dialect
-    SubstraitBytes,       // raw Substrait protobuf bytes
-}
-
-/// What the adapter produces
-pub enum ConnectorResult {
-    Json(JsonResult),     // Vec<serde_json::Value> rows
-    Arrow(ArrowResult),   // Vec<arrow::RecordBatch> (feature = "arrow")
-}
-
-/// Execution context — per-request metadata the adapter may use
-pub struct ExecContext {
-    pub request_id: String,
-    pub timeout: Option<Duration>,
-    pub engine_params: HashMap<String, String>,  // engine-specific hints
+    async fn execute(&self, request: &ComputeRequest)
+        -> Result<ComputeResult, ConnectorError>;
 }
 ```
 
----
-
-## Included adapters
-
-### PassthroughAdapter (v1)
-
-Posts SQL to any HTTP SQL endpoint. Compatible with:
-- DuckDB HTTP server (`--listen` mode)
-- ClickHouse HTTP interface
-- Any service implementing the simple `POST /query → JSON rows` contract
+### ComputeResult
 
 ```rust
-pub struct PassthroughAdapter {
-    endpoint: String,
-    dialect: Dialect,
-    client: reqwest::Client,
+pub struct ComputeResult {
+    pub data: ComputeResultData,
+    pub stats: ExecutionStats,
+}
+
+pub enum ComputeResultData {
+    Empty,
+    Json(Vec<serde_json::Value>),
+    Native(Box<dyn Any + Send + Sync>),  // downcasted via as_native::<T>()
 }
 ```
 
-Accepts: `InputKind::Sql(dialect)`. Returns: `ConnectorResult::Json`. No engine SDK required — pure HTTP.
+---
 
-### FlightSqlAdapter (feature = "flight", stub in v1)
+## Included Connectors
 
-Connects to a FlightSQL gRPC endpoint and executes Substrait bytes directly. The engine (DataFusion, Velox, etc.) handles planning from the Substrait input.
+### DataFusion (`feature = "datafusion"`)
 
-Accepts: `InputKind::SubstraitBytes`. Returns: `ConnectorResult::Arrow`.
+Full SQL execution via DataFusion's `SessionContext`. Implements all three traits.
 
-Full implementation requires `arrow-flight` with the `flight-sql` feature. The struct and trait impl are present in v1 but `execute()` returns `ConnectorError::NotImplemented` until wired up in a subsequent iteration.
+- Accepts: `PayloadKind::Sql`
+- Returns: `ComputeResultData::Native` wrapping `ArrowBatches(Vec<RecordBatch>)`
+- Uses DataFusion's re-exported Arrow types (no separate arrow dependency)
+
+```rust
+use semstrait_connectors::datafusion::{DataFusionConnector, ArrowBatches};
+
+let connector = DataFusionConnector::new();
+let result = connector.execute(&request).await?;
+let batches = result.data.as_native::<ArrowBatches>().unwrap();
+```
+
+### DuckDB, Trino, Spark (stubs)
+
+Feature flags exist (`duckdb`, `trino`, `spark`) but implementations are not yet wired. Connector traits are ready for implementation.
 
 ---
 
-## Transport data model
+## Dependencies
 
-The adapter abstraction is deliberately narrow. `semstrait-connectors` does not:
-- Own the Arrow schema (that's carried in `ArrowResult`)
-- Serialize results to HTTP responses (that's `semstrait-http`)
-- Cache results (a wrapper adapter can do this without touching the core adapter)
-
-This keeps the adapter implementation surface small. Adding a new engine means implementing four methods.
+- `semstrait-core` — `ConsumerProfile`, `DataType`
+- `semstrait-ir` — `LogicalPlan`, `PlanNode`
+- `semstrait-sql` — SQL emission for SQL-based connectors
+- `datafusion` v52 (optional, feature-gated)

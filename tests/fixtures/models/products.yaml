@@ -1,0 +1,28 @@
+semantic_model:
+  name: filter_test
+  kinds:
+    - name: products
+      type:
+        grainset:
+      dimensions:
+        - name: category
+          data_type: string
+          type:
+            categorical:
+        - name: brand
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: total_sales
+          data_type: float64
+          expr: "SUM(sales_amount)"
+      datasets:
+        - name: product_sales
+          extras:
+            column_mapping:
+              category: product_category
+              brand: product_brand
+              total_sales: sales_amount
+            storage:
+              path: analytics.product_sales

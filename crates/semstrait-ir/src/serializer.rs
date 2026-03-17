@@ -46,12 +46,15 @@ const FUNC_GTE: u32 = 105;
 
 const FUNC_AND: u32 = 200;
 const FUNC_OR: u32 = 201;
-#[allow(dead_code)]
 const FUNC_IS_NULL: u32 = 202;
-#[allow(dead_code)]
 const FUNC_IS_NOT_NULL: u32 = 203;
-#[allow(dead_code)]
 const FUNC_COALESCE: u32 = 204;
+const FUNC_NOT: u32 = 205;
+const FUNC_IN: u32 = 206;
+const FUNC_BETWEEN: u32 = 207;
+const FUNC_LIKE: u32 = 208;
+const FUNC_NULLIF: u32 = 209;
+const FUNC_DATE_TRUNC: u32 = 210;
 
 const FUNC_ADD: u32 = 300;
 const FUNC_SUBTRACT: u32 = 301;
@@ -763,9 +766,15 @@ impl SubstraitSerializer {
             Self::make_function_extension(URI_COMPARISON, FUNC_GTE, "gte"),
             Self::make_function_extension(URI_BOOLEAN, FUNC_AND, "and"),
             Self::make_function_extension(URI_BOOLEAN, FUNC_OR, "or"),
+            Self::make_function_extension(URI_BOOLEAN, FUNC_NOT, "not"),
             Self::make_function_extension(URI_BOOLEAN, FUNC_IS_NULL, "is_null"),
             Self::make_function_extension(URI_BOOLEAN, FUNC_IS_NOT_NULL, "is_not_null"),
+            Self::make_function_extension(URI_BOOLEAN, FUNC_IN, "in"),
+            Self::make_function_extension(URI_BOOLEAN, FUNC_BETWEEN, "between"),
+            Self::make_function_extension(URI_BOOLEAN, FUNC_LIKE, "like"),
             Self::make_function_extension(URI_BOOLEAN, FUNC_COALESCE, "coalesce"),
+            Self::make_function_extension(URI_BOOLEAN, FUNC_NULLIF, "nullif"),
+            Self::make_function_extension(URI_BOOLEAN, FUNC_DATE_TRUNC, "date_trunc"),
             Self::make_function_extension(URI_ARITHMETIC, FUNC_ADD, "add"),
             Self::make_function_extension(URI_ARITHMETIC, FUNC_SUBTRACT, "subtract"),
             Self::make_function_extension(URI_ARITHMETIC, FUNC_MULTIPLY, "multiply"),

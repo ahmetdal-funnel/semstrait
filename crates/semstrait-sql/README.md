@@ -1,83 +1,58 @@
 # semstrait-sql
 
-SQL dialect translation for semstrait compiled plans.
-
-`semstrait-core` produces ANSI SQL from its internal plan. `semstrait-sql` post-processes that ANSI SQL into engine-specific dialects: DuckDB, Spark, Snowflake, BigQuery, Trino, Redshift, Postgres, and others.
+SQL dialect emission from `LogicalPlan` IR.
 
 ---
 
 ## Responsibility
 
-A single concern: given an ANSI SQL string, produce a semantically equivalent string in the target dialect.
+Walks the `PlanNode` tree and emits SQL via `sqlparser-rs` AST construction. One `SqlEmitter` implementation per dialect family. `DslExprSqlRenderer` converts DSL expressions to SQL fragments.
 
-This crate does not touch the semantic model, the query request, or the Substrait plan. It operates entirely on SQL text. This is intentional — dialect handling is a string transformation problem, not a semantic modeling problem.
-
----
-
-## Why separate from core
-
-`semstrait-core` must remain free of SQL dialect dependencies. A semantic compiler that requires DuckDB-specific libraries to compile would be a significant footgun. `semstrait-sql` is an optional layer: services that deliver Substrait bytes to engines never need it. Only SQL-consuming integrations pull this crate.
+Does not parse SQL, validate semantic correctness, or know about the semantic model.
 
 ---
 
 ## Architecture
 
 ```
-CompiledPlan.sql()   →  ANSI SQL string  (from semstrait-core)
-                              ↓
-                     SqlDialectEmitter::emit(ansi_sql, dialect)
-                              ↓
-                     engine-specific SQL string
+LogicalPlan (from semstrait-ir)
+      ↓
+SqlEmitter::emit(&plan) → Result<String, EmitError>
+      ↓
+dialect-specific SQL string
 ```
 
-The `SqlDialectEmitter` trait is the extension point. The default implementation wraps `polyglot-sql` (32+ dialects, pure Rust, 100% sqlglot fixture compliance). Custom emitters can be registered for dialects not covered by polyglot-sql, or for engines with unusual extension syntax.
+The emitter walks the PlanNode tree depth-first, building `sqlparser::ast` nodes, then renders to a string. All identifiers are double-quoted for safety.
 
 ---
 
-## Key types
+## Key Types
 
 ```rust
-/// The target SQL dialect.
-#[non_exhaustive]
-pub enum Dialect {
-    Ansi,
-    DuckDb,
-    Spark,
-    Snowflake,
-    BigQuery,
-    Trino,
-    Redshift,
-    Postgres,
-    // Additional dialects added as polyglot-sql support is validated
+pub trait SqlDialect: Send + Sync {
+    fn quote_ident(&self, ident: &str) -> String;
+    fn date_trunc(&self, part: &str, expr: &str) -> String;
 }
 
-/// Translate ANSI SQL to a target dialect.
-pub trait SqlDialectEmitter: Send + Sync {
-    fn dialect(&self) -> Dialect;
-    fn emit(&self, ansi_sql: &str) -> Result<String, SqlError>;
+pub trait SqlEmitter: Send + Sync {
+    fn emit(&self, plan: &LogicalPlan) -> Result<String, EmitError>;
 }
 
-/// Default implementation using polyglot-sql.
-pub struct PolyglotEmitter { dialect: Dialect }
-
-impl SqlDialectEmitter for PolyglotEmitter {
-    fn dialect(&self) -> Dialect { self.dialect.clone() }
-    fn emit(&self, ansi_sql: &str) -> Result<String, SqlError> {
-        polyglot_sql::transpile(ansi_sql, to_polyglot_dialect(&self.dialect))
-            .map_err(SqlError::from)
-    }
-}
-
-pub struct SqlError { pub message: String, pub source_sql: String }
+pub struct AnsiSqlEmitter<D: SqlDialect> { dialect: D }
 ```
+
+## Dialect Implementations
+
+| Dialect | Status |
+|---------|--------|
+| `AnsiDialect` | Complete — default, used by all tests |
+| `DuckDbDialect` | Implemented — DuckDB-specific identifier quoting |
+| `TrinoDialect` | Implemented — Trino-specific syntax |
 
 ---
 
-## Scope limitation
+## Dependencies
 
-`semstrait-sql` does not:
-- Parse SQL (parsing is done inside polyglot-sql)
-- Validate semantic correctness (that's `semstrait-core`'s job)
-- Know anything about the semantic model or schema
-
-If a dialect transformation is impossible for a given ANSI construct, `SqlError` is returned with the offending fragment in `source_sql`. Callers can fall back to Substrait delivery or ANSI SQL in that case.
+- `semstrait-core` — `DslExpr`, `DataType`
+- `semstrait-ir` — `LogicalPlan`, `PlanNode`
+- `sqlparser` v0.53 — AST construction and rendering

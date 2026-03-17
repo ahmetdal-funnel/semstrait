@@ -1,11 +1,17 @@
 //! End-to-end integration tests for the full Semstrait pipeline.
 //!
 //! Tests the complete flow: YAML → ManifestCompiler → SemanticPlanner → SQL generation.
+//! Model definitions are loaded from `tests/fixtures/models/`.
 
+mod test_helpers;
+
+use semstrait_api::types::RawQueryRequest;
+use semstrait_api::SemstraitEngine;
 use semstrait_manifest::{CompileSource, ManifestCompiler};
 use semstrait_planner::{ResolvedQueryRequest, SemanticPlanner};
 use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
 use std::collections::HashMap;
+use test_helpers::load_model;
 
 // =============================================================================
 // Test 1: Full pipeline - compile, plan, generate SQL
@@ -13,50 +19,12 @@ use std::collections::HashMap;
 
 #[tokio::test]
 async fn test_yaml_compile_plan_sql() {
-    // Define a minimal YAML model with one dataset and one kind
-    let yaml = r#"
-semantic_model:
-  name: e2e_test_model
-  description: End-to-end test model
-  kinds:
-    - name: orders
-      type:
-        grainset:
-      dimensions:
-        - name: date
-          data_type: date
-          type:
-            temporal:
-              grains:
-                - day
-        - name: region
-          data_type: string
-          type:
-            categorical:
-        - name: customer
-          data_type: string
-          type:
-            categorical:
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-      datasets:
-        - name: orders_daily
-          extras:
-            column_mapping:
-              date: order_date
-              region: region_name
-              customer: customer_name
-              revenue: amount
-            storage:
-              path: public.orders_daily
-"#;
+    let yaml = load_model("orders_3dim");
 
     // Step 1: Compile the YAML model
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(yaml.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -90,7 +58,6 @@ semantic_model:
     let planner = SemanticPlanner::builder().build();
     let plan = planner
         .plan(&request, &manifest)
-        .await
         .expect("planning should succeed");
 
     // Verify the plan output
@@ -115,8 +82,6 @@ semantic_model:
         sql
     );
 
-    // The SQL should reference the physical table and columns
-    // (Implementation may vary, so we just check it's non-empty and well-formed)
     assert!(!sql.is_empty(), "SQL should not be empty");
     assert!(
         sql.len() > 20,
@@ -131,47 +96,11 @@ semantic_model:
 
 #[tokio::test]
 async fn test_constraint_violation_e2e() {
-    // Define a model with a measure that requires the 'date' dimension
-    let yaml = r#"
-semantic_model:
-  name: constraint_test
-  kinds:
-    - name: sales
-      type:
-        grainset:
-      dimensions:
-        - name: date
-          data_type: date
-          type:
-            temporal:
-              grains:
-                - day
-        - name: region
-          data_type: string
-          type:
-            categorical:
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-          constraints:
-            dimensions:
-              one_of:
-                - date
-      datasets:
-        - name: sales_data
-          extras:
-            column_mapping:
-              date: sale_date
-              region: region_name
-              revenue: amount
-            storage:
-              path: warehouse.sales
-"#;
+    let yaml = load_model("sales_constrained");
 
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(yaml.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -190,7 +119,7 @@ semantic_model:
 
     // Planning should fail with constraint violation
     let planner = SemanticPlanner::builder().build();
-    let result = planner.plan(&request, &manifest).await;
+    let result = planner.plan(&request, &manifest);
 
     assert!(result.is_err(), "planning should fail due to constraint");
 
@@ -209,28 +138,11 @@ semantic_model:
 
 #[tokio::test]
 async fn test_compile_error_raw_sql() {
-    // Define a model with a measure containing raw SQL
-    let yaml = r#"
-semantic_model:
-  name: raw_sql_test
-  datasets:
-    - name: orders
-      dimensions:
-        - name: date
-          data_type: date
-          type:
-            temporal:
-              grains:
-                - day
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SELECT SUM(amount) FROM orders WHERE status = 'completed'"
-"#;
+    let yaml = load_model("raw_sql_invalid");
 
     let compiler = ManifestCompiler::new();
     let result = compiler
-        .compile(CompileSource::Yaml(yaml.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await;
 
     assert!(
@@ -253,40 +165,11 @@ semantic_model:
 
 #[tokio::test]
 async fn test_plan_with_filters_and_order() {
-    let yaml = r#"
-semantic_model:
-  name: filter_test
-  kinds:
-    - name: products
-      type:
-        grainset:
-      dimensions:
-        - name: category
-          data_type: string
-          type:
-            categorical:
-        - name: brand
-          data_type: string
-          type:
-            categorical:
-      measures:
-        - name: total_sales
-          data_type: float64
-          expr: "SUM(sales_amount)"
-      datasets:
-        - name: product_sales
-          extras:
-            column_mapping:
-              category: product_category
-              brand: product_brand
-              total_sales: sales_amount
-            storage:
-              path: analytics.product_sales
-"#;
+    let yaml = load_model("products");
 
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(yaml.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -315,7 +198,6 @@ semantic_model:
     let planner = SemanticPlanner::builder().build();
     let plan = planner
         .plan(&request, &manifest)
-        .await
         .expect("planning should succeed");
 
     // Verify plan structure
@@ -336,46 +218,11 @@ semantic_model:
 
 #[tokio::test]
 async fn test_multiple_measures() {
-    let yaml = r#"
-semantic_model:
-  name: multi_measure_test
-  kinds:
-    - name: transactions
-      type:
-        grainset:
-      dimensions:
-        - name: date
-          data_type: date
-          type:
-            temporal:
-              grains:
-                - day
-                - month
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-        - name: transaction_count
-          data_type: int64
-          expr: "COUNT(id)"
-        - name: avg_amount
-          data_type: float64
-          expr: "AVG(amount)"
-      datasets:
-        - name: txn_daily
-          extras:
-            column_mapping:
-              date: txn_date
-              revenue: amount
-              transaction_count: id
-              avg_amount: amount
-            storage:
-              path: warehouse.transactions_daily
-"#;
+    let yaml = load_model("transactions_multi_measure");
 
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(yaml.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -398,7 +245,6 @@ semantic_model:
     let planner = SemanticPlanner::builder().build();
     let plan = planner
         .plan(&request, &manifest)
-        .await
         .expect("planning should succeed");
 
     // Should have 4 outputs: 1 dimension + 3 measures
@@ -422,37 +268,11 @@ semantic_model:
 
 #[tokio::test]
 async fn test_kind_not_found() {
-    let yaml = r#"
-semantic_model:
-  name: simple_model
-  kinds:
-    - name: orders
-      type:
-        grainset:
-      dimensions:
-        - name: date
-          data_type: date
-          type:
-            temporal:
-              grains:
-                - day
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-      datasets:
-        - name: orders_data
-          extras:
-            column_mapping:
-              date: order_date
-              revenue: amount
-            storage:
-              path: db.orders
-"#;
+    let yaml = load_model("orders_simple");
 
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(yaml.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -470,7 +290,7 @@ semantic_model:
     };
 
     let planner = SemanticPlanner::builder().build();
-    let result = planner.plan(&request, &manifest).await;
+    let result = planner.plan(&request, &manifest);
 
     assert!(result.is_err(), "planning should fail for unknown kind");
 
@@ -481,4 +301,101 @@ semantic_model:
         "error should mention kind not found, got: {}",
         err_msg
     );
+}
+
+// =============================================================================
+// Test 7: Explain includes Substrait JSON
+// =============================================================================
+
+#[tokio::test]
+async fn test_explain_includes_substrait() {
+    let yaml = load_model("orders_with_metrics");
+
+    let engine = SemstraitEngine::with_manifest_yaml(&yaml)
+        .await
+        .expect("engine should compile manifest");
+
+    let raw = RawQueryRequest {
+        kind: "orders".to_string(),
+        dimensions: vec!["date".to_string(), "region".to_string()],
+        measures: vec!["revenue".to_string()],
+        ..Default::default()
+    };
+
+    let result = engine.explain(&raw).await.expect("explain should succeed");
+
+    assert!(result.sql.is_some(), "should have SQL");
+    assert!(
+        result.substrait_json.is_some(),
+        "should have Substrait JSON"
+    );
+
+    let substrait = result.substrait_json.unwrap();
+    // Substrait JSON should be valid JSON containing plan structure
+    let parsed: serde_json::Value =
+        serde_json::from_str(&substrait).expect("Substrait output should be valid JSON");
+    assert!(
+        parsed.is_object(),
+        "Substrait JSON should be an object"
+    );
+}
+
+// =============================================================================
+// Test 8: DataFusion query execution (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "datafusion")]
+mod datafusion_tests {
+    use super::*;
+    use semstrait_connectors::datafusion::DataFusionConnector;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_query_via_datafusion() {
+        let yaml = load_model("orders_datafusion");
+
+        let compiler = ManifestCompiler::new();
+        let compiled = compiler
+            .compile(CompileSource::Yaml(yaml))
+            .await
+            .expect("compilation should succeed");
+
+        // Create DataFusion connector and register CSV as the dataset table.
+        let connector = DataFusionConnector::new();
+        let csv_path = format!(
+            "{}/tests/fixtures/data/orders.csv",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        // The planner resolves to dataset name "orders_data" as table name.
+        connector
+            .register_csv("orders_data", &csv_path)
+            .await
+            .expect("CSV registration should succeed");
+
+        let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
+
+        let raw = RawQueryRequest {
+            kind: "orders".to_string(),
+            dimensions: vec!["region".to_string()],
+            measures: vec!["revenue".to_string()],
+            ..Default::default()
+        };
+
+        let result = engine.query(&raw).await.expect("query should succeed");
+
+        // Should return JSON with rows and stats
+        assert!(result.is_object(), "result should be a JSON object");
+        let stats = result.get("stats").expect("should have stats field");
+        let rows_returned = stats.get("rows_returned").expect("should have rows_returned");
+        assert_eq!(rows_returned, 2, "should have 2 rows (US, EU)");
+
+        // Verify actual row data is present (not just stats)
+        let rows = result.get("rows").expect("should have rows field");
+        let rows_array = rows.as_array().expect("rows should be an array");
+        assert_eq!(rows_array.len(), 2, "should have 2 row objects");
+        assert!(
+            rows_array[0].is_object(),
+            "each row should be a JSON object with column values"
+        );
+    }
 }

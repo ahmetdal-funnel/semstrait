@@ -1,6 +1,7 @@
 //! End-to-end pipeline tests: YAML → ManifestCompiler → SemanticPlanner → SQL.
 //!
 //! Exercises the full stack through the facade crate's dependencies.
+//! Model definitions are loaded from `tests/fixtures/models/` at the workspace root.
 
 use std::collections::HashMap;
 
@@ -11,91 +12,13 @@ use semstrait_planner::{
 };
 use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
 
-/// Minimal grainset YAML model for testing.
-const GRAINSET_YAML: &str = r#"
-semantic_model:
-  name: e2e_test
-  description: E2E pipeline test model
-  kinds:
-    - name: orders
-      type:
-        grainset:
-      dimensions:
-        - name: order_date
-          data_type: date
-          type:
-            temporal:
-              grains:
-                - day
-        - name: region
-          data_type: string
-          type:
-            categorical: {}
-        - name: customer
-          data_type: string
-          type:
-            categorical: {}
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-        - name: order_count
-          data_type: int64
-          expr: "COUNT(order_id)"
-      metrics:
-        - name: avg_order_value
-          data_type: float64
-          expr: "revenue / order_count"
-      datasets:
-        - name: orders_daily
-          extras:
-            column_mapping:
-              order_date: created_at
-              region: region_name
-              customer: customer_name
-              revenue: amount
-              order_count: order_id
-            storage:
-              path: warehouse.orders_daily
-"#;
-
-/// YAML model with measure constraints.
-const CONSTRAINED_YAML: &str = r#"
-semantic_model:
-  name: constrained_test
-  kinds:
-    - name: orders
-      type:
-        grainset:
-      dimensions:
-        - name: order_date
-          data_type: date
-          type:
-            temporal:
-              grains:
-                - day
-        - name: region
-          data_type: string
-          type:
-            categorical: {}
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-          constraints:
-            dimensions:
-              one_of:
-                - order_date
-      datasets:
-        - name: orders_daily
-          extras:
-            column_mapping:
-              order_date: created_at
-              region: region_name
-              revenue: amount
-            storage:
-              path: warehouse.orders_daily
-"#;
+/// Load a test fixture YAML model by name (without extension).
+fn load_model(name: &str) -> String {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let path = format!("{}/../../tests/fixtures/models/{}.yaml", manifest_dir, name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to load fixture '{}': {}", path, e))
+}
 
 fn make_request(
     kind: &str,
@@ -121,10 +44,12 @@ fn make_request(
 
 #[tokio::test]
 async fn e2e_compile_plan_sql() {
+    let yaml = load_model("orders_basic");
+
     // Step 1: Compile YAML → CompiledManifest
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(GRAINSET_YAML.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -138,7 +63,6 @@ async fn e2e_compile_plan_sql() {
 
     let plan = planner
         .plan(&request, &manifest)
-        .await
         .expect("planning should succeed");
 
     assert_eq!(plan.output_names, vec!["order_date", "region", "revenue"]);
@@ -160,9 +84,11 @@ async fn e2e_compile_plan_sql() {
 
 #[tokio::test]
 async fn e2e_compile_plan_sql_with_filters() {
+    let yaml = load_model("orders_basic");
+
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(GRAINSET_YAML.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -176,7 +102,6 @@ async fn e2e_compile_plan_sql_with_filters() {
 
     let plan = planner
         .plan(&request, &manifest)
-        .await
         .expect("planning with filter should succeed");
 
     let emitter = AnsiSqlEmitter::new(AnsiDialect);
@@ -188,9 +113,11 @@ async fn e2e_compile_plan_sql_with_filters() {
 
 #[tokio::test]
 async fn e2e_compile_plan_sql_with_order_and_limit() {
+    let yaml = load_model("orders_basic");
+
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(GRAINSET_YAML.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -204,7 +131,6 @@ async fn e2e_compile_plan_sql_with_order_and_limit() {
 
     let plan = planner
         .plan(&request, &manifest)
-        .await
         .expect("planning with order+limit should succeed");
 
     let emitter = AnsiSqlEmitter::new(AnsiDialect);
@@ -229,9 +155,11 @@ async fn e2e_compile_plan_sql_with_order_and_limit() {
 
 #[tokio::test]
 async fn e2e_constraint_violation() {
+    let yaml = load_model("orders_constrained");
+
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(CONSTRAINED_YAML.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -239,7 +167,7 @@ async fn e2e_constraint_violation() {
     // Request without order_date — violates one_of constraint
     let request = make_request("orders", &["region"], &["revenue"]);
 
-    let result = planner.plan(&request, &manifest).await;
+    let result = planner.plan(&request, &manifest);
     assert!(result.is_err(), "should fail with constraint violation");
 
     let err = result.unwrap_err();
@@ -253,9 +181,11 @@ async fn e2e_constraint_violation() {
 
 #[tokio::test]
 async fn e2e_constraint_satisfied() {
+    let yaml = load_model("orders_constrained");
+
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(CONSTRAINED_YAML.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -265,7 +195,6 @@ async fn e2e_constraint_satisfied() {
 
     let plan = planner
         .plan(&request, &manifest)
-        .await
         .expect("should succeed when constraint is satisfied");
 
     assert_eq!(
@@ -280,36 +209,29 @@ async fn e2e_constraint_satisfied() {
 
 #[tokio::test]
 async fn e2e_kind_not_found() {
+    let yaml = load_model("orders_basic");
+
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(GRAINSET_YAML.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
     let planner = SemanticPlanner::builder().build();
     let request = make_request("nonexistent_kind", &["date"], &["revenue"]);
 
-    let result = planner.plan(&request, &manifest).await;
+    let result = planner.plan(&request, &manifest);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
 
 #[tokio::test]
 async fn e2e_raw_sql_rejected_at_compile() {
-    let yaml = r#"
-semantic_model:
-  name: bad_model
-  datasets:
-    - name: orders
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SELECT SUM(amount) FROM orders"
-"#;
+    let yaml = load_model("raw_sql_invalid");
 
     let compiler = ManifestCompiler::new();
     let result = compiler
-        .compile(CompileSource::Yaml(yaml.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await;
 
     assert!(result.is_err());
@@ -323,9 +245,11 @@ semantic_model:
 
 #[tokio::test]
 async fn e2e_multiple_measures() {
+    let yaml = load_model("orders_basic");
+
     let compiler = ManifestCompiler::new();
     let manifest = compiler
-        .compile(CompileSource::Yaml(GRAINSET_YAML.to_string()))
+        .compile(CompileSource::Yaml(yaml))
         .await
         .expect("compilation should succeed");
 
@@ -334,7 +258,6 @@ async fn e2e_multiple_measures() {
 
     let plan = planner
         .plan(&request, &manifest)
-        .await
         .expect("multi-measure query should succeed");
 
     assert_eq!(

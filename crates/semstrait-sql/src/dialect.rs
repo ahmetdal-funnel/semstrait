@@ -24,6 +24,10 @@ pub trait SqlDialect: Send + Sync {
 
     /// Generate a ROW_NUMBER() window function expression.
     fn window_row_number(&self, partition_by: &[&str], order_by: &str) -> String;
+
+    /// Generate a LIMIT/FETCH clause for row-limiting.
+    /// Returns an empty string if both count is None and offset is 0.
+    fn limit_clause(&self, count: Option<i64>, offset: i64) -> String;
 }
 
 // =============================================================================
@@ -65,18 +69,28 @@ impl SqlDialect for AnsiDialect {
             )
         }
     }
+
+    fn limit_clause(&self, count: Option<i64>, offset: i64) -> String {
+        match (count, offset) {
+            (Some(c), 0) => format!("FETCH FIRST {c} ROWS ONLY"),
+            (Some(c), o) => format!("OFFSET {o} ROWS FETCH FIRST {c} ROWS ONLY"),
+            (None, o) if o > 0 => format!("OFFSET {o} ROWS"),
+            _ => String::new(),
+        }
+    }
 }
 
 // =============================================================================
-// DuckDbDialect — backtick identifiers, DuckDB-specific date_trunc
+// DuckDbDialect — double-quoted identifiers (ANSI), DuckDB-specific date_trunc
 // =============================================================================
 
-/// DuckDB dialect. Backtick identifiers, DuckDB date_trunc syntax.
+/// DuckDB dialect. Double-quoted identifiers (ANSI standard), DuckDB date_trunc syntax.
 pub struct DuckDbDialect;
 
 impl SqlDialect for DuckDbDialect {
     fn quote_identifier(&self, ident: &str) -> String {
-        format!("`{}`", ident.replace('`', "``"))
+        // DuckDB uses ANSI-standard double-quoted identifiers
+        format!("\"{}\"", ident.replace('"', "\"\""))
     }
 
     fn supports_cte(&self) -> bool {
@@ -104,6 +118,15 @@ impl SqlDialect for DuckDbDialect {
                 "ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {order_by})",
                 partition_by.join(", ")
             )
+        }
+    }
+
+    fn limit_clause(&self, count: Option<i64>, offset: i64) -> String {
+        match (count, offset) {
+            (Some(c), 0) => format!("LIMIT {c}"),
+            (Some(c), o) => format!("LIMIT {c} OFFSET {o}"),
+            (None, o) if o > 0 => format!("OFFSET {o}"),
+            _ => String::new(),
         }
     }
 }
@@ -145,6 +168,16 @@ impl SqlDialect for TrinoDialect {
                 "ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {order_by})",
                 partition_by.join(", ")
             )
+        }
+    }
+
+    fn limit_clause(&self, count: Option<i64>, offset: i64) -> String {
+        // Trino uses ANSI FETCH FIRST syntax
+        match (count, offset) {
+            (Some(c), 0) => format!("FETCH FIRST {c} ROWS ONLY"),
+            (Some(c), o) => format!("OFFSET {o} ROWS FETCH FIRST {c} ROWS ONLY"),
+            (None, o) if o > 0 => format!("OFFSET {o} ROWS"),
+            _ => String::new(),
         }
     }
 }

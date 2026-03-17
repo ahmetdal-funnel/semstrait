@@ -19,6 +19,34 @@ use semstrait_core::ConsumerProfile;
 /// Arrow RecordBatch results, extractable from `ComputeResultData::Native`.
 pub struct ArrowBatches(pub Vec<RecordBatch>);
 
+impl ArrowBatches {
+    /// Convert Arrow record batches to JSON rows.
+    ///
+    /// Uses Arrow's built-in JSON writer to produce one `serde_json::Value`
+    /// per row (as a JSON object with column names as keys).
+    pub fn to_json_rows(&self) -> Result<Vec<serde_json::Value>, ConnectorError> {
+        use datafusion_engine::arrow::json::ArrayWriter;
+
+        let mut buf = Vec::new();
+        let mut writer = ArrayWriter::new(&mut buf);
+        let batch_refs: Vec<&RecordBatch> = self.0.iter().collect();
+        writer
+            .write_batches(&batch_refs)
+            .map_err(|e| ConnectorError::Internal(format!("Arrow JSON serialization failed: {}", e)))?;
+        writer
+            .finish()
+            .map_err(|e| ConnectorError::Internal(format!("Arrow JSON writer finish failed: {}", e)))?;
+        drop(writer);
+
+        // ArrayWriter produces a JSON array like [{...}, {...}, ...].
+        // Parse it into Vec<serde_json::Value>.
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&buf)
+            .map_err(|e| ConnectorError::Internal(format!("JSON parse failed: {}", e)))?;
+
+        Ok(rows)
+    }
+}
+
 /// DataFusion-based compute connector.
 ///
 /// Wraps a `SessionContext` and executes SQL queries against registered tables.
@@ -60,6 +88,40 @@ impl DataFusionConnector {
             .await
             .map_err(|e| ConnectorError::Execution(e.to_string()))?;
         Ok(())
+    }
+
+    /// Register a CSV file as a named table.
+    pub async fn register_csv(&self, table_name: &str, path: &str) -> Result<(), ConnectorError> {
+        self.ctx
+            .register_csv(table_name, path, CsvReadOptions::default())
+            .await
+            .map_err(|e| ConnectorError::Execution(e.to_string()))
+    }
+
+    /// Register a Parquet file as a named table.
+    pub async fn register_parquet(
+        &self,
+        table_name: &str,
+        path: &str,
+    ) -> Result<(), ConnectorError> {
+        self.ctx
+            .register_parquet(table_name, path, ParquetReadOptions::default())
+            .await
+            .map_err(|e| ConnectorError::Execution(e.to_string()))
+    }
+
+    /// Register a file, auto-detecting format by extension (.csv or .parquet).
+    pub async fn register_file(&self, table_name: &str, path: &str) -> Result<(), ConnectorError> {
+        if path.ends_with(".parquet") || path.ends_with(".parq") {
+            self.register_parquet(table_name, path).await
+        } else if path.ends_with(".csv") || path.ends_with(".tsv") {
+            self.register_csv(table_name, path).await
+        } else {
+            Err(ConnectorError::Execution(format!(
+                "unsupported file format for '{}': expected .csv or .parquet",
+                path
+            )))
+        }
     }
 }
 
@@ -123,13 +185,30 @@ impl ComputeConnector for DataFusionConnector {
             .await
             .map_err(|e| ConnectorError::Execution(e.to_string()))?;
 
-        let batches = df
-            .collect()
-            .await
-            .map_err(|e| ConnectorError::Execution(e.to_string()))?;
+        // Enforce timeout if specified in the request.
+        let batches = if let Some(timeout) = request.timeout {
+            tokio::time::timeout(timeout, df.collect())
+                .await
+                .map_err(|_| {
+                    ConnectorError::Execution(format!(
+                        "query timed out after {:?}",
+                        timeout
+                    ))
+                })?
+                .map_err(|e| ConnectorError::Execution(e.to_string()))?
+        } else {
+            df.collect()
+                .await
+                .map_err(|e| ConnectorError::Execution(e.to_string()))?
+        };
 
         let elapsed = start.elapsed();
         let rows_returned: u64 = batches.iter().map(|b: &RecordBatch| b.num_rows() as u64).sum();
+
+        // Convert Arrow batches to JSON rows for universal consumption.
+        // Callers needing raw Arrow can use execute_native() or downcast Native results.
+        let arrow_batches = ArrowBatches(batches);
+        let json_rows = arrow_batches.to_json_rows()?;
 
         Ok(ComputeResult {
             complete: true,
@@ -138,7 +217,7 @@ impl ComputeConnector for DataFusionConnector {
                 execution_time: Some(elapsed),
                 bytes_scanned: None,
             },
-            data: ComputeResultData::Native(Box::new(ArrowBatches(batches))),
+            data: ComputeResultData::Json(json_rows),
         })
     }
 
@@ -210,13 +289,17 @@ mod tests {
         assert!(result.complete);
         assert_eq!(result.stats.rows_returned, 2); // US, EU
 
-        // Extract Arrow batches.
-        let batches = result
-            .data
-            .as_native::<ArrowBatches>()
-            .expect("should be ArrowBatches");
-        assert_eq!(batches.0.len(), 1);
-        assert_eq!(batches.0[0].num_rows(), 2);
+        // Results are now returned as JSON rows by default.
+        match &result.data {
+            ComputeResultData::Json(rows) => {
+                assert_eq!(rows.len(), 2, "should have 2 JSON rows");
+                // Each row should be an object with column keys.
+                assert!(rows[0].is_object(), "each row should be a JSON object");
+                assert!(rows[0].get("region").is_some(), "row should have 'region' key");
+                assert!(rows[0].get("total").is_some(), "row should have 'total' key");
+            }
+            other => panic!("expected Json result data, got: {:?}", other),
+        }
     }
 
     #[tokio::test]

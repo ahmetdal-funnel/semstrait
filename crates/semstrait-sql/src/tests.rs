@@ -546,7 +546,7 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "(SELECT \"id\", \"customer_id\" FROM \"orders\") AS _l \
+            "SELECT * FROM (SELECT \"id\", \"customer_id\" FROM \"orders\") AS _l \
              INNER JOIN \
              (SELECT \"id\", \"name\" FROM \"customers\") AS _r \
              ON (\"customer_id\" = \"id\")"
@@ -626,7 +626,7 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "SELECT * FROM (SELECT \"id\" FROM \"orders\") AS _t LIMIT 10 OFFSET 20"
+            "SELECT * FROM (SELECT \"id\" FROM \"orders\") AS _t OFFSET 20 ROWS FETCH FIRST 10 ROWS ONLY"
         );
     }
 
@@ -642,7 +642,7 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "SELECT * FROM (SELECT \"id\" FROM \"orders\") AS _t LIMIT 5"
+            "SELECT * FROM (SELECT \"id\" FROM \"orders\") AS _t FETCH FIRST 5 ROWS ONLY"
         );
     }
 
@@ -698,7 +698,7 @@ mod plan_emission {
         assert!(sql.contains("GROUP BY \"user_id\""), "should have GROUP BY");
         assert!(sql.contains("SUM(\"value\")"), "should have SUM aggregate");
         assert!(sql.contains("ORDER BY \"user_id\" ASC"), "should have ORDER BY");
-        assert!(sql.contains("LIMIT 100"), "should have LIMIT");
+        assert!(sql.contains("FETCH FIRST 100 ROWS ONLY"), "should have FETCH FIRST");
     }
 }
 
@@ -719,8 +719,8 @@ mod dialect_tests {
     #[test]
     fn duckdb_quote_identifier() {
         let d = DuckDbDialect;
-        assert_eq!(d.quote_identifier("col"), "`col`");
-        assert_eq!(d.quote_identifier("my`col"), "`my``col`");
+        assert_eq!(d.quote_identifier("col"), "\"col\"");
+        assert_eq!(d.quote_identifier("my\"col"), "\"my\"\"col\"");
     }
 
     #[test]
@@ -739,7 +739,7 @@ mod dialect_tests {
     #[test]
     fn duckdb_date_trunc() {
         let d = DuckDbDialect;
-        assert_eq!(d.date_trunc(&Grain::Week, "`ts`"), "date_trunc('week', `ts`)");
+        assert_eq!(d.date_trunc(&Grain::Week, "\"ts\""), "date_trunc('week', \"ts\")");
     }
 
     #[test]
@@ -779,7 +779,7 @@ mod dialect_tests {
         let e = AnsiSqlEmitter::new(DuckDbDialect);
         let p = plan(scan("orders", &["id", "amount"]));
         let sql = e.emit(&p).unwrap();
-        assert_eq!(sql, "SELECT `id`, `amount` FROM `orders`");
+        assert_eq!(sql, "SELECT \"id\", \"amount\" FROM \"orders\"");
     }
 
     #[test]
@@ -803,8 +803,8 @@ mod dialect_tests {
             },
         });
         let sql = e.emit(&plan(root)).unwrap();
-        assert!(sql.contains("`a`"));
-        assert!(sql.contains("WHERE (`a` > 5)"));
+        assert!(sql.contains("\"a\""));
+        assert!(sql.contains("WHERE (\"a\" > 5)"));
     }
 
     #[test]

@@ -1,0 +1,23 @@
+semantic_model:
+  name: datafusion_test_model
+  kinds:
+    - name: orders
+      type:
+        grainset:
+      dimensions:
+        - name: region
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders_data
+          extras:
+            column_mapping:
+              region: region
+              revenue: amount
+            storage:
+              path: orders_data

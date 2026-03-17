@@ -21,6 +21,15 @@ const FUNC_GT: u32 = 104;
 const FUNC_GTE: u32 = 105;
 const FUNC_AND: u32 = 200;
 const FUNC_OR: u32 = 201;
+const FUNC_IS_NULL: u32 = 202;
+const FUNC_IS_NOT_NULL: u32 = 203;
+const FUNC_COALESCE: u32 = 204;
+const FUNC_NOT: u32 = 205;
+const FUNC_IN: u32 = 206;
+const FUNC_BETWEEN: u32 = 207;
+const FUNC_LIKE: u32 = 208;
+const FUNC_NULLIF: u32 = 209;
+const FUNC_DATE_TRUNC: u32 = 210;
 const FUNC_ADD: u32 = 300;
 const FUNC_SUBTRACT: u32 = 301;
 const FUNC_MULTIPLY: u32 = 302;
@@ -328,9 +337,15 @@ impl<'s> ExprConverter<'s> {
     ) -> Result<proto::Expression, ConvertError> {
         // Map common function names to anchors
         let function_ref = match name.to_lowercase().as_str() {
-            "coalesce" => 204,
-            "is_null" => 202,
-            "is_not_null" => 203,
+            "not" => FUNC_NOT,
+            "is_null" => FUNC_IS_NULL,
+            "is_not_null" => FUNC_IS_NOT_NULL,
+            "in" => FUNC_IN,
+            "between" => FUNC_BETWEEN,
+            "like" => FUNC_LIKE,
+            "coalesce" => FUNC_COALESCE,
+            "nullif" => FUNC_NULLIF,
+            "date_trunc" => FUNC_DATE_TRUNC,
             _ => {
                 return Err(ConvertError::FunctionNotFound(format!(
                     "Function not mapped: {}",
@@ -425,7 +440,7 @@ impl<'s> ExprConverter<'s> {
                 _ => None,
             })
             .collect();
-        let args = args?;
+        let mut args = args?;
 
         // Map function reference back to operator or function name
         match func.function_reference {
@@ -441,21 +456,111 @@ impl<'s> ExprConverter<'s> {
             FUNC_SUBTRACT => self.binary_from_args(args, BinaryOp::Subtract),
             FUNC_MULTIPLY => self.binary_from_args(args, BinaryOp::Multiply),
             FUNC_DIVIDE => self.binary_from_args(args, BinaryOp::Divide),
-            202 => Ok(DslExpr::FunctionCall {
-                name: "is_null".to_string(),
-                args,
-                distinct: false,
-            }),
-            203 => Ok(DslExpr::FunctionCall {
-                name: "is_not_null".to_string(),
-                args,
-                distinct: false,
-            }),
-            204 => Ok(DslExpr::FunctionCall {
-                name: "coalesce".to_string(),
-                args,
-                distinct: false,
-            }),
+            FUNC_NOT => {
+                if args.len() != 1 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "NOT requires 1 argument, got {}",
+                        args.len()
+                    )));
+                }
+                Ok(DslExpr::Not(Box::new(args.into_iter().next().unwrap())))
+            }
+            FUNC_IS_NULL => {
+                if args.len() != 1 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "IS_NULL requires 1 argument, got {}",
+                        args.len()
+                    )));
+                }
+                Ok(DslExpr::IsNull(Box::new(args.into_iter().next().unwrap())))
+            }
+            FUNC_IS_NOT_NULL => {
+                if args.len() != 1 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "IS_NOT_NULL requires 1 argument, got {}",
+                        args.len()
+                    )));
+                }
+                Ok(DslExpr::IsNotNull(Box::new(
+                    args.into_iter().next().unwrap(),
+                )))
+            }
+            FUNC_IN => {
+                if args.len() < 2 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "IN requires at least 2 arguments, got {}",
+                        args.len()
+                    )));
+                }
+                let expr = Box::new(args.remove(0));
+                Ok(DslExpr::InList {
+                    expr,
+                    list: args,
+                    negated: false,
+                })
+            }
+            FUNC_BETWEEN => {
+                if args.len() != 3 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "BETWEEN requires 3 arguments, got {}",
+                        args.len()
+                    )));
+                }
+                let mut iter = args.into_iter();
+                let expr = Box::new(iter.next().unwrap());
+                let low = Box::new(iter.next().unwrap());
+                let high = Box::new(iter.next().unwrap());
+                Ok(DslExpr::Between {
+                    expr,
+                    low,
+                    high,
+                    negated: false,
+                })
+            }
+            FUNC_LIKE => {
+                if args.len() != 2 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "LIKE requires 2 arguments, got {}",
+                        args.len()
+                    )));
+                }
+                let mut iter = args.into_iter();
+                let expr = Box::new(iter.next().unwrap());
+                let pattern = Box::new(iter.next().unwrap());
+                Ok(DslExpr::Like { expr, pattern })
+            }
+            FUNC_COALESCE => Ok(DslExpr::Coalesce(args)),
+            FUNC_NULLIF => {
+                if args.len() != 2 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "NULLIF requires 2 arguments, got {}",
+                        args.len()
+                    )));
+                }
+                let mut iter = args.into_iter();
+                let expr = Box::new(iter.next().unwrap());
+                let null_expr = Box::new(iter.next().unwrap());
+                Ok(DslExpr::NullIf { expr, null_expr })
+            }
+            FUNC_DATE_TRUNC => {
+                if args.len() != 2 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "DATE_TRUNC requires 2 arguments, got {}",
+                        args.len()
+                    )));
+                }
+                // First arg should be a string literal for the grain
+                let grain = match &args[0] {
+                    DslExpr::StringLit(s) => s.clone(),
+                    _ => {
+                        return Err(ConvertError::InvalidExpression(
+                            "DATE_TRUNC first argument must be a string literal".to_string(),
+                        ))
+                    }
+                };
+                let expr = Box::new(args.into_iter().nth(1).unwrap());
+                Ok(DslExpr::DateTrunc { grain, expr })
+            }
             _ => Err(ConvertError::FunctionNotFound(format!(
                 "Unknown function reference: {}",
                 func.function_reference
@@ -580,6 +685,223 @@ mod tests {
             }),
             op: BinaryOp::Eq,
             right: Box::new(DslExpr::Number(10.0)),
+        };
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_not_roundtrip() {
+        let schema = Schema::new(vec![Field::new("active", DataType::Boolean)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = DslExpr::Not(Box::new(DslExpr::Column {
+            name: "active".to_string(),
+            qualifier: None,
+        }));
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_is_null_roundtrip() {
+        let schema = Schema::new(vec![Field::new("value", DataType::Float64)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = DslExpr::IsNull(Box::new(DslExpr::Column {
+            name: "value".to_string(),
+            qualifier: None,
+        }));
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_is_not_null_roundtrip() {
+        let schema = Schema::new(vec![Field::new("value", DataType::Float64)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = DslExpr::IsNotNull(Box::new(DslExpr::Column {
+            name: "value".to_string(),
+            qualifier: None,
+        }));
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_in_list_roundtrip() {
+        let schema = Schema::new(vec![Field::new("status", DataType::Utf8)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = DslExpr::InList {
+            expr: Box::new(DslExpr::Column {
+                name: "status".to_string(),
+                qualifier: None,
+            }),
+            list: vec![
+                DslExpr::StringLit("active".to_string()),
+                DslExpr::StringLit("pending".to_string()),
+            ],
+            negated: false,
+        };
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_between_roundtrip() {
+        let schema = Schema::new(vec![Field::new("age", DataType::Int64)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = DslExpr::Between {
+            expr: Box::new(DslExpr::Column {
+                name: "age".to_string(),
+                qualifier: None,
+            }),
+            low: Box::new(DslExpr::Number(18.0)),
+            high: Box::new(DslExpr::Number(65.0)),
+            negated: false,
+        };
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_like_roundtrip() {
+        let schema = Schema::new(vec![Field::new("name", DataType::Utf8)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = DslExpr::Like {
+            expr: Box::new(DslExpr::Column {
+                name: "name".to_string(),
+                qualifier: None,
+            }),
+            pattern: Box::new(DslExpr::StringLit("%smith%".to_string())),
+        };
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_coalesce_roundtrip() {
+        let schema = Schema::new(vec![
+            Field::new("primary", DataType::Float64),
+            Field::new("fallback", DataType::Float64),
+        ]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = DslExpr::Coalesce(vec![
+            DslExpr::Column {
+                name: "primary".to_string(),
+                qualifier: None,
+            },
+            DslExpr::Column {
+                name: "fallback".to_string(),
+                qualifier: None,
+            },
+            DslExpr::Number(0.0),
+        ]);
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_nullif_roundtrip() {
+        let schema = Schema::new(vec![Field::new("value", DataType::Float64)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = DslExpr::NullIf {
+            expr: Box::new(DslExpr::Column {
+                name: "value".to_string(),
+                qualifier: None,
+            }),
+            null_expr: Box::new(DslExpr::Number(0.0)),
+        };
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_date_trunc_roundtrip() {
+        let schema = Schema::new(vec![Field::new("created_at", DataType::Date32)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = DslExpr::DateTrunc {
+            grain: "month".to_string(),
+            expr: Box::new(DslExpr::Column {
+                name: "created_at".to_string(),
+                qualifier: None,
+            }),
+        };
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_case_roundtrip() {
+        let schema = Schema::new(vec![
+            Field::new("age", DataType::Int64),
+            Field::new("status", DataType::Utf8),
+        ]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = DslExpr::Case {
+            when_then: vec![
+                (
+                    DslExpr::BinaryOp {
+                        left: Box::new(DslExpr::Column {
+                            name: "age".to_string(),
+                            qualifier: None,
+                        }),
+                        op: BinaryOp::Lt,
+                        right: Box::new(DslExpr::Number(18.0)),
+                    },
+                    DslExpr::StringLit("minor".to_string()),
+                ),
+                (
+                    DslExpr::BinaryOp {
+                        left: Box::new(DslExpr::Column {
+                            name: "age".to_string(),
+                            qualifier: None,
+                        }),
+                        op: BinaryOp::Gt,
+                        right: Box::new(DslExpr::Number(65.0)),
+                    },
+                    DslExpr::StringLit("senior".to_string()),
+                ),
+            ],
+            else_expr: Some(Box::new(DslExpr::StringLit("adult".to_string()))),
         };
 
         let substrait = converter.to_substrait(&expr).unwrap();

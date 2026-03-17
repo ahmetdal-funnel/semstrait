@@ -5,9 +5,8 @@ A **manifest compiler + semantic query engine** written in Rust.
 semstrait resolves semantic models (defined in YAML) into engine-executable plans by:
 1. Compiling YAML model files into a validated `CompiledManifest` artifact (offline)
 2. Planning `QueryRequest`s against that manifest into a `LogicalPlan` IR (online)
-3. Emitting the plan as Substrait bytes or dialect-specific SQL (online)
-
-The canonical output is Substrait — a portable, engine-agnostic binary representation of relational algebra. SQL is derived from the same internal plan, for engines that prefer SQL over Substrait.
+3. Emitting the plan as dialect-specific SQL or Substrait bytes (online)
+4. Optionally executing against a compute engine (DataFusion, DuckDB, etc.)
 
 ---
 
@@ -28,15 +27,18 @@ semstrait/                       Cargo workspace root
 ├── crates/
 │   ├── semstrait-core/          Foundation — shared primitives, zero internal deps
 │   ├── semstrait-model/         YAML model parsing and ref resolution
-│   ├── semstrait-catalog/       CatalogProvider trait + implementations
-│   ├── semstrait-manifest/      ManifestCompiler + Repository (InMemory v1)
+│   ├── semstrait-catalog/       CatalogProvider trait + Iceberg REST catalog
+│   ├── semstrait-manifest/      ManifestCompiler pipeline (parse → validate → compile)
 │   ├── semstrait-ir/            PlanNode IR + Substrait bridge
 │   ├── semstrait-planner/       SemanticPlanner + KindPlanners + Optimizer
 │   ├── semstrait-sql/           SqlEmitter trait + dialect implementations
 │   ├── semstrait-connectors/    Compute traits + feature-gated engine impls
-│   ├── semstrait-api/           gRPC + REST + CLI (submodules, feature-gated)
+│   ├── semstrait-api/           REST + CLI + gRPC transports (feature-gated)
 │   └── semstrait/               Facade — builder, public API, feature flags
-├── test_data/                   Shared YAML model fixtures
+├── tests/
+│   ├── fixtures/models/         Shared YAML model fixtures for integration tests
+│   ├── e2e_pipeline_test.rs     Workspace-level E2E tests
+│   └── test_helpers.rs          Fixture loading utilities
 └── docs/                        Architecture diagrams and design documents
 ```
 
@@ -50,13 +52,13 @@ semstrait-core                    (zero internal deps — foundation)
             │
 semstrait-manifest                (core + model + catalog)
             │
-    ├── semstrait-planner         (core + ir + manifest + catalog)
+    ├── semstrait-planner         (core + ir + manifest)
     └── semstrait-sql             (core + ir)
             │
 semstrait-connectors              (core + ir + sql)
             │
-    ├── semstrait-api             (core + planner + manifest + connectors)
-    └── semstrait (facade)        (planner + manifest + connectors + catalog)
+    ├── semstrait-api             (planner + manifest + connectors + sql)
+    └── semstrait (facade)        (all crates, re-exports)
 ```
 
 Dependencies flow strictly downward. No cycles.
@@ -88,14 +90,11 @@ semantic_model:
             categorical:
       measures:
         - name: revenue
-          data_type: "decimal(18,2)"
+          data_type: float64
           expr: "SUM(amount)"
-          additivity:
-            type:
-              full:
       metrics:
         - name: avg_order_value
-          data_type: "decimal(18,2)"
+          data_type: float64
           expr: "revenue / COUNT(order_id)"
       datasets:
         - name: orders_daily
@@ -138,14 +137,14 @@ QueryRequest + CompiledManifest
  SemanticPlanner
        │  KindPlanner dispatch   Grainset | Unionset | Joinset
        │  AdditivityResolver     semi/non-additive measure handling
-       │  Filter injection       dataset → measure → metric → user
+       │  Filter injection       dataset → measure (conditional agg) → user
        ▼
  LogicalPlan (PlanNode IR)
        │
-       ├─ SubstraitSerializer  → substrait::proto::Plan → Vec<u8>  (always produced)
-       └─ SqlEmitter           → String                             (on demand)
+       ├─ SqlEmitter           → String  (dialect-specific via sqlparser-rs AST)
+       └─ SubstraitSerializer  → substrait::proto::Plan → Vec<u8>
        ▼
- CompiledPlan                  ← the public output
+ ComputeConnector (optional)  → ComputeResult (Arrow RecordBatches or JSON)
 ```
 
 ---
@@ -160,7 +159,7 @@ expr: "SUM(amount)"
 expr: "COUNT(DISTINCT customer_id)"
 expr: "AVG(price)"
 
-# Arithmetic
+# Arithmetic (metrics)
 expr: "revenue / order_count"
 
 # Safe division (NULL when divisor is 0)
@@ -171,24 +170,7 @@ expr: "CASE WHEN status = 'active' THEN amount END"
 
 # Date truncation
 expr: "DATE_TRUNC('month', order_date)"
-
-# Guards (measure-scoped filters)
-expr: "SUM(CASE WHEN channel = 'online' THEN amount END)"
 ```
-
----
-
-## Design Principles
-
-**Substrait is the contract, not SQL.** The canonical representation of a compiled query is always Substrait bytes. SQL is a convenience output.
-
-**Proto is an implementation detail.** `substrait::proto::*` types are used only inside the IR crate's serializer. The public API surface contains only `Vec<u8>`.
-
-**PlanNode is internal.** The relational algebra IR is never exposed. Engine integrations work from Substrait bytes or SQL strings only.
-
-**Strict dependency direction.** `semstrait-core` has no I/O, no engine deps, no network. Layers above add capability without modifying layers below.
-
-**DSL only, no raw SQL.** Expressions are parsed from a typed DSL. This enables validation, optimization, and cross-dialect emission.
 
 ---
 
@@ -197,51 +179,47 @@ expr: "SUM(CASE WHEN channel = 'online' THEN amount END)"
 ### Library Usage
 
 ```rust
-use semstrait::{Semstrait, QueryRequest};
+use semstrait::SemstraitBuilder;
 
-let sem = Semstrait::builder()
+let sem = SemstraitBuilder::new()
     .with_manifest_yaml(yaml_str)
     .build()
     .await?;
 
-let result = sem.explain(QueryRequest {
+let sql = sem.explain(&request).await?;
+println!("SQL: {}", sql);
+```
+
+### SemstraitEngine (API layer)
+
+```rust
+use semstrait_api::{SemstraitEngine, RawQueryRequest};
+
+let engine = SemstraitEngine::with_manifest_yaml(yaml).await?;
+
+let result = engine.explain(&RawQueryRequest {
     kind: "orders".into(),
-    dimensions: vec!["region".into(), "order_date".into()],
+    dimensions: vec!["region".into()],
     measures: vec!["revenue".into()],
     ..Default::default()
 }).await?;
 
 println!("SQL: {}", result.sql.unwrap());
-println!("Substrait: {} bytes", result.substrait.len());
 ```
 
-### CLI
+---
 
-```bash
-# Compile a model and explain a query
-semstrait explain --model models/sales.yaml \
-  --dimensions region,order_date \
-  --measures revenue
+## Feature Flags
 
-# Validate a model
-semstrait validate --model models/sales.yaml
-
-# Start REST API server
-semstrait serve --model models/ --port 3000
-```
-
-### REST API
-
-```bash
-curl -X POST http://localhost:3000/query \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "kind": "orders",
-    "dimensions": ["region", "order_date"],
-    "measures": ["revenue"],
-    "filters": [{"dimension": "order_date", "op": "gte", "value": "2024-01-01"}]
-  }'
-```
+| Crate | Feature | Adds |
+|-------|---------|------|
+| `semstrait-connectors` | `datafusion` | DataFusion SQL execution connector |
+| `semstrait-connectors` | `duckdb` | DuckDB connector (stub) |
+| `semstrait-connectors` | `trino` | Trino connector (stub) |
+| `semstrait-catalog` | `iceberg` | Iceberg REST catalog client (OAuth2, Polaris) |
+| `semstrait-api` | `cli` | CLI transport via clap |
+| `semstrait-api` | `rest` | REST transport via axum |
+| `semstrait-api` | `grpc` | gRPC transport via tonic |
 
 ---
 
@@ -251,12 +229,33 @@ curl -X POST http://localhost:3000/query \
 # Build all crates
 cargo build --workspace
 
-# Run all tests
+# Run all tests (239 tests)
 cargo test --workspace
 
-# Run with specific features
-cargo build -p semstrait --features "api-rest,api-cli"
+# Run with DataFusion connector
+cargo test --workspace --features semstrait-connectors/datafusion
+
+# Run with Iceberg catalog
+cargo test --workspace --features semstrait-catalog/iceberg
 ```
+
+---
+
+## Test Fixtures
+
+Integration tests load YAML model definitions from `tests/fixtures/models/` rather than inline strings. Available fixtures:
+
+| Fixture | Description |
+|---------|-------------|
+| `orders_basic` | 3 dims, 2 measures, 1 metric — full-featured model |
+| `orders_constrained` | Measure with `one_of` dimension constraint |
+| `orders_3dim` | 3 dims (date/region/customer), 1 measure |
+| `orders_simple` | Minimal: 1 dim, 1 measure |
+| `orders_with_metrics` | 2 dims, 1 measure — for API engine tests |
+| `products` | 2 dims, 1 measure — for filter/order tests |
+| `transactions_multi_measure` | 1 dim, 3 measures |
+| `sales_constrained` | Sales kind with dimension constraint |
+| `raw_sql_invalid` | Raw SQL in expr — compile rejection test |
 
 ---
 

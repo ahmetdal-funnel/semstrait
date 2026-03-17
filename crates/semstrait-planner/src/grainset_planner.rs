@@ -18,6 +18,66 @@ use semstrait_manifest::{CompiledKind, CompiledKindDataset, CompiledKindType};
 use std::collections::HashSet;
 use semstrait_manifest::ColumnMappingValue;
 
+/// Recursively collect all column references from a DslExpr tree.
+fn collect_column_refs(expr: &DslExpr, columns: &mut Vec<String>, seen: &mut HashSet<String>) {
+    match expr {
+        DslExpr::Column { name, .. } => {
+            if seen.insert(name.clone()) {
+                columns.push(name.clone());
+            }
+        }
+        DslExpr::BinaryOp { left, right, .. } => {
+            collect_column_refs(left, columns, seen);
+            collect_column_refs(right, columns, seen);
+        }
+        DslExpr::Case { when_then, else_expr } => {
+            for (when, then) in when_then {
+                collect_column_refs(when, columns, seen);
+                collect_column_refs(then, columns, seen);
+            }
+            if let Some(e) = else_expr {
+                collect_column_refs(e, columns, seen);
+            }
+        }
+        DslExpr::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_column_refs(arg, columns, seen);
+            }
+        }
+        DslExpr::Negate(e) | DslExpr::Not(e) | DslExpr::IsNull(e) | DslExpr::IsNotNull(e) => {
+            collect_column_refs(e, columns, seen);
+        }
+        DslExpr::InList { expr, list, .. } => {
+            collect_column_refs(expr, columns, seen);
+            for item in list {
+                collect_column_refs(item, columns, seen);
+            }
+        }
+        DslExpr::Between { expr, low, high, .. } => {
+            collect_column_refs(expr, columns, seen);
+            collect_column_refs(low, columns, seen);
+            collect_column_refs(high, columns, seen);
+        }
+        DslExpr::Like { expr, pattern } => {
+            collect_column_refs(expr, columns, seen);
+            collect_column_refs(pattern, columns, seen);
+        }
+        DslExpr::Coalesce(exprs) => {
+            for e in exprs {
+                collect_column_refs(e, columns, seen);
+            }
+        }
+        DslExpr::NullIf { expr, null_expr } => {
+            collect_column_refs(expr, columns, seen);
+            collect_column_refs(null_expr, columns, seen);
+        }
+        DslExpr::DateTrunc { expr, .. } => {
+            collect_column_refs(expr, columns, seen);
+        }
+        DslExpr::Number(_) | DslExpr::StringLit(_) | DslExpr::Bool(_) | DslExpr::Null => {}
+    }
+}
+
 /// Planner for Grainset kinds — route to cheapest covering dataset.
 pub struct GrainsetPlanner;
 
@@ -153,13 +213,10 @@ fn build_grainset_plan(
                     &measure.filters,
                 )?;
 
-            // Collect physical columns referenced by each aggregate into scan_columns.
+            // Collect all physical columns referenced by aggregate expressions,
+            // including those nested inside CASE/binary/function expressions.
             for agg_measure in &lowered.aggregates {
-                if let DslExpr::Column { name, .. } = &agg_measure.expr {
-                    if scan_columns_seen.insert(name.clone()) {
-                        scan_columns.push(name.clone());
-                    }
-                }
+                collect_column_refs(&agg_measure.expr, &mut scan_columns, &mut scan_columns_seen);
             }
             lowered_measures.push((measure_name.clone(), lowered));
         } else if kind.metrics.contains_key(measure_name) {
@@ -222,15 +279,25 @@ fn build_grainset_plan(
         .flat_map(|(_, lowered)| lowered.aggregates.clone())
         .collect();
 
-    // Aggregate output schema: group_by columns + aggregate columns.
+    // Aggregate output schema: group_by columns + one field per AggregateMeasure.
+    // For composed measures (e.g. SUM(a)/COUNT(b)), there are multiple aggregates
+    // per semantic measure. Primary aggregate gets the semantic name; extras get synthetic names.
     let mut agg_fields: Vec<Field> = dim_physical
         .iter()
         .map(|(semantic, _)| Field::new(semantic.clone(), DataType::Utf8))
         .collect();
-    for (semantic, _) in &lowered_measures {
-        agg_fields.push(Field::new(semantic.clone(), DataType::Float64));
+    let mut agg_idx = 0;
+    for (semantic, lowered) in &lowered_measures {
+        for (j, _) in lowered.aggregates.iter().enumerate() {
+            if j == 0 {
+                agg_fields.push(Field::new(semantic.clone(), DataType::Float64));
+            } else {
+                agg_fields.push(Field::new(format!("__agg_{}", agg_idx), DataType::Float64));
+            }
+            agg_idx += 1;
+        }
     }
-    let agg_schema = Schema::new(agg_fields.clone());
+    let agg_schema = Schema::new(agg_fields);
 
     let agg = PlanNode::Aggregate(AggNode {
         meta: NodeMeta::new(agg_schema),
@@ -253,7 +320,11 @@ fn build_grainset_plan(
         project_exprs.push(lowered.post_agg_expr.clone());
     }
 
-    let project_schema = Schema::new(agg_fields);
+    let project_fields: Vec<Field> = request.dimensions.iter()
+        .map(|name| Field::new(name.clone(), DataType::Utf8))
+        .chain(lowered_measures.iter().map(|(name, _)| Field::new(name.clone(), DataType::Float64)))
+        .collect();
+    let project_schema = Schema::new(project_fields);
     let project = PlanNode::Project(ProjectNode {
         meta: NodeMeta::new(project_schema.clone()),
         input: Box::new(agg),

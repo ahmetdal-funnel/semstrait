@@ -12,6 +12,7 @@ use reqwest::Client;
 use semstrait_core::{DataType, GlobPattern};
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 // ============================================================================
@@ -49,8 +50,8 @@ pub struct IcebergRestCatalog {
     prefix: Option<String>,
     client: Client,
     auth: AuthConfig,
-    /// Cached OAuth2 access token.
-    token_cache: Arc<RwLock<Option<String>>>,
+    /// Cached OAuth2 access token with optional expiry instant.
+    token_cache: Arc<RwLock<Option<(String, Option<Instant>)>>>,
 }
 
 impl IcebergRestCatalog {
@@ -125,11 +126,14 @@ impl IcebergRestCatalog {
                 client_secret,
                 scope,
             } => {
-                // Check cache first.
+                // Check cache first; return cached token if still valid.
                 {
                     let cached = self.token_cache.read().await;
-                    if let Some(token) = cached.as_ref() {
-                        return Ok(Some(token.clone()));
+                    if let Some((token, expiry)) = cached.as_ref() {
+                        if expiry.map_or(true, |exp| Instant::now() < exp) {
+                            return Ok(Some(token.clone()));
+                        }
+                        tracing::debug!("OAuth2 token expired, refreshing");
                     }
                 }
 
@@ -165,7 +169,11 @@ impl IcebergRestCatalog {
                     .map_err(|e| CatalogError::Internal(format!("failed to parse token: {e}")))?;
 
                 let token = body.access_token;
-                *self.token_cache.write().await = Some(token.clone());
+                // Cache with expiry: subtract 30s buffer so we refresh before actual expiry.
+                let expiry = body.expires_in.map(|secs| {
+                    Instant::now() + Duration::from_secs(secs.saturating_sub(30))
+                });
+                *self.token_cache.write().await = Some((token.clone(), expiry));
                 Ok(Some(token))
             }
         }
@@ -303,6 +311,9 @@ impl CatalogProvider for IcebergRestCatalog {
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
+    /// Token lifetime in seconds (per OAuth2 spec).
+    #[serde(default)]
+    expires_in: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

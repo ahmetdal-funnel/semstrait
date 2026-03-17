@@ -65,6 +65,7 @@ impl<D: SqlDialect> AnsiSqlEmitter<D> {
 
             PlanNode::Aggregate(agg) => {
                 let input_sql = self.emit_node(&agg.input)?;
+                let schema_fields = &agg.meta.output_schema.fields;
 
                 let group_exprs: Result<Vec<String>, EmitError> = agg
                     .group_by
@@ -80,11 +81,32 @@ impl<D: SqlDialect> AnsiSqlEmitter<D> {
                     .collect();
                 let agg_exprs = agg_exprs?;
 
+                // Alias group-by and aggregate expressions using schema field names.
+                let num_groups = group_exprs.len();
                 let mut select_parts = Vec::new();
-                select_parts.extend(group_exprs.clone());
-                select_parts.extend(agg_exprs);
+                for (i, expr) in group_exprs.iter().enumerate() {
+                    if let Some(field) = schema_fields.get(i) {
+                        let alias = self.dialect.quote_identifier(&field.name);
+                        if *expr != alias {
+                            select_parts.push(format!("{expr} AS {alias}"));
+                        } else {
+                            select_parts.push(expr.clone());
+                        }
+                    } else {
+                        select_parts.push(expr.clone());
+                    }
+                }
+                for (i, expr) in agg_exprs.iter().enumerate() {
+                    if let Some(field) = schema_fields.get(num_groups + i) {
+                        let alias = self.dialect.quote_identifier(&field.name);
+                        select_parts.push(format!("{expr} AS {alias}"));
+                    } else {
+                        select_parts.push(expr.clone());
+                    }
+                }
                 let select_list = select_parts.join(", ");
 
+                // GROUP BY uses the raw (unaliased) expressions.
                 if group_exprs.is_empty() {
                     Ok(format!("SELECT {select_list} FROM ({input_sql}) AS _a"))
                 } else {
@@ -104,11 +126,11 @@ impl<D: SqlDialect> AnsiSqlEmitter<D> {
                     semstrait_ir::JoinType::Inner => "INNER JOIN",
                     semstrait_ir::JoinType::Left => "LEFT JOIN",
                     semstrait_ir::JoinType::Right => "RIGHT JOIN",
-                    semstrait_ir::JoinType::Full => "FULL JOIN",
+                    semstrait_ir::JoinType::Full => "FULL OUTER JOIN",
                 };
 
                 Ok(format!(
-                    "({left_sql}) AS _l {join_type} ({right_sql}) AS _r ON {condition}"
+                    "SELECT * FROM ({left_sql}) AS _l {join_type} ({right_sql}) AS _r ON {condition}"
                 ))
             }
 
@@ -148,14 +170,12 @@ impl<D: SqlDialect> AnsiSqlEmitter<D> {
 
             PlanNode::Fetch(fetch) => {
                 let input_sql = self.emit_node(&fetch.input)?;
-                let mut sql = format!("SELECT * FROM ({input_sql}) AS _t");
-                if let Some(count) = fetch.count {
-                    sql.push_str(&format!(" LIMIT {count}"));
+                let limit = self.dialect.limit_clause(fetch.count, fetch.offset);
+                if limit.is_empty() {
+                    Ok(format!("SELECT * FROM ({input_sql}) AS _t"))
+                } else {
+                    Ok(format!("SELECT * FROM ({input_sql}) AS _t {limit}"))
                 }
-                if fetch.offset > 0 {
-                    sql.push_str(&format!(" OFFSET {}", fetch.offset));
-                }
-                Ok(sql)
             }
         }
     }

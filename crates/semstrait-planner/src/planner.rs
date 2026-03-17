@@ -43,7 +43,7 @@ impl SemanticPlanner {
     }
 
     /// Plan a query request against the compiled manifest.
-    pub async fn plan(
+    pub fn plan(
         &self,
         request: &ResolvedQueryRequest,
         manifest: &CompiledManifest,
@@ -310,22 +310,8 @@ fn query_filter_to_dsl_expr(
                 }),
             })
         }
-        FilterOperator::IsNull => {
-            // Represented as col = NULL (simplified for v1).
-            Ok(DslExpr::BinaryOp {
-                left: Box::new(column),
-                op: BinaryOp::Eq,
-                right: Box::new(DslExpr::Null),
-            })
-        }
-        FilterOperator::IsNotNull => {
-            // Represented as col != NULL (simplified for v1).
-            Ok(DslExpr::BinaryOp {
-                left: Box::new(column),
-                op: BinaryOp::NotEq,
-                right: Box::new(DslExpr::Null),
-            })
-        }
+        FilterOperator::IsNull => Ok(DslExpr::IsNull(Box::new(column))),
+        FilterOperator::IsNotNull => Ok(DslExpr::IsNotNull(Box::new(column))),
     }
 }
 
@@ -397,13 +383,13 @@ mod tests {
     use crate::test_helpers::*;
     use crate::request::{FilterOperator, FilterValue, OrderByClause, QueryFilter, SortDirection};
 
-    #[tokio::test]
-    async fn test_plan_basic_grainset() {
+    #[test]
+    fn test_plan_basic_grainset() {
         let manifest = make_test_manifest();
         let request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
 
         let planner = SemanticPlanner::builder().build();
-        let result = planner.plan(&request, &manifest).await;
+        let result = planner.plan(&request, &manifest);
 
         assert!(result.is_ok(), "basic grainset planning should succeed");
         let plan = result.unwrap();
@@ -411,8 +397,8 @@ mod tests {
         assert_eq!(plan.output_names, vec!["date", "region", "revenue"]);
     }
 
-    #[tokio::test]
-    async fn test_plan_with_filters() {
+    #[test]
+    fn test_plan_with_filters() {
         let manifest = make_test_manifest();
         let mut request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
         request.filters = vec![QueryFilter {
@@ -422,7 +408,7 @@ mod tests {
         }];
 
         let planner = SemanticPlanner::builder().build();
-        let result = planner.plan(&request, &manifest).await;
+        let result = planner.plan(&request, &manifest);
 
         assert!(result.is_ok(), "planning with filters should succeed");
         let plan = result.unwrap();
@@ -432,8 +418,8 @@ mod tests {
         assert!(has_filter, "plan should contain a FilterNode");
     }
 
-    #[tokio::test]
-    async fn test_plan_with_order_by() {
+    #[test]
+    fn test_plan_with_order_by() {
         let manifest = make_test_manifest();
         let mut request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
         request.order_by = vec![OrderByClause {
@@ -442,7 +428,7 @@ mod tests {
         }];
 
         let planner = SemanticPlanner::builder().build();
-        let result = planner.plan(&request, &manifest).await;
+        let result = planner.plan(&request, &manifest);
 
         assert!(result.is_ok(), "planning with order_by should succeed");
         let plan = result.unwrap();
@@ -452,14 +438,14 @@ mod tests {
         assert!(has_sort, "plan should contain a SortNode");
     }
 
-    #[tokio::test]
-    async fn test_plan_with_limit() {
+    #[test]
+    fn test_plan_with_limit() {
         let manifest = make_test_manifest();
         let mut request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
         request.limit = Some(100);
 
         let planner = SemanticPlanner::builder().build();
-        let result = planner.plan(&request, &manifest).await;
+        let result = planner.plan(&request, &manifest);
 
         assert!(result.is_ok(), "planning with limit should succeed");
         let plan = result.unwrap();
@@ -469,13 +455,13 @@ mod tests {
         assert!(has_fetch, "plan should contain a FetchNode");
     }
 
-    #[tokio::test]
-    async fn test_plan_kind_not_found() {
+    #[test]
+    fn test_plan_kind_not_found() {
         let manifest = make_test_manifest();
         let request = make_test_request("nonexistent_kind", vec!["date"], vec!["revenue"]);
 
         let planner = SemanticPlanner::builder().build();
-        let result = planner.plan(&request, &manifest).await;
+        let result = planner.plan(&request, &manifest);
 
         assert!(result.is_err(), "should error when kind doesn't exist");
         assert!(matches!(result.unwrap_err(), PlannerError::KindNotFound(_)));

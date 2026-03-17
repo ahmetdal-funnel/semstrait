@@ -1,5 +1,5 @@
 # Semstrait Architecture Document
-**Version:** 3.0 | **Status:** Design — authoritative reference for per-module documentation
+**Version:** 3.1 | **Status:** Implementation — authoritative reference for per-module documentation
 
 ---
 
@@ -151,19 +151,21 @@ InMemoryRepository.save()         │    Substrait-serializable + SemAnnotation
                                   │  Optimizer.apply()  ← empty in v1
                                   │          │
                                   │          ▼
-                                  │  ComputeEmitter.emit()
-                                  │    → SQL | SubstraitPlan | NativePlan
+                                  │  SqlEmitter.emit(plan)
+                                  │    → SQL string (dialect-specific)
+                                  │  SubstraitSerializer.to_substrait(plan)
+                                  │    → substrait::proto::Plan (JSON)
                                   │          │
                                   │          ▼
-                                  │  ComputeAdapter.adapt()
+                                  │  ComputeAdapter.adapt(payload)
                                   │    negotiate via ConsumerProfile
                                   │          │
                                   │          ▼
-                                  │  ComputeConnector.execute()
-                                  │    duckdb · datafusion · trino · spark
+                                  │  ComputeConnector.execute(request)
+                                  │    datafusion (v1) · duckdb · trino · spark
                                   │          │
                                   │          ▼
-                                  │  ComputeResult → Arrow RecordBatches
+                                  │  ComputeResult → JSON rows (default) or Arrow
 ──────────────────────────────────┴──────────────────────────────────────
 ```
 
@@ -178,26 +180,13 @@ InMemoryRepository.save()         │    Substrait-serializable + SemAnnotation
 **Key types:**
 
 ```rust
-/// Canonical column schema. Ordinals are stable after construction.
-/// Every PlanNode carries an output_schema; parent nodes derive field
-/// references via schema.ordinal("name") — never by positional index.
-pub struct Schema {
-    pub columns: Vec<SchemaColumn>,
-}
-
-pub struct SchemaColumn {
-    pub name:      String,
-    pub data_type: DataType,
-    pub nullable:  bool,
-    pub ordinal:   u32,
-}
-
-impl Schema {
-    pub fn ordinal(&self, name: &str) -> Result<u32, SchemaError>;
-    pub fn join(left: &Schema, right: &Schema) -> Schema; // ordinals: [left | left.len + right]
-    pub fn project(&self, keep: &[&str]) -> Schema;
-    pub fn emit_mapping(&self, target: &Schema) -> Vec<u32>;
-}
+/// Note: Schema and Field live in `semstrait-ir`, not `semstrait-core`.
+/// They are IR-level types used by PlanNode metadata.
+/// See §5.5 for the full Schema definition.
+///
+/// Schema uses a HashMap<String, usize> index for O(1) ordinal lookups.
+/// The index is built at construction and maintained through Clone.
+/// PartialEq compares only fields (index is derived).
 
 /// Arrow-aligned type system. Bidirectional with arrow::datatypes::DataType.
 pub enum DataType {
@@ -252,23 +241,38 @@ pub struct AggregationConstraints {
 
 /// DSL expression tree — the ONLY way to express computations in v1.
 /// Raw SQL strings are rejected at compile time.
+///
+/// Note: There are TWO DslExpr types in the workspace:
+///   1. `semstrait_core::DslExpr` — used by manifest compiler for expression parsing
+///   2. `semstrait_ir::DslExpr` — used by PlanNode/IR for plan representation
+/// Both share the same variant set. The IR variant is used in PlanNode trees,
+/// ExprConverter (Substrait), and DslExprSqlRenderer (SQL emission).
+/// Future: rename IR variant to `IrExpr` to eliminate the name collision.
 pub enum DslExpr {
-    Column(String),
-    Literal(Literal),
-    EntityRef(String),
-    Sum(Box<DslExpr>) | Count(Box<DslExpr>) | CountDistinct(Box<DslExpr>)
-      | Avg(Box<DslExpr>) | Min(Box<DslExpr>) | Max(Box<DslExpr>),
-    Add(Vec<DslExpr>) | Subtract(..) | Multiply(..) | Divide(..)
-      | SafeDivide(..) | Negate(..),
-    Eq(..) | Ne(..) | Gt(..) | Gte(..) | Lt(..) | Lte(..)
-      | InList(..) | Between(..) | Like(..) | IsNull(..) | IsNotNull(..),
-    And(Vec<DslExpr>) | Or(..) | Not(..),
-    Case { when: Vec<WhenClause>, else_expr: Option<Box<DslExpr>> },
-    Coalesce(..) | NullIf(..),
-    DateTrunc { grain: Grain, expr: Box<DslExpr> },
-    /// Renders as CASE WHEN condition THEN expr END.
-    /// Used for measure filters in multi-measure aggregation context.
-    Guard { condition: Box<DslExpr>, expr: Box<DslExpr> },
+    Column { name: String, qualifier: Option<String> },
+    Number(f64),
+    StringLit(String),
+    Bool(bool),
+    Null,
+    BinaryOp { left: Box<DslExpr>, op: BinaryOp, right: Box<DslExpr> },
+    FunctionCall { name: String, args: Vec<DslExpr>, distinct: bool },
+    Negate(Box<DslExpr>),
+    Not(Box<DslExpr>),
+    Case { when_then: Vec<(DslExpr, DslExpr)>, else_expr: Option<Box<DslExpr>> },
+    InList { expr: Box<DslExpr>, list: Vec<DslExpr>, negated: bool },
+    Between { expr: Box<DslExpr>, low: Box<DslExpr>, high: Box<DslExpr>, negated: bool },
+    Like { expr: Box<DslExpr>, pattern: Box<DslExpr> },
+    IsNull(Box<DslExpr>),
+    IsNotNull(Box<DslExpr>),
+    Coalesce(Vec<DslExpr>),
+    NullIf { expr: Box<DslExpr>, null_expr: Box<DslExpr> },
+    DateTrunc { grain: String, expr: Box<DslExpr> },
+}
+
+pub enum BinaryOp {
+    Add, Subtract, Multiply, Divide, SafeDivide,
+    Eq, NotEq, Lt, LtEq, Gt, GtEq,
+    And, Or,
 }
 ```
 
@@ -525,7 +529,7 @@ pub struct CompiledMeasure {
 
 **Role:** Define the `LogicalPlan` IR in-memory. Provide bidirectional Substrait serialization. Carry semantic annotations per node.
 
-**Design principle:** `PlanNode` ordinals == Substrait `structField` ordinals. Schema is always attached to each node. Parent nodes never guess field positions.
+**Design principle:** `PlanNode` ordinals == Substrait `structField` ordinals. Schema is always attached to each node via `NodeMeta`. Parent nodes never guess field positions — they use `schema.ordinal(name)` which is O(1) via HashMap index.
 
 #### PlanNode Enum
 
@@ -597,16 +601,24 @@ impl<'s> ExprConverter<'s> {
 }
 ```
 
-**Key DslExpr → Expression mappings:**
+**DslExpr ↔ Substrait Expression mappings (full round-trip tested):**
 
 | `DslExpr` | `Expression` |
 |---|---|
-| `Column(name)` | `FieldReference { struct_field: { field: schema.ordinal(name) } }` |
-| `Literal(v)` | `Literal { literal_type: ... }` |
-| `Eq(l, r)` | `ScalarFunction { fn_anchor, args: [l, r] }` (ANSI comparison) |
-| `Guard { cond, expr }` | `IfThen { ifs: [{ if: cond, then: expr }], else_: null_literal }` |
-| `DateTrunc { grain, expr }` | `ScalarFunction { fn_anchor: date_trunc, args: [grain_lit, expr] }` |
-| `Sum(inner)` | Used inside `AggregateRel.measures[i].function` |
+| `Column { name, .. }` | `FieldReference { struct_field: { field: schema.ordinal(name) } }` |
+| `Number(n)` / `StringLit(s)` / `Bool(b)` / `Null` | `Literal { literal_type: ... }` |
+| `BinaryOp { l, Eq, r }` | `ScalarFunction { fn_anchor: 100, args: [l, r] }` |
+| `Case { when_then, else_expr }` | `IfThen { ifs: [..], else_: .. }` |
+| `Not(inner)` | `ScalarFunction { fn_anchor: 205 }` |
+| `IsNull(inner)` | `ScalarFunction { fn_anchor: 202 }` |
+| `IsNotNull(inner)` | `ScalarFunction { fn_anchor: 203 }` |
+| `InList { expr, list }` | `ScalarFunction { fn_anchor: 206, args: [expr, list..] }` |
+| `Between { expr, low, high }` | `ScalarFunction { fn_anchor: 207, args: [expr, low, high] }` |
+| `Like { expr, pattern }` | `ScalarFunction { fn_anchor: 208 }` |
+| `Coalesce(exprs)` | `ScalarFunction { fn_anchor: 204 }` |
+| `NullIf { expr, null_expr }` | `ScalarFunction { fn_anchor: 209 }` |
+| `DateTrunc { grain, expr }` | `ScalarFunction { fn_anchor: 210, args: [grain_lit, expr] }` |
+| Aggregation (Sum/Avg/...) | Used inside `AggregateRel.measures[i].function` |
 
 #### SubstraitSerializer
 
@@ -646,23 +658,27 @@ pub struct SemanticPlanner {
     catalog:   Option<Arc<dyn CatalogProvider>>,
     optimizer: Optimizer,       // empty in v1; configured at construction
     planners:  KindPlannerRegistry,
+    profile:   ConsumerProfile, // wired from connector; defaults to full capabilities
 }
 
 pub struct SemanticPlannerBuilder {
     catalog: Option<Arc<dyn CatalogProvider>>,
     passes:  Vec<Box<dyn OptimizerPass>>,
+    profile: ConsumerProfile,
 }
 impl SemanticPlannerBuilder {
     pub fn new() -> Self;
     pub fn with_catalog(self, c: Arc<dyn CatalogProvider>) -> Self;
     pub fn with_optimizer_pass(self, p: impl OptimizerPass + 'static) -> Self;
+    pub fn with_profile(self, profile: ConsumerProfile) -> Self;
     pub fn build(self) -> SemanticPlanner;
 }
 
 impl SemanticPlanner {
     pub fn builder() -> SemanticPlannerBuilder;
 
-    pub async fn plan(
+    /// Synchronous — no async work needed for plan generation.
+    pub fn plan(
         &self,
         request: &ResolvedQueryRequest,
         manifest: &CompiledManifest,
@@ -813,7 +829,7 @@ pub struct ResolvedQueryRequest {
 
 **Role:** Emit SQL strings from `LogicalPlan`. Pure, synchronous, no I/O. One dialect per `SqlEmitter` implementation.
 
-**Design:** SQL is generated by walking the `PlanNode` tree and emitting SQL fragments programmatically. There are no Jinja templates. Uses `sqlparser-rs` AST as an intermediate form to guarantee syntactically correct output before converting to string.
+**Design:** SQL is generated by walking the `PlanNode` tree and emitting SQL fragments via direct string building through the dialect. There are no Jinja templates and no sqlparser-rs AST intermediate — the emitter produces SQL strings directly from `PlanNode` + `DslExprSqlRenderer`.
 
 ```rust
 pub trait SqlEmitter: Send + Sync {
@@ -828,19 +844,23 @@ pub trait SqlDialect: Send + Sync {
     fn null_safe_eq(&self, l: &str, r: &str) -> String;
     fn current_timestamp(&self) -> String;
     fn window_row_number(&self, partition_by: &[&str], order_by: &str) -> String;
+    /// Generate a LIMIT/FETCH clause. ANSI → FETCH FIRST N ROWS ONLY; DuckDB → LIMIT N.
+    fn limit_clause(&self, count: Option<i64>, offset: i64) -> String;
 }
 
 // DslExpr → dialect SQL string
 pub struct DslExprSqlRenderer<'d> { dialect: &'d dyn SqlDialect }
 impl<'d> DslExprSqlRenderer<'d> {
-    pub fn render(&self, expr: &DslExpr, schema: &Schema) -> Result<String, EmitError>;
+    pub fn render(&self, expr: &DslExpr) -> Result<String, EmitError>;
+    pub fn render_aggregate(&self, measure: &AggregateMeasure) -> Result<String, EmitError>;
 }
 
-// Implementations
-pub struct AnsiSqlEmitter;    // safe baseline
-pub struct TrinoSqlEmitter;   // DATE_TRUNC syntax, double-quoted identifiers
-pub struct DuckDbSqlEmitter;  // DuckDB-specific strftime, backtick identifiers
-pub struct SparkSqlEmitter;   // Spark SQL date_trunc, backticks
+// Single parameterized emitter — dialect is a type parameter
+pub struct AnsiSqlEmitter<D: SqlDialect> { dialect: D }
+// Dialect structs (all use ANSI double-quoted identifiers):
+pub struct AnsiDialect;   // FETCH FIRST, standard DATE_TRUNC
+pub struct DuckDbDialect;  // LIMIT, lowercase date_trunc
+pub struct TrinoDialect;   // FETCH FIRST, lowercase date_trunc
 ```
 
 **DslExpr → SQL lowering table:**
@@ -855,7 +875,7 @@ pub struct SparkSqlEmitter;   // Spark SQL date_trunc, backticks
 | `DateTrunc { Day, x }` | `DATE_TRUNC('day', x)` (dialect-specific) |
 | `SafeDivide(a, b)` | `CASE WHEN b = 0 THEN NULL ELSE a / b END` |
 
-**External deps:** `semstrait-core`, `semstrait-ir`, `sqlparser`
+**External deps:** `semstrait-core`, `semstrait-ir` (no sqlparser — direct string building)
 
 ---
 
@@ -879,8 +899,13 @@ semstrait-connectors/
 #### Core traits
 
 ```rust
+/// Converts LogicalPlan to a compute-ready payload.
+/// Note: in the current engine pipeline, SemstraitEngine calls SqlEmitter and
+/// SubstraitSerializer directly. ComputeEmitter is available for connectors
+/// that want to customize payload creation.
 pub trait ComputeEmitter: Send + Sync {
-    fn emit(&self, plan: &LogicalPlan) -> Result<ComputePayload, EmitError>;
+    fn emit_sql(&self, sql: &str) -> Result<ComputePayload, EmitError>;
+    fn emit_substrait(&self, plan_bytes: &[u8]) -> Result<ComputePayload, EmitError>;
     fn supported_payloads(&self) -> &[PayloadKind];
 }
 pub enum PayloadKind { Sql, SubstraitPlan, NativePlan }
@@ -908,11 +933,15 @@ pub trait ComputeConnector: ComputeAdapter + Send + Sync {
 }
 
 pub struct ComputeResult {
-    pub schema:      Schema,
-    pub batches:     Vec<RecordBatch>,
     pub complete:    bool,                   // false = partial result
-    pub diagnostics: Vec<Diagnostic>,
-    pub stats:       ExecutionStats,
+    pub stats:       ExecutionStats,         // rows_returned, execution_time, bytes_scanned
+    pub data:        ComputeResultData,
+}
+
+pub enum ComputeResultData {
+    Empty,                                   // DDL, health check
+    Json(Vec<serde_json::Value>),            // universal format (DataFusion default)
+    Native(Box<dyn Any + Send + Sync>),      // engine-specific (Arrow batches)
 }
 ```
 
@@ -951,7 +980,7 @@ ComputeEmitter.emit() ───────────────────�
 | Engine | Payload support | Wire | Notes |
 |---|---|---|---|
 | DuckDB | `Sql` + partial `SubstraitPlan` | DuckDB C API / ADBC | Embedded; `ConsumerProfile.supports_window_functions = true` |
-| DataFusion | `Sql` + `SubstraitPlan` + `NativePlan(LogicalPlan)` | In-process Rust | `NativePlan` = zero-copy; uses `datafusion-substrait` for binary plan |
+| DataFusion | `Sql` only (v1) | In-process Rust | Returns `ComputeResultData::Json` via Arrow→JSON; timeout enforcement via `tokio::time::timeout` |
 | Trino | `Sql` only | ADBC driver manager (columnar-tech) / HTTP REST | `TrinoSqlEmitter` for dialect; no Substrait endpoint |
 | Spark | `Sql` + `SubstraitPlan` (experimental) | spark-connect gRPC (tonic) | Not ADBC; `SparkSqlEmitter` for safe fallback |
 
@@ -987,18 +1016,26 @@ pub mod parse {
 }
 
 pub struct SemstraitEngine {
-    planner:   Arc<SemanticPlanner>,
-    connector: Arc<dyn ComputeConnector>,
-    manifest:  Arc<CompiledManifest>,
+    manifest:  Option<CompiledManifest>,
+    planner:   SemanticPlanner,           // sync; not Arc-wrapped
+    connector: Option<Arc<dyn ComputeConnector>>,
 }
 
 impl SemstraitEngine {
-    pub async fn query(&self, req: ResolvedQueryRequest)
-        -> Result<ComputeResult, EngineError>;
-    pub async fn explain(&self, req: ResolvedQueryRequest)
-        -> Result<ExplainResult, EngineError>;
-    pub async fn validate(&self, req: ResolvedQueryRequest)
-        -> Result<ValidationResult, EngineError>;
+    pub fn new() -> Self;                               // no manifest, no connector
+    pub fn with_manifest(manifest: CompiledManifest) -> Self;
+    pub fn with_connector(
+        manifest: CompiledManifest,
+        connector: Arc<dyn ComputeConnector>,
+    ) -> Self;                                          // extracts ConsumerProfile → planner
+    pub async fn with_manifest_yaml(yaml: &str) -> Result<Self, EngineError>;
+    pub fn set_connector(&mut self, connector: Arc<dyn ComputeConnector>);
+
+    pub fn validate(&self, raw: &RawQueryRequest) -> ValidationResult;
+    pub async fn explain(&self, raw: &RawQueryRequest)
+        -> Result<ExplainResult, EngineError>;          // SQL + Substrait JSON
+    pub async fn query(&self, raw: &RawQueryRequest)
+        -> Result<serde_json::Value, EngineError>;      // requires connector
 }
 
 // gRPC transport — feature = "grpc"
@@ -1022,8 +1059,9 @@ pub mod rest {
 // CLI transport — feature = "cli"
 #[cfg(feature = "cli")]
 pub mod cli {
-    pub fn run() -> Result<(), CliError>;
-    // Commands: compile [--yaml] | explain [--json] | validate | query
+    pub async fn run() -> Result<(), Box<dyn std::error::Error>>;
+    // Commands: compile | explain | validate | query (datafusion) | serve (rest)
+    // Binary target: `cargo build -p semstrait-api --features cli,rest,datafusion`
 }
 ```
 
@@ -1049,33 +1087,37 @@ Transport deps (feature-gated): `tonic` + `prost` (grpc), `axum` (rest), `clap` 
 **Role:** Single entry point for library consumers. Builder API. Feature flag coordination. Public API re-exports.
 
 ```rust
-pub struct Semstrait {
-    engine: SemstraitEngine,
+pub struct SemstraitInstance {
+    manifest_yaml: String,
+    manifest: CompiledManifest,
+    planner: SemanticPlanner,
+    connector: Option<Arc<dyn ComputeConnector>>,
 }
 
 pub struct SemstraitBuilder {
-    manifest_source: Option<CompileSource>,
-    catalog:         Option<Arc<dyn CatalogProvider>>,
-    connector:       Option<Arc<dyn ComputeConnector>>,
-    optimizer_passes: Vec<Box<dyn OptimizerPass>>,
+    manifest_yaml: Option<String>,
+    manifest_path: Option<PathBuf>,
+    catalog:       Option<Arc<dyn CatalogProvider>>,
+    connector:     Option<Arc<dyn ComputeConnector>>,
 }
 
 impl SemstraitBuilder {
     pub fn new() -> Self;
     pub fn with_manifest_yaml(self, yaml: impl Into<String>) -> Self;
     pub fn with_manifest_file(self, path: impl Into<PathBuf>) -> Self;
-    pub fn with_catalog(self, c: impl CatalogProvider + 'static) -> Self;
-    pub fn with_connector(self, conn: impl ComputeConnector + 'static) -> Self;
-    pub fn with_optimizer_pass(self, p: impl OptimizerPass + 'static) -> Self;
-    pub async fn build(self) -> Result<Semstrait, BuildError>;
+    pub fn with_catalog(self, catalog: Arc<dyn CatalogProvider>) -> Self;
+    pub fn with_connector(self, connector: Arc<dyn ComputeConnector>) -> Self;
+    pub async fn build(self) -> Result<SemstraitInstance, BuildError>;
+    // build() compiles manifest, wires catalog into ManifestCompiler,
+    // extracts ConsumerProfile from connector into planner builder
 }
 
-impl Semstrait {
+impl SemstraitInstance {
     pub fn builder() -> SemstraitBuilder;
-    pub async fn query(&self, req: QueryRequest) -> Result<ComputeResult, Error>;
-    pub async fn explain(&self, req: QueryRequest) -> Result<ExplainResult, Error>;
-    pub async fn validate(&self, req: QueryRequest) -> Result<ValidationResult, Error>;
-    pub fn manifest(&self) -> Arc<CompiledManifest>;
+    pub fn manifest(&self) -> &CompiledManifest;
+    pub fn explain(&self, req: &ResolvedQueryRequest) -> Result<String, String>; // sync SQL
+    pub async fn query(&self, req: &ResolvedQueryRequest)
+        -> Result<ComputeResult, BuildError>;  // requires connector
 }
 
 // Usage example:
@@ -1123,12 +1165,12 @@ prost        = "0.13"
 pbjson       = "0.7"
 
 # Query IR
-substrait    = { version = "0.58", features = ["serde"] }
-arrow        = { version = "54", features = ["ipc"] }
-arrow-schema = "54"
+substrait    = { version = "0.62", features = ["serde"] }
+arrow        = { version = "55", default-features = false, features = ["json"] }
+arrow-schema = "55"
 
-# SQL generation
-sqlparser    = "0.53"
+# SQL generation (no sqlparser — direct string building via SqlDialect trait)
+# sqlparser listed in workspace but not used by semstrait-sql
 
 # Graph analysis (manifest compiler only)
 petgraph     = "0.6"
@@ -1142,8 +1184,8 @@ tonic        = { version = "0.12", optional = true }
 
 # Engine connectors (all optional)
 duckdb                = { version = "1.1", optional = true }
-datafusion            = { version = "44", optional = true }
-datafusion-substrait  = { version = "44", optional = true }
+datafusion            = { version = "52", optional = true }
+# datafusion-substrait not used in v1 — SQL execution only
 adbc_driver_manager   = { version = "0.12", optional = true }
 # spark-connect: tonic + prost with custom proto definitions
 

@@ -65,4 +65,11 @@ semstrait-planner = { workspace = true }
 semstrait-sql = { workspace = true }
 semstrait-ir = { workspace = true }
 semstrait-core = { workspace = true }
+semstrait-api = { workspace = true }
+semstrait-connectors = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
+
+[features]
+default = []
+datafusion = ["semstrait-connectors/datafusion", "semstrait-api/datafusion"]

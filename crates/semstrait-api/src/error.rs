@@ -9,13 +9,13 @@ pub enum EngineError {
     Parse(String),
 
     #[error("compile error: {0}")]
-    Compile(String),
+    Compile(#[from] semstrait_manifest::CompileError),
 
     #[error("plan error: {0}")]
-    Plan(String),
+    Plan(#[from] semstrait_planner::PlannerError),
 
     #[error("emit error: {0}")]
-    Emit(String),
+    Emit(#[from] semstrait_sql::EmitError),
 
     #[error("execution error: {0}")]
     Execution(String),

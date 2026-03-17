@@ -1,0 +1,34 @@
+semantic_model:
+  name: multi_measure_test
+  kinds:
+    - name: transactions
+      type:
+        grainset:
+      dimensions:
+        - name: date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+                - month
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+        - name: transaction_count
+          data_type: int64
+          expr: "COUNT(id)"
+        - name: avg_amount
+          data_type: float64
+          expr: "AVG(amount)"
+      datasets:
+        - name: txn_daily
+          extras:
+            column_mapping:
+              date: txn_date
+              revenue: amount
+              transaction_count: id
+              avg_amount: amount
+            storage:
+              path: warehouse.transactions_daily

@@ -19,13 +19,13 @@ mod tests {
     // Simple grainset planning
     // ========================================================================
 
-    #[tokio::test]
-    async fn test_simple_grainset_plan() {
+    #[test]
+    fn test_simple_grainset_plan() {
         let planner = SemanticPlanner::builder().build();
         let manifest = make_test_manifest();
         let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
 
-        let plan = planner.plan(&request, &manifest).await;
+        let plan = planner.plan(&request, &manifest);
         assert!(plan.is_ok(), "planning should succeed: {:?}", plan.err());
 
         let plan = plan.unwrap();
@@ -65,8 +65,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_grainset_plan_multiple_dims() {
+    #[test]
+    fn test_grainset_plan_multiple_dims() {
         let planner = SemanticPlanner::builder().build();
         let manifest = make_test_manifest();
         let request = make_test_request(
@@ -75,20 +75,20 @@ mod tests {
             vec!["revenue"],
         );
 
-        let plan = planner.plan(&request, &manifest).await.unwrap();
+        let plan = planner.plan(&request, &manifest).unwrap();
         assert_eq!(
             plan.output_names,
             vec!["date".to_string(), "region".to_string(), "revenue".to_string()]
         );
     }
 
-    #[tokio::test]
-    async fn test_grainset_plan_kind_not_found() {
+    #[test]
+    fn test_grainset_plan_kind_not_found() {
         let planner = SemanticPlanner::builder().build();
         let manifest = make_test_manifest();
         let request = make_test_request("nonexistent", vec!["date"], vec!["revenue"]);
 
-        let result = planner.plan(&request, &manifest).await;
+        let result = planner.plan(&request, &manifest);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -100,8 +100,8 @@ mod tests {
     // Constraint evaluation (integration)
     // ========================================================================
 
-    #[tokio::test]
-    async fn test_constraint_violation_blocks_planning() {
+    #[test]
+    fn test_constraint_violation_blocks_planning() {
         let planner = SemanticPlanner::builder().build();
         let manifest = make_test_manifest_with_constraints(
             Some(semstrait_manifest::DimensionConstraints {
@@ -114,7 +114,7 @@ mod tests {
 
         // Request without date — should fail constraint check.
         let request = make_test_request("orders", vec!["region"], vec!["revenue"]);
-        let result = planner.plan(&request, &manifest).await;
+        let result = planner.plan(&request, &manifest);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -122,8 +122,8 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn test_constraint_satisfied_allows_planning() {
+    #[test]
+    fn test_constraint_satisfied_allows_planning() {
         let planner = SemanticPlanner::builder().build();
         let manifest = make_test_manifest_with_constraints(
             Some(semstrait_manifest::DimensionConstraints {
@@ -136,7 +136,7 @@ mod tests {
 
         // Request with date — should pass.
         let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
-        let result = planner.plan(&request, &manifest).await;
+        let result = planner.plan(&request, &manifest);
         assert!(result.is_ok());
     }
 
@@ -144,8 +144,8 @@ mod tests {
     // Filter injection
     // ========================================================================
 
-    #[tokio::test]
-    async fn test_user_filter_injection() {
+    #[test]
+    fn test_user_filter_injection() {
         let planner = SemanticPlanner::builder().build();
         let manifest = make_test_manifest();
 
@@ -165,7 +165,7 @@ mod tests {
             session_variables: HashMap::new(),
         };
 
-        let plan = planner.plan(&request, &manifest).await.unwrap();
+        let plan = planner.plan(&request, &manifest).unwrap();
 
         // Root should be a Filter node wrapping the Project.
         assert!(
@@ -197,8 +197,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_multiple_user_filters() {
+    #[test]
+    fn test_multiple_user_filters() {
         let planner = SemanticPlanner::builder().build();
         let manifest = make_test_manifest();
 
@@ -225,7 +225,7 @@ mod tests {
             session_variables: HashMap::new(),
         };
 
-        let plan = planner.plan(&request, &manifest).await.unwrap();
+        let plan = planner.plan(&request, &manifest).unwrap();
 
         // Should have Filter -> Filter -> Project -> ...
         assert!(matches!(&plan.root, PlanNode::Filter(_)));
@@ -238,8 +238,8 @@ mod tests {
     // ORDER BY and LIMIT
     // ========================================================================
 
-    #[tokio::test]
-    async fn test_order_by() {
+    #[test]
+    fn test_order_by() {
         let planner = SemanticPlanner::builder().build();
         let manifest = make_test_manifest();
 
@@ -258,15 +258,15 @@ mod tests {
             session_variables: HashMap::new(),
         };
 
-        let plan = planner.plan(&request, &manifest).await.unwrap();
+        let plan = planner.plan(&request, &manifest).unwrap();
         assert!(
             matches!(&plan.root, PlanNode::Sort(_)),
             "root should be Sort when ORDER BY is specified"
         );
     }
 
-    #[tokio::test]
-    async fn test_limit() {
+    #[test]
+    fn test_limit() {
         let planner = SemanticPlanner::builder().build();
         let manifest = make_test_manifest();
 
@@ -282,7 +282,7 @@ mod tests {
             session_variables: HashMap::new(),
         };
 
-        let plan = planner.plan(&request, &manifest).await.unwrap();
+        let plan = planner.plan(&request, &manifest).unwrap();
         assert!(
             matches!(&plan.root, PlanNode::Fetch(_)),
             "root should be Fetch when LIMIT is specified"
@@ -297,14 +297,14 @@ mod tests {
     // Optimizer pass-through
     // ========================================================================
 
-    #[tokio::test]
-    async fn test_optimizer_identity_pass_through() {
+    #[test]
+    fn test_optimizer_identity_pass_through() {
         // Build planner with NO optimizer passes (default).
         let planner = SemanticPlanner::builder().build();
         let manifest = make_test_manifest();
         let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
 
-        let plan = planner.plan(&request, &manifest).await.unwrap();
+        let plan = planner.plan(&request, &manifest).unwrap();
         // Should succeed and produce a valid plan.
         assert!(!plan.output_names.is_empty());
     }
@@ -326,8 +326,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_optimizer_custom_pass_invoked() {
+    #[test]
+    fn test_optimizer_custom_pass_invoked() {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         let planner = SemanticPlanner::builder()
@@ -339,7 +339,7 @@ mod tests {
         let manifest = make_test_manifest();
         let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
 
-        let plan = planner.plan(&request, &manifest).await;
+        let plan = planner.plan(&request, &manifest);
         assert!(plan.is_ok());
         assert_eq!(
             count.load(std::sync::atomic::Ordering::SeqCst),

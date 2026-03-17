@@ -1,0 +1,25 @@
+semantic_model:
+  name: simple_model
+  kinds:
+    - name: orders
+      type:
+        grainset:
+      dimensions:
+        - name: date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders_data
+          extras:
+            column_mapping:
+              date: order_date
+              revenue: amount
+            storage:
+              path: db.orders

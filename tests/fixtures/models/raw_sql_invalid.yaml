@@ -1,0 +1,8 @@
+semantic_model:
+  name: bad_model
+  datasets:
+    - name: orders
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SELECT SUM(amount) FROM orders"

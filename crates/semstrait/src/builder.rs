@@ -1,6 +1,7 @@
 //! Builder API for constructing a Semstrait instance.
 
 use semstrait_catalog::{CatalogProvider, NullCatalogProvider};
+use semstrait_connectors::{ComputeConnector, ComputePayload, ComputeResult};
 use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
 use semstrait_planner::SemanticPlanner;
 use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
@@ -19,6 +20,9 @@ pub enum BuildError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("query error: {0}")]
+    Query(String),
 }
 
 /// Builder for constructing a `SemstraitInstance`.
@@ -26,6 +30,7 @@ pub struct SemstraitBuilder {
     manifest_yaml: Option<String>,
     manifest_path: Option<PathBuf>,
     catalog: Option<Arc<dyn CatalogProvider>>,
+    connector: Option<Arc<dyn ComputeConnector>>,
 }
 
 impl SemstraitBuilder {
@@ -35,6 +40,7 @@ impl SemstraitBuilder {
             manifest_yaml: None,
             manifest_path: None,
             catalog: None,
+            connector: None,
         }
     }
 
@@ -56,6 +62,12 @@ impl SemstraitBuilder {
         self
     }
 
+    /// Set the compute connector for query execution.
+    pub fn with_connector(mut self, connector: Arc<dyn ComputeConnector>) -> Self {
+        self.connector = Some(connector);
+        self
+    }
+
     /// Build the Semstrait instance by compiling the manifest.
     pub async fn build(self) -> Result<SemstraitInstance, BuildError> {
         let yaml = if let Some(yaml) = self.manifest_yaml {
@@ -66,20 +78,31 @@ impl SemstraitBuilder {
             return Err(BuildError::NoManifest);
         };
 
-        let _catalog = self
+        let catalog = self
             .catalog
             .unwrap_or_else(|| Arc::new(NullCatalogProvider));
 
-        let compiler = ManifestCompiler::new();
+        let compiler = ManifestCompiler::new().with_catalog(catalog);
         let manifest = compiler
             .compile(CompileSource::Yaml(yaml.clone()))
             .await
             .map_err(|e| BuildError::Compile(e.to_string()))?;
 
+        // Build planner with profile from connector if available
+        let planner = if let Some(ref connector) = self.connector {
+            let profile = connector.consumer_profile().clone();
+            SemanticPlanner::builder()
+                .with_profile(profile)
+                .build()
+        } else {
+            SemanticPlanner::builder().build()
+        };
+
         Ok(SemstraitInstance {
             manifest_yaml: yaml,
             manifest,
-            planner: SemanticPlanner::builder().build(),
+            planner,
+            connector: self.connector,
         })
     }
 }
@@ -95,6 +118,7 @@ pub struct SemstraitInstance {
     manifest_yaml: String,
     manifest: CompiledManifest,
     planner: SemanticPlanner,
+    connector: Option<Arc<dyn ComputeConnector>>,
 }
 
 impl SemstraitInstance {
@@ -114,18 +138,39 @@ impl SemstraitInstance {
     }
 
     /// Plan and emit SQL for a query request.
-    pub async fn explain(
+    pub fn explain(
         &self,
         request: &semstrait_planner::request::ResolvedQueryRequest,
     ) -> Result<String, String> {
         let plan = self
             .planner
             .plan(request, &self.manifest)
-            .await
             .map_err(|e| e.to_string())?;
 
         let emitter = AnsiSqlEmitter::new(AnsiDialect);
         emitter.emit(&plan).map_err(|e| e.to_string())
+    }
+
+    /// Execute a query via the configured connector.
+    pub async fn query(
+        &self,
+        request: &semstrait_planner::request::ResolvedQueryRequest,
+    ) -> Result<ComputeResult, BuildError> {
+        let connector = self
+            .connector
+            .as_ref()
+            .ok_or_else(|| BuildError::Query("no connector configured".to_string()))?;
+
+        let sql = self.explain(request).map_err(BuildError::Query)?;
+
+        let payload = ComputePayload::Sql(sql);
+        let compute_request = connector
+            .adapt(payload)
+            .map_err(|e| BuildError::Query(e.to_string()))?;
+        connector
+            .execute(compute_request)
+            .await
+            .map_err(|e| BuildError::Query(e.to_string()))
     }
 }
 

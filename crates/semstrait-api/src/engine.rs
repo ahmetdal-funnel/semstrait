@@ -6,6 +6,8 @@
 use crate::error::EngineError;
 use crate::parse::RequestParser;
 use crate::types::{ExplainResult, RawQueryRequest, ValidationResult};
+use semstrait_connectors::{ComputeConnector, ComputePayload, ComputeResultData};
+use semstrait_ir::SubstraitSerializer;
 use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
 use semstrait_planner::SemanticPlanner;
 use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
@@ -15,11 +17,12 @@ use std::sync::Arc;
 ///
 /// Supports:
 /// - `validate()` — parse + validate request against manifest
-/// - `explain()` — compile → plan → emit SQL
+/// - `explain()` — compile → plan → emit SQL + Substrait JSON
 /// - `query()` — explain + execute (requires connector)
 pub struct SemstraitEngine {
     manifest: Option<CompiledManifest>,
     planner: SemanticPlanner,
+    connector: Option<Arc<dyn ComputeConnector>>,
 }
 
 impl SemstraitEngine {
@@ -28,6 +31,7 @@ impl SemstraitEngine {
         Self {
             manifest: None,
             planner: SemanticPlanner::builder().build(),
+            connector: None,
         }
     }
 
@@ -36,6 +40,24 @@ impl SemstraitEngine {
         Self {
             manifest: Some(manifest),
             planner: SemanticPlanner::builder().build(),
+            connector: None,
+        }
+    }
+
+    /// Create an engine with a manifest and a compute connector for query execution.
+    pub fn with_connector(
+        manifest: CompiledManifest,
+        connector: Arc<dyn ComputeConnector>,
+    ) -> Self {
+        let profile = connector.consumer_profile().clone();
+        let planner = SemanticPlanner::builder()
+            .with_profile(profile)
+            .build();
+
+        Self {
+            manifest: Some(manifest),
+            planner,
+            connector: Some(connector),
         }
     }
 
@@ -44,14 +66,22 @@ impl SemstraitEngine {
         let compiler = ManifestCompiler::new();
         let manifest = compiler
             .compile(CompileSource::Yaml(yaml.to_string()))
-            .await
-            .map_err(|e| EngineError::Compile(e.to_string()))?;
+            .await?;
         Ok(Self::with_manifest(manifest))
     }
 
     /// Get a reference to the compiled manifest (if loaded).
     pub fn manifest(&self) -> Option<&CompiledManifest> {
         self.manifest.as_ref()
+    }
+
+    /// Set a connector on an existing engine.
+    pub fn set_connector(&mut self, connector: Arc<dyn ComputeConnector>) {
+        let profile = connector.consumer_profile().clone();
+        self.planner = SemanticPlanner::builder()
+            .with_profile(profile)
+            .build();
+        self.connector = Some(connector);
     }
 
     /// Validate a query request against the manifest.
@@ -69,10 +99,7 @@ impl SemstraitEngine {
         if let Some(manifest) = &self.manifest {
             let mut errors = Vec::new();
 
-            if manifest.get_kind(&raw.kind).is_none() {
-                errors.push(format!("kind '{}' not found in manifest", raw.kind));
-            } else {
-                let kind = manifest.get_kind(&raw.kind).unwrap();
+            if let Some(kind) = manifest.get_kind(&raw.kind) {
                 for dim in &raw.dimensions {
                     if !kind.dimensions.contains_key(dim) {
                         errors.push(format!("dimension '{}' not found in kind '{}'", dim, raw.kind));
@@ -86,6 +113,8 @@ impl SemstraitEngine {
                         ));
                     }
                 }
+            } else {
+                errors.push(format!("kind '{}' not found in manifest", raw.kind));
             }
 
             if errors.is_empty() {
@@ -111,7 +140,7 @@ impl SemstraitEngine {
         }
     }
 
-    /// Explain a query: compile, plan, emit SQL — without executing.
+    /// Explain a query: compile, plan, emit SQL + Substrait JSON — without executing.
     pub async fn explain(
         &self,
         raw: &RawQueryRequest,
@@ -126,17 +155,18 @@ impl SemstraitEngine {
             .map_err(|e| EngineError::Parse(e.to_string()))?;
 
         // Plan.
-        let plan = self
-            .planner
-            .plan(&request, manifest)
-            .await
-            .map_err(|e| EngineError::Plan(e.to_string()))?;
+        let plan = self.planner.plan(&request, manifest)?;
 
-        // Emit SQL via ANSI dialect.
+        // TODO: When a connector is configured, use its preferred dialect instead of
+        // AnsiDialect. This requires adding a `preferred_dialect()` method to the
+        // ComputeConnector trait (Phase C work).
         let emitter = AnsiSqlEmitter::new(AnsiDialect);
-        let sql = emitter
-            .emit(&plan)
-            .map_err(|e| EngineError::Emit(e.to_string()))?;
+        let sql = emitter.emit(&plan)?;
+
+        // Emit Substrait JSON.
+        let substrait_json = SubstraitSerializer::to_substrait(&plan)
+            .ok()
+            .and_then(|proto_plan| serde_json::to_string_pretty(&proto_plan).ok());
 
         // Build plan text summary.
         let plan_text = format!(
@@ -147,19 +177,81 @@ impl SemstraitEngine {
 
         Ok(ExplainResult {
             sql: Some(sql),
-            substrait_json: None,
+            substrait_json,
             plan_text,
         })
     }
 
-    /// Execute a query end-to-end. Requires a configured connector (v2).
+    /// Execute a query end-to-end. Requires a configured connector.
     pub async fn query(
         &self,
-        _raw: &RawQueryRequest,
+        raw: &RawQueryRequest,
     ) -> Result<serde_json::Value, EngineError> {
-        Err(EngineError::NotConfigured(
-            "query execution requires a configured connector (v2)".to_string(),
-        ))
+        let connector = self
+            .connector
+            .as_ref()
+            .ok_or_else(|| EngineError::NotConfigured("no connector configured".to_string()))?;
+
+        // Get SQL via explain.
+        let explain = self.explain(raw).await?;
+        let sql = explain
+            .sql
+            .ok_or_else(|| EngineError::Internal("explain produced no SQL".to_string()))?;
+
+        // Adapt → Execute.
+        let payload = ComputePayload::Sql(sql);
+        let request = connector
+            .adapt(payload)
+            .map_err(|e| EngineError::Execution(e.to_string()))?;
+        let result = connector
+            .execute(request)
+            .await
+            .map_err(|e| EngineError::Execution(e.to_string()))?;
+
+        // Convert result to JSON.
+        match &result.data {
+            ComputeResultData::Json(rows) => Ok(serde_json::json!({
+                "rows": rows,
+                "stats": {
+                    "rows_returned": result.stats.rows_returned,
+                    "complete": result.complete,
+                }
+            })),
+            ComputeResultData::Empty => Ok(serde_json::json!({
+                "rows": [],
+                "stats": {
+                    "rows_returned": 0,
+                    "complete": result.complete,
+                }
+            })),
+            ComputeResultData::Native(ref native) => {
+                // Attempt to extract ArrowBatches and convert to JSON as a fallback.
+                // Connectors should prefer returning ComputeResultData::Json directly.
+                #[cfg(feature = "datafusion")]
+                {
+                    if let Some(arrow_batches) = native.downcast_ref::<semstrait_connectors::datafusion::ArrowBatches>() {
+                        let json_rows = arrow_batches.to_json_rows()
+                            .map_err(|e| EngineError::Internal(format!("Arrow to JSON conversion failed: {}", e)))?;
+                        return Ok(serde_json::json!({
+                            "rows": json_rows,
+                            "stats": {
+                                "rows_returned": result.stats.rows_returned,
+                                "complete": result.complete,
+                            }
+                        }));
+                    }
+                }
+                // If not ArrowBatches or datafusion feature not enabled, return stats only.
+                let _ = native; // suppress unused warning
+                Ok(serde_json::json!({
+                    "format": "native",
+                    "stats": {
+                        "rows_returned": result.stats.rows_returned,
+                        "complete": result.complete,
+                    }
+                }))
+            }
+        }
     }
 }
 
@@ -217,42 +309,21 @@ mod tests {
         assert!(matches!(result, Err(EngineError::NotConfigured(_))));
     }
 
+    fn load_model(name: &str) -> String {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let path = format!(
+            "{}/../../tests/fixtures/models/{}.yaml",
+            manifest_dir, name
+        );
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to load fixture '{}': {}", path, e))
+    }
+
     #[tokio::test]
     async fn test_explain_with_manifest() {
-        let yaml = r#"
-semantic_model:
-  name: test_model
-  kinds:
-    - name: orders
-      type:
-        grainset:
-      dimensions:
-        - name: date
-          data_type: date
-          type:
-            temporal:
-              grains:
-                - day
-        - name: region
-          data_type: string
-          type:
-            categorical:
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-      datasets:
-        - name: orders_daily
-          extras:
-            column_mapping:
-              date: order_date
-              region: region_name
-              revenue: amount
-            storage:
-              path: public.orders_daily
-"#;
+        let yaml = load_model("orders_with_metrics");
 
-        let engine = SemstraitEngine::with_manifest_yaml(yaml)
+        let engine = SemstraitEngine::with_manifest_yaml(&yaml)
             .await
             .expect("engine should compile manifest");
 
@@ -275,39 +346,17 @@ semantic_model:
             "SQL should contain GROUP BY: {}",
             sql
         );
+        assert!(
+            explain.substrait_json.is_some(),
+            "should have Substrait JSON"
+        );
     }
 
     #[tokio::test]
     async fn test_validate_against_manifest() {
-        let yaml = r#"
-semantic_model:
-  name: test_model
-  kinds:
-    - name: orders
-      type:
-        grainset:
-      dimensions:
-        - name: date
-          data_type: date
-          type:
-            temporal:
-              grains:
-                - day
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-      datasets:
-        - name: orders_daily
-          extras:
-            column_mapping:
-              date: order_date
-              revenue: amount
-            storage:
-              path: public.orders_daily
-"#;
+        let yaml = load_model("orders_simple");
 
-        let engine = SemstraitEngine::with_manifest_yaml(yaml)
+        let engine = SemstraitEngine::with_manifest_yaml(&yaml)
             .await
             .expect("engine should compile manifest");
 

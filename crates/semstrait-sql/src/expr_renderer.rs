@@ -2,6 +2,7 @@
 
 use crate::dialect::SqlDialect;
 use crate::error::EmitError;
+use semstrait_core::Grain;
 use semstrait_ir::{Aggregation, AggregateMeasure, DslExpr};
 
 /// Renders `DslExpr` trees into SQL string fragments using a given dialect.
@@ -151,7 +152,12 @@ impl<'d> DslExprSqlRenderer<'d> {
 
             DslExpr::DateTrunc { grain, expr } => {
                 let rendered_expr = self.render(expr)?;
-                Ok(format!("DATE_TRUNC('{grain}', {rendered_expr})"))
+                // Parse the grain string into a Grain enum and delegate to the dialect.
+                // Fall back to ANSI DATE_TRUNC if the grain string is not a known variant.
+                match parse_grain(grain) {
+                    Some(g) => Ok(self.dialect.date_trunc(&g, &rendered_expr)),
+                    None => Ok(format!("DATE_TRUNC('{grain}', {rendered_expr})")),
+                }
             }
         }
     }
@@ -166,6 +172,21 @@ impl<'d> DslExprSqlRenderer<'d> {
         } else {
             Ok(format!("{func_name}({inner})"))
         }
+    }
+}
+
+/// Parse a grain string (e.g. "day", "month") into the `Grain` enum.
+/// Returns `None` for unrecognised values so callers can fall back.
+fn parse_grain(s: &str) -> Option<Grain> {
+    match s.to_lowercase().as_str() {
+        "minute" => Some(Grain::Minute),
+        "hour" => Some(Grain::Hour),
+        "day" => Some(Grain::Day),
+        "week" => Some(Grain::Week),
+        "month" => Some(Grain::Month),
+        "quarter" => Some(Grain::Quarter),
+        "year" => Some(Grain::Year),
+        _ => None,
     }
 }
 

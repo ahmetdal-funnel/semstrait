@@ -1,0 +1,36 @@
+semantic_model:
+  name: e2e_test_model
+  description: End-to-end test model
+  kinds:
+    - name: orders
+      type:
+        grainset:
+      dimensions:
+        - name: date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: region
+          data_type: string
+          type:
+            categorical:
+        - name: customer
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders_daily
+          extras:
+            column_mapping:
+              date: order_date
+              region: region_name
+              customer: customer_name
+              revenue: amount
+            storage:
+              path: public.orders_daily
