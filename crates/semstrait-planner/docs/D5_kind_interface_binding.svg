@@ -1,0 +1,74 @@
+<svg width="100%" viewBox="0 0 680 424" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <!-- Row 1 Left: Interface (what users query) -->
+  <g>
+    <rect x="20" y="10" width="280" height="130" rx="8" stroke-width="0.5" style="fill:rgb(8, 80, 65);stroke:rgb(93, 202, 165);stroke-width:0.5px"/>
+    <text x="40" y="33" dominant-baseline="central" style="fill:rgb(159, 225, 203);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:14px;font-weight:500">Interface (what users query)</text>
+    <text x="40" y="55" dominant-baseline="central" style="fill:rgb(93, 202, 165);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">dimensions: IndexMap&lt;name, Dim&gt;</text>
+    <text x="40" y="73" dominant-baseline="central" style="fill:rgb(93, 202, 165);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">measures:   IndexMap&lt;name, Meas&gt;</text>
+    <text x="40" y="91" dominant-baseline="central" style="fill:rgb(93, 202, 165);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">metrics:    IndexMap&lt;name, Metric&gt;</text>
+    <text x="40" y="109" dominant-baseline="central" style="fill:rgb(93, 202, 165);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">keys:       Option&lt;CompiledKeys&gt;</text>
+    <text x="40" y="127" dominant-baseline="central" style="fill:rgb(93, 202, 165);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">constraints checked at step 0</text>
+  </g>
+
+  <!-- Row 1 Right: Resolution strategy (KindType) -->
+  <g>
+    <rect x="380" y="10" width="280" height="130" rx="8" stroke-width="0.5" style="fill:rgb(60, 52, 137);stroke:rgb(175, 169, 236);stroke-width:0.5px"/>
+    <text x="400" y="33" dominant-baseline="central" style="fill:rgb(206, 203, 246);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:14px;font-weight:500">Resolution strategy (KindType)</text>
+    <text x="400" y="58" dominant-baseline="central" style="fill:rgb(175, 169, 236);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">Grainset</text>
+    <text x="400" y="76" dominant-baseline="central" style="fill:rgb(175, 169, 236);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">  route to cheapest covering dataset</text>
+    <text x="400" y="96" dominant-baseline="central" style="fill:rgb(175, 169, 236);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">Unionset</text>
+    <text x="400" y="114" dominant-baseline="central" style="fill:rgb(175, 169, 236);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">  UNION ALL + branch pruning</text>
+    <text x="400" y="132" dominant-baseline="central" style="fill:rgb(175, 169, 236);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:11px;font-weight:400">Joinset { associativity } → BFS join tree</text>
+  </g>
+
+  <!-- Horizontal arrow: Interface → Strategy (kind_type) -->
+  <line x1="300" y1="75" x2="380" y2="75" marker-end="url(#arrow)" style="fill:none;stroke:rgb(156, 154, 146);stroke-width:1.5px"/>
+  <text x="340" y="66" text-anchor="middle" style="fill:rgb(194, 192, 182);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">kind_type</text>
+
+  <!-- Vertical arrows Row 1 → Row 2 -->
+  <line x1="160" y1="140" x2="160" y2="180" marker-end="url(#arrow)" style="fill:none;stroke:rgb(156, 154, 146);stroke-width:1.5px"/>
+  <line x1="520" y1="140" x2="520" y2="180" marker-end="url(#arrow)" style="fill:none;stroke:rgb(156, 154, 146);stroke-width:1.5px"/>
+
+  <!-- Row 2 Left: Binding (physical implementation) -->
+  <g>
+    <rect x="20" y="180" width="280" height="120" rx="8" stroke-width="0.5" style="fill:rgb(113, 43, 19);stroke:rgb(240, 153, 123);stroke-width:0.5px"/>
+    <text x="40" y="203" dominant-baseline="central" style="fill:rgb(245, 196, 179);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:14px;font-weight:500">Binding (physical implementation)</text>
+    <text x="40" y="225" dominant-baseline="central" style="fill:rgb(240, 153, 123);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">datasets: Vec&lt;CompiledKindDataset&gt;</text>
+    <text x="40" y="243" dominant-baseline="central" style="fill:rgb(240, 153, 123);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">  name · column_mapping · extras</text>
+    <text x="40" y="261" dominant-baseline="central" style="fill:rgb(240, 153, 123);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">relationships: Vec&lt;CompiledRelationship&gt;</text>
+    <text x="40" y="279" dominant-baseline="central" style="fill:rgb(240, 153, 123);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">  joinset only — BFS graph for join tree</text>
+  </g>
+
+  <!-- Row 2 Right: KindPlanner dispatch -->
+  <g>
+    <rect x="380" y="180" width="280" height="120" rx="8" stroke-width="0.5" style="fill:rgb(99, 56, 6);stroke:rgb(239, 159, 39);stroke-width:0.5px"/>
+    <text x="400" y="203" dominant-baseline="central" style="fill:rgb(250, 199, 117);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:14px;font-weight:500">KindPlanner dispatch</text>
+    <text x="400" y="225" dominant-baseline="central" style="fill:rgb(239, 159, 39);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">GrainsetPlanner.resolve()</text>
+    <text x="400" y="241" dominant-baseline="central" style="fill:rgb(239, 159, 39);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">  ScanNode + routing logic</text>
+    <text x="400" y="261" dominant-baseline="central" style="fill:rgb(239, 159, 39);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">UnionsetPlanner.resolve()</text>
+    <text x="400" y="277" dominant-baseline="central" style="fill:rgb(239, 159, 39);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">  ScanNode(s) + UnionNode</text>
+    <text x="400" y="293" dominant-baseline="central" style="fill:rgb(239, 159, 39);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">JoinsetPlanner.resolve()</text>
+  </g>
+
+  <!-- Horizontal arrow: Binding → KindPlanner (binding) -->
+  <line x1="300" y1="240" x2="380" y2="240" marker-end="url(#arrow)" style="fill:none;stroke:rgb(156, 154, 146);stroke-width:1.5px"/>
+  <text x="340" y="231" text-anchor="middle" style="fill:rgb(194, 192, 182);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">binding</text>
+
+  <!-- Vertical arrows Row 2 → PlanFragment -->
+  <line x1="160" y1="300" x2="160" y2="340" marker-end="url(#arrow)" style="fill:none;stroke:rgb(156, 154, 146);stroke-width:1.5px;opacity:0.6"/>
+  <line x1="520" y1="300" x2="520" y2="340" marker-end="url(#arrow)" style="fill:none;stroke:rgb(156, 154, 146);stroke-width:1.5px;opacity:0.6"/>
+
+  <!-- PlanFragment (output) -->
+  <g>
+    <rect x="100" y="340" width="480" height="74" rx="8" stroke-width="0.5" style="fill:rgb(12, 68, 124);stroke:rgb(133, 183, 235);stroke-width:0.5px"/>
+    <text x="340" y="358" text-anchor="middle" dominant-baseline="central" style="fill:rgb(181, 212, 244);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:14px;font-weight:500">PlanFragment</text>
+    <text x="340" y="378" text-anchor="middle" dominant-baseline="central" style="fill:rgb(133, 183, 235);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">root: PlanNode · output_schema · pending_filters</text>
+    <text x="340" y="396" text-anchor="middle" dominant-baseline="central" style="fill:rgb(133, 183, 235);stroke:none;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, sans-serif;font-size:12px;font-weight:400">returned to SemanticPlanner for filter injection</text>
+  </g>
+</svg>
