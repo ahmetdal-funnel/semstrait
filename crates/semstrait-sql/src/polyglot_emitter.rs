@@ -1,83 +1,74 @@
 //! Polyglot-sql backed SQL emitter.
 //!
-//! Uses the existing `AnsiSqlEmitter` to generate ANSI SQL, then transpiles
-//! it to the target dialect via `polyglot_sql::transpile()`. This gives us
+//! Builds a polyglot-sql AST from the `PlanNode` IR via the builder API, then
+//! renders to the target dialect via `polyglot_sql::generate()`. This gives us
 //! dialect-aware output (identifier quoting, LIMIT vs FETCH FIRST, etc.)
 //! for 34+ SQL dialects without per-dialect `SqlDialect` implementations.
 
 use crate::dialect::{AnsiDialect, SqlDialect, TargetDialect};
-use crate::emitter::{AnsiSqlEmitter, SqlEmitter};
+use crate::emitter::SqlEmitter;
 use crate::error::EmitError;
+use crate::polyglot::PlanBuilder;
 use polyglot_sql::DialectType;
 use semstrait_ir::LogicalPlan;
 
 impl TargetDialect {
-    /// Convert to polyglot-sql's `DialectType`. Returns `None` for ANSI
-    /// (pass-through — no transpilation needed).
-    fn to_polyglot(self) -> Option<DialectType> {
+    /// Convert to polyglot-sql's `DialectType`.
+    fn to_polyglot(self) -> DialectType {
         match self {
-            Self::Ansi => None,
-            Self::DataFusion => Some(DialectType::DataFusion),
-            Self::DuckDb => Some(DialectType::DuckDB),
-            Self::Trino => Some(DialectType::Trino),
-            Self::Spark => Some(DialectType::Spark),
-            Self::Snowflake => Some(DialectType::Snowflake),
-            Self::Databricks => Some(DialectType::Databricks),
-            Self::PostgreSql => Some(DialectType::PostgreSQL),
+            Self::Ansi => DialectType::Generic, // Standard SQL with no dialect-specific behavior
+            Self::DataFusion => DialectType::DataFusion,
+            Self::DuckDb => DialectType::DuckDB,
+            Self::Trino => DialectType::Trino,
+            Self::Spark => DialectType::Spark,
+            Self::Snowflake => DialectType::Snowflake,
+            Self::Databricks => DialectType::Databricks,
+            Self::PostgreSql => DialectType::PostgreSQL,
         }
     }
 }
 
-/// SQL emitter that generates dialect-specific SQL via polyglot-sql transpilation.
+/// SQL emitter that generates dialect-specific SQL via polyglot-sql AST builder.
 ///
 /// Architecture:
 /// ```text
-/// PlanNode -> AnsiSqlEmitter (ANSI SQL string) -> polyglot::transpile -> target dialect SQL
+/// PlanNode -> PlanBuilder (AST construction) -> Expression -> polyglot::generate -> target SQL
 /// ```
 ///
-/// The ANSI SQL is generated using our existing, well-tested `AnsiSqlEmitter`.
-/// Polyglot-sql then handles dialect-specific transformations:
+/// The PlanNode IR is converted to a polyglot-sql Expression AST using the
+/// programmatic builder API. Polyglot-sql then renders dialect-specific SQL:
 /// - Identifier quoting (double-quotes → backticks for Spark/Databricks)
 /// - FETCH FIRST → LIMIT conversion
 /// - Function name normalization
 pub struct PolyglotEmitter {
-    base: AnsiSqlEmitter<AnsiDialect>,
+    builder: PlanBuilder,
     target: TargetDialect,
+    /// Kept for backward compatibility with `SqlEmitter::dialect()`.
+    _ansi_dialect: AnsiDialect,
 }
 
 impl PolyglotEmitter {
     pub fn new(target: TargetDialect) -> Self {
         Self {
-            base: AnsiSqlEmitter::new(AnsiDialect),
+            builder: PlanBuilder::new(),
             target,
-        }
-    }
-
-    /// Transpile ANSI SQL to the target dialect.
-    fn transpile(&self, ansi_sql: &str) -> Result<String, EmitError> {
-        match self.target.to_polyglot() {
-            None => Ok(ansi_sql.to_string()),
-            Some(target_dialect) => {
-                // Parse as DuckDB (lenient parser that handles ANSI + common extensions)
-                // and generate for the target dialect.
-                let results = polyglot_sql::transpile(ansi_sql, DialectType::DuckDB, target_dialect)
-                    .map_err(|e| EmitError::InvalidPlan(format!("transpile failed: {e}")))?;
-                results
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| EmitError::InvalidPlan("transpile returned no output".into()))
-            }
+            _ansi_dialect: AnsiDialect,
         }
     }
 }
 
 impl SqlEmitter for PolyglotEmitter {
     fn emit(&self, plan: &LogicalPlan) -> Result<String, EmitError> {
-        let ansi_sql = self.base.emit(plan)?;
-        self.transpile(&ansi_sql)
+        // Build polyglot-sql AST from PlanNode IR
+        let ast = self.builder.build(plan)?;
+
+        // Generate SQL for the target dialect
+        let dialect = self.target.to_polyglot();
+        polyglot_sql::generate(&ast, dialect)
+            .map_err(|e| EmitError::InvalidPlan(format!("generate failed: {e}")))
     }
 
     fn dialect(&self) -> &dyn SqlDialect {
-        self.base.dialect()
+        &self._ansi_dialect
     }
 }

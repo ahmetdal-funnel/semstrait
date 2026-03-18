@@ -16,6 +16,8 @@ mod emitter;
 mod error;
 mod expr_renderer;
 #[cfg(feature = "polyglot")]
+mod polyglot;
+#[cfg(feature = "polyglot")]
 mod polyglot_emitter;
 
 pub use dialect::{AnsiDialect, DuckDbDialect, SqlDialect, TargetDialect, TrinoDialect};
