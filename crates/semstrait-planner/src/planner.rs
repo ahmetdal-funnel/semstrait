@@ -56,10 +56,39 @@ impl SemanticPlanner {
             .get_kind(&request.kind_name)
             .ok_or_else(|| PlannerError::KindNotFound(request.kind_name.clone()))?;
 
-        // Step 3: Dispatch to kind-specific planner.
+        // Step 3: Apply domain filter — narrow datasets if domain_hint is present.
+        let kind = if let Some(ref domain_hint) = request.domain_hint {
+            let mut filtered_kind = kind.clone();
+            filtered_kind.datasets.retain(|_ds| {
+                // Keep datasets that belong to the requested domain.
+                // Kind-level domain is checked: if the kind's domain list
+                // doesn't include the hint, all datasets are excluded.
+                if let Some(ref kind_domains) = filtered_kind.domain {
+                    if !kind_domains.iter().any(|d| d == domain_hint) {
+                        return false;
+                    }
+                }
+                true
+            });
+
+            if filtered_kind.datasets.is_empty() {
+                return Err(PlannerError::NoCoveringDataset {
+                    kind: kind.name.clone(),
+                    reason: format!(
+                        "no datasets match domain hint '{}'",
+                        domain_hint
+                    ),
+                });
+            }
+            std::borrow::Cow::Owned(filtered_kind)
+        } else {
+            std::borrow::Cow::Borrowed(kind)
+        };
+
+        // Step 4: Dispatch to kind-specific planner.
         let kind_planner = self.planners.dispatch(&kind.kind_type)?;
 
-        // Step 4: Build planning context.
+        // Step 5: Build planning context.
         let ctx = PlannerContext {
             manifest,
             profile: &self.profile,
@@ -67,10 +96,10 @@ impl SemanticPlanner {
             session: &request.session_variables,
         };
 
-        // Step 5: Resolve plan fragment via kind planner.
-        let mut fragment = kind_planner.resolve(kind, request, &ctx)?;
+        // Step 6: Resolve plan fragment via kind planner.
+        let mut fragment = kind_planner.resolve(&kind, request, &ctx)?;
 
-        // Step 6: Additivity resolution for each measure.
+        // Step 7: Additivity resolution for each measure.
         for measure_name in &request.measures {
             if let Some(measure) = kind.measures.get(measure_name) {
                 fragment =
@@ -78,29 +107,29 @@ impl SemanticPlanner {
             }
         }
 
-        // Step 7: Inject filters.
+        // Step 8: Inject filters.
         let mut root = fragment.root;
 
-        // 7a: Inject dataset-level filters.
+        // 8a: Inject dataset-level filters.
         // (Dataset filters come from the dataset binding; skipped in v1 simplified flow.)
 
-        // 7b: Measure-level filters are applied as conditional aggregation inside
+        // 8b: Measure-level filters are applied as conditional aggregation inside
         // the KindPlanner (GrainsetPlanner wraps aggregate expressions in
         // CASE WHEN filter THEN expr ELSE NULL END). No extra FilterNode needed here.
 
-        // 7c: Metric-level filters follow the same conditional aggregation pattern
+        // 8c: Metric-level filters follow the same conditional aggregation pattern
         // as measure filters — applied during expression lowering in KindPlanner.
 
-        // 7d: Inject user filters from the request.
+        // 8d: Inject user filters from the request.
         root = inject_user_filters(root, request)?;
 
-        // Step 8: Apply ORDER BY.
+        // Step 9: Apply ORDER BY.
         root = apply_order_by(root, request)?;
 
-        // Step 9: Apply LIMIT.
+        // Step 10: Apply LIMIT.
         root = apply_limit(root, request)?;
 
-        // Step 10: Build LogicalPlan.
+        // Step 11: Build LogicalPlan.
         let output_names: Vec<String> = request
             .dimensions
             .iter()
@@ -110,7 +139,7 @@ impl SemanticPlanner {
 
         let plan = LogicalPlan::new(root, output_names);
 
-        // Step 11: Optimizer pass.
+        // Step 12: Optimizer pass.
         self.optimizer.apply(plan)
     }
 }
@@ -197,51 +226,31 @@ fn query_filter_to_dsl_expr(
     };
 
     match &filter.operator {
-        FilterOperator::Eq => {
-            let value = filter_value_to_expr(&filter.values[0])?;
+        FilterOperator::Eq
+        | FilterOperator::NotEq
+        | FilterOperator::Lt
+        | FilterOperator::LtEq
+        | FilterOperator::Gt
+        | FilterOperator::GtEq => {
+            let first = filter.values.first().ok_or_else(|| {
+                PlannerError::Internal(format!(
+                    "{:?} filter requires at least 1 value",
+                    filter.operator
+                ))
+            })?;
+            let value = filter_value_to_expr(first)?;
+            let op = match filter.operator {
+                FilterOperator::Eq => BinaryOp::Eq,
+                FilterOperator::NotEq => BinaryOp::NotEq,
+                FilterOperator::Lt => BinaryOp::Lt,
+                FilterOperator::LtEq => BinaryOp::LtEq,
+                FilterOperator::Gt => BinaryOp::Gt,
+                FilterOperator::GtEq => BinaryOp::GtEq,
+                _ => unreachable!(),
+            };
             Ok(DslExpr::BinaryOp {
                 left: Box::new(column),
-                op: BinaryOp::Eq,
-                right: Box::new(value),
-            })
-        }
-        FilterOperator::NotEq => {
-            let value = filter_value_to_expr(&filter.values[0])?;
-            Ok(DslExpr::BinaryOp {
-                left: Box::new(column),
-                op: BinaryOp::NotEq,
-                right: Box::new(value),
-            })
-        }
-        FilterOperator::Lt => {
-            let value = filter_value_to_expr(&filter.values[0])?;
-            Ok(DslExpr::BinaryOp {
-                left: Box::new(column),
-                op: BinaryOp::Lt,
-                right: Box::new(value),
-            })
-        }
-        FilterOperator::LtEq => {
-            let value = filter_value_to_expr(&filter.values[0])?;
-            Ok(DslExpr::BinaryOp {
-                left: Box::new(column),
-                op: BinaryOp::LtEq,
-                right: Box::new(value),
-            })
-        }
-        FilterOperator::Gt => {
-            let value = filter_value_to_expr(&filter.values[0])?;
-            Ok(DslExpr::BinaryOp {
-                left: Box::new(column),
-                op: BinaryOp::Gt,
-                right: Box::new(value),
-            })
-        }
-        FilterOperator::GtEq => {
-            let value = filter_value_to_expr(&filter.values[0])?;
-            Ok(DslExpr::BinaryOp {
-                left: Box::new(column),
-                op: BinaryOp::GtEq,
+                op,
                 right: Box::new(value),
             })
         }
@@ -465,6 +474,56 @@ mod tests {
 
         assert!(result.is_err(), "should error when kind doesn't exist");
         assert!(matches!(result.unwrap_err(), PlannerError::KindNotFound(_)));
+    }
+
+    #[test]
+    fn test_plan_with_domain_hint_accepted() {
+        let mut manifest = make_test_manifest();
+        // Set domain on the kind.
+        if let Some(kind) = manifest.kinds.get_mut("orders") {
+            kind.domain = Some(vec!["financial".to_string()]);
+        }
+
+        let mut request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
+        request.domain_hint = Some("financial".to_string());
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan(&request, &manifest);
+        assert!(result.is_ok(), "domain hint matching kind domain should succeed");
+    }
+
+    #[test]
+    fn test_plan_with_domain_hint_rejected() {
+        let mut manifest = make_test_manifest();
+        if let Some(kind) = manifest.kinds.get_mut("orders") {
+            kind.domain = Some(vec!["financial".to_string()]);
+        }
+
+        let mut request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
+        request.domain_hint = Some("marketing".to_string());
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan(&request, &manifest);
+        assert!(result.is_err(), "domain hint not matching should fail");
+        assert!(matches!(
+            result.unwrap_err(),
+            PlannerError::NoCoveringDataset { .. }
+        ));
+    }
+
+    #[test]
+    fn test_plan_no_domain_hint_passes_through() {
+        let mut manifest = make_test_manifest();
+        if let Some(kind) = manifest.kinds.get_mut("orders") {
+            kind.domain = Some(vec!["financial".to_string()]);
+        }
+
+        let request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
+        // No domain_hint set.
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan(&request, &manifest);
+        assert!(result.is_ok(), "no domain hint should pass through all datasets");
     }
 
     // Helper functions to check for node types in the plan tree

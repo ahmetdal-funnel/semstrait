@@ -13,21 +13,22 @@ Module-level decisions live in `crates/<module>/DECISION_LOG.md`.
 **Decision:** Restructure to match CONTEXT.md's 10-crate architecture. Move existing working code into appropriate new crates. Preserve all 203 existing tests.
 **Rationale:** The 10-crate structure enforces dependency rules at the Cargo level, enables parallel compilation, and matches the design document that is the authoritative reference.
 
-## DL-002: V1 focuses on plan generation, not execution
+## DL-002: V1 focuses on plan generation, with DataFusion as reference executor
 
-**Date:** 2026-03-17
-**Status:** Accepted
+**Date:** 2026-03-17 (updated 2026-03-18)
+**Status:** Amended
 **Context:** Full engine execution requires DuckDB, Trino, Spark connectors with complex wire protocols.
-**Decision:** V1 generates LogicalPlan + ANSI SQL. Connector traits exist but implementations are stubs. Execution is v2.
-**Rationale:** Validating the semantic model → plan → SQL pipeline end-to-end is the critical path. Execution adds integration complexity that can be layered on once the plan generation is proven correct.
+**Decision:** V1 generates LogicalPlan + ANSI SQL as primary output. DataFusion is the reference execution connector (feature-gated). DuckDB/Trino/Spark connectors are stubs — full execution for those engines is v2.
+**Rationale:** Validating the semantic model → plan → SQL pipeline end-to-end is the critical path. DataFusion is embedded (in-process Rust), making it the lowest-friction execution target for E2E validation. External engine connectors remain v2.
 
 ## DL-003: Use sqlparser-rs AST for SQL generation
 
 **Date:** 2026-03-17
-**Status:** Accepted
+**Status:** Superseded by DL-015
 **Context:** CONTEXT.md specifies using `sqlparser-rs` as intermediate form for syntactically correct SQL output.
 **Decision:** PlanNode tree → sqlparser AST → String. No Jinja templates. Programmatic SQL construction only.
 **Rationale:** sqlparser-rs guarantees syntactic correctness. Template-based approaches are fragile and hard to test.
+**Superseded:** Direct string building via `SqlDialect` trait proved simpler and sufficient. See DL-015.
 
 ## DL-004: Substrait is always produced, SQL is on-demand
 
@@ -56,7 +57,7 @@ Module-level decisions live in `crates/<module>/DECISION_LOG.md`.
 ## DL-007: IcebergRestCatalog is stub-only in v1
 
 **Date:** 2026-03-17
-**Status:** Superseded by DL-009
+**Status:** Superseded by DL-010
 **Context:** Full Iceberg REST catalog requires Polaris/Gravitino integration.
 **Decision:** `IcebergRestCatalog` struct exists behind `iceberg` feature flag. V1 implementation is minimal.
 **Rationale:** Catalog integration is secondary to plan generation correctness.
@@ -156,3 +157,86 @@ Module-level decisions live in `crates/<module>/DECISION_LOG.md`.
 **Context:** `ExprConverter::from_substrait()` reconstructed many expression types as generic `FunctionCall` nodes instead of their native `DslExpr` variants (Not, IsNull, InList, Between, Like, NullIf, DateTrunc, Coalesce).
 **Decision:** Add function anchor constants (205-210) for all missing functions. Update `from_scalar_function()` to reconstruct native DslExpr variants. Register all functions in Substrait extension declarations.
 **Rationale:** Faithful round-trip (DslExpr → Substrait → DslExpr) is required for plan inspection, optimization passes, and Substrait-based plan exchange with external consumers.
+
+## DL-020: Dual DslExpr types — core vs IR
+
+**Date:** 2026-03-18
+**Status:** Acknowledged — future rename
+**Context:** `semstrait_core::DslExpr` (used by manifest compiler) and `semstrait_ir::DslExpr` (used by plan nodes/SQL emission) are structurally different. Core uses typed variants per operator (Sum, Add, Eq, Guard). IR uses `BinaryOp { op }` enum and `FunctionCall`. They do NOT share the same variant set despite CONTEXT.md's note.
+**Decision:** Both types remain as-is for v1. The IR variant is the one documented in CONTEXT.md §5.1 and used by `ExprConverter` and `DslExprSqlRenderer`. Future: rename IR type to `IrExpr` to eliminate name collision.
+**Rationale:** Renaming mid-v1 would touch 40+ files. The current setup works — core DslExpr is internal to the compiler; IR DslExpr is the public-facing expression type.
+
+## DL-021: Domain filter step deferred to v1.1
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** CONTEXT.md §5.6 Step 2 documents a "domain filter" step that narrows candidate datasets by `domain_hint`. The `domain_hint` field exists on `ResolvedQueryRequest` but the planner never reads it.
+**Decision:** Domain filtering is deferred to v1.1. The planner looks up the kind by name and dispatches directly. The `domain_hint` field is preserved for future use.
+**Rationale:** V1 models have a single kind per query. Domain filtering becomes necessary with multi-kind or multi-tenant deployments. Adding it now without a use case would be speculative.
+
+## DL-022: Aggregation constraint checking deferred to v1.1
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** `ConstraintEvaluator::check_aggregation_constraints()` is a stub returning `Ok(())`. Dimensional constraints (one_of, none_of, all) are fully implemented.
+**Decision:** Aggregation constraints (allowed/prohibited function lists) are deferred to v1.1. Dimension constraints are the priority for v1.
+**Rationale:** V1 measures use simple aggregates (SUM, COUNT, AVG). Aggregation constraints become relevant when custom aggregation functions are supported.
+
+## DL-023: ComputeEmitter trait — available but not in engine hot path
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** `ComputeEmitter` trait is defined in `semstrait-connectors` and implemented by connectors, but `SemstraitEngine` constructs `ComputePayload::Sql(sql)` directly via `SqlEmitter`, bypassing `ComputeEmitter`. D6 diagram shows it in the pipeline.
+**Decision:** `ComputeEmitter` remains as an optional connector capability for engines that want custom payload creation. The engine's hot path uses `SqlEmitter` + `SubstraitSerializer` directly. Connectors that need Substrait or native plan formats can use `ComputeEmitter` in their own orchestration.
+**Rationale:** The engine knows best which formats to produce (SQL + Substrait JSON for explain). Delegating to `ComputeEmitter` would add indirection without benefit for the common SQL-execution path.
+
+## DL-024: SafeDivide maps to Divide in Substrait (null-guard at SQL level)
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** `BinaryOp::SafeDivide` encodes as `FUNC_DIVIDE` (anchor 303) in Substrait. On round-trip decode, it becomes `BinaryOp::Divide`. The null-guard semantics (`CASE WHEN b = 0 THEN NULL ELSE a / b END`) are only preserved in SQL emission.
+**Decision:** This is by design. Substrait does not have a "safe divide" function. The null-guard is a SQL-emission concern, not a plan-level concern.
+**Rationale:** Substrait consumers that receive the plan will get a standard divide. The SafeDivide semantics are a presentation-layer feature specific to SQL output.
+
+## DL-025: Adopt polyglot-sql as SQL emission core abstraction
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** semstrait-sql uses custom `SqlDialect` trait + `AnsiSqlEmitter` (~580 lines) for SQL emission via direct string building. Adding dialects (Spark, Snowflake, Databricks) requires ~200 lines per dialect with risk of missing edge cases. `polyglot-sql` (v0.1.15, MIT, pure Rust) provides a builder API + dialect-aware `generate()` for 34 dialects with 18,745 test cases.
+**Decision:** Adopt `polyglot-sql` as the SQL generation backend. Build queries programmatically via polyglot's builder API (`select()`, `col()`, `sum()`, `case()`, etc.), then call `generate(&expr, dialect)` for target-specific SQL. Keep `SqlEmitter` trait as our public API — polyglot is an implementation detail. Deprecate `AnsiSqlEmitter`, `DslExprSqlRenderer`, and per-dialect `SqlDialect` trait impls.
+**Rationale:** Eliminates per-dialect reimplementation. polyglot's 18K tests catch function mapping, quoting, and syntax edge cases. Fork-friendly (MIT, pure Rust, zero C deps). Builder gaps (SUM DISTINCT, window OVER, DATE_TRUNC) are solvable with thin wrappers or PRs upstream. `sqlparser` kept in workspace for future SQL expr parsing (separate concern).
+**Risks:** Pre-1.0 (0.1.x), 5 weeks old, 222K SLoC. Mitigated by: pin exact version, fork-ready, feature-gate only needed dialects, keep SqlEmitter trait as abstraction boundary.
+
+## DL-026: DuckDB connector via official duckdb crate v1.3.2
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** DuckDB connector was a stub (feature flag exists, no implementation). `duckdb` crate v1.3.2 is the official Rust binding (1.58M downloads, arrow 55 compatible).
+**Decision:** Implement `DuckDbConnector` using `duckdb = "1.3"` with `bundled` feature. Execute SQL via `stmt.query_arrow()` -> `Vec<RecordBatch>`. Wrap blocking calls in `tokio::task::spawn_blocking` since `Connection` is `Send` but `!Sync`.
+**Rationale:** Arrow 55 matches our workspace — no version bump. Official bindings, production maturity. Embedded (in-process) execution with native Parquet/CSV/Iceberg/S3 reading via DuckDB extensions.
+**Trade-off:** `bundled` feature compiles DuckDB C++ from source (several minutes first build). Acceptable for feature-gated dependency.
+
+## DL-027: Trino connector via trino-rust-client v0.9.3
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** Trino connector was a stub. `trino-rust-client` v0.9.3 (MIT, 36K downloads, Feb 2026) is an actively maintained fork of prusto with Basic Auth, JWT, spooling protocol, and dynamic Row type.
+**Decision:** Implement `TrinoConnector` using `trino-rust-client`. Submit SQL via REST v1/statement, receive JSON rows. Add JSON -> Arrow conversion layer. Fallback to raw reqwest implementation if crate proves insufficient (reuse IcebergRestCatalog patterns).
+**Rationale:** Handles pagination (nextUri), spooling protocol, compression. ~4K SLoC — small enough to audit/fork. No Arrow Flight SQL option (Trino does not support it).
+
+## DL-028: Spark connector via Apache spark-connect-rs (forked)
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** Apache `spark-connect-rust` (github.com/apache/spark-connect-rust) is the official Apache Spark Connect Rust client. Same codebase as community `spark-connect-rs` (donated by sjrusso8). Uses arrow 55 (matches), but tonic 0.11 (we have 0.12) and prost 0.12 (we have 0.14).
+**Decision:** Fork the Apache repo, bump tonic 0.11->0.12 and prost 0.12->0.14 to match workspace. Primary path: SQL string execution via `spark.sql()` -> `RecordBatch`. UnresolvedLogicalPlan submission via DataFrame API available for future v3 optimization. Contribute dep bumps upstream.
+**Rationale:** Only Apache-blessed Rust client for Spark. Arrow 55 compatible. Supports SQL + catalog + streaming. Fork necessary due to dep version mismatch. Small codebase (~10K SLoC) makes fork maintenance feasible.
+**Risks:** Experimental status, low commit velocity (2 commits in 6 months), 3-4 contributors. protoc build requirement. Mitigated by: fork under our control, pin to specific commit, SQL path is simple and stable.
+
+## DL-029: Arrow Flight SQL deferred to Databricks-specific connector
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** `arrow-flight` crate (v58.0.0, 9.4M downloads) provides production-grade `FlightSqlServiceClient`. However, neither Spark nor Trino natively expose Flight SQL endpoints. Only Databricks and purpose-built Flight SQL servers (Dremio, Ballista) support it.
+**Decision:** Defer Flight SQL connector to v2+ as a Databricks-specific or generic Flight-compatible connector. Not part of the Spark or Trino connector implementations.
+**Rationale:** Flight SQL is the right long-term protocol for zero-copy Arrow data transfer, but the server-side ecosystem is not there yet for our target engines. When Databricks support is needed, `arrow-flight` is the clear choice.

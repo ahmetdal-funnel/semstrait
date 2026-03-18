@@ -51,6 +51,7 @@ pub struct IcebergRestCatalog {
     client: Client,
     auth: AuthConfig,
     /// Cached OAuth2 access token with optional expiry instant.
+    #[allow(clippy::type_complexity)]
     token_cache: Arc<RwLock<Option<(String, Option<Instant>)>>>,
 }
 
@@ -130,7 +131,7 @@ impl IcebergRestCatalog {
                 {
                     let cached = self.token_cache.read().await;
                     if let Some((token, expiry)) = cached.as_ref() {
-                        if expiry.map_or(true, |exp| Instant::now() < exp) {
+                        if expiry.is_none_or(|exp| Instant::now() < exp) {
                             return Ok(Some(token.clone()));
                         }
                         tracing::debug!("OAuth2 token expired, refreshing");

@@ -7,7 +7,7 @@
 
 use crate::error::PlannerError;
 use crate::expr_lower;
-use crate::kind_planner::{KindPlanner, PlanFragment, PlannerContext};
+use crate::kind_planner::{resolve_column_name, KindPlanner, PlanFragment, PlannerContext};
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::DataType;
 use semstrait_ir::{
@@ -16,10 +16,9 @@ use semstrait_ir::{
 };
 use semstrait_manifest::{CompiledKind, CompiledKindDataset, CompiledKindType};
 use std::collections::HashSet;
-use semstrait_manifest::ColumnMappingValue;
 
 /// Recursively collect all column references from a DslExpr tree.
-fn collect_column_refs(expr: &DslExpr, columns: &mut Vec<String>, seen: &mut HashSet<String>) {
+pub fn collect_column_refs(expr: &DslExpr, columns: &mut Vec<String>, seen: &mut HashSet<String>) {
     match expr {
         DslExpr::Column { name, .. } => {
             if seen.insert(name.clone()) {
@@ -159,14 +158,6 @@ fn resolve_table_name<'a>(
         Ok(&dataset.name)
     } else {
         Ok(&dataset_binding.name)
-    }
-}
-
-/// Resolve the physical column name from a column mapping value.
-fn resolve_column_name(mapping_value: &ColumnMappingValue) -> &str {
-    match mapping_value {
-        ColumnMappingValue::Simple(s) => s.as_str(),
-        ColumnMappingValue::WithGrain { column, .. } => column.as_str(),
     }
 }
 

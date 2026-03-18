@@ -17,6 +17,7 @@ pub use repository::{InMemoryRepository, Repository};
 // Re-export model types needed by downstream crates (planner, tests).
 // This avoids forcing planner to depend directly on semstrait-model.
 pub use semstrait_model::{
-    AdditivityType, AggregationConstraints, CategoricalDimension, ColumnMappingValue,
-    DimensionConstraints, DimensionType, KindDatasetExtras, MeasureConstraints,
+    AdditivityType, AggregationConstraints, Cardinality, CategoricalDimension, ColumnMappingValue,
+    DimensionConstraints, DimensionType, JoinAssociativity, JoinColumnPair,
+    JoinType, KindDatasetExtras, KindTypeSpec, MeasureConstraints,
 };

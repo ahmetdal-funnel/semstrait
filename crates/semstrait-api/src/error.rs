@@ -17,8 +17,11 @@ pub enum EngineError {
     #[error("emit error: {0}")]
     Emit(#[from] semstrait_sql::EmitError),
 
-    #[error("execution error: {0}")]
-    Execution(String),
+    #[error("adapt error: {0}")]
+    Adapt(#[from] semstrait_connectors::AdaptError),
+
+    #[error("connector error: {0}")]
+    Connector(#[from] semstrait_connectors::ConnectorError),
 
     #[error("not configured: {0}")]
     NotConfigured(String),

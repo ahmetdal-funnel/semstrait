@@ -434,6 +434,7 @@ impl SubstraitSerializer {
                 arguments: vec![proto::FunctionArgument {
                     arg_type: Some(ArgType::Value(arg_expr)),
                 }],
+                #[allow(deprecated)]
                 args: vec![],
                 sorts: vec![],
                 output_type: None,
@@ -565,7 +566,7 @@ impl SubstraitSerializer {
 
     fn union_to_rel(node: &UnionNode) -> Result<proto::Rel, SerializeError> {
         let inputs: Result<Vec<_>, _> =
-            node.inputs.iter().map(|n| Self::node_to_rel(n)).collect();
+            node.inputs.iter().map(Self::node_to_rel).collect();
         let inputs = inputs?;
 
         Ok(proto::Rel {
@@ -580,7 +581,7 @@ impl SubstraitSerializer {
 
     fn rel_to_union(set: &proto::SetRel) -> Result<PlanNode, DeserializeError> {
         let inputs: Result<Vec<_>, _> =
-            set.inputs.iter().map(|r| Self::rel_to_node(r)).collect();
+            set.inputs.iter().map(Self::rel_to_node).collect();
         let inputs = inputs?;
 
         if inputs.is_empty() {
@@ -687,7 +688,7 @@ impl SubstraitSerializer {
             None
         };
 
-        let count_mode = node.count.map(|c| proto::fetch_rel::CountMode::Count(c));
+        let count_mode = node.count.map(proto::fetch_rel::CountMode::Count);
 
         Ok(proto::Rel {
             rel_type: Some(RelType::Fetch(Box::new(proto::FetchRel {

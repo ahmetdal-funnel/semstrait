@@ -1,5 +1,5 @@
 # Semstrait Architecture Document
-**Version:** 3.1 | **Status:** Implementation — authoritative reference for per-module documentation
+**Version:** 3.2 | **Status:** Implementation — authoritative reference for per-module documentation
 
 ---
 
@@ -69,8 +69,8 @@ semstrait/                       Cargo workspace root
 | `semstrait-planner` | `semstrait-core`, `semstrait-ir`, `semstrait-manifest`, `semstrait-catalog` |
 | `semstrait-sql` | `semstrait-core`, `semstrait-ir` |
 | `semstrait-connectors` | `semstrait-core`, `semstrait-ir`, `semstrait-sql` |
-| `semstrait-api` | `semstrait-core`, `semstrait-planner`, `semstrait-manifest`, `semstrait-connectors` |
-| `semstrait` (facade) | `semstrait-planner`, `semstrait-manifest`, `semstrait-connectors`, `semstrait-catalog` |
+| `semstrait-api` | `semstrait-core`, `semstrait-ir`, `semstrait-sql`, `semstrait-planner`, `semstrait-manifest`, `semstrait-connectors`, `semstrait-catalog` |
+| `semstrait` (facade) | `semstrait-core`, `semstrait-ir`, `semstrait-sql`, `semstrait-planner`, `semstrait-manifest`, `semstrait-connectors`, `semstrait-catalog` |
 
 **Connection verification — cycle check:**
 - `semstrait-connectors` needs `ConsumerProfile` (for `ComputeAdapter::consumer_profile()`). `ConsumerProfile` is in `semstrait-core`. `semstrait-planner` also needs `ConsumerProfile` (for `AdditivityResolver`). Both get it from `core`. No cycle. ✓
@@ -180,13 +180,15 @@ InMemoryRepository.save()         │    Substrait-serializable + SemAnnotation
 **Key types:**
 
 ```rust
-/// Note: Schema and Field live in `semstrait-ir`, not `semstrait-core`.
-/// They are IR-level types used by PlanNode metadata.
-/// See §5.5 for the full Schema definition.
+/// Note: There are TWO Schema types in the workspace:
+///   1. `semstrait_core::Schema` — simple Vec<SchemaColumn> with linear ordinal scan.
+///      Used by manifest compiler for compile-time schema tracking.
+///   2. `semstrait_ir::Schema` — with HashMap<String, usize> index for O(1) ordinal.
+///      Used by PlanNode metadata, ExprConverter, and DslExprSqlRenderer.
+///      See §5.5 for the full IR Schema definition.
 ///
-/// Schema uses a HashMap<String, usize> index for O(1) ordinal lookups.
-/// The index is built at construction and maintained through Clone.
-/// PartialEq compares only fields (index is derived).
+/// The IR Schema's HashMap index is built at construction and maintained through Clone.
+/// PartialEq compares only fields (index is derived). #[serde(skip)] on the index.
 
 /// Arrow-aligned type system. Bidirectional with arrow::datatypes::DataType.
 pub enum DataType {
@@ -225,28 +227,38 @@ pub enum Grain { Minute, Hour, Day, Week, Month, Quarter, Year }
 
 /// MeasureConstraints — the runtime type for the `constraints:` YAML field.
 /// Evaluated at step 0 (pre-resolution). This is NOT `requires`.
+///
+/// Note: There are TWO sets of constraint types in the workspace:
+///   1. `semstrait_core::constraints` — uses Vec<String> with serde skip_serializing_if.
+///      Defined in core for shared use, but currently unused by other crates.
+///   2. `semstrait_model::types` — uses Option<Vec<String>> for YAML deserialization.
+///      Re-exported via semstrait-manifest. Used by ConstraintEvaluator and CompiledManifest.
+///
+/// The model types (shown below) are the ones used in practice:
 pub struct MeasureConstraints {
     pub dimensions:   Option<DimensionConstraints>,
     pub aggregations: Option<AggregationConstraints>,
 }
 pub struct DimensionConstraints {
-    pub one_of: Vec<String>,
-    pub none_of: Vec<String>,
-    pub all:    Vec<String>,
+    pub one_of:  Option<Vec<String>>,
+    pub none_of: Option<Vec<String>>,
+    pub all:     Option<Vec<String>>,
 }
 pub struct AggregationConstraints {
-    pub allowed:    Vec<String>,
-    pub prohibited: Vec<String>,
+    pub allowed:    Option<Vec<String>>,
+    pub prohibited: Option<Vec<String>>,
 }
 
 /// DSL expression tree — the ONLY way to express computations in v1.
 /// Raw SQL strings are rejected at compile time.
 ///
-/// Note: There are TWO DslExpr types in the workspace:
-///   1. `semstrait_core::DslExpr` — used by manifest compiler for expression parsing
-///   2. `semstrait_ir::DslExpr` — used by PlanNode/IR for plan representation
-/// Both share the same variant set. The IR variant is used in PlanNode trees,
-/// ExprConverter (Substrait), and DslExprSqlRenderer (SQL emission).
+/// Note: There are TWO DslExpr types in the workspace (DL-020):
+///   1. `semstrait_core::DslExpr` — used by manifest compiler. Uses typed variants
+///      per operator (Sum, Add, Eq, Guard). Internal to compile pipeline.
+///   2. `semstrait_ir::DslExpr` — used by PlanNode/IR for plan representation.
+///      Uses BinaryOp { op } enum and FunctionCall. Documented below.
+/// The two types have DIFFERENT variant sets. The IR variant is the canonical
+/// one used in PlanNode trees, ExprConverter (Substrait), and DslExprSqlRenderer.
 /// Future: rename IR variant to `IrExpr` to eliminate the name collision.
 pub enum DslExpr {
     Column { name: String, qualifier: Option<String> },
@@ -292,6 +304,7 @@ pub struct SemanticModel {
     pub description:   Option<String>,
     pub ai_context:    Option<AiContext>,
     pub labels:        Vec<String>,
+    pub namespace:     Option<String>,  // catalog namespace for glob expansion (defaults to "default")
     pub datasets:      Vec<Dataset>,
     pub kinds:         Vec<Kind>,
     pub relationships: Vec<Relationship>,
@@ -405,13 +418,13 @@ pub struct NullCatalogProvider;
 
 **Implementations (feature-gated within this crate):**
 
-| Feature flag | Impl | Backend | Protocol |
-|---|---|---|---|
-| `iceberg` | `IcebergRestCatalog` | Polaris, Gravitino | Iceberg REST spec |
-| `unity` | `UnityCatalog` | Databricks Unity Catalog | UC REST API |
-| `glue` | `GlueCatalog` | AWS Glue | AWS SDK |
-| `hive` | `HiveCatalog` | Hive Metastore | Thrift / HTTP |
-| *(always)* | `NullCatalogProvider` | None | — |
+| Feature flag | Impl | Backend | Protocol | Status |
+|---|---|---|---|---|
+| `iceberg` | `IcebergRestCatalog` | Polaris, Gravitino | Iceberg REST spec | Implemented (v1) |
+| `unity` | `UnityCatalog` | Databricks Unity Catalog | UC REST API | Planned (v2) |
+| `glue` | `GlueCatalog` | AWS Glue | AWS SDK | Planned (v2) |
+| `hive` | `HiveCatalog` | Hive Metastore | Thrift / HTTP | Planned (v2) |
+| *(always)* | `NullCatalogProvider` | None | — | Implemented (v1) |
 
 **External deps:** `semstrait-core`, `async-trait`, `tokio`, `reqwest` (optional)
 
@@ -689,16 +702,20 @@ impl SemanticPlanner {
 **`plan()` internal steps:**
 ```
 1. ConstraintEvaluator::check(request, manifest)   → Err if violated
-2. domain filter                                    → narrow candidate set
+2. domain filter (v1.1 — DL-021)                   → deferred, kind lookup only
 3. KindPlannerRegistry::dispatch(kind_type)         → KindPlanner
 4. KindPlanner::resolve(kind, request, ctx)         → PlanFragment
 5. AdditivityResolver::resolve(fragment, measure, ..)
-6. inject dataset filter         (FilterNode, source = DatasetFilter)
-7. inject measure filter         (Guard in AggNode or FilterNode)
-8. inject metric filter          (FilterNode, source = MetricFilter)
+6. inject dataset filter (v1: skipped — handled inside KindPlanner)
+7. inject measure filter         (CASE WHEN in AggNode — DL-008)
+8. inject metric filter          (handled inside KindPlanner in v1)
 9. inject user filter            (FilterNode, source = UserFilter)
-10. Optimizer::apply(plan)       → LogicalPlan  (identity in v1)
+10. ORDER BY + LIMIT/FETCH       (SortNode + FetchNode)
+11. Optimizer::apply(plan)       → LogicalPlan  (identity in v1)
 ```
+**Note:** In v1, steps 6 and 8 (dataset/metric filters) are applied inside the
+KindPlanner's resolve() method rather than as separate post-processing steps.
+Domain filtering (step 2) is deferred to v1.1 per DL-021.
 
 #### ConstraintEvaluator
 
@@ -863,17 +880,28 @@ pub struct DuckDbDialect;  // LIMIT, lowercase date_trunc
 pub struct TrinoDialect;   // FETCH FIRST, lowercase date_trunc
 ```
 
-**DslExpr → SQL lowering table:**
+**IR DslExpr → SQL lowering table:**
 
 | `DslExpr` | ANSI SQL |
 |---|---|
-| `Column(name)` | `"name"` (quoted per dialect) |
-| `Literal(Int(n))` | `n` |
-| `Sum(x)` | `SUM(x)` |
-| `CountDistinct(x)` | `COUNT(DISTINCT x)` |
-| `Guard { cond, expr }` | `CASE WHEN cond THEN expr END` |
-| `DateTrunc { Day, x }` | `DATE_TRUNC('day', x)` (dialect-specific) |
-| `SafeDivide(a, b)` | `CASE WHEN b = 0 THEN NULL ELSE a / b END` |
+| `Column { name, .. }` | `"name"` (quoted per dialect) |
+| `Number(n)` / `StringLit(s)` / `Bool(b)` / `Null` | literal |
+| `BinaryOp { l, Add, r }` | `(l + r)` |
+| `BinaryOp { l, SafeDivide, r }` | `CASE WHEN r = 0 THEN NULL ELSE l / r END` |
+| `FunctionCall { name: "SUM", args }` | `SUM(args)` |
+| `FunctionCall { distinct: true }` | `COUNT(DISTINCT args)` |
+| `Case { when_then, else_expr }` | `CASE WHEN w THEN t ... ELSE e END` |
+| `Not(inner)` | `NOT (inner)` |
+| `IsNull(inner)` | `inner IS NULL` |
+| `IsNotNull(inner)` | `inner IS NOT NULL` |
+| `InList { expr, list }` | `expr IN (list)` |
+| `Between { expr, low, high }` | `expr BETWEEN low AND high` |
+| `Like { expr, pattern }` | `expr LIKE pattern` |
+| `Coalesce(exprs)` | `COALESCE(exprs)` |
+| `NullIf { expr, null_expr }` | `NULLIF(expr, null_expr)` |
+| `DateTrunc { grain, expr }` | `DATE_TRUNC('grain', expr)` (dialect-specific) |
+
+**Note:** `Guard` is a `semstrait_core::DslExpr` variant only. The IR DslExpr uses `Case` with `else_expr: None` for the same semantics. Aggregates (SUM, AVG, etc.) are in `AggregateMeasure`, rendered via `DslExprSqlRenderer::render_aggregate()`.
 
 **External deps:** `semstrait-core`, `semstrait-ir` (no sqlparser — direct string building)
 
@@ -1144,8 +1172,7 @@ datafusion      = ["semstrait-connectors/datafusion"]
 trino           = ["semstrait-connectors/trino"]
 spark           = ["semstrait-connectors/spark"]
 catalog-iceberg = ["semstrait-catalog/iceberg"]
-catalog-unity   = ["semstrait-catalog/unity"]
-catalog-glue    = ["semstrait-catalog/glue"]
+# catalog-unity and catalog-glue planned for v2
 api-grpc        = ["semstrait-api/grpc"]
 api-rest        = ["semstrait-api/rest"]
 api-cli         = ["semstrait-api/cli"]
@@ -1161,41 +1188,38 @@ api-cli         = ["semstrait-api/cli"]
 serde        = { version = "1", features = ["derive"] }
 serde_yaml   = "0.9"
 serde_json   = "1"
-prost        = "0.13"
-pbjson       = "0.7"
+prost        = "0.14"
 
 # Query IR
 substrait    = { version = "0.62", features = ["serde"] }
 arrow        = { version = "55", default-features = false, features = ["json"] }
 arrow-schema = "55"
+datafusion   = { version = "52", default-features = false, features = ["sql"] }
 
 # SQL generation (no sqlparser — direct string building via SqlDialect trait)
-# sqlparser listed in workspace but not used by semstrait-sql
+# sqlparser "0.53" listed in workspace but scheduled for removal (DL-015)
 
 # Graph analysis (manifest compiler only)
-petgraph     = "0.6"
+petgraph     = "0.7"
 
 # Async
 tokio        = { version = "1", features = ["full"] }
 async-trait  = "0.1"
 
-# gRPC
-tonic        = { version = "0.12", optional = true }
+# HTTP client
+reqwest      = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
-# Engine connectors (all optional)
-duckdb                = { version = "1.1", optional = true }
-datafusion            = { version = "52", optional = true }
-# datafusion-substrait not used in v1 — SQL execution only
-adbc_driver_manager   = { version = "0.12", optional = true }
-# spark-connect: tonic + prost with custom proto definitions
+# API (optional)
+axum         = "0.8"
+clap         = { version = "4", features = ["derive"] }
+tonic        = "0.12"
 
 # Utilities
 uuid         = { version = "1", features = ["v4"] }
-indexmap     = "2"
+indexmap      = { version = "2", features = ["serde"] }
 thiserror    = "2"
 tracing      = "0.1"
 chrono       = { version = "0.4", features = ["serde"] }
-glob         = "0.3"
 sha2         = "0.10"
 ```
 
@@ -1234,6 +1258,11 @@ This table records every cross-crate type reference and confirms no cycle is int
 | Item | Decision | Notes |
 |---|---|---|
 | `column_mapping: auto` | Deferred v1.1 | Map all physical columns from catalog |
+| Domain filter step | **Done** (v1.1-B.2) | Planner step 3 filters datasets by `domain_hint` using `Cow<CompiledKind>` |
+| Aggregation constraints | **Done** (v1.1-B.1) | `check_aggregation_constraints()` validates allowed/prohibited lists against `expr_source` |
+| REST /schema and /compile endpoints | **Done** (v1.1-B.4) | GET /schema returns kind introspection; POST /compile accepts YAML, returns manifest JSON |
+| gRPC transport | Deferred v2 | Stub file exists, no implementation |
+| DuckDB/Trino/Spark connectors | Deferred v2 | Feature flags exist but no source files |
 | Spark Substrait support | Default to SQL emitter | Spark 3.4+ experimental |
 | Multi-engine query fan-out | Deferred v2 | Single connector per `Semstrait` instance |
 | `FileSystemRepository` | Deferred v2 | `InMemoryRepository` sufficient for v1 stateless operation |
@@ -1243,6 +1272,11 @@ This table records every cross-crate type reference and confirms no cycle is int
 | Kind-level filter block | Deferred v1.1 | Applies to all queries against a kind regardless of dataset |
 | Schema drift detection | Warn PLAN_W003 | Physical schema changed since compile |
 | Row-level security user_attribute | Schema exists | Session parameter required; missing → PLAN_E005 |
+| ComputeEmitter integration | Deferred v1.1 (DL-023) | Trait exists but engine bypasses it via direct SqlEmitter |
+| Unity/Glue/Hive catalogs | Deferred v2 | Only IcebergRestCatalog implemented |
+| Dual DslExpr rename | Deferred v2 (DL-020) | IR type should be renamed to IrExpr |
+| SafeDivide Substrait anchor | By design (DL-024) | SafeDivide maps to Divide in Substrait; null-guard is SQL-only |
+| Glob namespace hardcoded | **Done** (v1.1-B.3) | `SemanticModel.namespace` field used; defaults to `"default"` |
 
 ---
 

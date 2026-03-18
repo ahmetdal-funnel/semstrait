@@ -153,6 +153,7 @@ pub struct GuardExpr {
 }
 
 // Convenience constructors
+#[allow(clippy::should_implement_trait)]
 impl DslExpr {
     /// Create a column reference.
     pub fn column(name: impl Into<String>) -> Self {

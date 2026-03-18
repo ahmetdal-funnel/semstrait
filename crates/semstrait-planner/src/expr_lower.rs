@@ -274,7 +274,7 @@ fn wrap_with_filters(
         });
     }
 
-    let condition = combined.unwrap(); // safe: filters is non-empty
+    let condition = combined.expect("filters is non-empty; early return guards this");
     Ok(IrExpr::Case {
         when_then: vec![(condition, expr)],
         else_expr: Some(Box::new(IrExpr::Null)),
@@ -386,7 +386,9 @@ fn extract_aggregates(
 ) -> Result<IrExpr, PlannerError> {
     // If this node is an aggregate, extract it.
     if let Some((agg_fn, distinct)) = core_agg_to_ir(expr) {
-        let inner_core = agg_inner(expr).unwrap();
+        let inner_core = agg_inner(expr).ok_or_else(|| {
+            PlannerError::Internal("aggregate function matched but inner extraction failed".into())
+        })?;
         let inner_ir = lower_expr(inner_core, column_mapping)?;
 
         // If this is the only aggregate (checked by caller), use the measure name directly.

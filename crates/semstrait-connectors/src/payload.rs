@@ -3,7 +3,6 @@
 use std::any::Any;
 use std::time::Duration;
 
-use serde_json;
 
 /// Kind of payload a connector can accept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

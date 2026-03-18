@@ -114,6 +114,9 @@ pub struct SemanticModel {
     pub ai_context: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Catalog namespace for glob expansion (defaults to "default").
+    #[serde(default)]
+    pub namespace: Option<String>,
 
     // Top-level datasets (can also live inside kinds)
     #[serde(default)]
@@ -250,6 +253,7 @@ pub enum JoinAssociativity {
 /// A dataset reference in a kind: either inline definition or ref to another kind.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum KindDatasetEntry {
     Ref(RefEntry),
     Inline(KindDataset),
@@ -578,6 +582,7 @@ pub struct AiContext {
 /// Measure entry: inline definition or reference.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum MeasureEntry {
     Ref(RefEntry),
     Inline(Measure),
@@ -702,6 +707,7 @@ pub struct MeasureFilter {
 /// Metric entry: inline definition or reference.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum MetricEntry {
     Ref(RefEntry),
     Inline(Metric),

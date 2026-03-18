@@ -805,7 +805,7 @@ dependencies = [
  "parquet",
  "rand 0.9.2",
  "regex",
- "sqlparser 0.59.0",
+ "sqlparser",
  "tempfile",
  "tokio",
  "url",
@@ -878,7 +878,7 @@ dependencies = [
  "object_store",
  "parquet",
  "paste",
- "sqlparser 0.59.0",
+ "sqlparser",
  "tokio",
  "web-time",
 ]
@@ -1068,7 +1068,7 @@ dependencies = [
  "itertools",
  "paste",
  "serde_json",
- "sqlparser 0.59.0",
+ "sqlparser",
 ]
 
 [[package]]
@@ -1391,7 +1391,7 @@ dependencies = [
  "indexmap 2.13.0",
  "log",
  "regex",
- "sqlparser 0.59.0",
+ "sqlparser",
 ]
 
 [[package]]
@@ -3111,7 +3111,6 @@ version = "0.1.0"
 dependencies = [
  "semstrait-core",
  "semstrait-ir",
- "sqlparser 0.53.0",
  "thiserror",
 ]
 
@@ -3314,15 +3313,6 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "sqlparser"
-version = "0.53.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05a528114c392209b3264855ad491fcce534b94a38771b0a0b97a79379275ce8"
-dependencies = [
- "log",
 ]
 
 [[package]]

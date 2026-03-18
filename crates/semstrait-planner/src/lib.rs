@@ -39,7 +39,7 @@ pub use request::{
     SessionVariables, SortDirection,
 };
 pub use constraint_evaluator::ConstraintEvaluator;
-pub use kind_planner::{KindPlanner, KindPlannerRegistry, PlanFragment, PlannerContext};
+pub use kind_planner::{resolve_column_name, KindPlanner, KindPlannerRegistry, PlanFragment, PlannerContext};
 pub use grainset_planner::GrainsetPlanner;
 pub use unionset_planner::UnionsetPlanner;
 pub use joinset_planner::JoinsetPlanner;

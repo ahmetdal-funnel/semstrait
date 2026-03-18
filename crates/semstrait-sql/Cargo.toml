@@ -8,5 +8,4 @@ description = "SQL dialect emission from LogicalPlan IR"
 [dependencies]
 semstrait-core = { workspace = true }
 semstrait-ir = { workspace = true }
-sqlparser = { workspace = true }
 thiserror = { workspace = true }

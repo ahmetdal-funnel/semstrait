@@ -27,6 +27,8 @@ pub(crate) async fn expand_globs(
     mut model: SemanticModel,
     catalog: Option<&dyn CatalogProvider>,
 ) -> Result<SemanticModel, CompileError> {
+    let namespace = model.namespace.as_deref().unwrap_or("default");
+
     for kind in &mut model.kinds {
         let mut expanded_datasets = Vec::new();
         let mut has_globs = false;
@@ -43,7 +45,7 @@ pub(crate) async fn expand_globs(
 
                         let glob = semstrait_core::GlobPattern::new(&pattern.0);
                         let tables = cat
-                            .list_tables("default", &glob)
+                            .list_tables(namespace, &glob)
                             .await
                             .map_err(|e| CompileError::CatalogError(e.to_string()))?;
 
@@ -186,17 +188,17 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
         let interface_names: HashSet<String> = kind
             .dimensions
             .iter()
-            .filter_map(|d| match d {
-                DimensionEntry::Inline(dim) => Some(dim.name.clone()),
-                DimensionEntry::Ref(r) => Some(r.ref_name.clone()),
+            .map(|d| match d {
+                DimensionEntry::Inline(dim) => dim.name.clone(),
+                DimensionEntry::Ref(r) => r.ref_name.clone(),
             })
-            .chain(kind.measures.iter().filter_map(|m| match m {
-                MeasureEntry::Inline(mea) => Some(mea.name.clone()),
-                MeasureEntry::Ref(r) => Some(r.ref_name.clone()),
+            .chain(kind.measures.iter().map(|m| match m {
+                MeasureEntry::Inline(mea) => mea.name.clone(),
+                MeasureEntry::Ref(r) => r.ref_name.clone(),
             }))
-            .chain(kind.metrics.iter().filter_map(|m| match m {
-                MetricEntry::Inline(met) => Some(met.name.clone()),
-                MetricEntry::Ref(r) => Some(r.ref_name.clone()),
+            .chain(kind.metrics.iter().map(|m| match m {
+                MetricEntry::Inline(met) => met.name.clone(),
+                MetricEntry::Ref(r) => r.ref_name.clone(),
             }))
             .collect();
 
@@ -722,6 +724,7 @@ fn looks_like_raw_sql(expr: &str) -> bool {
 fn try_parse_aggregation(expr: &str) -> Option<DslExpr> {
     let upper = expr.to_uppercase();
 
+    #[allow(clippy::type_complexity)]
     let agg_patterns: &[(&str, fn(DslExpr) -> DslExpr)] = &[
         ("SUM(", DslExpr::sum),
         ("COUNT_DISTINCT(", DslExpr::count_distinct),
@@ -827,7 +830,7 @@ fn parse_operand(s: &str) -> DslExpr {
 fn is_identifier(s: &str) -> bool {
     !s.is_empty()
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
-        && s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_')
+        && s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
 }
 
 fn dataset_display_name(name: &DatasetName) -> &str {
@@ -952,6 +955,7 @@ mod tests {
             description: None,
             ai_context: None,
             labels: vec![],
+            namespace: None,
             datasets: vec![
                 Dataset {
                     name: "orders".to_string(),
@@ -994,6 +998,7 @@ mod tests {
             description: None,
             ai_context: None,
             labels: vec![],
+            namespace: None,
             datasets: vec![],
             kinds: vec![Kind {
                 name: "empty_kind".to_string(),

@@ -1,183 +1,197 @@
 # Semstrait Implementation Plan
 
-**Version:** 2.0 | **Status:** Active | **Target:** V1 — plan generation + ANSI SQL
-**Authoritative source:** CONTEXT.md (v3.0)
+**Version:** 4.0 | **Status:** Active | **Target:** V1.1 polish + V2 connectors & SQL layer
+**Authoritative source:** CONTEXT.md (v3.1)
 
 ---
 
-## V1 Scope
+## V1 Status: Complete
 
-Generate valid logical plans and ANSI-standard SQL from semantic YAML models.
-Human-reviewable output. DataFusion compatible Substrait plans. CLI + REST API.
-Iceberg/Polaris catalog (stub for v1). Connectors execution is v2.
-
-### In Scope
-- 10-crate workspace per CONTEXT.md section 3
-- DSL expression parser (no raw SQL — rejected at compile time)
-- ManifestCompiler: YAML -> CompiledManifest (9-step pipeline)
-- SemanticPlanner: QueryRequest -> LogicalPlan (kind dispatch)
-- PlanNode IR with Substrait serialization + SemAnnotation
-- SQL emission (ANSI baseline via sqlparser-rs AST)
-- CatalogProvider trait + NullCatalogProvider
-- CLI: compile, explain, validate, query commands
-- REST API: /query, /explain, /schema, /compile endpoints
-- Connector traits (stubs; no execution in v1)
-- Optimizer skeleton (empty passes, OptimizerPass trait)
-- Test suite: unit + integration + E2E
-
-### Out of Scope (v2)
-- Engine execution (DuckDB, Trino, Spark connectors)
-- FileSystemRepository / ObjectStoreRepository
-- Cross-kind metric refs (COMP_E006)
-- Many-to-many junction tables
-- UNION DISTINCT (UNION ALL only in v1)
-- Multi-engine query fan-out
-- column_mapping: auto
-- Kind-level filter block
+All 10 crates compiling and tested (261 tests with datafusion feature).
+Full E2E pipeline: YAML -> compile -> plan -> SQL -> DataFusion execute -> JSON.
+Binary: `cargo build -p semstrait-api --features cli,rest,datafusion`
 
 ---
 
-## Phase 1: Foundation — semstrait-core
+## V1.1 Scope — Polish & Hardening
 
-**Goal:** Shared primitives. Zero internal workspace deps.
+Fix known issues, add missing tests, complete deferred v1 items.
 
-| Task | Description |
-|------|-------------|
-| 1.1 | Refactor `DataType` to Arrow-aligned enum per CONTEXT.md 5.1 |
-| 1.2 | Implement `Schema`, `SchemaColumn` with ordinal-based lookup |
-| 1.3 | Implement `ConsumerProfile` + `SemiAdditiveStrategy` |
-| 1.4 | Implement `Grain` enum (Minute..Year) |
-| 1.5 | Implement `MeasureConstraints`, `DimensionConstraints`, `AggregationConstraints` |
-| 1.6 | Implement full `DslExpr` enum per CONTEXT.md 5.1 |
-| 1.7 | Define error type hierarchy (`thiserror`) |
+### V1.1-A: Critical — Test Coverage Gaps
 
-**Deps:** none | **External:** serde, thiserror, arrow-schema (type compat)
+| Task | Description | Crate |
+|------|-------------|-------|
+| A.1 | Unionset planner tests (multi-dataset UNION ALL, NULL-fill) | semstrait-planner |
+| A.2 | Joinset planner tests (BFS anchor, multi-hop join chain) | semstrait-planner |
+| A.3 | Clippy clean — all crates, deny warnings | workspace |
 
----
+### V1.1-B: Important — Deferred V1 Items
 
-## Phase 2: Definition Layer — semstrait-model + semstrait-catalog
+| Task | Description | Crate | Ref |
+|------|-------------|-------|-----|
+| B.1 | Aggregation constraint checking (allowed/prohibited functions) | semstrait-planner | DL-022 |
+| B.2 | Domain filter step in planner (domain_hint routing) | semstrait-planner | DL-021 |
+| B.3 | Glob namespace from model (not hardcoded "default") | semstrait-manifest | CONTEXT.md §8 |
+| B.4 | REST /schema and /compile endpoints | semstrait-api | CONTEXT.md §8 |
+| B.5 | Kind-level filter block (applies to all queries against a kind) | semstrait-planner | CONTEXT.md §8 |
+| B.6 | UNION DISTINCT support (alongside UNION ALL) | semstrait-planner | CONTEXT.md §8 |
 
-**Goal:** Parse YAML models and abstract catalog access. These two crates are independent.
+### V1.1-C: Low Priority — Cleanup
 
-### semstrait-model (depends on: core)
-| Task | Description |
-|------|-------------|
-| 2.1 | SemanticModel, Dataset, Kind, Dimension, Measure, Metric types |
-| 2.2 | DimensionEntry/MeasureEntry/MetricEntry (Inline or Ref) |
-| 2.3 | GlobPattern, DatasetName types |
-| 2.4 | KindDataset with ColumnMapping + ColumnMappingValue |
-| 2.5 | `parse(yaml)` and `resolve_refs(model)` functions |
-| 2.6 | KindRelationship, Relationship types |
-
-### semstrait-catalog (depends on: core)
-| Task | Description |
-|------|-------------|
-| 2.7 | `CatalogProvider` async trait (list_tables, get_schema, table_exists) |
-| 2.8 | `TableRef`, `CatalogColumn` types |
-| 2.9 | `NullCatalogProvider` (no-op for testing) |
-| 2.10 | Stub `IcebergRestCatalog` (feature = "iceberg") |
+| Task | Description | Crate | Ref |
+|------|-------------|-------|-----|
+| C.1 | Rename IR DslExpr to IrExpr (eliminate name collision) | semstrait-ir + dependents | DL-020 |
+| C.2 | ComputeEmitter integration into engine pipeline | semstrait-api | DL-023 |
+| C.3 | Schema drift detection (warn PLAN_W003) | semstrait-planner | CONTEXT.md §8 |
 
 ---
 
-## Phase 3: IR + Manifest — semstrait-ir + semstrait-manifest
+## V2 Scope — Connectors, SQL Layer, Catalogs
 
-**Goal:** Plan IR and manifest compilation.
+### Research Results (2026-03-18)
 
-### semstrait-ir (depends on: core)
-| Task | Description |
-|------|-------------|
-| 3.1 | `PlanNode` enum (Scan, Filter, Project, Aggregate, Join, Union, Sort, Fetch) |
-| 3.2 | `NodeMeta` with output_schema + annotations |
-| 3.3 | `SemAnnotation` enum (AggregateRole, FilterSource, Additivity, KindRef, DomainHint) |
-| 3.4 | `ExprConverter` (DslExpr <-> Substrait Expression) |
-| 3.5 | `SubstraitSerializer` (LogicalPlan <-> substrait::proto::Plan) |
-| 3.6 | Proto definition for SemstraitAnnotation |
+Library evaluation for v2 connector and SQL implementations:
 
-### semstrait-manifest (depends on: core, model, catalog)
-| Task | Description |
-|------|-------------|
-| 3.7 | `ManifestCompiler` with 9-step pipeline |
-| 3.8 | `CompiledManifest`, `CompiledKind`, `CompiledMeasure` types |
-| 3.9 | `Repository` trait + `InMemoryRepository` |
-| 3.10 | Metric graph (petgraph) cycle detection, depth <= 3 |
-| 3.11 | Relationship graph for joinset anchor inference |
-| 3.12 | Expression compilation (DSL parse + reject raw SQL) |
-| 3.13 | Glob expansion via CatalogProvider |
+| Component | Library | Version | Arrow Compat | Maturity | Decision |
+|-----------|---------|---------|-------------|----------|----------|
+| SQL transpilation | `polyglot-sql` | 0.1.15 | N/A | Early (726 stars, 18K tests) | Adopt as SQL core abstraction (DL-025) |
+| SQL parsing (future) | `sqlparser-rs` | 0.53 (workspace) | N/A | Production (4.3M/mo) | Keep for future expr parsing |
+| DuckDB connector | `duckdb` | 1.3.2 | arrow 55 | Production (1.58M DL) | Adopt with `bundled` feature (DL-026) |
+| Trino connector | `trino-rust-client` | 0.9.3 | N/A (JSON) | Medium-High (36K DL) | Adopt, add JSON->Arrow layer (DL-027) |
+| Spark connector | Apache `spark-connect-rs` | 0.0.2 | arrow 55 | Experimental (Apache) | Fork, bump deps (DL-028) |
+| Flight SQL | `arrow-flight` | 58.0.0 | arrow 58 | Production (9.4M DL) | Deferred — for Databricks (DL-029) |
 
----
+### V2-A: SQL Layer — polyglot-sql Integration (High Priority)
 
-## Phase 4: Planning + SQL — semstrait-planner + semstrait-sql
+Replace custom `SqlDialect` + `AnsiSqlEmitter` + `DslExprSqlRenderer` with polyglot-sql's
+builder API + dialect-aware `generate()`. Eliminates per-dialect reimplementation risk.
 
-**Goal:** Build logical plans and emit SQL.
+| Task | Description | Crate |
+|------|-------------|-------|
+| A.1 | Add `polyglot-sql` to semstrait-sql with feature-gated dialects | semstrait-sql |
+| A.2 | Implement `PolyglotEmitter`: PlanNode -> polyglot Expression via builder API | semstrait-sql |
+| A.3 | Map DslExpr -> polyglot Expr (column, literal, binary, case, aggregate, etc.) | semstrait-sql |
+| A.4 | Thin wrappers for builder gaps (sum_distinct, date_trunc, window_over) | semstrait-sql |
+| A.5 | Add SparkDialect via polyglot's DialectType::Spark | semstrait-sql |
+| A.6 | Validate output equivalence — all 261 tests must pass with polyglot emitter | semstrait-sql |
+| A.7 | Deprecate AnsiSqlEmitter, DslExprSqlRenderer, SqlDialect trait impls | semstrait-sql |
+| A.8 | Keep SqlEmitter trait as public API — polyglot is implementation detail | semstrait-sql |
 
-### semstrait-planner (depends on: core, ir, manifest, catalog)
-| Task | Description |
-|------|-------------|
-| 4.1 | `SemanticPlanner` + `SemanticPlannerBuilder` |
-| 4.2 | `ConstraintEvaluator` (step 0 pre-resolution gate) |
-| 4.3 | `KindPlanner` trait + `KindPlannerRegistry` |
-| 4.4 | `GrainsetPlanner` — coverage-based dataset selection |
-| 4.5 | `UnionsetPlanner` — UNION ALL with NULL-fill |
-| 4.6 | `JoinsetPlanner` — BFS from anchor, join chain |
-| 4.7 | `AdditivityResolver` (window function / double aggregate) |
-| 4.8 | Filter injection pipeline (dataset, measure, metric, user) |
-| 4.9 | `Optimizer` skeleton + `OptimizerPass` trait |
-| 4.10 | `ResolvedQueryRequest` type |
+**Architecture:**
+```
+BEFORE: PlanNode -> AnsiSqlEmitter -> SqlDialect (string building)
+AFTER:  PlanNode -> PolyglotEmitter -> polyglot::builder -> generate(dialect)
+```
 
-### semstrait-sql (depends on: core, ir)
-| Task | Description |
-|------|-------------|
-| 4.11 | `SqlEmitter` + `SqlDialect` traits |
-| 4.12 | `AnsiSqlEmitter` — PlanNode -> sqlparser AST -> String |
-| 4.13 | `DslExprSqlRenderer` |
-| 4.14 | Dialect stubs: Trino, DuckDB, Spark |
+**Feature flags (semstrait-sql/Cargo.toml):**
+```toml
+polyglot-sql = { version = "0.1", default-features = false, features = [
+    "dialect-duckdb", "dialect-trino", "dialect-spark",
+    "dialect-snowflake", "dialect-databricks", "dialect-postgresql",
+    "dialect-datafusion"
+] }
+```
+
+**Risk mitigation:** Pin exact version. Fork-ready (MIT, pure Rust, zero C deps).
 
 ---
 
-## Phase 5: Connectors + API — semstrait-connectors + semstrait-api
+### V2-B: DuckDB Connector (High Priority)
 
-**Goal:** Compute interface and entry points.
+Implement `DuckDbConnector` using official `duckdb` crate v1.3.2 (arrow 55 compatible).
 
-### semstrait-connectors (depends on: core, ir, sql)
-| Task | Description |
-|------|-------------|
-| 5.1 | `ComputeEmitter`, `ComputeAdapter`, `ComputeConnector` traits |
-| 5.2 | `ComputePayload`, `ComputeRequest`, `ComputeResult` types |
-| 5.3 | Stub implementations (v1 returns unimplemented) |
+| Task | Description | Crate |
+|------|-------------|-------|
+| B.1 | Add `duckdb = "1.3"` with `bundled` feature to workspace + connectors | semstrait-connectors |
+| B.2 | Implement `DuckDbConnector` struct (Connection, profile) | semstrait-connectors |
+| B.3 | Implement `ComputeEmitter` — emit_sql wraps SQL string | semstrait-connectors |
+| B.4 | Implement `ComputeAdapter` — consumer_profile for DuckDB capabilities | semstrait-connectors |
+| B.5 | Implement `ComputeConnector` — execute via query_arrow(), spawn_blocking | semstrait-connectors |
+| B.6 | Register CSV/Parquet/file helpers (like DataFusion connector) | semstrait-connectors |
+| B.7 | health_check via SELECT 1 | semstrait-connectors |
+| B.8 | Tests: query execution, file registration, error handling | semstrait-connectors |
+| B.9 | Wire into SemstraitEngine and CLI (feature = "duckdb") | semstrait-api |
 
-### semstrait-api (depends on: core, planner, manifest, connectors)
-| Task | Description |
-|------|-------------|
-| 5.4 | `RequestParser` — RawQueryRequest -> ResolvedQueryRequest |
-| 5.5 | `SemstraitEngine` orchestrator |
-| 5.6 | CLI submodule (clap): compile, explain, validate, query |
-| 5.7 | REST submodule (axum): /query, /explain, /schema, /compile |
-| 5.8 | Feature flags: cli, rest, grpc |
+**Key pattern:** `Connection` is `Send` but `!Sync` — wrap all calls in `tokio::task::spawn_blocking`.
 
 ---
 
-## Phase 6: Facade + E2E — semstrait
+### V2-C: Trino Connector (Medium Priority)
 
-**Goal:** Public API and integration tests.
+Implement `TrinoConnector` using `trino-rust-client` v0.9.3.
 
-| Task | Description |
-|------|-------------|
-| 6.1 | `Semstrait` struct + `SemstraitBuilder` |
-| 6.2 | Feature flag coordination |
-| 6.3 | Public type re-exports |
-| 6.4 | E2E: YAML -> compile -> plan -> SQL -> validate |
-| 6.5 | DataFusion roundtrip test (Substrait decode) |
-| 6.6 | Update README.md per crate |
+| Task | Description | Crate |
+|------|-------------|-------|
+| C.1 | Add `trino-rust-client = "0.9"` to workspace + connectors | semstrait-connectors |
+| C.2 | Implement `TrinoConnector` struct (client, config, profile) | semstrait-connectors |
+| C.3 | Implement `ComputeConnector` — submit SQL via REST, receive JSON rows | semstrait-connectors |
+| C.4 | JSON -> Arrow RecordBatch conversion layer | semstrait-connectors |
+| C.5 | Authentication: Basic Auth + JWT (reuse OAuth2 patterns from Iceberg) | semstrait-connectors |
+| C.6 | health_check via system query | semstrait-connectors |
+| C.7 | Tests with mock server or integration test fixtures | semstrait-connectors |
+| C.8 | Wire into SemstraitEngine and CLI (feature = "trino") | semstrait-api |
+
+**Fallback:** If trino-rust-client proves insufficient, implement directly with reqwest (~800 lines).
+We already have the patterns from IcebergRestCatalog.
 
 ---
 
-## Phase 7: Polish + Review
+### V2-D: Spark Connector (Medium Priority)
 
-| Task | Description |
-|------|-------------|
-| 7.1 | Clippy clean (all crates) |
-| 7.2 | Documentation pass |
-| 7.3 | Review + brainstorm session |
+Implement `SparkConnector` using Apache `spark-connect-rs` (forked for dep alignment).
+
+| Task | Description | Crate |
+|------|-------------|-------|
+| D.1 | Fork apache/spark-connect-rust, bump prost 0.12->0.14, tonic 0.11->0.12 | external |
+| D.2 | Add forked spark-connect-rs to workspace (git dep or vendored) | semstrait-connectors |
+| D.3 | Implement `SparkConnector` struct (SparkSession, profile) | semstrait-connectors |
+| D.4 | Implement `ComputeConnector` — SQL execution path (spark.sql()) | semstrait-connectors |
+| D.5 | Arrow RecordBatch results (native from spark-connect-rs) | semstrait-connectors |
+| D.6 | Authentication: bearer token via connection string | semstrait-connectors |
+| D.7 | health_check via spark.version() or SELECT 1 | semstrait-connectors |
+| D.8 | Tests with Spark Connect mock or docker-compose | semstrait-connectors |
+| D.9 | Wire into SemstraitEngine and CLI (feature = "spark") | semstrait-api |
+
+**Future (v3):** UnresolvedLogicalPlan submission — convert PlanNode IR -> Spark Relation proto.
+This bypasses SQL entirely but requires tight coupling to Spark Connect protos.
+
+---
+
+### V2-E: Catalog Expansion (Lower Priority)
+
+| Task | Description | Crate |
+|------|-------------|-------|
+| E.1 | UnityCatalog (Databricks) — REST API client | semstrait-catalog |
+| E.2 | GlueCatalog (AWS) — aws-sdk-glue integration | semstrait-catalog |
+| E.3 | HiveCatalog — Thrift/HTTP metastore client | semstrait-catalog |
+| E.4 | FileSystemRepository for persistent manifest storage | semstrait-manifest |
+| E.5 | ObjectStoreRepository (S3/GCS/Azure) | semstrait-manifest |
+
+---
+
+### V2-F: API Expansion (Lower Priority)
+
+| Task | Description | Crate |
+|------|-------------|-------|
+| F.1 | gRPC transport implementation (tonic server) | semstrait-api |
+| F.2 | Arrow Flight SQL server for client connectivity | semstrait-api |
+| F.3 | Multi-engine query fan-out (one query, multiple connectors) | semstrait-api |
+
+---
+
+## Execution Order
+
+```
+V1.1-A (test gaps, clippy)        ──── IMMEDIATE (critical for quality gate)
+V1.1-B (deferred v1 items)        ──── NEXT (important but not blocking)
+V2-A (polyglot SQL layer)         ──┐
+V2-B (DuckDB connector)           ──┤─ PARALLEL (independent crates)
+V2-C (Trino connector)            ──┘
+V2-D (Spark connector)            ──── AFTER fork prep (dep alignment needed)
+V1.1-C (cleanup/rename)           ──── AFTER V2-A (rename fits with SQL refactor)
+V2-E (catalogs)                   ──── INDEPENDENT (any time)
+V2-F (API expansion)              ──── LAST (depends on connector maturity)
+```
 
 ---
 
@@ -185,10 +199,38 @@ Iceberg/Polaris catalog (stub for v1). Connectors execution is v2.
 
 | Phase | Status |
 |-------|--------|
-| 1 — Foundation | In Progress |
-| 2 — Definition Layer | Pending |
-| 3 — IR + Manifest | Pending |
-| 4 — Planning + SQL | Pending |
-| 5 — Connectors + API | Pending |
-| 6 — Facade + E2E | Pending |
-| 7 — Polish | Pending |
+| 1-6 — V1 Implementation | Complete |
+| 7 — Documentation reconciliation | Complete |
+| V1.1-A — Test coverage gaps | **Complete** |
+| V1.1-B — Deferred v1 items | **Partial** (B.1-B.4 complete, B.5-B.6 pending) |
+| V2-A — polyglot SQL layer | Pending |
+| V2-B — DuckDB connector | Pending |
+| V2-C — Trino connector | Pending |
+| V2-D — Spark connector | Pending |
+| V2-E — Catalog expansion | Pending |
+| V2-F — API expansion | Pending |
+
+### Completed milestones (2026-03-17 — 2026-03-18)
+- All 10 crates compiling and tested (278 tests with datafusion feature, 0 clippy warnings)
+- Full E2E pipeline: YAML -> compile -> plan -> SQL -> DataFusion execute -> JSON
+- Binary: `cargo build -p semstrait-api --features cli,rest,datafusion`
+- CLI commands: compile, explain, validate, query (datafusion), serve (rest)
+- Iceberg REST catalog with OAuth2 token lifecycle
+- Substrait round-trip for all DslExpr variants
+- ANSI FETCH FIRST / dialect-aware limit_clause()
+- ConsumerProfile wired from connector through engine to planner
+- Schema HashMap ordinal index for O(1) lookups (IR)
+- Documentation reconciliation complete (CONTEXT.md v3.1, DECISION_LOG DL-001..024)
+- Library research complete: polyglot-sql, duckdb, trino-rust-client, spark-connect-rs
+- V1.1-A complete: Unionset planner (4 tests), Joinset planner (5 tests), Clippy clean (0 warnings)
+- V1.1-B partial: Aggregation constraints (B.1, 6 tests), Domain filter (B.2, 3 tests), Glob namespace (B.3), REST /schema + /compile (B.4)
+
+### Dependencies for V2
+
+| Dependency | Version | Feature | Purpose |
+|-----------|---------|---------|---------|
+| polyglot-sql | 0.1.15 | dialect-duckdb, dialect-trino, dialect-spark, etc. | SQL transpilation |
+| duckdb | 1.3.2 | bundled | DuckDB embedded connector |
+| trino-rust-client | 0.9.3 | spooling | Trino REST connector |
+| spark-connect-rs | fork | tls | Spark Connect gRPC connector |
+| sqlparser | 0.53 | (kept) | Future SQL expr parsing |

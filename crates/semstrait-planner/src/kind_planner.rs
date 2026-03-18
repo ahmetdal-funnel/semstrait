@@ -5,7 +5,7 @@ use crate::request::{ResolvedQueryRequest, SessionVariables};
 use semstrait_catalog::CatalogProvider;
 use semstrait_core::ConsumerProfile;
 use semstrait_ir::{DslExpr, PlanNode, Schema};
-use semstrait_manifest::{CompiledKind, CompiledKindType, CompiledManifest};
+use semstrait_manifest::{ColumnMappingValue, CompiledKind, CompiledKindType, CompiledManifest};
 
 /// Context passed to kind planners during resolution.
 pub struct PlannerContext<'a> {
@@ -74,5 +74,13 @@ impl KindPlannerRegistry {
 impl Default for KindPlannerRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Resolve a `ColumnMappingValue` to its physical column name.
+pub fn resolve_column_name(mapping_value: &ColumnMappingValue) -> &str {
+    match mapping_value {
+        ColumnMappingValue::Simple(s) => s.as_str(),
+        ColumnMappingValue::WithGrain { column, .. } => column.as_str(),
     }
 }

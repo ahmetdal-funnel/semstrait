@@ -323,6 +323,7 @@ impl<'s> ExprConverter<'s> {
                     ],
                     output_type: None,
                     options: vec![],
+                    #[allow(deprecated)]
                     args: vec![],
                 },
             )),
@@ -368,6 +369,7 @@ impl<'s> ExprConverter<'s> {
                     arguments,
                     output_type: None,
                     options: vec![],
+                    #[allow(deprecated)]
                     args: vec![],
                 },
             )),
@@ -375,6 +377,7 @@ impl<'s> ExprConverter<'s> {
     }
 
     // Deserialize helpers
+    #[allow(clippy::wrong_self_convention)]
     fn from_literal(
         &self,
         lit: &proto::expression::Literal,
@@ -393,6 +396,7 @@ impl<'s> ExprConverter<'s> {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_field_reference(
         &self,
         field_ref: &proto::expression::FieldReference,
@@ -427,6 +431,7 @@ impl<'s> ExprConverter<'s> {
         })
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_scalar_function(
         &self,
         func: &proto::expression::ScalarFunction,
@@ -592,6 +597,7 @@ impl<'s> ExprConverter<'s> {
         })
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_if_then(
         &self,
         if_then: &expression::IfThen,

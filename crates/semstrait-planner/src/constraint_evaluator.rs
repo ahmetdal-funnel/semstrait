@@ -48,9 +48,11 @@ impl ConstraintEvaluator {
                         constraints,
                         &scope,
                     )?;
+                    let agg_func = Self::extract_agg_function(&measure.expr_source);
                     Self::check_aggregation_constraints(
                         measure_name,
                         constraints,
+                        agg_func,
                     )?;
                 }
             }
@@ -125,17 +127,61 @@ impl ConstraintEvaluator {
     }
 
     /// Check aggregation constraints (allowed, prohibited).
+    ///
+    /// The aggregation function is extracted from the measure's expr_source
+    /// (e.g., "SUM(amount)" → "SUM"). This is checked against the allowed/prohibited
+    /// lists in the measure's constraints.
     fn check_aggregation_constraints(
         entity_name: &str,
         constraints: &semstrait_manifest::MeasureConstraints,
+        agg_function: Option<&str>,
     ) -> Result<(), PlannerError> {
-        if let Some(ref _agg_constraints) = constraints.aggregations {
-            // v1: aggregation constraint checking is a stub.
-            // Full implementation requires knowing the requested aggregation function,
-            // which is resolved from the measure definition.
-            let _ = entity_name;
+        if let Some(ref agg_constraints) = constraints.aggregations {
+            if let Some(func) = agg_function {
+                // allowed: only these functions are permitted.
+                if let Some(ref allowed) = agg_constraints.allowed {
+                    if !allowed.is_empty()
+                        && !allowed.iter().any(|a| a.eq_ignore_ascii_case(func))
+                    {
+                        return Err(PlannerError::ConstraintViolation {
+                            entity: entity_name.to_string(),
+                            message: format!(
+                                "aggregation constraint violated: '{}' is not in allowed list [{}]",
+                                func,
+                                allowed.join(", ")
+                            ),
+                        });
+                    }
+                }
+
+                // prohibited: these functions are not allowed.
+                if let Some(ref prohibited) = agg_constraints.prohibited {
+                    if prohibited.iter().any(|p| p.eq_ignore_ascii_case(func)) {
+                        return Err(PlannerError::ConstraintViolation {
+                            entity: entity_name.to_string(),
+                            message: format!(
+                                "aggregation constraint violated: '{}' is prohibited",
+                                func,
+                            ),
+                        });
+                    }
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Extract the aggregation function name from an expression source string.
+    /// E.g., "SUM(amount)" → Some("SUM"), "COUNT_DISTINCT(id)" → Some("COUNT_DISTINCT").
+    fn extract_agg_function(expr_source: &str) -> Option<&str> {
+        let trimmed = expr_source.trim();
+        if let Some(paren_pos) = trimmed.find('(') {
+            let func = trimmed[..paren_pos].trim();
+            if !func.is_empty() {
+                return Some(func);
+            }
+        }
+        None
     }
 }
 
@@ -252,6 +298,83 @@ mod tests {
 
         let result = ConstraintEvaluator::check(&request, &manifest);
         assert!(result.is_err(), "all constraint should fail when region is missing");
+    }
+
+    #[test]
+    fn test_agg_allowed_satisfied() {
+        let manifest = make_test_manifest_with_constraints(
+            None,
+            Some(semstrait_manifest::AggregationConstraints {
+                allowed: Some(vec!["SUM".to_string(), "AVG".to_string()]),
+                prohibited: None,
+            }),
+        );
+
+        let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
+        // revenue's expr_source is "SUM(amount)", SUM is in allowed list.
+        let result = ConstraintEvaluator::check(&request, &manifest);
+        assert!(result.is_ok(), "SUM should be allowed");
+    }
+
+    #[test]
+    fn test_agg_allowed_violated() {
+        let manifest = make_test_manifest_with_constraints(
+            None,
+            Some(semstrait_manifest::AggregationConstraints {
+                allowed: Some(vec!["AVG".to_string(), "COUNT".to_string()]),
+                prohibited: None,
+            }),
+        );
+
+        let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
+        // revenue's expr_source is "SUM(amount)", SUM is NOT in allowed list.
+        let result = ConstraintEvaluator::check(&request, &manifest);
+        assert!(result.is_err(), "SUM should not be in allowed list");
+        assert!(matches!(
+            result.unwrap_err(),
+            PlannerError::ConstraintViolation { .. }
+        ));
+    }
+
+    #[test]
+    fn test_agg_prohibited_violated() {
+        let manifest = make_test_manifest_with_constraints(
+            None,
+            Some(semstrait_manifest::AggregationConstraints {
+                allowed: None,
+                prohibited: Some(vec!["SUM".to_string()]),
+            }),
+        );
+
+        let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
+        // revenue's expr_source is "SUM(amount)", SUM is prohibited.
+        let result = ConstraintEvaluator::check(&request, &manifest);
+        assert!(result.is_err(), "SUM should be prohibited");
+    }
+
+    #[test]
+    fn test_agg_prohibited_satisfied() {
+        let manifest = make_test_manifest_with_constraints(
+            None,
+            Some(semstrait_manifest::AggregationConstraints {
+                allowed: None,
+                prohibited: Some(vec!["AVG".to_string()]),
+            }),
+        );
+
+        let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
+        // revenue's expr_source is "SUM(amount)", only AVG is prohibited.
+        let result = ConstraintEvaluator::check(&request, &manifest);
+        assert!(result.is_ok(), "SUM should not be prohibited when only AVG is");
+    }
+
+    #[test]
+    fn test_extract_agg_function() {
+        assert_eq!(ConstraintEvaluator::extract_agg_function("SUM(amount)"), Some("SUM"));
+        assert_eq!(ConstraintEvaluator::extract_agg_function("COUNT_DISTINCT(id)"), Some("COUNT_DISTINCT"));
+        assert_eq!(ConstraintEvaluator::extract_agg_function("AVG(price)"), Some("AVG"));
+        assert_eq!(ConstraintEvaluator::extract_agg_function("plain_column"), None);
+        assert_eq!(ConstraintEvaluator::extract_agg_function(""), None);
     }
 
     #[test]

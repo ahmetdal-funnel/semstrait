@@ -76,7 +76,7 @@ pub fn resolve_refs(mut model: SemanticModel) -> Result<SemanticModel, ModelErro
 }
 
 fn resolve_dimension_entries(
-    entries: &mut Vec<DimensionEntry>,
+    entries: &mut [DimensionEntry],
     map: &HashMap<&str, &Dimension>,
 ) -> Result<(), ModelError> {
     for entry in entries.iter_mut() {
@@ -92,7 +92,7 @@ fn resolve_dimension_entries(
 }
 
 fn resolve_measure_entries(
-    entries: &mut Vec<MeasureEntry>,
+    entries: &mut [MeasureEntry],
     map: &HashMap<&str, &Measure>,
 ) -> Result<(), ModelError> {
     for entry in entries.iter_mut() {
@@ -108,7 +108,7 @@ fn resolve_measure_entries(
 }
 
 fn resolve_metric_entries(
-    entries: &mut Vec<MetricEntry>,
+    entries: &mut [MetricEntry],
     map: &HashMap<&str, &Metric>,
 ) -> Result<(), ModelError> {
     for entry in entries.iter_mut() {

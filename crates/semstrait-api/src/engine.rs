@@ -163,10 +163,20 @@ impl SemstraitEngine {
         let emitter = AnsiSqlEmitter::new(AnsiDialect);
         let sql = emitter.emit(&plan)?;
 
-        // Emit Substrait JSON.
-        let substrait_json = SubstraitSerializer::to_substrait(&plan)
-            .ok()
-            .and_then(|proto_plan| serde_json::to_string_pretty(&proto_plan).ok());
+        // Emit Substrait JSON (best-effort: log warnings on failure).
+        let substrait_json = match SubstraitSerializer::to_substrait(&plan) {
+            Ok(proto_plan) => match serde_json::to_string_pretty(&proto_plan) {
+                Ok(json) => Some(json),
+                Err(e) => {
+                    tracing::warn!("Substrait JSON serialization failed: {}", e);
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Substrait plan conversion failed: {}", e);
+                None
+            }
+        };
 
         // Build plan text summary.
         let plan_text = format!(
@@ -200,13 +210,8 @@ impl SemstraitEngine {
 
         // Adapt → Execute.
         let payload = ComputePayload::Sql(sql);
-        let request = connector
-            .adapt(payload)
-            .map_err(|e| EngineError::Execution(e.to_string()))?;
-        let result = connector
-            .execute(request)
-            .await
-            .map_err(|e| EngineError::Execution(e.to_string()))?;
+        let request = connector.adapt(payload)?;
+        let result = connector.execute(request).await?;
 
         // Convert result to JSON.
         match &result.data {
