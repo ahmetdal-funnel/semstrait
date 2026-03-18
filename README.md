@@ -39,7 +39,8 @@ semstrait/                       Cargo workspace root
 │   ├── fixtures/models/         Shared YAML model fixtures for integration tests
 │   ├── e2e_pipeline_test.rs     Workspace-level E2E tests
 │   └── test_helpers.rs          Fixture loading utilities
-└── docs/                        Architecture diagrams and design documents
+└── docs/                        Workspace-level diagrams (D1, D2)
+    (D3–D6 live in their respective crate docs/ directories)
 ```
 
 ### Dependency Graph
@@ -121,10 +122,10 @@ Kinds define how datasets relate to each other:
 
 | Diagram | Description |
 |---------|-------------|
-| [D3 - Planner Evaluation Order](docs/D3_planner_evaluation_order.svg) | Steps within SemanticPlanner.plan() |
-| [D4 - PlanNode Substrait Map](docs/D4_plannode_substrait_map.svg) | PlanNode variant to Substrait Rel correspondence |
-| [D5 - Kind Interface Binding](docs/D5_kind_interface_binding.svg) | Three layers of Kind: interface, strategy, binding |
-| [D6 - Connector Architecture](docs/D6_connector_architecture.svg) | Compute emit/adapt/execute pipeline |
+| [D3 - Planner Evaluation Order](crates/semstrait-planner/docs/D3_planner_evaluation_order.svg) | Steps within SemanticPlanner.plan() — domain filter, constraints, kind dispatch, additivity, filter stacking, optimizer |
+| [D4 - PlanNode Substrait Map](crates/semstrait-ir/docs/D4_plannode_substrait_map.svg) | PlanNode variant to Substrait Rel correspondence |
+| [D5 - Kind Interface Binding](crates/semstrait-planner/docs/D5_kind_interface_binding.svg) | Three layers of Kind: interface → strategy (KindType) → binding → PlanFragment |
+| [D6 - Connector Architecture](crates/semstrait-connectors/docs/D6_connector_architecture.svg) | Compute emit/adapt/execute pipeline — DataFusion, DuckDB, Trino |
 
 ---
 
@@ -186,7 +187,7 @@ let sem = SemstraitBuilder::new()
     .build()
     .await?;
 
-let sql = sem.explain(&request).await?;
+let sql = sem.explain(&request)?;
 println!("SQL: {}", sql);
 ```
 
@@ -215,7 +216,8 @@ println!("SQL: {}", result.sql.unwrap());
 |-------|---------|------|
 | `semstrait-connectors` | `datafusion` | DataFusion SQL execution connector |
 | `semstrait-connectors` | `duckdb` | DuckDB embedded connector (v1.3.2, Arrow 55) |
-| `semstrait-connectors` | `trino` | Trino connector (stub) |
+| `semstrait-connectors` | `trino` | Trino connector (planned) |
+| `semstrait-connectors` | `spark` | Spark Connect connector (planned) |
 | `semstrait-sql` | `polyglot` | PolyglotEmitter — 34+ SQL dialects via polyglot-sql |
 | `semstrait-catalog` | `iceberg` | Iceberg REST catalog client (OAuth2, Polaris) |
 | `semstrait-api` | `cli` | CLI transport via clap |
@@ -230,7 +232,7 @@ println!("SQL: {}", result.sql.unwrap());
 # Build all crates
 cargo build --workspace
 
-# Run all tests (307 tests with all features)
+# Run all tests (311 tests with all features)
 cargo test --workspace --features datafusion,duckdb,polyglot
 
 # Build CLI binary with all connectors
