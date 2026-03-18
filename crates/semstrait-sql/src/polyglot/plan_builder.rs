@@ -27,7 +27,6 @@ impl PlanBuilder {
         self.build_node(&plan.root)
     }
 
-    /// Build a single PlanNode recursively.
     fn build_node(&self, node: &PlanNode) -> Result<Expression, EmitError> {
         match node {
             PlanNode::Scan(scan) => self.build_scan(scan),
@@ -40,8 +39,6 @@ impl PlanBuilder {
             PlanNode::Fetch(fetch) => self.build_fetch(fetch),
         }
     }
-
-    // -- Scan ------------------------------------------------------------------
 
     fn build_scan(&self, scan: &semstrait_ir::ScanNode) -> Result<Expression, EmitError> {
         let select_exprs: Vec<Expr> = if scan.projection.is_empty() {
@@ -57,57 +54,47 @@ impl PlanBuilder {
             .build())
     }
 
-    // -- Filter ----------------------------------------------------------------
-
     fn build_filter(&self, filter: &semstrait_ir::FilterNode) -> Result<Expression, EmitError> {
         let child = self.build_node(&filter.input)?;
         let predicate = self.expr.build(&filter.predicate)?;
-
         Ok(builder::select([builder::star()])
             .from_expr(wrap_subquery(child, "_f"))
             .where_(predicate)
             .build())
     }
 
-    // -- Project ---------------------------------------------------------------
-
     fn build_project(
         &self,
         project: &semstrait_ir::ProjectNode,
     ) -> Result<Expression, EmitError> {
         let child = self.build_node(&project.input)?;
-
-        let exprs: Result<Vec<Expr>, EmitError> = project
+        let exprs = project
             .expressions
             .iter()
             .map(|e| self.expr.build(e))
-            .collect();
-
-        Ok(builder::select(exprs?)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(builder::select(exprs)
             .from_expr(wrap_subquery(child, "_p"))
             .build())
     }
-
-    // -- Aggregate -------------------------------------------------------------
 
     fn build_aggregate(&self, agg: &semstrait_ir::AggNode) -> Result<Expression, EmitError> {
         let child = self.build_node(&agg.input)?;
         let schema_fields = &agg.meta.output_schema.fields;
 
-        // Build GROUP BY expressions
-        let group_exprs: Result<Vec<Expr>, EmitError> =
-            agg.group_by.iter().map(|e| self.expr.build(e)).collect();
-        let group_exprs = group_exprs?;
+        let group_exprs = agg
+            .group_by
+            .iter()
+            .map(|e| self.expr.build(e))
+            .collect::<Result<Vec<_>, _>>()?;
 
-        // Build aggregate expressions
-        let agg_exprs: Result<Vec<Expr>, EmitError> = agg
+        let agg_exprs = agg
             .aggregates
             .iter()
             .map(|m| self.expr.build_aggregate(m))
-            .collect();
-        let agg_exprs = agg_exprs?;
+            .collect::<Result<Vec<_>, _>>()?;
 
-        // Build SELECT list with aliases from schema
+        // Build SELECT list with aliases from output schema
         let num_groups = group_exprs.len();
         let mut select_list: Vec<Expr> = Vec::with_capacity(num_groups + agg_exprs.len());
 
@@ -126,26 +113,21 @@ impl PlanBuilder {
             }
         }
 
-        // Reuse already-built group expressions for GROUP BY (unaliased)
         let mut query = builder::select(select_list)
             .from_expr(wrap_subquery(child, "_a"));
 
         if !group_exprs.is_empty() {
-            let group_by_refs: Vec<Expr> = group_exprs.into_iter().collect();
-            query = query.group_by(group_by_refs);
+            query = query.group_by(group_exprs);
         }
 
         Ok(query.build())
     }
-
-    // -- Join ------------------------------------------------------------------
 
     fn build_join(&self, join: &semstrait_ir::JoinNode) -> Result<Expression, EmitError> {
         let left = self.build_node(&join.left)?;
         let right = self.build_node(&join.right)?;
         let on_expr = self.expr.build(&join.condition)?;
 
-        // Map IR JoinType to polyglot JoinKind
         let kind = match join.join_type {
             JoinType::Inner => JoinKind::Inner,
             JoinType::Left => JoinKind::Left,
@@ -153,8 +135,8 @@ impl PlanBuilder {
             JoinType::Full => JoinKind::Full,
         };
 
-        // Construct Select AST directly — the builder lacks full_join() and
-        // join-on-subquery support, so we build the struct manually.
+        // Construct Select AST directly — the builder lacks full_join()
+        // and join-on-subquery support.
         let mut select = Select::new();
         select.expressions = vec![Expression::Star(Star {
             table: None,
@@ -186,8 +168,6 @@ impl PlanBuilder {
         Ok(Expression::Select(Box::new(select)))
     }
 
-    // -- Union -----------------------------------------------------------------
-
     fn build_union(
         &self,
         union_node: &semstrait_ir::UnionNode,
@@ -198,18 +178,16 @@ impl PlanBuilder {
             ));
         }
 
-        // Build all inputs as Expression ASTs
-        let exprs: Result<Vec<Expression>, EmitError> = union_node
+        let exprs = union_node
             .inputs
             .iter()
             .map(|n| self.build_node(n))
-            .collect();
-        let exprs = exprs?;
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Left-fold into nested Union(Union(a, b), c) tree
         let mut acc = exprs.into_iter();
         let first = acc.next().unwrap();
-        let result = acc.fold(first, |left, right| {
+        Ok(acc.fold(first, |left, right| {
             Expression::Union(Box::new(Union {
                 left,
                 right,
@@ -229,17 +207,12 @@ impl PlanBuilder {
                 strict: false,
                 on_columns: Vec::new(),
             }))
-        });
-
-        Ok(result)
+        }))
     }
-
-    // -- Sort ------------------------------------------------------------------
 
     fn build_sort(&self, sort: &semstrait_ir::SortNode) -> Result<Expression, EmitError> {
         let child = self.build_node(&sort.input)?;
-
-        let sort_exprs: Result<Vec<Expr>, EmitError> = sort
+        let sort_exprs = sort
             .sort_keys
             .iter()
             .map(|k| {
@@ -249,15 +222,13 @@ impl PlanBuilder {
                     SortDirection::Descending => Ok(e.desc()),
                 }
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(builder::select([builder::star()])
             .from_expr(wrap_subquery(child, "_s"))
-            .order_by(sort_exprs?)
+            .order_by(sort_exprs)
             .build())
     }
-
-    // -- Fetch -----------------------------------------------------------------
 
     fn build_fetch(&self, fetch: &semstrait_ir::FetchNode) -> Result<Expression, EmitError> {
         if fetch.offset < 0 {
@@ -270,7 +241,6 @@ impl PlanBuilder {
         }
 
         let child = self.build_node(&fetch.input)?;
-
         let mut query = builder::select([builder::star()])
             .from_expr(wrap_subquery(child, "_t"));
 
@@ -278,17 +248,11 @@ impl PlanBuilder {
             query = query.offset(fetch.offset as usize);
         }
 
-        // Build the Select, then set .fetch for FETCH FIRST semantics.
+        // Set .fetch for FETCH FIRST semantics on the built Select.
         // polyglot-sql converts FETCH → LIMIT for dialects that prefer it
-        // (DuckDB, Spark, Databricks, etc.) and keeps FETCH FIRST for others
-        // (Trino, PostgreSQL, DataFusion, Oracle).
-        let mut select = match query.build() {
-            Expression::Select(s) => *s,
-            other => {
-                let mut s = Select::new();
-                s.expressions = vec![other];
-                s
-            }
+        // (DuckDB, Spark, Databricks) and keeps FETCH FIRST for others.
+        let Expression::Select(mut select) = query.build() else {
+            unreachable!("builder::select().build() always returns Expression::Select");
         };
 
         if let Some(count) = fetch.count {
@@ -301,21 +265,17 @@ impl PlanBuilder {
             });
         }
 
-        Ok(Expression::Select(Box::new(select)))
+        Ok(Expression::Select(select))
     }
 }
 
-// -- Helpers -------------------------------------------------------------------
-
-/// Wrap an `Expression` as a subquery `Expr` with the given alias.
 fn wrap_subquery(expr: Expression, alias: &str) -> Expr {
     builder::subquery_expr(expr, alias)
 }
 
-/// Create a table reference `Expr` with quoted identifiers for the table name.
 fn quoted_table(name: &str) -> Expr {
     let parts: Vec<&str> = name.split('.').collect();
-    let mut tref = TableRef::new(parts.last().copied().unwrap_or(""));
+    let mut tref = TableRef::new("");
     match parts.len() {
         3 => {
             tref.catalog = Some(Identifier::quoted(parts[0]));
@@ -333,7 +293,6 @@ fn quoted_table(name: &str) -> Expr {
     Expr(Expression::Table(Box::new(tref)))
 }
 
-/// Create a `Subquery` struct with the given alias.
 fn make_subquery(expr: Expression, alias: &str) -> Subquery {
     Subquery {
         this: expr,

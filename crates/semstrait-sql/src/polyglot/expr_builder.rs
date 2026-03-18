@@ -8,25 +8,18 @@ use semstrait_ir::{Aggregation, AggregateMeasure, BinaryOp, DslExpr};
 /// Create a column reference with quoted identifiers so every dialect applies
 /// its native quoting style (double-quotes, backticks, brackets, etc.).
 pub(crate) fn quoted_col(name: &str) -> Expr {
-    if let Some((table, column)) = name.rsplit_once('.') {
-        Expr(Expression::boxed_column(Column {
-            name: Identifier::quoted(column),
-            table: Some(Identifier::quoted(table)),
-            join_mark: false,
-            trailing_comments: Vec::new(),
-            span: None,
-            inferred_type: None,
-        }))
-    } else {
-        Expr(Expression::boxed_column(Column {
-            name: Identifier::quoted(name),
-            table: None,
-            join_mark: false,
-            trailing_comments: Vec::new(),
-            span: None,
-            inferred_type: None,
-        }))
-    }
+    let (table, col_name) = match name.rsplit_once('.') {
+        Some((t, c)) => (Some(Identifier::quoted(t)), c),
+        None => (None, name),
+    };
+    Expr(Expression::boxed_column(Column {
+        name: Identifier::quoted(col_name),
+        table,
+        join_mark: false,
+        trailing_comments: Vec::new(),
+        span: None,
+        inferred_type: None,
+    }))
 }
 
 /// Converts IR `DslExpr` trees into polyglot-sql builder `Expr` nodes.
@@ -37,15 +30,14 @@ impl ExprBuilder {
     pub fn build(&self, expr: &DslExpr) -> Result<Expr, EmitError> {
         match expr {
             DslExpr::Column { name, qualifier } => {
-                let col_ref = match qualifier {
-                    Some(q) => format!("{q}.{name}"),
-                    None => name.clone(),
-                };
-                Ok(quoted_col(&col_ref))
+                if let Some(q) = qualifier {
+                    Ok(quoted_col(&format!("{q}.{name}")))
+                } else {
+                    Ok(quoted_col(name))
+                }
             }
 
             DslExpr::Number(n) => {
-                // Render integers without fractional part.
                 // Guard against precision loss near i64 boundary (f64 has 53-bit mantissa).
                 if n.fract() == 0.0 && n.abs() < (1_i64 << 53) as f64 {
                     Ok(builder::lit(*n as i64))
@@ -94,12 +86,12 @@ impl ExprBuilder {
                 args,
                 distinct,
             } => {
-                let built_args: Result<Vec<Expr>, EmitError> =
-                    args.iter().map(|a| self.build(a)).collect();
-                let built_args = built_args?;
+                let built_args = args
+                    .iter()
+                    .map(|a| self.build(a))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 if *distinct {
-                    // For COUNT(DISTINCT x), use the dedicated helper
                     if name.eq_ignore_ascii_case("COUNT") && built_args.len() == 1 {
                         Ok(builder::count_distinct(built_args.into_iter().next().unwrap()))
                     } else {
@@ -111,17 +103,13 @@ impl ExprBuilder {
             }
 
             DslExpr::Negate(inner) => {
-                let inner_expr = self.build(inner)?;
-                // Construct Expression::Neg directly (no builder helper exists)
+                let e = self.build(inner)?;
                 Ok(Expr(Expression::Neg(Box::new(UnaryOp::new(
-                    inner_expr.into_inner(),
+                    e.into_inner(),
                 )))))
             }
 
-            DslExpr::Not(inner) => {
-                let inner_expr = self.build(inner)?;
-                Ok(builder::not(inner_expr))
-            }
+            DslExpr::Not(inner) => Ok(builder::not(self.build(inner)?)),
 
             DslExpr::Case {
                 when_then,
@@ -129,9 +117,7 @@ impl ExprBuilder {
             } => {
                 let mut case = builder::case();
                 for (when, then) in when_then {
-                    let w = self.build(when)?;
-                    let t = self.build(then)?;
-                    case = case.when(w, t);
+                    case = case.when(self.build(when)?, self.build(then)?);
                 }
                 if let Some(else_e) = else_expr {
                     case = case.else_(self.build(else_e)?);
@@ -139,15 +125,9 @@ impl ExprBuilder {
                 Ok(case.build())
             }
 
-            DslExpr::IsNull(inner) => {
-                let inner_expr = self.build(inner)?;
-                Ok(inner_expr.is_null())
-            }
+            DslExpr::IsNull(inner) => Ok(self.build(inner)?.is_null()),
 
-            DslExpr::IsNotNull(inner) => {
-                let inner_expr = self.build(inner)?;
-                Ok(inner_expr.is_not_null())
-            }
+            DslExpr::IsNotNull(inner) => Ok(self.build(inner)?.is_not_null()),
 
             DslExpr::InList {
                 expr,
@@ -155,9 +135,10 @@ impl ExprBuilder {
                 negated,
             } => {
                 let e = self.build(expr)?;
-                let items: Result<Vec<Expr>, EmitError> =
-                    list.iter().map(|i| self.build(i)).collect();
-                let items = items?;
+                let items = list
+                    .iter()
+                    .map(|i| self.build(i))
+                    .collect::<Result<Vec<_>, _>>()?;
                 if *negated {
                     Ok(e.not_in(items))
                 } else {
@@ -175,7 +156,6 @@ impl ExprBuilder {
                 let l = self.build(low)?;
                 let h = self.build(high)?;
                 if *negated {
-                    // No not_between in builder — use NOT (expr BETWEEN low AND high)
                     Ok(builder::not(e.between(l, h)))
                 } else {
                     Ok(e.between(l, h))
@@ -183,28 +163,25 @@ impl ExprBuilder {
             }
 
             DslExpr::Like { expr, pattern } => {
-                let e = self.build(expr)?;
-                let p = self.build(pattern)?;
-                Ok(e.like(p))
+                Ok(self.build(expr)?.like(self.build(pattern)?))
             }
 
             DslExpr::Coalesce(exprs) => {
-                let items: Result<Vec<Expr>, EmitError> =
-                    exprs.iter().map(|e| self.build(e)).collect();
-                Ok(builder::coalesce(items?))
+                let items = exprs
+                    .iter()
+                    .map(|e| self.build(e))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(builder::coalesce(items))
             }
 
             DslExpr::NullIf { expr, null_expr } => {
-                let e = self.build(expr)?;
-                let n = self.build(null_expr)?;
-                Ok(builder::null_if(e, n))
+                Ok(builder::null_if(self.build(expr)?, self.build(null_expr)?))
             }
 
             DslExpr::DateTrunc { grain, expr } => {
-                let e = self.build(expr)?;
                 Ok(builder::func(
                     "DATE_TRUNC",
-                    [builder::lit(grain.as_str()), e],
+                    [builder::lit(grain.as_str()), self.build(expr)?],
                 ))
             }
         }
@@ -213,7 +190,6 @@ impl ExprBuilder {
     /// Convert an `AggregateMeasure` to a polyglot-sql `Expr`.
     pub fn build_aggregate(&self, measure: &AggregateMeasure) -> Result<Expr, EmitError> {
         let inner = self.build(&measure.expr)?;
-
         let is_distinct =
             measure.distinct || matches!(measure.function, Aggregation::CountDistinct);
 
@@ -222,10 +198,7 @@ impl ExprBuilder {
                 Aggregation::Count | Aggregation::CountDistinct => {
                     Ok(builder::count_distinct(inner))
                 }
-                _ => {
-                    let func_name = aggregation_name(&measure.function);
-                    Ok(distinct_func(func_name, [inner]))
-                }
+                _ => Ok(distinct_func(aggregation_name(&measure.function), [inner])),
             }
         } else {
             match measure.function {
@@ -240,8 +213,8 @@ impl ExprBuilder {
     }
 }
 
-/// Create a function call with `DISTINCT` set on the AST node.
-/// Produces `FUNC(DISTINCT args)` instead of the incorrect `FUNC DISTINCT(args)`.
+/// Create a function call with `DISTINCT` on the AST node.
+/// Produces correct `FUNC(DISTINCT args)` via the `Function.distinct` field.
 fn distinct_func(name: &str, args: impl IntoIterator<Item = Expr>) -> Expr {
     Expr(Expression::Function(Box::new(Function {
         name: name.to_string(),
