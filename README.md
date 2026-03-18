@@ -141,7 +141,7 @@ QueryRequest + CompiledManifest
        ▼
  LogicalPlan (PlanNode IR)
        │
-       ├─ SqlEmitter           → String  (dialect-specific via sqlparser-rs AST)
+       ├─ SqlEmitter           → String  (AnsiSqlEmitter or PolyglotEmitter for 34+ dialects)
        └─ SubstraitSerializer  → substrait::proto::Plan → Vec<u8>
        ▼
  ComputeConnector (optional)  → ComputeResult (Arrow RecordBatches or JSON)
@@ -216,6 +216,7 @@ println!("SQL: {}", result.sql.unwrap());
 | `semstrait-connectors` | `datafusion` | DataFusion SQL execution connector |
 | `semstrait-connectors` | `duckdb` | DuckDB embedded connector (v1.3.2, Arrow 55) |
 | `semstrait-connectors` | `trino` | Trino connector (stub) |
+| `semstrait-sql` | `polyglot` | PolyglotEmitter — 34+ SQL dialects via polyglot-sql |
 | `semstrait-catalog` | `iceberg` | Iceberg REST catalog client (OAuth2, Polaris) |
 | `semstrait-api` | `cli` | CLI transport via clap |
 | `semstrait-api` | `rest` | REST transport via axum |
@@ -229,11 +230,17 @@ println!("SQL: {}", result.sql.unwrap());
 # Build all crates
 cargo build --workspace
 
-# Run all tests (239 tests)
-cargo test --workspace
+# Run all tests (307 tests with all features)
+cargo test --workspace --features datafusion,duckdb,polyglot
 
-# Run with DataFusion connector
-cargo test --workspace --features semstrait-connectors/datafusion
+# Build CLI binary with all connectors
+cargo build -p semstrait-api --features cli,rest,datafusion,duckdb
+
+# Run with DataFusion connector only
+cargo test --workspace --features datafusion
+
+# Run with DuckDB connector only
+cargo test --workspace --features duckdb
 
 # Run with Iceberg catalog
 cargo test --workspace --features semstrait-catalog/iceberg
