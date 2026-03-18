@@ -120,7 +120,10 @@ impl SemanticPlanner {
         // 8c: Metric-level filters follow the same conditional aggregation pattern
         // as measure filters — applied during expression lowering in KindPlanner.
 
-        // 8d: Inject user filters from the request.
+        // 8d: Inject kind-level filters (applied to all queries against this kind).
+        root = inject_kind_filters(root, &kind)?;
+
+        // 8e: Inject user filters from the request.
         root = inject_user_filters(root, request)?;
 
         // Step 9: Apply ORDER BY.
@@ -198,6 +201,27 @@ impl Default for SemanticPlannerBuilder {
 // ============================================================================
 // Filter injection helpers
 // ============================================================================
+
+/// Inject kind-level filters as FilterNodes wrapping the plan root.
+///
+/// Kind filters apply to all queries against a kind, regardless of dataset or user request.
+/// Expressions use semantic names (post-projection), so we lower with an empty mapping.
+fn inject_kind_filters(
+    mut root: PlanNode,
+    kind: &semstrait_manifest::CompiledKind,
+) -> Result<PlanNode, PlannerError> {
+    let empty_mapping = std::collections::HashMap::new();
+    for filter in &kind.filters {
+        let predicate = crate::expr_lower::lower_expr(&filter.expr, &empty_mapping)?;
+        let schema = root.meta().output_schema.clone();
+        root = PlanNode::Filter(FilterNode {
+            meta: NodeMeta::new(schema),
+            input: Box::new(root),
+            predicate,
+        });
+    }
+    Ok(root)
+}
 
 /// Convert user QueryFilters into FilterNodes wrapping the plan root.
 fn inject_user_filters(
@@ -564,5 +588,89 @@ mod tests {
             PlanNode::Union(n) => n.inputs.iter().any(|i| contains_fetch_node(i)),
             PlanNode::Scan(_) => false,
         }
+    }
+
+    #[test]
+    fn test_plan_with_kind_filter() {
+        let mut manifest = make_test_manifest();
+        // Add a kind-level filter: region = 'US'.
+        if let Some(kind) = manifest.kinds.get_mut("orders") {
+            kind.filters.push(semstrait_manifest::CompiledFilter {
+                name: "us_only".to_string(),
+                expr: semstrait_core::DslExpr::eq(
+                    semstrait_core::DslExpr::column("region"),
+                    semstrait_core::DslExpr::string("US"),
+                ),
+                expr_source: "region = 'US'".to_string(),
+            });
+        }
+
+        let request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan(&request, &manifest);
+        assert!(result.is_ok(), "plan with kind filter should succeed: {:?}", result.err());
+
+        let plan = result.unwrap();
+        // Should have a FilterNode from the kind-level filter.
+        assert!(contains_filter_node(&plan.root), "plan should contain kind-level filter");
+    }
+
+    #[test]
+    fn test_plan_kind_filter_combined_with_user_filter() {
+        let mut manifest = make_test_manifest();
+        // Add a kind-level filter.
+        if let Some(kind) = manifest.kinds.get_mut("orders") {
+            kind.filters.push(semstrait_manifest::CompiledFilter {
+                name: "active_only".to_string(),
+                expr: semstrait_core::DslExpr::eq(
+                    semstrait_core::DslExpr::column("region"),
+                    semstrait_core::DslExpr::string("US"),
+                ),
+                expr_source: "region = 'US'".to_string(),
+            });
+        }
+
+        let mut request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
+        // Also add a user filter.
+        request.filters = vec![QueryFilter {
+            field: "date".to_string(),
+            operator: FilterOperator::Eq,
+            values: vec![FilterValue::String("2024-01-01".to_string())],
+        }];
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan(&request, &manifest);
+        assert!(result.is_ok(), "plan with both filters should succeed");
+
+        let plan = result.unwrap();
+        // Count filter nodes — should be at least 2 (kind + user).
+        let filter_count = count_filter_nodes(&plan.root);
+        assert!(filter_count >= 2, "should have at least 2 filter nodes (kind + user), got {}", filter_count);
+    }
+
+    fn count_filter_nodes(node: &PlanNode) -> usize {
+        match node {
+            PlanNode::Filter(n) => 1 + count_filter_nodes(&n.input),
+            PlanNode::Project(n) => count_filter_nodes(&n.input),
+            PlanNode::Aggregate(n) => count_filter_nodes(&n.input),
+            PlanNode::Sort(n) => count_filter_nodes(&n.input),
+            PlanNode::Fetch(n) => count_filter_nodes(&n.input),
+            PlanNode::Join(n) => count_filter_nodes(&n.left) + count_filter_nodes(&n.right),
+            PlanNode::Union(n) => n.inputs.iter().map(count_filter_nodes).sum(),
+            PlanNode::Scan(_) => 0,
+        }
+    }
+
+    #[test]
+    fn test_plan_no_kind_filters() {
+        // Verify baseline: no kind filters means no extra filter nodes
+        // (unless user adds one).
+        let manifest = make_test_manifest();
+        let request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
+
+        let planner = SemanticPlanner::builder().build();
+        let plan = planner.plan(&request, &manifest).expect("should succeed");
+        assert!(!contains_filter_node(&plan.root), "no filter should be present without user/kind filters");
     }
 }

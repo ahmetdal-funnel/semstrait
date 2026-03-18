@@ -135,6 +135,41 @@ impl SqlDialect for DuckDbDialect {
 // TrinoDialect — double-quoted identifiers, Trino date_trunc syntax
 // =============================================================================
 
+// =============================================================================
+// TargetDialect — engine-agnostic dialect identifier
+// =============================================================================
+
+/// Target SQL dialect identifier.
+///
+/// Used by connectors to declare their preferred dialect and by the engine
+/// to select the appropriate SQL emitter. When the `polyglot` feature is
+/// enabled, `PolyglotEmitter` uses this to pick the transpilation target.
+/// Without `polyglot`, the engine falls back to the matching `SqlDialect`
+/// implementation (ANSI, DuckDB, or Trino).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetDialect {
+    /// ANSI SQL (pass-through, no transpilation).
+    Ansi,
+    /// Apache DataFusion.
+    DataFusion,
+    /// DuckDB.
+    DuckDb,
+    /// Trino (formerly PrestoSQL).
+    Trino,
+    /// Apache Spark SQL.
+    Spark,
+    /// Snowflake.
+    Snowflake,
+    /// Databricks SQL.
+    Databricks,
+    /// PostgreSQL.
+    PostgreSql,
+}
+
+// =============================================================================
+// TrinoDialect — double-quoted identifiers, Trino date_trunc syntax
+// =============================================================================
+
 /// Trino dialect. Double-quoted identifiers, Trino-specific date_trunc.
 pub struct TrinoDialect;
 

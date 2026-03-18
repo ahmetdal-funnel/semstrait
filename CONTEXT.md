@@ -1,5 +1,5 @@
 # Semstrait Architecture Document
-**Version:** 3.2 | **Status:** Implementation — authoritative reference for per-module documentation
+**Version:** 3.5 | **Status:** Implementation — authoritative reference for per-module documentation
 
 ---
 
@@ -903,7 +903,24 @@ pub struct TrinoDialect;   // FETCH FIRST, lowercase date_trunc
 
 **Note:** `Guard` is a `semstrait_core::DslExpr` variant only. The IR DslExpr uses `Case` with `else_expr: None` for the same semantics. Aggregates (SUM, AVG, etc.) are in `AggregateMeasure`, rendered via `DslExprSqlRenderer::render_aggregate()`.
 
-**External deps:** `semstrait-core`, `semstrait-ir` (no sqlparser — direct string building)
+**Polyglot SQL transpilation (V2-A, feature-gated):**
+
+When the `polyglot` feature is enabled, `PolyglotEmitter` generates dialect-specific SQL by:
+1. Generating ANSI SQL via `AnsiSqlEmitter` (existing, well-tested pipeline)
+2. Transpiling to the target dialect via `polyglot_sql::transpile()`
+
+```rust
+// Always available — connectors declare their preferred dialect
+pub enum TargetDialect { Ansi, DataFusion, DuckDb, Trino, Spark, Snowflake, Databricks, PostgreSql }
+
+// Feature-gated behind "polyglot"
+pub struct PolyglotEmitter { base: AnsiSqlEmitter<AnsiDialect>, target: TargetDialect }
+impl SqlEmitter for PolyglotEmitter { /* transpile(ansi_sql, DuckDB, target) */ }
+```
+
+Transpilation handles: identifier quoting (double-quotes → backticks for Spark/Databricks), FETCH FIRST → LIMIT conversion, and function name normalization across 34+ dialects.
+
+**External deps:** `semstrait-core`, `semstrait-ir`, `polyglot-sql` (optional, feature-gated)
 
 ---
 
@@ -958,6 +975,8 @@ pub trait ComputeConnector: ComputeAdapter + Send + Sync {
         -> Result<ComputeResult, ConnectorError>;
     async fn health_check(&self) -> Result<(), ConnectorError>;
     fn name(&self) -> &str;
+    /// The SQL dialect preferred by this engine. Default: Ansi.
+    fn preferred_dialect(&self) -> TargetDialect { TargetDialect::Ansi }
 }
 
 pub struct ComputeResult {
@@ -1007,7 +1026,7 @@ ComputeEmitter.emit() ───────────────────�
 
 | Engine | Payload support | Wire | Notes |
 |---|---|---|---|
-| DuckDB | `Sql` + partial `SubstraitPlan` | DuckDB C API / ADBC | Embedded; `ConsumerProfile.supports_window_functions = true` |
+| DuckDB | `Sql` only | DuckDB C API (embedded, `bundled`) | `Connection` is `Send`/`!Sync` — wrapped in `Arc<Mutex<Connection>>` + `spawn_blocking`; `query_arrow` → Arrow 55 batches → JSON via `arrow::json::ArrayWriter`; CSV/Parquet via `read_csv_auto()`/`read_parquet()`; `preferred_dialect = DuckDb` |
 | DataFusion | `Sql` only (v1) | In-process Rust | Returns `ComputeResultData::Json` via Arrow→JSON; timeout enforcement via `tokio::time::timeout` |
 | Trino | `Sql` only | ADBC driver manager (columnar-tech) / HTTP REST | `TrinoSqlEmitter` for dialect; no Substrait endpoint |
 | Spark | `Sql` + `SubstraitPlan` (experimental) | spark-connect gRPC (tonic) | Not ADBC; `SparkSqlEmitter` for safe fallback |
@@ -1015,10 +1034,10 @@ ComputeEmitter.emit() ───────────────────�
 **External deps:** `semstrait-core`, `semstrait-ir`, `semstrait-sql`, `arrow`, `async-trait`
 
 Engine deps (feature-gated):
-- `duckdb`: `duckdb` crate
-- `datafusion`: `datafusion`, `datafusion-substrait`
-- `trino`: `adbc_driver_manager` (optional), `reqwest`
-- `spark`: `tonic`, `prost` (spark-connect proto)
+- `duckdb`: `duckdb` crate v1.3.2 (arrow 55, `bundled` feature), `arrow` crate v55 (for `json` feature)
+- `datafusion`: `datafusion` v52
+- `trino`: `adbc_driver_manager` (optional), `reqwest` (planned)
+- `spark`: `tonic`, `prost` (spark-connect proto) (planned)
 
 ---
 
@@ -1088,7 +1107,7 @@ pub mod rest {
 #[cfg(feature = "cli")]
 pub mod cli {
     pub async fn run() -> Result<(), Box<dyn std::error::Error>>;
-    // Commands: compile | explain | validate | query (datafusion) | serve (rest)
+    // Commands: compile | explain | validate | query (datafusion) | query-duckdb (duckdb) | serve (rest)
     // Binary target: `cargo build -p semstrait-api --features cli,rest,datafusion`
 }
 ```
@@ -1262,14 +1281,16 @@ This table records every cross-crate type reference and confirms no cycle is int
 | Aggregation constraints | **Done** (v1.1-B.1) | `check_aggregation_constraints()` validates allowed/prohibited lists against `expr_source` |
 | REST /schema and /compile endpoints | **Done** (v1.1-B.4) | GET /schema returns kind introspection; POST /compile accepts YAML, returns manifest JSON |
 | gRPC transport | Deferred v2 | Stub file exists, no implementation |
-| DuckDB/Trino/Spark connectors | Deferred v2 | Feature flags exist but no source files |
+| Polyglot SQL transpilation | **Done** (V2-A, DL-030) | `PolyglotEmitter` transpiles ANSI SQL to 34+ dialects via `polyglot-sql`. Feature-gated behind `polyglot`. |
+| DuckDB connector | **Done** (V2-B, DL-031) | `DuckDbConnector` — embedded DuckDB 1.3.2, `Arc<Mutex<Connection>>` + `spawn_blocking`, CSV/Parquet registration, CLI `query-duckdb` command |
+| Trino/Spark connectors | Deferred v2 | Feature flags exist but no source files |
 | Spark Substrait support | Default to SQL emitter | Spark 3.4+ experimental |
 | Multi-engine query fan-out | Deferred v2 | Single connector per `Semstrait` instance |
 | `FileSystemRepository` | Deferred v2 | `InMemoryRepository` sufficient for v1 stateless operation |
 | Cross-kind metric refs | Prohibited v1 (COMP_E006) | Multi-kind planning deferred |
-| UNION DISTINCT | Deferred v1.1 | UNION ALL only |
+| UNION DISTINCT | **Done** (v1.1-B.6) | `UnionMode::All` (default) or `UnionMode::Distinct` on Unionset kind type |
 | Many-to-many junction tables | Deferred v2 | Bridge as explicit dataset in joinset |
-| Kind-level filter block | Deferred v1.1 | Applies to all queries against a kind regardless of dataset |
+| Kind-level filter block | **Done** (v1.1-B.5) | `CompiledKind.filters` injected as FilterNodes before user filters |
 | Schema drift detection | Warn PLAN_W003 | Physical schema changed since compile |
 | Row-level security user_attribute | Schema exists | Session parameter required; missing → PLAN_E005 |
 | ComputeEmitter integration | Deferred v1.1 (DL-023) | Trait exists but engine bypasses it via direct SqlEmitter |

@@ -10,6 +10,7 @@ use crate::payload::{
     EmitError, PayloadKind,
 };
 use semstrait_core::ConsumerProfile;
+use semstrait_sql::TargetDialect;
 
 /// Converts a LogicalPlan into a compute-ready payload.
 ///
@@ -60,4 +61,13 @@ pub trait ComputeConnector: ComputeAdapter + Send + Sync {
 
     /// Human-readable name of this connector.
     fn name(&self) -> &str;
+
+    /// The SQL dialect preferred by this engine.
+    ///
+    /// Used by the engine to select the appropriate SQL emitter. When the
+    /// `polyglot` feature is enabled, `PolyglotEmitter` transpiles ANSI SQL
+    /// to this dialect. Defaults to `Ansi` (no transpilation).
+    fn preferred_dialect(&self) -> TargetDialect {
+        TargetDialect::Ansi
+    }
 }

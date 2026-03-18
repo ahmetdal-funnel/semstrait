@@ -728,6 +728,7 @@ mod tests {
             datasets: vec![ds_orders, ds_customers],
             relationships: vec![relationship],
             domain: None,
+            filters: vec![],
         };
 
         let mut kinds = IndexMap::new();
@@ -872,6 +873,7 @@ mod tests {
             ],
             relationships: vec![],
             domain: None,
+            filters: vec![],
         };
 
         let request = make_test_request("broken", vec![], vec![]);
@@ -984,6 +986,7 @@ mod tests {
             datasets: vec![ds_orders, ds_customers, ds_regions],
             relationships: vec![rel1, rel2],
             domain: None,
+            filters: vec![],
         };
 
         let request = make_test_request("order_region", vec!["order_date", "region_name"], vec!["revenue"]);

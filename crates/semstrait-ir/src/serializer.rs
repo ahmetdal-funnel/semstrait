@@ -573,7 +573,11 @@ impl SubstraitSerializer {
             rel_type: Some(RelType::Set(proto::SetRel {
                 common: None,
                 inputs,
-                op: proto::set_rel::SetOp::UnionAll as i32,
+                op: if node.distinct {
+                    proto::set_rel::SetOp::UnionDistinct as i32
+                } else {
+                    proto::set_rel::SetOp::UnionAll as i32
+                },
                 advanced_extension: None,
             })),
         })
@@ -593,7 +597,7 @@ impl SubstraitSerializer {
         let schema = inputs[0].meta().output_schema.clone();
         let meta = NodeMeta::new(schema);
 
-        Ok(PlanNode::Union(UnionNode { meta, inputs }))
+        Ok(PlanNode::Union(UnionNode { meta, inputs, distinct: false }))
     }
 
     fn sort_to_rel(node: &SortNode) -> Result<proto::Rel, SerializeError> {

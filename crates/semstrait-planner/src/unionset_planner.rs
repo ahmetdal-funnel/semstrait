@@ -14,7 +14,7 @@ use semstrait_ir::{
     AggNode, AggregateMeasure, Aggregation, DslExpr, Field, NodeMeta, PlanNode, ProjectNode,
     ScanNode, Schema, UnionNode,
 };
-use semstrait_manifest::{CompiledKind, CompiledKindDataset, CompiledKindType};
+use semstrait_manifest::{CompiledKind, CompiledKindDataset, CompiledKindType, UnionMode};
 use std::collections::HashSet;
 
 /// Planner for Unionset kinds — UNION ALL across multiple datasets.
@@ -22,7 +22,7 @@ pub struct UnionsetPlanner;
 
 impl KindPlanner for UnionsetPlanner {
     fn supports(&self, kind_type: &CompiledKindType) -> bool {
-        matches!(kind_type, CompiledKindType::Unionset)
+        matches!(kind_type, CompiledKindType::Unionset { .. })
     }
 
     fn resolve(
@@ -37,6 +37,12 @@ impl KindPlanner for UnionsetPlanner {
                 reason: "unionset kind has no datasets".to_string(),
             });
         }
+
+        // Extract union mode from the kind type.
+        let distinct = matches!(
+            kind.kind_type,
+            CompiledKindType::Unionset { union_mode: UnionMode::Distinct }
+        );
 
         // Build one branch per dataset.
         let branches: Vec<PlanNode> = kind
@@ -55,6 +61,7 @@ impl KindPlanner for UnionsetPlanner {
             PlanNode::Union(UnionNode {
                 meta: NodeMeta::new(schema),
                 inputs: branches,
+                distinct,
             })
         };
 
@@ -372,10 +379,11 @@ mod tests {
             measures,
             metrics: IndexMap::new(),
             keys: None,
-            kind_type: CompiledKindType::Unionset,
+            kind_type: CompiledKindType::Unionset { union_mode: UnionMode::All },
             datasets: vec![ds1, ds2],
             relationships: vec![],
             domain: None,
+            filters: vec![],
         };
 
         let mut kinds = IndexMap::new();
@@ -523,10 +531,11 @@ mod tests {
             measures,
             metrics: IndexMap::new(),
             keys: None,
-            kind_type: CompiledKindType::Unionset,
+            kind_type: CompiledKindType::Unionset { union_mode: UnionMode::All },
             datasets: vec![ds1],
             relationships: vec![],
             domain: None,
+            filters: vec![],
         };
 
         let request = make_test_request("partial", vec!["date", "region"], vec!["revenue"]);
@@ -579,10 +588,11 @@ mod tests {
             measures: IndexMap::new(),
             metrics: IndexMap::new(),
             keys: None,
-            kind_type: CompiledKindType::Unionset,
+            kind_type: CompiledKindType::Unionset { union_mode: UnionMode::All },
             datasets: vec![],
             relationships: vec![],
             domain: None,
+            filters: vec![],
         };
 
         let request = make_test_request("empty", vec![], vec![]);
@@ -610,5 +620,39 @@ mod tests {
             result.unwrap_err(),
             PlannerError::NoCoveringDataset { .. }
         ));
+    }
+
+    #[test]
+    fn test_unionset_distinct_mode() {
+        let manifest = make_unionset_manifest();
+        let mut kind = manifest.get_kind("all_orders").unwrap().clone();
+        kind.kind_type = CompiledKindType::Unionset { union_mode: UnionMode::Distinct };
+
+        let request = make_test_request("all_orders", vec!["date", "region"], vec!["revenue"]);
+        let ctx = PlannerContext {
+            manifest: &manifest,
+            profile: &semstrait_core::ConsumerProfile::default(),
+            catalog: None,
+            session: &HashMap::new(),
+        };
+
+        let planner = UnionsetPlanner;
+        let result = planner.resolve(&kind, &request, &ctx);
+        assert!(result.is_ok(), "unionset distinct should succeed");
+
+        let fragment = result.unwrap();
+        // Root should be Aggregate over Union with distinct=true.
+        match &fragment.root {
+            PlanNode::Aggregate(agg) => {
+                match agg.input.as_ref() {
+                    PlanNode::Union(union_node) => {
+                        assert!(union_node.distinct, "union node should be distinct");
+                        assert_eq!(union_node.inputs.len(), 2);
+                    }
+                    _ => panic!("expected Union node under Aggregate"),
+                }
+            }
+            _ => panic!("expected Aggregate as root"),
+        }
     }
 }

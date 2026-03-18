@@ -9,7 +9,7 @@ use semstrait_core::DslExpr;
 use semstrait_model::{
     Additivity, AdditivityType, Cardinality, DimensionType, JoinAssociativity,
     JoinColumnPair, JoinType, Keys, KindDatasetExtras, KindTypeSpec, MeasureConstraints,
-    MeasureFilter, TemporalGrain,
+    MeasureFilter, TemporalGrain, UnionMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +85,9 @@ pub struct CompiledKind {
     pub relationships: Vec<CompiledRelationship>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<Vec<String>>,
+    /// Kind-level filters applied to all queries against this kind.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<CompiledFilter>,
 }
 
 // ============================================================================
@@ -96,7 +99,10 @@ pub struct CompiledKind {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CompiledKindType {
     Grainset,
-    Unionset,
+    Unionset {
+        #[serde(default)]
+        union_mode: UnionMode,
+    },
     Joinset {
         associativity: JoinAssociativity,
     },
@@ -106,7 +112,9 @@ impl From<&KindTypeSpec> for CompiledKindType {
     fn from(spec: &KindTypeSpec) -> Self {
         match spec {
             KindTypeSpec::Grainset => CompiledKindType::Grainset,
-            KindTypeSpec::Unionset => CompiledKindType::Unionset,
+            KindTypeSpec::Unionset(config) => CompiledKindType::Unionset {
+                union_mode: config.union_mode,
+            },
             KindTypeSpec::Joinset(config) => CompiledKindType::Joinset {
                 associativity: config.associativity,
             },

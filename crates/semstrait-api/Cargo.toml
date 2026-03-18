@@ -35,6 +35,8 @@ cli = ["dep:clap"]
 rest = ["dep:axum"]
 grpc = ["dep:tonic"]
 datafusion = ["semstrait-connectors/datafusion"]
+duckdb = ["semstrait-connectors/duckdb"]
+polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot"]
 
 [[bin]]
 name = "semstrait"

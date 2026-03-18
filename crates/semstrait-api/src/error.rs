@@ -6,7 +6,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum EngineError {
     #[error("parse error: {0}")]
-    Parse(String),
+    Parse(#[from] ParseError),
 
     #[error("compile error: {0}")]
     Compile(#[from] semstrait_manifest::CompileError),

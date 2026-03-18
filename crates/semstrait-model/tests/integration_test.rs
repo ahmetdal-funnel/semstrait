@@ -109,7 +109,7 @@ fn test_parse_unionset_basic_yaml() {
     assert_eq!(kind.name, "all_events");
 
     match &kind.kind_type {
-        semstrait_model::KindTypeSpec::Unionset => {},
+        semstrait_model::KindTypeSpec::Unionset(_) => {},
         _ => panic!("expected unionset"),
     }
 }

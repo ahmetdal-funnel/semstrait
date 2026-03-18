@@ -580,12 +580,33 @@ mod plan_emission {
                 scan("orders_2023", &["id", "amount"]),
                 scan("orders_2024", &["id", "amount"]),
             ],
+            distinct: false,
         });
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
             "SELECT \"id\", \"amount\" FROM \"orders_2023\" \
              UNION ALL \
+             SELECT \"id\", \"amount\" FROM \"orders_2024\""
+        );
+    }
+
+    #[test]
+    fn union_distinct() {
+        let e = emitter();
+        let root = PlanNode::Union(UnionNode {
+            meta: meta(),
+            inputs: vec![
+                scan("orders_2023", &["id", "amount"]),
+                scan("orders_2024", &["id", "amount"]),
+            ],
+            distinct: true,
+        });
+        let sql = e.emit(&plan(root)).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT \"id\", \"amount\" FROM \"orders_2023\" \
+             UNION DISTINCT \
              SELECT \"id\", \"amount\" FROM \"orders_2024\""
         );
     }
@@ -825,7 +846,242 @@ fn union_empty_inputs_errors() {
     let root = PlanNode::Union(UnionNode {
         meta: meta(),
         inputs: vec![],
+        distinct: false,
     });
     let result = e.emit(&plan(root));
     assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Polyglot emitter tests (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "polyglot")]
+mod polyglot_tests {
+    use super::*;
+    use crate::dialect::TargetDialect;
+    use crate::polyglot_emitter::PolyglotEmitter;
+
+    fn polyglot(target: TargetDialect) -> PolyglotEmitter {
+        PolyglotEmitter::new(target)
+    }
+
+    #[test]
+    fn ansi_passthrough() {
+        let e = polyglot(TargetDialect::Ansi);
+        let p = plan(scan("orders", &["id", "amount"]));
+        let sql = e.emit(&p).unwrap();
+        assert_eq!(sql, "SELECT \"id\", \"amount\" FROM \"orders\"");
+    }
+
+    #[test]
+    fn duckdb_limit_conversion() {
+        let e = polyglot(TargetDialect::DuckDb);
+        let root = PlanNode::Fetch(FetchNode {
+            meta: meta(),
+            input: Box::new(scan("orders", &["id"])),
+            count: Some(10),
+            offset: 0,
+        });
+        let sql = e.emit(&plan(root)).unwrap();
+        assert!(sql.contains("LIMIT 10"), "DuckDB should use LIMIT, got: {sql}");
+        assert!(!sql.contains("FETCH FIRST"), "DuckDB should not use FETCH FIRST, got: {sql}");
+    }
+
+    #[test]
+    fn trino_keeps_fetch_first() {
+        let e = polyglot(TargetDialect::Trino);
+        let root = PlanNode::Fetch(FetchNode {
+            meta: meta(),
+            input: Box::new(scan("orders", &["id"])),
+            count: Some(10),
+            offset: 0,
+        });
+        let sql = e.emit(&plan(root)).unwrap();
+        assert!(
+            sql.contains("FETCH FIRST 10 ROWS ONLY"),
+            "Trino should use FETCH FIRST, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn spark_backtick_quoting() {
+        let e = polyglot(TargetDialect::Spark);
+        let p = plan(scan("orders", &["id", "amount"]));
+        let sql = e.emit(&p).unwrap();
+        assert!(sql.contains("`id`"), "Spark should use backtick quoting, got: {sql}");
+        assert!(sql.contains("`orders`"), "Spark should use backtick quoting, got: {sql}");
+    }
+
+    #[test]
+    fn databricks_backtick_quoting() {
+        let e = polyglot(TargetDialect::Databricks);
+        let p = plan(scan("orders", &["id", "amount"]));
+        let sql = e.emit(&p).unwrap();
+        assert!(sql.contains("`id`"), "Databricks should use backtick quoting, got: {sql}");
+    }
+
+    #[test]
+    fn snowflake_double_quote() {
+        let e = polyglot(TargetDialect::Snowflake);
+        let p = plan(scan("orders", &["id", "amount"]));
+        let sql = e.emit(&p).unwrap();
+        assert!(sql.contains("\"id\""), "Snowflake should use double-quote, got: {sql}");
+    }
+
+    #[test]
+    fn datafusion_keeps_fetch_first() {
+        let e = polyglot(TargetDialect::DataFusion);
+        let root = PlanNode::Fetch(FetchNode {
+            meta: meta(),
+            input: Box::new(scan("orders", &["id"])),
+            count: Some(5),
+            offset: 0,
+        });
+        let sql = e.emit(&plan(root)).unwrap();
+        assert!(
+            sql.contains("FETCH FIRST 5 ROWS ONLY"),
+            "DataFusion should use FETCH FIRST, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn postgresql_keeps_fetch_first() {
+        let e = polyglot(TargetDialect::PostgreSql);
+        let root = PlanNode::Fetch(FetchNode {
+            meta: meta(),
+            input: Box::new(scan("orders", &["id"])),
+            count: Some(5),
+            offset: 0,
+        });
+        let sql = e.emit(&plan(root)).unwrap();
+        assert!(
+            sql.contains("FETCH FIRST 5 ROWS ONLY"),
+            "PostgreSQL should use FETCH FIRST, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn complex_nested_plan_duckdb() {
+        let e = polyglot(TargetDialect::DuckDb);
+        let scan_node = scan("events", &["user_id", "event_type", "value"]);
+        let filter_node = PlanNode::Filter(FilterNode {
+            meta: meta(),
+            input: Box::new(scan_node),
+            predicate: DslExpr::BinaryOp {
+                left: Box::new(DslExpr::Column { name: "event_type".into(), qualifier: None }),
+                op: BinaryOp::Eq,
+                right: Box::new(DslExpr::StringLit("purchase".into())),
+            },
+        });
+        let agg_node = PlanNode::Aggregate(AggNode {
+            meta: meta(),
+            input: Box::new(filter_node),
+            group_by: vec![DslExpr::Column { name: "user_id".into(), qualifier: None }],
+            aggregates: vec![AggregateMeasure {
+                function: Aggregation::Sum,
+                expr: DslExpr::Column { name: "value".into(), qualifier: None },
+                distinct: false,
+            }],
+        });
+        let sort_node = PlanNode::Sort(SortNode {
+            meta: meta(),
+            input: Box::new(agg_node),
+            sort_keys: vec![SortKey {
+                expr: DslExpr::Column { name: "user_id".into(), qualifier: None },
+                direction: SortDirection::Ascending,
+            }],
+        });
+        let fetch_node = PlanNode::Fetch(FetchNode {
+            meta: meta(),
+            input: Box::new(sort_node),
+            count: Some(100),
+            offset: 0,
+        });
+        let sql = e.emit(&plan(fetch_node)).unwrap();
+        assert!(sql.contains("LIMIT 100"), "DuckDB should use LIMIT, got: {sql}");
+        assert!(sql.contains("SUM(\"value\")"), "should have aggregate, got: {sql}");
+        assert!(sql.contains("GROUP BY"), "should have GROUP BY, got: {sql}");
+        assert!(sql.contains("ORDER BY"), "should have ORDER BY, got: {sql}");
+    }
+
+    #[test]
+    fn complex_nested_plan_spark() {
+        let e = polyglot(TargetDialect::Spark);
+        let scan_node = scan("events", &["user_id", "value"]);
+        let agg_node = PlanNode::Aggregate(AggNode {
+            meta: meta(),
+            input: Box::new(scan_node),
+            group_by: vec![DslExpr::Column { name: "user_id".into(), qualifier: None }],
+            aggregates: vec![AggregateMeasure {
+                function: Aggregation::Sum,
+                expr: DslExpr::Column { name: "value".into(), qualifier: None },
+                distinct: false,
+            }],
+        });
+        let fetch_node = PlanNode::Fetch(FetchNode {
+            meta: meta(),
+            input: Box::new(agg_node),
+            count: Some(10),
+            offset: 0,
+        });
+        let sql = e.emit(&plan(fetch_node)).unwrap();
+        assert!(sql.contains("`user_id`"), "Spark should use backtick, got: {sql}");
+        assert!(sql.contains("`value`"), "Spark should use backtick, got: {sql}");
+        assert!(sql.contains("LIMIT 10"), "Spark should use LIMIT, got: {sql}");
+    }
+
+    #[test]
+    fn union_all_preserved() {
+        let e = polyglot(TargetDialect::DuckDb);
+        let root = PlanNode::Union(UnionNode {
+            meta: meta(),
+            inputs: vec![
+                scan("orders_2023", &["id", "amount"]),
+                scan("orders_2024", &["id", "amount"]),
+            ],
+            distinct: false,
+        });
+        let sql = e.emit(&plan(root)).unwrap();
+        assert!(sql.contains("UNION ALL"), "should preserve UNION ALL, got: {sql}");
+    }
+
+    #[test]
+    fn full_outer_join_preserved() {
+        let e = polyglot(TargetDialect::Spark);
+        let root = PlanNode::Join(JoinNode {
+            meta: meta(),
+            left: Box::new(scan("a", &["id", "x"])),
+            right: Box::new(scan("b", &["id", "y"])),
+            join_type: JoinType::Full,
+            condition: DslExpr::BinaryOp {
+                left: Box::new(DslExpr::Column { name: "x".into(), qualifier: None }),
+                op: BinaryOp::Eq,
+                right: Box::new(DslExpr::Column { name: "y".into(), qualifier: None }),
+            },
+        });
+        let sql = e.emit(&plan(root)).unwrap();
+        assert!(
+            sql.contains("FULL OUTER JOIN"),
+            "should preserve FULL OUTER JOIN, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn case_when_and_safe_divide_across_dialects() {
+        for target in [TargetDialect::DuckDb, TargetDialect::Trino, TargetDialect::Spark] {
+            let e = polyglot(target);
+            let root = PlanNode::Project(ProjectNode {
+                meta: meta(),
+                input: Box::new(scan("orders", &["revenue", "count"])),
+                expressions: vec![DslExpr::BinaryOp {
+                    left: Box::new(DslExpr::Column { name: "revenue".into(), qualifier: None }),
+                    op: BinaryOp::SafeDivide,
+                    right: Box::new(DslExpr::Column { name: "count".into(), qualifier: None }),
+                }],
+            });
+            let sql = e.emit(&plan(root)).unwrap();
+            assert!(sql.contains("CASE WHEN"), "SafeDivide should emit CASE WHEN for {target:?}, got: {sql}");
+        }
+    }
 }

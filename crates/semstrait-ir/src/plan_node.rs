@@ -124,12 +124,14 @@ pub enum JoinType {
     Full,
 }
 
-/// Union node (UNION ALL)
+/// Union node (UNION ALL or UNION DISTINCT)
 #[derive(Debug, Clone)]
 pub struct UnionNode {
     pub meta: NodeMeta,
     /// Input branches (must have compatible schemas)
     pub inputs: Vec<PlanNode>,
+    /// If true, emit UNION DISTINCT (deduplicate rows); otherwise UNION ALL.
+    pub distinct: bool,
 }
 
 /// Sort node (ORDER BY)

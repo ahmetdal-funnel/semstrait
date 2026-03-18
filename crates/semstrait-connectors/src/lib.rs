@@ -13,6 +13,9 @@ mod payload;
 #[cfg(feature = "datafusion")]
 pub mod datafusion;
 
+#[cfg(feature = "duckdb")]
+pub mod duckdb;
+
 pub use traits::{ComputeEmitter, ComputeAdapter, ComputeConnector};
 pub use payload::{
     ComputePayload, ComputeRequest, ComputeResult, ComputeResultData, PayloadKind,

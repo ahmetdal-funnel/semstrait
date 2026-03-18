@@ -16,10 +16,22 @@ pub enum BuildError {
     NoManifest,
 
     #[error("compile error: {0}")]
-    Compile(String),
+    Compile(#[from] semstrait_manifest::CompileError),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("plan error: {0}")]
+    Plan(#[from] semstrait_planner::PlannerError),
+
+    #[error("emit error: {0}")]
+    Emit(#[from] semstrait_sql::EmitError),
+
+    #[error("adapt error: {0}")]
+    Adapt(#[from] semstrait_connectors::AdaptError),
+
+    #[error("connector error: {0}")]
+    Connector(#[from] semstrait_connectors::ConnectorError),
 
     #[error("query error: {0}")]
     Query(String),
@@ -85,8 +97,7 @@ impl SemstraitBuilder {
         let compiler = ManifestCompiler::new().with_catalog(catalog);
         let manifest = compiler
             .compile(CompileSource::Yaml(yaml.clone()))
-            .await
-            .map_err(|e| BuildError::Compile(e.to_string()))?;
+            .await?;
 
         // Build planner with profile from connector if available
         let planner = if let Some(ref connector) = self.connector {
@@ -141,14 +152,10 @@ impl SemstraitInstance {
     pub fn explain(
         &self,
         request: &semstrait_planner::request::ResolvedQueryRequest,
-    ) -> Result<String, String> {
-        let plan = self
-            .planner
-            .plan(request, &self.manifest)
-            .map_err(|e| e.to_string())?;
-
+    ) -> Result<String, BuildError> {
+        let plan = self.planner.plan(request, &self.manifest)?;
         let emitter = AnsiSqlEmitter::new(AnsiDialect);
-        emitter.emit(&plan).map_err(|e| e.to_string())
+        Ok(emitter.emit(&plan)?)
     }
 
     /// Execute a query via the configured connector.
@@ -161,16 +168,11 @@ impl SemstraitInstance {
             .as_ref()
             .ok_or_else(|| BuildError::Query("no connector configured".to_string()))?;
 
-        let sql = self.explain(request).map_err(BuildError::Query)?;
+        let sql = self.explain(request)?;
 
         let payload = ComputePayload::Sql(sql);
-        let compute_request = connector
-            .adapt(payload)
-            .map_err(|e| BuildError::Query(e.to_string()))?;
-        connector
-            .execute(compute_request)
-            .await
-            .map_err(|e| BuildError::Query(e.to_string()))
+        let compute_request = connector.adapt(payload)?;
+        Ok(connector.execute(compute_request).await?)
     }
 }
 

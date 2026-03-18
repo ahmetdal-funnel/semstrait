@@ -155,12 +155,17 @@ impl ComputeAdapter for DataFusionConnector {
     }
 
     fn adapt(&self, payload: ComputePayload) -> Result<ComputeRequest, AdaptError> {
-        match &payload {
+        match payload {
             ComputePayload::Sql(_) => Ok(ComputeRequest {
                 payload,
                 timeout: None,
             }),
-            _ => Err(AdaptError::UnsupportedPayload(PayloadKind::SubstraitPlan)),
+            ComputePayload::SubstraitPlan(_) => {
+                Err(AdaptError::UnsupportedPayload(PayloadKind::SubstraitPlan))
+            }
+            ComputePayload::NativePlan(_) => {
+                Err(AdaptError::UnsupportedPayload(PayloadKind::NativePlan))
+            }
         }
     }
 }
@@ -235,6 +240,10 @@ impl ComputeConnector for DataFusionConnector {
 
     fn name(&self) -> &str {
         "datafusion"
+    }
+
+    fn preferred_dialect(&self) -> semstrait_sql::TargetDialect {
+        semstrait_sql::TargetDialect::DataFusion
     }
 }
 

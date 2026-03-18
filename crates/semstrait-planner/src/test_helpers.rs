@@ -110,6 +110,7 @@ pub fn make_test_manifest_with_constraints(
         datasets: vec![dataset],
         relationships: vec![],
         domain: None,
+        filters: vec![],
     };
 
     let mut kinds = IndexMap::new();

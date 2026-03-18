@@ -15,11 +15,15 @@ mod dialect;
 mod emitter;
 mod error;
 mod expr_renderer;
+#[cfg(feature = "polyglot")]
+mod polyglot_emitter;
 
-pub use dialect::{AnsiDialect, DuckDbDialect, SqlDialect, TrinoDialect};
+pub use dialect::{AnsiDialect, DuckDbDialect, SqlDialect, TargetDialect, TrinoDialect};
 pub use emitter::{AnsiSqlEmitter, SqlEmitter};
 pub use error::EmitError;
 pub use expr_renderer::DslExprSqlRenderer;
+#[cfg(feature = "polyglot")]
+pub use polyglot_emitter::PolyglotEmitter;
 
 #[cfg(test)]
 mod tests;

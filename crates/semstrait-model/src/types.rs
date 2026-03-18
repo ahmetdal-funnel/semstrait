@@ -190,6 +190,9 @@ pub struct Kind {
     pub datasets: Vec<KindDatasetEntry>,
     #[serde(default)]
     pub relationships: Vec<KindRelationship>,
+    /// Kind-level filters applied to all queries against this kind.
+    #[serde(default)]
+    pub filters: Vec<MeasureFilter>,
 }
 
 /// Kind type specification (grainset, unionset, or joinset).
@@ -197,7 +200,7 @@ pub struct Kind {
 #[serde(rename_all = "snake_case")]
 pub enum KindTypeSpec {
     Grainset,
-    Unionset,
+    Unionset(UnionsetConfig),
     Joinset(JoinsetConfig),
 }
 
@@ -216,7 +219,16 @@ impl<'de> Deserialize<'de> for KindTypeSpec {
             .ok_or_else(|| serde::de::Error::custom("expected one variant key"))?;
         match key.as_str() {
             "grainset" => Ok(KindTypeSpec::Grainset),
-            "unionset" => Ok(KindTypeSpec::Unionset),
+            "unionset" => {
+                // Support both bare `unionset: {}` and `unionset: { union_mode: "distinct" }`.
+                if value.is_null() || (value.is_mapping() && value.as_mapping().is_none_or(|m| m.is_empty())) {
+                    Ok(KindTypeSpec::Unionset(UnionsetConfig::default()))
+                } else {
+                    Ok(KindTypeSpec::Unionset(
+                        serde_yaml::from_value(value).map_err(serde::de::Error::custom)?,
+                    ))
+                }
+            }
             "joinset" => Ok(KindTypeSpec::Joinset(
                 serde_yaml::from_value(value).map_err(serde::de::Error::custom)?,
             )),
@@ -244,6 +256,29 @@ pub enum JoinAssociativity {
     Left,
     Right,
     Full,
+}
+
+/// UNION mode: ALL (default) or DISTINCT.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnionMode {
+    #[default]
+    All,
+    Distinct,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UnionsetConfig {
+    #[serde(default)]
+    pub union_mode: UnionMode,
+}
+
+impl Default for UnionsetConfig {
+    fn default() -> Self {
+        Self {
+            union_mode: UnionMode::All,
+        }
+    }
 }
 
 // =============================================================================

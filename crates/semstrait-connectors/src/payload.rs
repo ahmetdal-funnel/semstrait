@@ -84,7 +84,7 @@ impl std::fmt::Debug for ComputeResultData {
 }
 
 /// Statistics from compute execution.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ExecutionStats {
     pub rows_returned: u64,
     pub execution_time: Option<Duration>,

@@ -5,6 +5,7 @@
 //! - explain: Show query plan, SQL, and Substrait JSON for a query
 //! - validate: Validate a query request against a manifest
 //! - query: Execute a query via DataFusion (feature-gated)
+//! - query-duckdb: Execute a query via DuckDB (feature-gated)
 //! - serve: Start the REST API server (feature-gated)
 
 use crate::engine::SemstraitEngine;
@@ -100,6 +101,34 @@ pub enum Commands {
         /// Register data files: name=path pairs (e.g., orders_data=data/orders.csv).
         #[arg(short, long, num_args = 1..)]
         register: Vec<String>,
+    },
+
+    /// Execute a query against local data files via DuckDB.
+    #[cfg(feature = "duckdb")]
+    QueryDuckdb {
+        /// Path to YAML manifest file.
+        #[arg(short, long)]
+        manifest: PathBuf,
+
+        /// Kind name to query.
+        #[arg(short, long)]
+        kind: String,
+
+        /// Dimensions to include.
+        #[arg(short, long, num_args = 1..)]
+        dimensions: Vec<String>,
+
+        /// Measures to include.
+        #[arg(short = 'e', long, num_args = 1..)]
+        measures: Vec<String>,
+
+        /// Register data files: name=path pairs (e.g., orders_data=data/orders.csv).
+        #[arg(short, long, num_args = 1..)]
+        register: Vec<String>,
+
+        /// Path to DuckDB database file (default: in-memory).
+        #[arg(long)]
+        db: Option<PathBuf>,
     },
 
     /// Start the REST API server.
@@ -218,6 +247,49 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| format!("compilation failed: {}", e))?;
 
             let connector = semstrait_connectors::datafusion::DataFusionConnector::new();
+            for pair in &register {
+                let (name, path) = pair
+                    .split_once('=')
+                    .ok_or_else(|| format!("invalid --register format '{}': expected name=path", pair))?;
+                connector.register_file(name, path).await
+                    .map_err(|e| format!("failed to register '{}': {}", pair, e))?;
+                eprintln!("Registered table '{}' from {}", name, path);
+            }
+
+            let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
+            let raw = RawQueryRequest {
+                kind,
+                dimensions,
+                measures,
+                ..Default::default()
+            };
+            let result = engine.query(&raw).await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
+
+        #[cfg(feature = "duckdb")]
+        Commands::QueryDuckdb {
+            manifest,
+            kind,
+            dimensions,
+            measures,
+            register,
+            db,
+        } => {
+            let yaml = tokio::fs::read_to_string(&manifest).await?;
+            let compiler = ManifestCompiler::new();
+            let compiled = compiler
+                .compile(CompileSource::Yaml(yaml))
+                .await
+                .map_err(|e| format!("compilation failed: {}", e))?;
+
+            let connector = match db {
+                Some(path) => semstrait_connectors::duckdb::DuckDbConnector::with_path(
+                    &path.to_string_lossy(),
+                )?,
+                None => semstrait_connectors::duckdb::DuckDbConnector::new()?,
+            };
             for pair in &register {
                 let (name, path) = pair
                     .split_once('=')

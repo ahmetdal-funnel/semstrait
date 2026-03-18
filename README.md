@@ -214,7 +214,7 @@ println!("SQL: {}", result.sql.unwrap());
 | Crate | Feature | Adds |
 |-------|---------|------|
 | `semstrait-connectors` | `datafusion` | DataFusion SQL execution connector |
-| `semstrait-connectors` | `duckdb` | DuckDB connector (stub) |
+| `semstrait-connectors` | `duckdb` | DuckDB embedded connector (v1.3.2, Arrow 55) |
 | `semstrait-connectors` | `trino` | Trino connector (stub) |
 | `semstrait-catalog` | `iceberg` | Iceberg REST catalog client (OAuth2, Polaris) |
 | `semstrait-api` | `cli` | CLI transport via clap |

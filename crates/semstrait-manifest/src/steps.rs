@@ -639,6 +639,7 @@ fn compile_kind(
         datasets: compiled_datasets,
         relationships: compiled_rels,
         domain: kind.domain.as_ref().map(|d| d.0.clone()),
+        filters: compile_measure_filters(&kind.filters)?,
     })
 }
 
@@ -1011,6 +1012,7 @@ mod tests {
                 metrics: vec![],
                 datasets: vec![],
                 relationships: vec![],
+                filters: vec![],
             }],
             relationships: vec![],
             dimensions: vec![],

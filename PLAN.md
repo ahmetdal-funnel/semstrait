@@ -1,7 +1,7 @@
 # Semstrait Implementation Plan
 
 **Version:** 4.0 | **Status:** Active | **Target:** V1.1 polish + V2 connectors & SQL layer
-**Authoritative source:** CONTEXT.md (v3.1)
+**Authoritative source:** CONTEXT.md (v3.5)
 
 ---
 
@@ -202,19 +202,19 @@ V2-F (API expansion)              ──── LAST (depends on connector maturi
 | 1-6 — V1 Implementation | Complete |
 | 7 — Documentation reconciliation | Complete |
 | V1.1-A — Test coverage gaps | **Complete** |
-| V1.1-B — Deferred v1 items | **Partial** (B.1-B.4 complete, B.5-B.6 pending) |
-| V2-A — polyglot SQL layer | Pending |
-| V2-B — DuckDB connector | Pending |
+| V1.1-B — Deferred v1 items | **Complete** (B.1-B.6 all done) |
+| V2-A — polyglot SQL layer | **Complete** (DL-030) |
+| V2-B — DuckDB connector | **Complete** (DL-031) |
 | V2-C — Trino connector | Pending |
 | V2-D — Spark connector | Pending |
 | V2-E — Catalog expansion | Pending |
 | V2-F — API expansion | Pending |
 
 ### Completed milestones (2026-03-17 — 2026-03-18)
-- All 10 crates compiling and tested (278 tests with datafusion feature, 0 clippy warnings)
-- Full E2E pipeline: YAML -> compile -> plan -> SQL -> DataFusion execute -> JSON
-- Binary: `cargo build -p semstrait-api --features cli,rest,datafusion`
-- CLI commands: compile, explain, validate, query (datafusion), serve (rest)
+- All 10 crates compiling and tested (307 tests with datafusion+duckdb+polyglot features, 0 clippy warnings)
+- Full E2E pipeline: YAML -> compile -> plan -> SQL -> DataFusion/DuckDB execute -> JSON
+- Binary: `cargo build -p semstrait-api --features cli,rest,datafusion,duckdb`
+- CLI commands: compile, explain, validate, query (datafusion), query-duckdb (duckdb), serve (rest)
 - Iceberg REST catalog with OAuth2 token lifecycle
 - Substrait round-trip for all DslExpr variants
 - ANSI FETCH FIRST / dialect-aware limit_clause()
@@ -224,6 +224,9 @@ V2-F (API expansion)              ──── LAST (depends on connector maturi
 - Library research complete: polyglot-sql, duckdb, trino-rust-client, spark-connect-rs
 - V1.1-A complete: Unionset planner (4 tests), Joinset planner (5 tests), Clippy clean (0 warnings)
 - V1.1-B partial: Aggregation constraints (B.1, 6 tests), Domain filter (B.2, 3 tests), Glob namespace (B.3), REST /schema + /compile (B.4)
+- V1.1-B complete: Kind-level filter block (B.5, 3 tests), UNION DISTINCT (B.6, 2 tests), error handling hardening (typed EngineError, build_scan propagation, Substrait tracing::warn)
+- V2-A complete: PolyglotEmitter (13 tests), TargetDialect enum, preferred_dialect() on ComputeConnector, feature-gated polyglot transpilation for 34+ SQL dialects
+- V2-B complete: DuckDbConnector (9 tests) — embedded DuckDB 1.3.2 (arrow 55), Arc<Mutex<Connection>> + spawn_blocking, CSV/Parquet via read_csv_auto/read_parquet, CLI query-duckdb command
 
 ### Dependencies for V2
 

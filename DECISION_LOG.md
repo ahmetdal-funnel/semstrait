@@ -18,7 +18,7 @@ Module-level decisions live in `crates/<module>/DECISION_LOG.md`.
 **Date:** 2026-03-17 (updated 2026-03-18)
 **Status:** Amended
 **Context:** Full engine execution requires DuckDB, Trino, Spark connectors with complex wire protocols.
-**Decision:** V1 generates LogicalPlan + ANSI SQL as primary output. DataFusion is the reference execution connector (feature-gated). DuckDB/Trino/Spark connectors are stubs — full execution for those engines is v2.
+**Decision:** V1 generates LogicalPlan + ANSI SQL as primary output. DataFusion is the reference execution connector (feature-gated). DuckDB connector implemented in V2-B (DL-031). Trino/Spark connectors are stubs — full execution for those engines is v2.
 **Rationale:** Validating the semantic model → plan → SQL pipeline end-to-end is the critical path. DataFusion is embedded (in-process Rust), making it the lowest-friction execution target for E2E validation. External engine connectors remain v2.
 
 ## DL-003: Use sqlparser-rs AST for SQL generation
@@ -240,3 +240,46 @@ Module-level decisions live in `crates/<module>/DECISION_LOG.md`.
 **Context:** `arrow-flight` crate (v58.0.0, 9.4M downloads) provides production-grade `FlightSqlServiceClient`. However, neither Spark nor Trino natively expose Flight SQL endpoints. Only Databricks and purpose-built Flight SQL servers (Dremio, Ballista) support it.
 **Decision:** Defer Flight SQL connector to v2+ as a Databricks-specific or generic Flight-compatible connector. Not part of the Spark or Trino connector implementations.
 **Rationale:** Flight SQL is the right long-term protocol for zero-copy Arrow data transfer, but the server-side ecosystem is not there yet for our target engines. When Databricks support is needed, `arrow-flight` is the clear choice.
+
+## DL-030: Polyglot SQL transpilation via `polyglot-sql` crate
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** The custom `SqlDialect` trait + per-dialect implementations (ANSI, DuckDB, Trino) require manual work for each new SQL dialect. polyglot-sql v0.1.15 supports 34 SQL dialects with a parse-transpile-generate pipeline.
+**Decision:** Implement `PolyglotEmitter` as a transpilation layer: (1) generate ANSI SQL via existing `AnsiSqlEmitter`, (2) transpile to target dialect via `polyglot_sql::transpile()`. Feature-gated behind `polyglot`. Keep existing `SqlDialect`/`AnsiSqlEmitter` as public API and fallback.
+**Architecture:**
+```
+PlanNode → AnsiSqlEmitter → ANSI SQL string → polyglot::transpile(sql, DuckDB, target) → dialect SQL
+```
+**Key design choices:**
+- `TargetDialect` enum is always available (not feature-gated) so connectors can declare `preferred_dialect()` regardless of polyglot availability.
+- `PolyglotEmitter` is feature-gated — only compiled when `polyglot` feature is enabled.
+- Engine uses `preferred_dialect()` from connector to select emitter. Falls back to ANSI when no polyglot or no connector.
+- `profile.dev.package.polyglot-sql.opt-level = 1` in workspace Cargo.toml because polyglot-sql is ~1000x slower in unoptimized debug builds (recursive AST walking).
+- `dialect-presto` feature required alongside `dialect-trino` (upstream bug: trino code references presto internals).
+**Rationale:** Transpilation approach reuses all 287 existing tests (no SQL output changes for ANSI). Adds 8 target dialects with zero custom dialect code. Keeps polyglot-sql as an implementation detail behind our `SqlEmitter` trait.
+**Risks:** polyglot-sql is young (v0.1.15, 726 stars). Mitigated by: MIT license, pure Rust, fork-ready, our existing emitters remain as fallback.
+
+## DL-031: DuckDB connector — embedded engine via `duckdb` crate v1.3.2
+
+**Date:** 2026-03-18
+**Status:** Accepted
+**Context:** V2-B requires a DuckDB compute connector. The official `duckdb` Rust crate provides ergonomic bindings to DuckDB's C API. Version 1.3.2 uses arrow 55, matching our workspace. Later versions (1.4+, 1.10500.0) use arrow 56/57 and are incompatible.
+**Decision:** Implement `DuckDbConnector` using `duckdb` crate v1.3.2 with `bundled` feature. Pin version to `>=1.3.0, <1.4.0` to prevent arrow version mismatch.
+**Architecture:**
+```
+DuckDbConnector {
+    conn: Arc<Mutex<Connection>>,  // tokio::sync::Mutex — Connection is Send but !Sync
+    profile: ConsumerProfile,
+}
+```
+**Key design choices:**
+- `Connection` is `Send` but `!Sync` — all DB operations dispatched via `tokio::task::spawn_blocking` with `blocking_lock()` inside the closure.
+- `query_arrow([])` returns `Arrow<'stmt>` (non-Send, borrows stmt) — must `.collect()` into `Vec<RecordBatch>` inside the blocking closure before crossing thread boundaries.
+- Arrow→JSON conversion uses workspace `arrow` crate's `json::ArrayWriter` (not duckdb's re-exported arrow, which lacks the `json` feature). Since both are arrow 55, the types are identical.
+- CSV/Parquet file registration via DuckDB SQL: `CREATE TABLE "name" AS SELECT * FROM read_csv_auto('path')` / `read_parquet('path')`.
+- `preferred_dialect()` returns `TargetDialect::DuckDb` — enables polyglot transpilation when the polyglot feature is active.
+- Package aliased as `duckdb-engine` in Cargo.toml (same pattern as `datafusion-engine`) to avoid name collision with the `duckdb` feature flag.
+- CLI command: `query-duckdb` (separate from DataFusion `query` to keep feature gating simple).
+**Rationale:** DuckDB is the fastest path to a second compute engine. Embedded (in-process) eliminates network latency for local development and testing. The `bundled` feature makes builds self-contained.
+**Risks:** `bundled` adds significant first-build time (compiling DuckDB C++). Version pin to 1.3.x means no automatic DuckDB updates. Mitigated by: CI target caching, explicit version bump when arrow alignment allows.

@@ -76,9 +76,21 @@ let result = connector.execute(&request).await?;
 let batches = result.data.as_native::<ArrowBatches>().unwrap();
 ```
 
-### DuckDB, Trino, Spark (stubs)
+### DuckDB
 
-Feature flags exist (`duckdb`, `trino`, `spark`) but implementations are not yet wired. Connector traits are ready for implementation.
+Embedded DuckDB connector via `duckdb` crate v1.3.2 (Arrow 55, `bundled` feature). Uses `Arc<Mutex<Connection>>` + `spawn_blocking` for async safety. Supports CSV/Parquet file registration via `read_csv_auto()`/`read_parquet()`.
+
+```rust
+use semstrait_connectors::duckdb::DuckDbConnector;
+
+let connector = DuckDbConnector::new()?;
+connector.register_csv("orders", "data/orders.csv").await?;
+let result = connector.execute(request).await?;
+```
+
+### Trino, Spark (stubs)
+
+Feature flags exist (`trino`, `spark`) but implementations are not yet wired. Connector traits are ready for implementation.
 
 ---
 
@@ -88,3 +100,5 @@ Feature flags exist (`duckdb`, `trino`, `spark`) but implementations are not yet
 - `semstrait-ir` — `LogicalPlan`, `PlanNode`
 - `semstrait-sql` — SQL emission for SQL-based connectors
 - `datafusion` v52 (optional, feature-gated)
+- `duckdb` v1.3.2 (optional, feature-gated, `bundled`)
+- `arrow` v55 (optional, for JSON serialization)

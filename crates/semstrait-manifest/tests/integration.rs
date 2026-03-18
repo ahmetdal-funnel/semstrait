@@ -669,6 +669,6 @@ semantic_model:
     ));
     assert!(matches!(
         manifest.kinds["union_kind"].kind_type,
-        semstrait_manifest::CompiledKindType::Unionset
+        semstrait_manifest::CompiledKindType::Unionset { .. }
     ));
 }

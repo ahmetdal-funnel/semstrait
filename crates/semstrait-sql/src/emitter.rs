@@ -146,7 +146,12 @@ impl<D: SqlDialect> AnsiSqlEmitter<D> {
                     .map(|n| self.emit_node(n))
                     .collect();
                 let parts = parts?;
-                Ok(parts.join(" UNION ALL "))
+                let separator = if union_node.distinct {
+                    " UNION DISTINCT "
+                } else {
+                    " UNION ALL "
+                };
+                Ok(parts.join(separator))
             }
 
             PlanNode::Sort(sort) => {

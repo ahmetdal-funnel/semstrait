@@ -11,6 +11,8 @@ use semstrait_ir::SubstraitSerializer;
 use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
 use semstrait_planner::SemanticPlanner;
 use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
+#[cfg(feature = "polyglot")]
+use semstrait_sql::{PolyglotEmitter, TargetDialect};
 use std::sync::Arc;
 
 /// The central engine that orchestrates semantic query execution.
@@ -84,6 +86,27 @@ impl SemstraitEngine {
         self.connector = Some(connector);
     }
 
+    /// Emit SQL from a logical plan, using the connector's preferred dialect
+    /// when the `polyglot` feature is enabled.
+    fn emit_sql(&self, plan: &semstrait_ir::LogicalPlan) -> Result<String, EngineError> {
+        #[cfg(feature = "polyglot")]
+        {
+            let target = self
+                .connector
+                .as_ref()
+                .map(|c| c.preferred_dialect())
+                .unwrap_or(TargetDialect::Ansi);
+
+            if target != TargetDialect::Ansi {
+                let emitter = PolyglotEmitter::new(target);
+                return Ok(emitter.emit(plan)?);
+            }
+        }
+
+        let emitter = AnsiSqlEmitter::new(AnsiDialect);
+        Ok(emitter.emit(plan)?)
+    }
+
     /// Validate a query request against the manifest.
     pub fn validate(&self, raw: &RawQueryRequest) -> ValidationResult {
         // Basic structural validation.
@@ -151,17 +174,14 @@ impl SemstraitEngine {
             .ok_or_else(|| EngineError::NotConfigured("no manifest loaded".to_string()))?;
 
         // Parse the raw request into a resolved query request.
-        let request = RequestParser::to_resolved(raw, manifest)
-            .map_err(|e| EngineError::Parse(e.to_string()))?;
+        let request = RequestParser::to_resolved(raw, manifest)?;
 
         // Plan.
         let plan = self.planner.plan(&request, manifest)?;
 
-        // TODO: When a connector is configured, use its preferred dialect instead of
-        // AnsiDialect. This requires adding a `preferred_dialect()` method to the
-        // ComputeConnector trait (Phase C work).
-        let emitter = AnsiSqlEmitter::new(AnsiDialect);
-        let sql = emitter.emit(&plan)?;
+        // Use the connector's preferred dialect when polyglot transpilation is available.
+        // Falls back to ANSI SQL when no connector is configured or polyglot is not enabled.
+        let sql = self.emit_sql(&plan)?;
 
         // Emit Substrait JSON (best-effort: log warnings on failure).
         let substrait_json = match SubstraitSerializer::to_substrait(&plan) {
@@ -213,23 +233,25 @@ impl SemstraitEngine {
         let request = connector.adapt(payload)?;
         let result = connector.execute(request).await?;
 
-        // Convert result to JSON.
-        match &result.data {
+        // Convert result to JSON. Destructure to move fields instead of borrowing.
+        let stats = result.stats;
+        let complete = result.complete;
+        match result.data {
             ComputeResultData::Json(rows) => Ok(serde_json::json!({
                 "rows": rows,
                 "stats": {
-                    "rows_returned": result.stats.rows_returned,
-                    "complete": result.complete,
+                    "rows_returned": stats.rows_returned,
+                    "complete": complete,
                 }
             })),
             ComputeResultData::Empty => Ok(serde_json::json!({
                 "rows": [],
                 "stats": {
                     "rows_returned": 0,
-                    "complete": result.complete,
+                    "complete": complete,
                 }
             })),
-            ComputeResultData::Native(ref native) => {
+            ComputeResultData::Native(native) => {
                 // Attempt to extract ArrowBatches and convert to JSON as a fallback.
                 // Connectors should prefer returning ComputeResultData::Json directly.
                 #[cfg(feature = "datafusion")]
@@ -240,19 +262,18 @@ impl SemstraitEngine {
                         return Ok(serde_json::json!({
                             "rows": json_rows,
                             "stats": {
-                                "rows_returned": result.stats.rows_returned,
-                                "complete": result.complete,
+                                "rows_returned": stats.rows_returned,
+                                "complete": complete,
                             }
                         }));
                     }
                 }
-                // If not ArrowBatches or datafusion feature not enabled, return stats only.
-                let _ = native; // suppress unused warning
+                let _ = native;
                 Ok(serde_json::json!({
                     "format": "native",
                     "stats": {
-                        "rows_returned": result.stats.rows_returned,
-                        "complete": result.complete,
+                        "rows_returned": stats.rows_returned,
+                        "complete": complete,
                     }
                 }))
             }

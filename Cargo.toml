@@ -17,6 +17,7 @@ datafusion = { version = "52", default-features = false, features = ["sql"] }
 
 # SQL generation
 sqlparser = "0.53"
+polyglot-sql = { version = "0.1", default-features = false }
 
 # Graph analysis
 petgraph = "0.7"
@@ -73,3 +74,11 @@ tokio = { workspace = true }
 [features]
 default = []
 datafusion = ["semstrait-connectors/datafusion", "semstrait-api/datafusion"]
+duckdb = ["semstrait-connectors/duckdb", "semstrait-api/duckdb"]
+polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot", "semstrait-api/polyglot"]
+
+# polyglot-sql is extremely slow in unoptimized debug builds (recursive AST
+# walking becomes ~1000x slower). Compile it with opt-level 1 so that `cargo test`
+# completes in reasonable time.
+[profile.dev.package.polyglot-sql]
+opt-level = 1
