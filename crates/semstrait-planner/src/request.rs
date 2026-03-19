@@ -82,5 +82,4 @@ pub enum SortDirection {
 }
 
 /// Runtime session variables provided by the API layer.
-/// Used for row-level security, tenant isolation, etc.
 pub type SessionVariables = HashMap<String, String>;

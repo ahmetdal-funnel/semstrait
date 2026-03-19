@@ -16,6 +16,12 @@ pub mod datafusion;
 #[cfg(feature = "duckdb")]
 pub mod duckdb;
 
+#[cfg(feature = "trino")]
+pub mod trino;
+
+#[cfg(feature = "spark")]
+pub mod spark;
+
 pub use traits::{ComputeEmitter, ComputeAdapter, ComputeConnector};
 pub use payload::{
     ComputePayload, ComputeRequest, ComputeResult, ComputeResultData, PayloadKind,

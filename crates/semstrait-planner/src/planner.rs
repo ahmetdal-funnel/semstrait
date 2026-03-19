@@ -13,7 +13,7 @@ use std::sync::Arc;
 use semstrait_catalog::CatalogProvider;
 use semstrait_core::ConsumerProfile;
 use semstrait_ir::{
-    BinaryOp, DslExpr, FetchNode, FilterNode, LogicalPlan, NodeMeta, PlanNode, SortKey,
+    BinaryOp, Expr, FetchNode, FilterNode, LogicalPlan, NodeMeta, PlanNode, SortKey,
     SortNode,
 };
 use semstrait_manifest::CompiledManifest;
@@ -21,7 +21,7 @@ use semstrait_manifest::CompiledManifest;
 use crate::additivity_resolver::AdditivityResolver;
 use crate::constraint_evaluator::ConstraintEvaluator;
 use crate::error::PlannerError;
-use crate::kind_planner::{KindPlannerRegistry, PlannerContext};
+use crate::kind::{KindPlannerRegistry, PlannerContext};
 use crate::optimizer::{Optimizer, OptimizerPass};
 use crate::request::{FilterOperator, FilterValue, ResolvedQueryRequest, SortDirection};
 
@@ -213,6 +213,7 @@ fn inject_kind_filters(
     let empty_mapping = std::collections::HashMap::new();
     for filter in &kind.filters {
         let predicate = crate::expr_lower::lower_expr(&filter.expr, &empty_mapping)?;
+
         let schema = root.meta().output_schema.clone();
         root = PlanNode::Filter(FilterNode {
             meta: NodeMeta::new(schema),
@@ -229,7 +230,7 @@ fn inject_user_filters(
     request: &ResolvedQueryRequest,
 ) -> Result<PlanNode, PlannerError> {
     for filter in &request.filters {
-        let predicate = query_filter_to_dsl_expr(filter)?;
+        let predicate = query_filter_to_expr(filter)?;
         let schema = root.meta().output_schema.clone();
         root = PlanNode::Filter(FilterNode {
             meta: NodeMeta::new(schema),
@@ -240,14 +241,11 @@ fn inject_user_filters(
     Ok(root)
 }
 
-/// Convert a QueryFilter into a DslExpr predicate.
-fn query_filter_to_dsl_expr(
+/// Convert a QueryFilter into an Expr predicate.
+fn query_filter_to_expr(
     filter: &crate::request::QueryFilter,
-) -> Result<DslExpr, PlannerError> {
-    let column = DslExpr::Column {
-        name: filter.field.clone(),
-        qualifier: None,
-    };
+) -> Result<Expr, PlannerError> {
+    let column = Expr::column(filter.field.clone());
 
     match &filter.operator {
         FilterOperator::Eq
@@ -272,48 +270,28 @@ fn query_filter_to_dsl_expr(
                 FilterOperator::GtEq => BinaryOp::GtEq,
                 _ => unreachable!(),
             };
-            Ok(DslExpr::BinaryOp {
-                left: Box::new(column),
-                op,
-                right: Box::new(value),
-            })
+            Ok(Expr::binary(column, op, value))
         }
         FilterOperator::In => {
             // IN is translated as OR chain: col = v1 OR col = v2 OR ...
-            let mut expr: Option<DslExpr> = None;
+            let mut expr: Option<Expr> = None;
             for val in &filter.values {
-                let eq = DslExpr::BinaryOp {
-                    left: Box::new(column.clone()),
-                    op: BinaryOp::Eq,
-                    right: Box::new(filter_value_to_expr(val)?),
-                };
+                let eq = Expr::eq(column.clone(), filter_value_to_expr(val)?);
                 expr = Some(match expr {
                     None => eq,
-                    Some(prev) => DslExpr::BinaryOp {
-                        left: Box::new(prev),
-                        op: BinaryOp::Or,
-                        right: Box::new(eq),
-                    },
+                    Some(prev) => Expr::or(prev, eq),
                 });
             }
             expr.ok_or_else(|| PlannerError::Internal("IN filter with no values".to_string()))
         }
         FilterOperator::NotIn => {
             // NOT IN is translated as AND chain: col != v1 AND col != v2 AND ...
-            let mut expr: Option<DslExpr> = None;
+            let mut expr: Option<Expr> = None;
             for val in &filter.values {
-                let neq = DslExpr::BinaryOp {
-                    left: Box::new(column.clone()),
-                    op: BinaryOp::NotEq,
-                    right: Box::new(filter_value_to_expr(val)?),
-                };
+                let neq = Expr::ne(column.clone(), filter_value_to_expr(val)?);
                 expr = Some(match expr {
                     None => neq,
-                    Some(prev) => DslExpr::BinaryOp {
-                        left: Box::new(prev),
-                        op: BinaryOp::And,
-                        right: Box::new(neq),
-                    },
+                    Some(prev) => Expr::and(prev, neq),
                 });
             }
             expr.ok_or_else(|| {
@@ -329,32 +307,23 @@ fn query_filter_to_dsl_expr(
             }
             let low = filter_value_to_expr(&filter.values[0])?;
             let high = filter_value_to_expr(&filter.values[1])?;
-            Ok(DslExpr::BinaryOp {
-                left: Box::new(DslExpr::BinaryOp {
-                    left: Box::new(column.clone()),
-                    op: BinaryOp::GtEq,
-                    right: Box::new(low),
-                }),
-                op: BinaryOp::And,
-                right: Box::new(DslExpr::BinaryOp {
-                    left: Box::new(column),
-                    op: BinaryOp::LtEq,
-                    right: Box::new(high),
-                }),
-            })
+            Ok(Expr::and(
+                Expr::gte(column.clone(), low),
+                Expr::lte(column, high),
+            ))
         }
-        FilterOperator::IsNull => Ok(DslExpr::IsNull(Box::new(column))),
-        FilterOperator::IsNotNull => Ok(DslExpr::IsNotNull(Box::new(column))),
+        FilterOperator::IsNull => Ok(Expr::is_null(column)),
+        FilterOperator::IsNotNull => Ok(Expr::is_not_null(column)),
     }
 }
 
-/// Convert a FilterValue to a DslExpr.
-fn filter_value_to_expr(value: &FilterValue) -> Result<DslExpr, PlannerError> {
+/// Convert a FilterValue to an Expr.
+fn filter_value_to_expr(value: &FilterValue) -> Result<Expr, PlannerError> {
     match value {
-        FilterValue::String(s) => Ok(DslExpr::StringLit(s.clone())),
-        FilterValue::Number(n) => Ok(DslExpr::Number(*n)),
-        FilterValue::Bool(b) => Ok(DslExpr::Bool(*b)),
-        FilterValue::Null => Ok(DslExpr::Null),
+        FilterValue::String(s) => Ok(Expr::string(s)),
+        FilterValue::Number(n) => Ok(Expr::float(*n)),
+        FilterValue::Bool(b) => Ok(Expr::boolean(*b)),
+        FilterValue::Null => Ok(Expr::null()),
     }
 }
 
@@ -375,10 +344,7 @@ fn apply_order_by(
         .order_by
         .iter()
         .map(|ob| SortKey {
-            expr: DslExpr::Column {
-                name: ob.field.clone(),
-                qualifier: None,
-            },
+            expr: Expr::column(ob.field.clone()),
             direction: match ob.direction {
                 SortDirection::Ascending => semstrait_ir::SortDirection::Ascending,
                 SortDirection::Descending => semstrait_ir::SortDirection::Descending,
@@ -597,9 +563,9 @@ mod tests {
         if let Some(kind) = manifest.kinds.get_mut("orders") {
             kind.filters.push(semstrait_manifest::CompiledFilter {
                 name: "us_only".to_string(),
-                expr: semstrait_core::DslExpr::eq(
-                    semstrait_core::DslExpr::column("region"),
-                    semstrait_core::DslExpr::string("US"),
+                expr: semstrait_core::Expr::eq(
+                    semstrait_core::Expr::column("region"),
+                    semstrait_core::Expr::string("US"),
                 ),
                 expr_source: "region = 'US'".to_string(),
             });
@@ -623,9 +589,9 @@ mod tests {
         if let Some(kind) = manifest.kinds.get_mut("orders") {
             kind.filters.push(semstrait_manifest::CompiledFilter {
                 name: "active_only".to_string(),
-                expr: semstrait_core::DslExpr::eq(
-                    semstrait_core::DslExpr::column("region"),
-                    semstrait_core::DslExpr::string("US"),
+                expr: semstrait_core::Expr::eq(
+                    semstrait_core::Expr::column("region"),
+                    semstrait_core::Expr::string("US"),
                 ),
                 expr_source: "region = 'US'".to_string(),
             });
@@ -673,4 +639,5 @@ mod tests {
         let plan = planner.plan(&request, &manifest).expect("should succeed");
         assert!(!contains_filter_node(&plan.root), "no filter should be present without user/kind filters");
     }
+
 }

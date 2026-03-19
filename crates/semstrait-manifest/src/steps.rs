@@ -9,7 +9,7 @@ use petgraph::algo::is_cyclic_directed;
 use petgraph::graph::DiGraph;
 
 use semstrait_catalog::CatalogProvider;
-use semstrait_core::DslExpr;
+use semstrait_core::Expr;
 use semstrait_model::*;
 
 use crate::compiled::*;
@@ -175,6 +175,32 @@ fn check_metric_uniqueness(entries: &[MetricEntry], container: &str, errors: &mu
 }
 
 // ============================================================================
+// Step 4.5: Expand Auto Column Mappings
+// ============================================================================
+
+/// Expand `column_mapping: auto` into explicit identity mappings.
+///
+/// For each dataset with `Auto`, generates a 1:1 mapping where each
+/// interface name (dimension/measure/metric) maps to itself.
+pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
+    for kind in &mut model.kinds {
+        let interface_names: Vec<String> = collect_interface_names(kind).collect();
+
+        for ds_entry in &mut kind.datasets {
+            if let KindDatasetEntry::Inline(ds) = ds_entry {
+                if ds.extras.column_mapping.is_auto() {
+                    let map: HashMap<String, ColumnMappingValue> = interface_names
+                        .iter()
+                        .map(|name| (name.clone(), ColumnMappingValue::Simple(name.clone())))
+                        .collect();
+                    ds.extras.column_mapping = ColumnMapping::Explicit(map);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Step 5: Validate Mappings
 // ============================================================================
 
@@ -184,23 +210,7 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
     let mut errors = Vec::new();
 
     for kind in &model.kinds {
-        // Build set of interface names (dimensions + measures + metrics)
-        let interface_names: HashSet<String> = kind
-            .dimensions
-            .iter()
-            .map(|d| match d {
-                DimensionEntry::Inline(dim) => dim.name.clone(),
-                DimensionEntry::Ref(r) => r.ref_name.clone(),
-            })
-            .chain(kind.measures.iter().map(|m| match m {
-                MeasureEntry::Inline(mea) => mea.name.clone(),
-                MeasureEntry::Ref(r) => r.ref_name.clone(),
-            }))
-            .chain(kind.metrics.iter().map(|m| match m {
-                MetricEntry::Inline(met) => met.name.clone(),
-                MetricEntry::Ref(r) => r.ref_name.clone(),
-            }))
-            .collect();
+        let interface_names: HashSet<String> = collect_interface_names(kind).collect();
 
         // Check each dataset's column_mapping
         for ds_entry in &kind.datasets {
@@ -463,86 +473,27 @@ pub(crate) fn emit(
 // Internal helpers
 // ============================================================================
 
-fn compile_dataset(ds: &Dataset) -> Result<CompiledDataset, CompileError> {
-    let mut dimensions = IndexMap::new();
-    let mut measures = IndexMap::new();
-    let mut metrics = IndexMap::new();
-
-    for d in &ds.dimensions {
-        if let DimensionEntry::Inline(dim) = d {
-            dimensions.insert(
-                dim.name.clone(),
-                CompiledDimension {
-                    name: dim.name.clone(),
-                    description: dim.description.clone(),
-                    data_type: dim.data_type.to_string(),
-                    dim_type: dim.dim_type.clone(),
-                },
-            );
-        }
-    }
-
-    for m in &ds.measures {
-        if let MeasureEntry::Inline(mea) = m {
-            let expr = parse_expr(&mea.expr, &mea.name)?;
-            let filters = compile_measure_filters(&mea.filters)?;
-            measures.insert(
-                mea.name.clone(),
-                CompiledMeasure {
-                    name: mea.name.clone(),
-                    description: mea.description.clone(),
-                    data_type: mea.data_type.to_string(),
-                    expr,
-                    expr_source: mea.expr.clone(),
-                    additivity: mea.additivity.clone(),
-                    constraints: mea.constraints.clone(),
-                    filters,
-                },
-            );
-        }
-    }
-
-    for m in &ds.metrics {
-        if let MetricEntry::Inline(met) = m {
-            let expr = parse_expr(&met.expr, &met.name)?;
-            let filters = compile_measure_filters(&met.filters)?;
-            metrics.insert(
-                met.name.clone(),
-                CompiledMetric {
-                    name: met.name.clone(),
-                    description: met.description.clone(),
-                    data_type: met.data_type.to_string(),
-                    expr,
-                    expr_source: met.expr.clone(),
-                    additivity: met.additivity.clone(),
-                    constraints: met.constraints.clone(),
-                    filters,
-                    depth: 0,
-                },
-            );
-        }
-    }
-
-    Ok(CompiledDataset {
-        name: ds.name.clone(),
-        description: ds.description.clone(),
-        domain: ds.domain.as_ref().map(|d| d.0.clone()),
-        keys: ds.keys.clone(),
-        dimensions,
-        measures,
-        metrics,
-    })
+/// Collect interface names (dimensions + measures + metrics) from a kind.
+fn collect_interface_names(kind: &Kind) -> impl Iterator<Item = String> + '_ {
+    kind.dimensions
+        .iter()
+        .map(|d| match d {
+            DimensionEntry::Inline(dim) => dim.name.clone(),
+            DimensionEntry::Ref(r) => r.ref_name.clone(),
+        })
+        .chain(kind.measures.iter().map(|m| match m {
+            MeasureEntry::Inline(mea) => mea.name.clone(),
+            MeasureEntry::Ref(r) => r.ref_name.clone(),
+        }))
+        .chain(kind.metrics.iter().map(|m| match m {
+            MetricEntry::Inline(met) => met.name.clone(),
+            MetricEntry::Ref(r) => r.ref_name.clone(),
+        }))
 }
 
-fn compile_kind(
-    kind: &Kind,
-    metric_depths: &HashMap<String, usize>,
-) -> Result<CompiledKind, CompileError> {
+fn compile_dimensions(entries: &[DimensionEntry]) -> IndexMap<String, CompiledDimension> {
     let mut dimensions = IndexMap::new();
-    let mut measures = IndexMap::new();
-    let mut metrics = IndexMap::new();
-
-    for d in &kind.dimensions {
+    for d in entries {
         if let DimensionEntry::Inline(dim) = d {
             dimensions.insert(
                 dim.name.clone(),
@@ -555,8 +506,14 @@ fn compile_kind(
             );
         }
     }
+    dimensions
+}
 
-    for m in &kind.measures {
+fn compile_measures(
+    entries: &[MeasureEntry],
+) -> Result<IndexMap<String, CompiledMeasure>, CompileError> {
+    let mut measures = IndexMap::new();
+    for m in entries {
         if let MeasureEntry::Inline(mea) = m {
             let expr = parse_expr(&mea.expr, &mea.name)?;
             let filters = compile_measure_filters(&mea.filters)?;
@@ -575,8 +532,15 @@ fn compile_kind(
             );
         }
     }
+    Ok(measures)
+}
 
-    for m in &kind.metrics {
+fn compile_metrics(
+    entries: &[MetricEntry],
+    metric_depths: &HashMap<String, usize>,
+) -> Result<IndexMap<String, CompiledMetric>, CompileError> {
+    let mut metrics = IndexMap::new();
+    for m in entries {
         if let MetricEntry::Inline(met) = m {
             let expr = parse_expr(&met.expr, &met.name)?;
             let depth = metric_depths.get(&met.name).copied().unwrap_or(0);
@@ -597,7 +561,27 @@ fn compile_kind(
             );
         }
     }
+    Ok(metrics)
+}
 
+fn compile_dataset(ds: &Dataset) -> Result<CompiledDataset, CompileError> {
+    let no_depths = HashMap::new();
+    Ok(CompiledDataset {
+        name: ds.name.clone(),
+        description: ds.description.clone(),
+        domain: ds.domain.as_ref().map(|d| d.0.clone()),
+        keys: ds.keys.clone(),
+        dimensions: compile_dimensions(&ds.dimensions),
+        measures: compile_measures(&ds.measures)?,
+        metrics: compile_metrics(&ds.metrics, &no_depths)?,
+        compiled_schema: None,
+    })
+}
+
+fn compile_kind(
+    kind: &Kind,
+    metric_depths: &HashMap<String, usize>,
+) -> Result<CompiledKind, CompileError> {
     // Compile kind datasets
     let compiled_datasets: Vec<CompiledKindDataset> = kind
         .datasets
@@ -631,9 +615,9 @@ fn compile_kind(
     Ok(CompiledKind {
         name: kind.name.clone(),
         description: kind.description.clone(),
-        dimensions,
-        measures,
-        metrics,
+        dimensions: compile_dimensions(&kind.dimensions),
+        measures: compile_measures(&kind.measures)?,
+        metrics: compile_metrics(&kind.metrics, metric_depths)?,
         keys: kind.keys.clone(),
         kind_type: CompiledKindType::from(&kind.kind_type),
         datasets: compiled_datasets,
@@ -654,12 +638,12 @@ fn compile_measure_filters(
     Ok(compiled)
 }
 
-/// Parse a DSL expression string into a DslExpr.
+/// Parse a DSL expression string into a Expr.
 ///
 /// For v1, we parse common aggregation patterns (SUM, COUNT, etc.)
 /// and store other expressions as entity refs. Full DSL parsing
 /// will use the semstrait-core DSL lexer/parser when stabilized.
-fn parse_expr(expr: &str, entity_name: &str) -> Result<DslExpr, CompileError> {
+fn parse_expr(expr: &str, entity_name: &str) -> Result<Expr, CompileError> {
     let trimmed = expr.trim();
 
     if trimmed.is_empty() {
@@ -691,24 +675,24 @@ fn parse_expr(expr: &str, entity_name: &str) -> Result<DslExpr, CompileError> {
     // Try entity ref: {{ name }}
     if trimmed.starts_with("{{") && trimmed.ends_with("}}") {
         let inner = trimmed[2..trimmed.len() - 2].trim();
-        return Ok(DslExpr::entity_ref(inner));
+        return Ok(Expr::entity_ref(inner));
     }
 
     // Bare identifier => entity ref
     if is_identifier(trimmed) {
-        return Ok(DslExpr::entity_ref(trimmed));
+        return Ok(Expr::entity_ref(trimmed));
     }
 
     // Numeric literal
     if let Ok(v) = trimmed.parse::<i64>() {
-        return Ok(DslExpr::int(v));
+        return Ok(Expr::int(v));
     }
     if let Ok(v) = trimmed.parse::<f64>() {
-        return Ok(DslExpr::float(v));
+        return Ok(Expr::float(v));
     }
 
     // Fallback: store as entity ref
-    Ok(DslExpr::entity_ref(trimmed))
+    Ok(Expr::entity_ref(trimmed))
 }
 
 /// SQL keywords that indicate raw SQL (rejected in v1).
@@ -722,26 +706,26 @@ fn looks_like_raw_sql(expr: &str) -> bool {
     SQL_KEYWORDS.iter().any(|kw| upper.contains(kw))
 }
 
-fn try_parse_aggregation(expr: &str) -> Option<DslExpr> {
+fn try_parse_aggregation(expr: &str) -> Option<Expr> {
     let upper = expr.to_uppercase();
 
     #[allow(clippy::type_complexity)]
-    let agg_patterns: &[(&str, fn(DslExpr) -> DslExpr)] = &[
-        ("SUM(", DslExpr::sum),
-        ("COUNT_DISTINCT(", DslExpr::count_distinct),
-        ("COUNT(", DslExpr::count),
-        ("AVG(", DslExpr::avg),
-        ("MIN(", DslExpr::min),
-        ("MAX(", DslExpr::max),
+    let agg_patterns: &[(&str, fn(Expr) -> Expr)] = &[
+        ("SUM(", Expr::sum),
+        ("COUNT_DISTINCT(", Expr::count_distinct),
+        ("COUNT(", Expr::count),
+        ("AVG(", Expr::avg),
+        ("MIN(", Expr::min),
+        ("MAX(", Expr::max),
     ];
 
     for (prefix, constructor) in agg_patterns {
         if upper.starts_with(prefix) && expr.ends_with(')') {
             let inner = expr[prefix.len()..expr.len() - 1].trim();
             let inner_expr = if is_identifier(inner) {
-                DslExpr::column(inner)
+                Expr::column(inner)
             } else {
-                DslExpr::entity_ref(inner)
+                Expr::entity_ref(inner)
             };
             return Some(constructor(inner_expr));
         }
@@ -750,7 +734,7 @@ fn try_parse_aggregation(expr: &str) -> Option<DslExpr> {
     None
 }
 
-fn try_parse_arithmetic(expr: &str) -> Option<DslExpr> {
+fn try_parse_arithmetic(expr: &str) -> Option<Expr> {
     let bytes = expr.as_bytes();
     let mut paren_depth = 0i32;
     let mut last_add_sub = None;
@@ -783,15 +767,15 @@ fn try_parse_arithmetic(expr: &str) -> Option<DslExpr> {
     let right_expr = parse_operand(right);
 
     Some(match op {
-        '+' => DslExpr::add(left_expr, right_expr),
-        '-' => DslExpr::subtract(left_expr, right_expr),
-        '*' => DslExpr::multiply(left_expr, right_expr),
-        '/' => DslExpr::divide(left_expr, right_expr),
+        '+' => Expr::add(left_expr, right_expr),
+        '-' => Expr::subtract(left_expr, right_expr),
+        '*' => Expr::multiply(left_expr, right_expr),
+        '/' => Expr::divide(left_expr, right_expr),
         _ => return None,
     })
 }
 
-fn parse_operand(s: &str) -> DslExpr {
+fn parse_operand(s: &str) -> Expr {
     let trimmed = s.trim();
 
     // Strip outer parens
@@ -811,21 +795,21 @@ fn parse_operand(s: &str) -> DslExpr {
 
     if trimmed.starts_with("{{") && trimmed.ends_with("}}") {
         let inner = trimmed[2..trimmed.len() - 2].trim();
-        return DslExpr::entity_ref(inner);
+        return Expr::entity_ref(inner);
     }
 
     if let Ok(v) = trimmed.parse::<i64>() {
-        return DslExpr::int(v);
+        return Expr::int(v);
     }
     if let Ok(v) = trimmed.parse::<f64>() {
-        return DslExpr::float(v);
+        return Expr::float(v);
     }
 
     if is_identifier(trimmed) {
-        return DslExpr::entity_ref(trimmed);
+        return Expr::entity_ref(trimmed);
     }
 
-    DslExpr::entity_ref(trimmed)
+    Expr::entity_ref(trimmed)
 }
 
 fn is_identifier(s: &str) -> bool {
@@ -914,25 +898,33 @@ mod tests {
     fn test_parse_expr_sum() {
         let expr = parse_expr("SUM(amount)", "revenue").unwrap();
         match &expr {
-            DslExpr::Sum(agg) => match agg.expr.as_ref() {
-                DslExpr::Column(col) => assert_eq!(col.name, "amount"),
-                _ => panic!("expected Column inside Sum"),
-            },
-            _ => panic!("expected Sum, got {:?}", expr),
+            Expr::Aggregate(agg) => {
+                assert_eq!(agg.function, semstrait_core::Aggregation::Sum);
+                match agg.expr.as_ref() {
+                    Expr::Column(col) => assert_eq!(col.name, "amount"),
+                    _ => panic!("expected Column inside Sum"),
+                }
+            }
+            _ => panic!("expected Aggregate(Sum), got {:?}", expr),
         }
     }
 
     #[test]
     fn test_parse_expr_count_distinct() {
         let expr = parse_expr("COUNT_DISTINCT(customer_id)", "unique_customers").unwrap();
-        assert!(matches!(expr, DslExpr::CountDistinct(_)));
+        match &expr {
+            Expr::Aggregate(agg) => {
+                assert_eq!(agg.function, semstrait_core::Aggregation::CountDistinct);
+            }
+            _ => panic!("expected Aggregate(CountDistinct), got {:?}", expr),
+        }
     }
 
     #[test]
     fn test_parse_expr_entity_ref() {
         let expr = parse_expr("{{ revenue }}", "margin").unwrap();
         match &expr {
-            DslExpr::EntityRef(e) => assert_eq!(e.name, "revenue"),
+            Expr::EntityRef(e) => assert_eq!(e.name, "revenue"),
             _ => panic!("expected EntityRef"),
         }
     }
@@ -940,7 +932,12 @@ mod tests {
     #[test]
     fn test_parse_expr_arithmetic() {
         let expr = parse_expr("{{ revenue }} - {{ cost }}", "profit").unwrap();
-        assert!(matches!(expr, DslExpr::Subtract(_)));
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::Subtract);
+            }
+            _ => panic!("expected BinaryOp(Subtract), got {:?}", expr),
+        }
     }
 
     #[test]

@@ -57,13 +57,13 @@ let back = SubstraitSerializer::from_substrait(&substrait_plan)?;
 
 ### ExprConverter
 
-Converts `DslExpr` ↔ Substrait `Expression` for round-trip fidelity.
+Converts `Expr` ↔ Substrait `Expression` for round-trip fidelity.
 
 ---
 
 ## Dependencies
 
-- `semstrait-core` — `DataType`, `Schema`, `DslExpr`
+- `semstrait-core` — `DataType`, `Schema`, `Expr`
 - `substrait` v0.62 — Substrait protocol buffers
 - `prost` v0.14 — protobuf encoding
 - `uuid` — node identifiers

@@ -43,7 +43,22 @@ pub trait ComputeAdapter: Send + Sync {
     fn consumer_profile(&self) -> &ConsumerProfile;
 
     /// Adapt a payload into an executable request.
-    fn adapt(&self, payload: ComputePayload) -> Result<ComputeRequest, AdaptError>;
+    ///
+    /// Default: accepts SQL payloads, rejects Substrait and Native.
+    fn adapt(&self, payload: ComputePayload) -> Result<ComputeRequest, AdaptError> {
+        match payload {
+            ComputePayload::Sql(_) => Ok(ComputeRequest {
+                payload,
+                timeout: None,
+            }),
+            ComputePayload::SubstraitPlan(_) => {
+                Err(AdaptError::UnsupportedPayload(PayloadKind::SubstraitPlan))
+            }
+            ComputePayload::NativePlan(_) => {
+                Err(AdaptError::UnsupportedPayload(PayloadKind::NativePlan))
+            }
+        }
+    }
 }
 
 /// The main async execution interface.

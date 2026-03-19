@@ -2,7 +2,7 @@
 
 use crate::dialect::SqlDialect;
 use crate::error::EmitError;
-use crate::expr_renderer::DslExprSqlRenderer;
+use crate::expr_renderer::ExprSqlRenderer;
 use semstrait_ir::{LogicalPlan, PlanNode, SortDirection};
 
 /// Emits SQL strings from a `LogicalPlan`.
@@ -29,7 +29,7 @@ impl<D: SqlDialect> AnsiSqlEmitter<D> {
 
     /// Emit SQL for a single PlanNode (recursive).
     fn emit_node(&self, node: &PlanNode) -> Result<String, EmitError> {
-        let renderer = DslExprSqlRenderer::new(&self.dialect);
+        let renderer = ExprSqlRenderer::new(&self.dialect);
 
         match node {
             PlanNode::Scan(scan) => {

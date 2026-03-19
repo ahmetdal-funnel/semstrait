@@ -1,101 +1,59 @@
 //! Error types for manifest compilation and repository operations.
 
-use std::fmt;
-
 /// Errors that can occur during manifest compilation.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CompileError {
     /// YAML parse error (step 1)
+    #[error("parse error: {0}")]
     Parse(String),
 
     /// Reference resolution error (step 2)
+    #[error("reference resolution error: {0}")]
     RefResolution(String),
 
     /// Glob expansion requires a catalog provider but none was configured (step 3)
+    #[error("glob pattern '{pattern}' in kind '{kind}' requires a catalog provider")]
     GlobRequiresCatalog { pattern: String, kind: String },
 
     /// Catalog error during glob expansion (step 3)
+    #[error("catalog error: {0}")]
     CatalogError(String),
 
     /// Structural validation error (step 4)
+    #[error("structure validation errors: {}", .0.join("; "))]
     StructureValidation(Vec<String>),
 
     /// Column mapping validation error (step 5)
+    #[error("mapping validation errors: {}", .0.join("; "))]
     MappingValidation(Vec<String>),
 
     /// Metric graph cycle detected (step 6)
+    #[error("metric dependency cycle: {}", cycle.join(" -> "))]
     MetricCycle { cycle: Vec<String> },
 
     /// Metric graph depth exceeded (step 6)
-    MetricDepthExceeded { metric: String, depth: usize, max_depth: usize },
+    #[error("metric '{metric}' has dependency depth {depth} exceeding maximum {max_depth}")]
+    MetricDepthExceeded {
+        metric: String,
+        depth: usize,
+        max_depth: usize,
+    },
 
     /// Relationship graph error (step 7)
+    #[error("relationship graph error: {0}")]
     RelationshipGraph(String),
 
     /// Expression compilation error (step 8)
+    #[error("expression compilation errors: {}", .0.join("; "))]
     ExprCompilation(Vec<String>),
 
     /// Raw SQL rejected (step 8)
+    #[error("raw SQL rejected for '{entity}': {expr}")]
     RawSqlRejected { entity: String, expr: String },
 
     /// IO error (reading files)
-    Io(std::io::Error),
-}
-
-impl fmt::Display for CompileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Parse(msg) => write!(f, "parse error: {}", msg),
-            Self::RefResolution(msg) => write!(f, "reference resolution error: {}", msg),
-            Self::GlobRequiresCatalog { pattern, kind } => {
-                write!(
-                    f,
-                    "glob pattern '{}' in kind '{}' requires a catalog provider",
-                    pattern, kind
-                )
-            }
-            Self::CatalogError(msg) => write!(f, "catalog error: {}", msg),
-            Self::StructureValidation(errors) => {
-                write!(f, "structure validation errors: {}", errors.join("; "))
-            }
-            Self::MappingValidation(errors) => {
-                write!(f, "mapping validation errors: {}", errors.join("; "))
-            }
-            Self::MetricCycle { cycle } => {
-                write!(f, "metric dependency cycle: {}", cycle.join(" -> "))
-            }
-            Self::MetricDepthExceeded { metric, depth, max_depth } => {
-                write!(
-                    f,
-                    "metric '{}' has dependency depth {} exceeding maximum {}",
-                    metric, depth, max_depth
-                )
-            }
-            Self::RelationshipGraph(msg) => write!(f, "relationship graph error: {}", msg),
-            Self::ExprCompilation(errors) => {
-                write!(f, "expression compilation errors: {}", errors.join("; "))
-            }
-            Self::RawSqlRejected { entity, expr } => {
-                write!(f, "raw SQL rejected for '{}': {}", entity, expr)
-            }
-            Self::Io(e) => write!(f, "IO error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for CompileError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for CompileError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl From<semstrait_model::ModelError> for CompileError {
@@ -111,24 +69,15 @@ impl From<semstrait_model::ModelError> for CompileError {
 }
 
 /// Errors that can occur during repository operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RepositoryError {
     /// No manifest has been stored yet.
+    #[error("no compiled manifest found in repository")]
     NotFound,
     /// Serialization/deserialization error.
+    #[error("serialization error: {0}")]
     Serialization(String),
     /// IO error.
-    Io(std::io::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
-
-impl fmt::Display for RepositoryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotFound => write!(f, "no compiled manifest found in repository"),
-            Self::Serialization(msg) => write!(f, "serialization error: {}", msg),
-            Self::Io(e) => write!(f, "IO error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for RepositoryError {}

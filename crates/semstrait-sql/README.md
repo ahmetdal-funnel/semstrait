@@ -6,7 +6,7 @@ SQL dialect emission from `LogicalPlan` IR.
 
 ## Responsibility
 
-Walks the `PlanNode` tree and emits SQL via `sqlparser-rs` AST construction. One `SqlEmitter` implementation per dialect family. `DslExprSqlRenderer` converts DSL expressions to SQL fragments.
+Walks the `PlanNode` tree and emits SQL via `sqlparser-rs` AST construction. One `SqlEmitter` implementation per dialect family. `ExprSqlRenderer` converts expressions to SQL fragments.
 
 Does not parse SQL, validate semantic correctness, or know about the semantic model.
 
@@ -53,6 +53,6 @@ pub struct AnsiSqlEmitter<D: SqlDialect> { dialect: D }
 
 ## Dependencies
 
-- `semstrait-core` — `DslExpr`, `DataType`
+- `semstrait-core` — `Expr`, `DataType`
 - `semstrait-ir` — `LogicalPlan`, `PlanNode`
 - `sqlparser` v0.53 — AST construction and rendering

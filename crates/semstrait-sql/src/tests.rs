@@ -2,10 +2,15 @@
 
 use crate::dialect::{AnsiDialect, DuckDbDialect, TrinoDialect, SqlDialect};
 use crate::emitter::{AnsiSqlEmitter, SqlEmitter};
-use crate::expr_renderer::DslExprSqlRenderer;
+use crate::expr_renderer::ExprSqlRenderer;
+use semstrait_core::expr::{
+    BinaryExpr, ColumnRef, InListExpr, Literal, BetweenExpr, LikeExpr,
+    CoalesceExpr, NullIfExpr, DateTruncExpr, CaseExpr, WhenClause, UnaryExpr,
+    FunctionCallExpr,
+};
 use semstrait_core::Grain;
 use semstrait_ir::{
-    AggNode, AggregateMeasure, Aggregation, BinaryOp, DslExpr, FetchNode, FilterNode,
+    AggNode, AggregateMeasure, Aggregation, BinaryOp, Expr, FetchNode, FilterNode,
     JoinNode, JoinType, LogicalPlan, NodeMeta, PlanNode, ProjectNode, ScanNode, Schema, SortDirection,
     SortKey, SortNode, UnionNode,
 };
@@ -34,161 +39,172 @@ fn plan(root: PlanNode) -> LogicalPlan {
     LogicalPlan::new(root, vec![])
 }
 
+// --- Expression construction helpers ---
+
+fn col(name: &str) -> Expr {
+    Expr::Column(ColumnRef { name: name.into(), qualifier: None })
+}
+
+fn qcol(qualifier: &str, name: &str) -> Expr {
+    Expr::Column(ColumnRef { name: name.into(), qualifier: Some(qualifier.into()) })
+}
+
+fn int(v: i64) -> Expr {
+    Expr::Literal(Literal::Integer { value: v })
+}
+
+fn float(v: f64) -> Expr {
+    Expr::Literal(Literal::Float { value: v })
+}
+
+fn str_lit(s: &str) -> Expr {
+    Expr::Literal(Literal::String { value: s.into() })
+}
+
+fn bool_lit(b: bool) -> Expr {
+    Expr::Literal(Literal::Boolean { value: b })
+}
+
+fn null_lit() -> Expr {
+    Expr::Literal(Literal::Null)
+}
+
+fn bin(left: Expr, op: BinaryOp, right: Expr) -> Expr {
+    Expr::BinaryOp(BinaryExpr {
+        left: Box::new(left),
+        op,
+        right: Box::new(right),
+    })
+}
+
 // ---------------------------------------------------------------------------
-// DslExpr rendering tests
+// Expr rendering tests
 // ---------------------------------------------------------------------------
 
 mod expr_rendering {
     use super::*;
 
-    fn renderer() -> DslExprSqlRenderer<'static> {
+    fn renderer() -> ExprSqlRenderer<'static> {
         static DIALECT: AnsiDialect = AnsiDialect;
-        DslExprSqlRenderer::new(&DIALECT)
+        ExprSqlRenderer::new(&DIALECT)
     }
 
     #[test]
     fn column_simple() {
         let r = renderer();
-        let expr = DslExpr::Column { name: "id".into(), qualifier: None };
-        assert_eq!(r.render(&expr).unwrap(), "\"id\"");
+        assert_eq!(r.render(&col("id")).unwrap(), "\"id\"");
     }
 
     #[test]
     fn column_qualified() {
         let r = renderer();
-        let expr = DslExpr::Column {
-            name: "id".into(),
-            qualifier: Some("orders".into()),
-        };
-        assert_eq!(r.render(&expr).unwrap(), "\"orders\".\"id\"");
+        assert_eq!(r.render(&qcol("orders", "id")).unwrap(), "\"orders\".\"id\"");
     }
 
     #[test]
     fn number_integer() {
         let r = renderer();
-        assert_eq!(r.render(&DslExpr::Number(42.0)).unwrap(), "42");
+        assert_eq!(r.render(&int(42)).unwrap(), "42");
     }
 
     #[test]
     fn number_float() {
         let r = renderer();
-        assert_eq!(r.render(&DslExpr::Number(3.14)).unwrap(), "3.14");
+        assert_eq!(r.render(&float(3.14)).unwrap(), "3.14");
     }
 
     #[test]
     fn string_literal() {
         let r = renderer();
-        assert_eq!(r.render(&DslExpr::StringLit("hello".into())).unwrap(), "'hello'");
+        assert_eq!(r.render(&str_lit("hello")).unwrap(), "'hello'");
     }
 
     #[test]
     fn string_literal_with_quotes() {
         let r = renderer();
-        assert_eq!(
-            r.render(&DslExpr::StringLit("it's".into())).unwrap(),
-            "'it''s'"
-        );
+        assert_eq!(r.render(&str_lit("it's")).unwrap(), "'it''s'");
     }
 
     #[test]
     fn bool_true() {
         let r = renderer();
-        assert_eq!(r.render(&DslExpr::Bool(true)).unwrap(), "TRUE");
+        assert_eq!(r.render(&bool_lit(true)).unwrap(), "TRUE");
     }
 
     #[test]
     fn bool_false() {
         let r = renderer();
-        assert_eq!(r.render(&DslExpr::Bool(false)).unwrap(), "FALSE");
+        assert_eq!(r.render(&bool_lit(false)).unwrap(), "FALSE");
     }
 
     #[test]
     fn null_literal() {
         let r = renderer();
-        assert_eq!(r.render(&DslExpr::Null).unwrap(), "NULL");
+        assert_eq!(r.render(&null_lit()).unwrap(), "NULL");
     }
 
     #[test]
     fn binary_op_add() {
         let r = renderer();
-        let expr = DslExpr::BinaryOp {
-            left: Box::new(DslExpr::Column { name: "a".into(), qualifier: None }),
-            op: BinaryOp::Add,
-            right: Box::new(DslExpr::Number(1.0)),
-        };
+        let expr = bin(col("a"), BinaryOp::Add, int(1));
         assert_eq!(r.render(&expr).unwrap(), "(\"a\" + 1)");
     }
 
     #[test]
     fn binary_op_eq() {
         let r = renderer();
-        let expr = DslExpr::BinaryOp {
-            left: Box::new(DslExpr::Column { name: "x".into(), qualifier: None }),
-            op: BinaryOp::Eq,
-            right: Box::new(DslExpr::Number(10.0)),
-        };
+        let expr = bin(col("x"), BinaryOp::Eq, int(10));
         assert_eq!(r.render(&expr).unwrap(), "(\"x\" = 10)");
     }
 
     #[test]
     fn binary_op_and() {
         let r = renderer();
-        let expr = DslExpr::BinaryOp {
-            left: Box::new(DslExpr::Bool(true)),
-            op: BinaryOp::And,
-            right: Box::new(DslExpr::Bool(false)),
-        };
+        let expr = bin(bool_lit(true), BinaryOp::And, bool_lit(false));
         assert_eq!(r.render(&expr).unwrap(), "(TRUE AND FALSE)");
     }
 
     #[test]
     fn function_call_simple() {
         let r = renderer();
-        let expr = DslExpr::FunctionCall {
+        let expr = Expr::FunctionCall(FunctionCallExpr {
             name: "COALESCE".into(),
-            args: vec![
-                DslExpr::Column { name: "x".into(), qualifier: None },
-                DslExpr::Number(0.0),
-            ],
+            args: vec![col("x"), int(0)],
             distinct: false,
-        };
+        });
         assert_eq!(r.render(&expr).unwrap(), "COALESCE(\"x\", 0)");
     }
 
     #[test]
     fn function_call_distinct() {
         let r = renderer();
-        let expr = DslExpr::FunctionCall {
+        let expr = Expr::FunctionCall(FunctionCallExpr {
             name: "COUNT".into(),
-            args: vec![DslExpr::Column { name: "id".into(), qualifier: None }],
+            args: vec![col("id")],
             distinct: true,
-        };
+        });
         assert_eq!(r.render(&expr).unwrap(), "COUNT(DISTINCT \"id\")");
     }
 
     #[test]
     fn negate() {
         let r = renderer();
-        let expr = DslExpr::Negate(Box::new(DslExpr::Number(5.0)));
+        let expr = Expr::Negate(UnaryExpr { expr: Box::new(int(5)) });
         assert_eq!(r.render(&expr).unwrap(), "(-5)");
     }
 
     #[test]
     fn case_expression() {
         let r = renderer();
-        let expr = DslExpr::Case {
+        let expr = Expr::Case(CaseExpr {
             when_then: vec![
-                (
-                    DslExpr::BinaryOp {
-                        left: Box::new(DslExpr::Column { name: "status".into(), qualifier: None }),
-                        op: BinaryOp::Eq,
-                        right: Box::new(DslExpr::StringLit("active".into())),
-                    },
-                    DslExpr::Number(1.0),
-                ),
+                WhenClause {
+                    condition: bin(col("status"), BinaryOp::Eq, str_lit("active")),
+                    result: int(1),
+                },
             ],
-            else_expr: Some(Box::new(DslExpr::Number(0.0))),
-        };
+            else_expr: Some(Box::new(int(0))),
+        });
         assert_eq!(
             r.render(&expr).unwrap(),
             "CASE WHEN (\"status\" = 'active') THEN 1 ELSE 0 END"
@@ -198,10 +214,13 @@ mod expr_rendering {
     #[test]
     fn case_no_else() {
         let r = renderer();
-        let expr = DslExpr::Case {
-            when_then: vec![(DslExpr::Bool(true), DslExpr::Number(1.0))],
+        let expr = Expr::Case(CaseExpr {
+            when_then: vec![WhenClause {
+                condition: bool_lit(true),
+                result: int(1),
+            }],
             else_expr: None,
-        };
+        });
         assert_eq!(r.render(&expr).unwrap(), "CASE WHEN TRUE THEN 1 END");
     }
 
@@ -210,7 +229,7 @@ mod expr_rendering {
         let r = renderer();
         let measure = AggregateMeasure {
             function: Aggregation::Sum,
-            expr: DslExpr::Column { name: "amount".into(), qualifier: None },
+            expr: col("amount"),
             distinct: false,
         };
         assert_eq!(r.render_aggregate(&measure).unwrap(), "SUM(\"amount\")");
@@ -221,7 +240,7 @@ mod expr_rendering {
         let r = renderer();
         let measure = AggregateMeasure {
             function: Aggregation::CountDistinct,
-            expr: DslExpr::Column { name: "user_id".into(), qualifier: None },
+            expr: col("user_id"),
             distinct: false,
         };
         assert_eq!(r.render_aggregate(&measure).unwrap(), "COUNT(DISTINCT \"user_id\")");
@@ -232,7 +251,7 @@ mod expr_rendering {
         let r = renderer();
         let measure = AggregateMeasure {
             function: Aggregation::Avg,
-            expr: DslExpr::Column { name: "price".into(), qualifier: None },
+            expr: col("price"),
             distinct: false,
         };
         assert_eq!(r.render_aggregate(&measure).unwrap(), "AVG(\"price\")");
@@ -243,69 +262,58 @@ mod expr_rendering {
         let r = renderer();
         let min_m = AggregateMeasure {
             function: Aggregation::Min,
-            expr: DslExpr::Column { name: "ts".into(), qualifier: None },
+            expr: col("ts"),
             distinct: false,
         };
         let max_m = AggregateMeasure {
             function: Aggregation::Max,
-            expr: DslExpr::Column { name: "ts".into(), qualifier: None },
+            expr: col("ts"),
             distinct: false,
         };
         assert_eq!(r.render_aggregate(&min_m).unwrap(), "MIN(\"ts\")");
         assert_eq!(r.render_aggregate(&max_m).unwrap(), "MAX(\"ts\")");
     }
 
-    // --- Tests for new DslExpr variants ---
+    // --- Tests for new Expr variants ---
 
     #[test]
     fn not_expr() {
         let r = renderer();
-        let expr = DslExpr::Not(Box::new(DslExpr::Bool(true)));
+        let expr = Expr::Not(UnaryExpr { expr: Box::new(bool_lit(true)) });
         assert_eq!(r.render(&expr).unwrap(), "NOT (TRUE)");
     }
 
     #[test]
     fn not_nested_comparison() {
         let r = renderer();
-        let expr = DslExpr::Not(Box::new(DslExpr::BinaryOp {
-            left: Box::new(DslExpr::Column { name: "x".into(), qualifier: None }),
-            op: BinaryOp::Eq,
-            right: Box::new(DslExpr::Number(1.0)),
-        }));
+        let expr = Expr::Not(UnaryExpr {
+            expr: Box::new(bin(col("x"), BinaryOp::Eq, int(1))),
+        });
         assert_eq!(r.render(&expr).unwrap(), "NOT ((\"x\" = 1))");
     }
 
     #[test]
     fn is_null() {
         let r = renderer();
-        let expr = DslExpr::IsNull(Box::new(DslExpr::Column {
-            name: "email".into(),
-            qualifier: None,
-        }));
+        let expr = Expr::IsNull(UnaryExpr { expr: Box::new(col("email")) });
         assert_eq!(r.render(&expr).unwrap(), "\"email\" IS NULL");
     }
 
     #[test]
     fn is_not_null() {
         let r = renderer();
-        let expr = DslExpr::IsNotNull(Box::new(DslExpr::Column {
-            name: "email".into(),
-            qualifier: None,
-        }));
+        let expr = Expr::IsNotNull(UnaryExpr { expr: Box::new(col("email")) });
         assert_eq!(r.render(&expr).unwrap(), "\"email\" IS NOT NULL");
     }
 
     #[test]
     fn in_list() {
         let r = renderer();
-        let expr = DslExpr::InList {
-            expr: Box::new(DslExpr::Column { name: "status".into(), qualifier: None }),
-            list: vec![
-                DslExpr::StringLit("active".into()),
-                DslExpr::StringLit("pending".into()),
-            ],
+        let expr = Expr::InList(InListExpr {
+            expr: Box::new(col("status")),
+            list: vec![str_lit("active"), str_lit("pending")],
             negated: false,
-        };
+        });
         assert_eq!(
             r.render(&expr).unwrap(),
             "\"status\" IN ('active', 'pending')"
@@ -315,14 +323,11 @@ mod expr_rendering {
     #[test]
     fn not_in_list() {
         let r = renderer();
-        let expr = DslExpr::InList {
-            expr: Box::new(DslExpr::Column { name: "status".into(), qualifier: None }),
-            list: vec![
-                DslExpr::StringLit("deleted".into()),
-                DslExpr::StringLit("archived".into()),
-            ],
+        let expr = Expr::InList(InListExpr {
+            expr: Box::new(col("status")),
+            list: vec![str_lit("deleted"), str_lit("archived")],
             negated: true,
-        };
+        });
         assert_eq!(
             r.render(&expr).unwrap(),
             "\"status\" NOT IN ('deleted', 'archived')"
@@ -332,45 +337,43 @@ mod expr_rendering {
     #[test]
     fn between() {
         let r = renderer();
-        let expr = DslExpr::Between {
-            expr: Box::new(DslExpr::Column { name: "age".into(), qualifier: None }),
-            low: Box::new(DslExpr::Number(18.0)),
-            high: Box::new(DslExpr::Number(65.0)),
+        let expr = Expr::Between(BetweenExpr {
+            expr: Box::new(col("age")),
+            low: Box::new(int(18)),
+            high: Box::new(int(65)),
             negated: false,
-        };
+        });
         assert_eq!(r.render(&expr).unwrap(), "\"age\" BETWEEN 18 AND 65");
     }
 
     #[test]
     fn not_between() {
         let r = renderer();
-        let expr = DslExpr::Between {
-            expr: Box::new(DslExpr::Column { name: "age".into(), qualifier: None }),
-            low: Box::new(DslExpr::Number(18.0)),
-            high: Box::new(DslExpr::Number(65.0)),
+        let expr = Expr::Between(BetweenExpr {
+            expr: Box::new(col("age")),
+            low: Box::new(int(18)),
+            high: Box::new(int(65)),
             negated: true,
-        };
+        });
         assert_eq!(r.render(&expr).unwrap(), "\"age\" NOT BETWEEN 18 AND 65");
     }
 
     #[test]
     fn like_pattern() {
         let r = renderer();
-        let expr = DslExpr::Like {
-            expr: Box::new(DslExpr::Column { name: "name".into(), qualifier: None }),
-            pattern: Box::new(DslExpr::StringLit("%smith%".into())),
-        };
+        let expr = Expr::Like(LikeExpr {
+            expr: Box::new(col("name")),
+            pattern: Box::new(str_lit("%smith%")),
+        });
         assert_eq!(r.render(&expr).unwrap(), "\"name\" LIKE '%smith%'");
     }
 
     #[test]
     fn coalesce() {
         let r = renderer();
-        let expr = DslExpr::Coalesce(vec![
-            DslExpr::Column { name: "preferred_name".into(), qualifier: None },
-            DslExpr::Column { name: "first_name".into(), qualifier: None },
-            DslExpr::StringLit("Unknown".into()),
-        ]);
+        let expr = Expr::Coalesce(CoalesceExpr {
+            exprs: vec![col("preferred_name"), col("first_name"), str_lit("Unknown")],
+        });
         assert_eq!(
             r.render(&expr).unwrap(),
             "COALESCE(\"preferred_name\", \"first_name\", 'Unknown')"
@@ -380,20 +383,20 @@ mod expr_rendering {
     #[test]
     fn nullif() {
         let r = renderer();
-        let expr = DslExpr::NullIf {
-            expr: Box::new(DslExpr::Column { name: "value".into(), qualifier: None }),
-            null_expr: Box::new(DslExpr::Number(0.0)),
-        };
+        let expr = Expr::NullIf(NullIfExpr {
+            expr: Box::new(col("value")),
+            null_expr: Box::new(int(0)),
+        });
         assert_eq!(r.render(&expr).unwrap(), "NULLIF(\"value\", 0)");
     }
 
     #[test]
     fn date_trunc() {
         let r = renderer();
-        let expr = DslExpr::DateTrunc {
-            grain: "month".into(),
-            expr: Box::new(DslExpr::Column { name: "created_at".into(), qualifier: None }),
-        };
+        let expr = Expr::DateTrunc(DateTruncExpr {
+            grain: Grain::Month,
+            expr: Box::new(col("created_at")),
+        });
         assert_eq!(
             r.render(&expr).unwrap(),
             "DATE_TRUNC('month', \"created_at\")"
@@ -403,11 +406,7 @@ mod expr_rendering {
     #[test]
     fn safe_divide() {
         let r = renderer();
-        let expr = DslExpr::BinaryOp {
-            left: Box::new(DslExpr::Column { name: "revenue".into(), qualifier: None }),
-            op: BinaryOp::SafeDivide,
-            right: Box::new(DslExpr::Column { name: "count".into(), qualifier: None }),
-        };
+        let expr = bin(col("revenue"), BinaryOp::SafeDivide, col("count"));
         assert_eq!(
             r.render(&expr).unwrap(),
             "(CASE WHEN \"count\" = 0 THEN NULL ELSE \"revenue\" / \"count\" END)"
@@ -448,11 +447,7 @@ mod plan_emission {
         let root = PlanNode::Filter(FilterNode {
             meta: meta(),
             input: Box::new(scan("orders", &["id", "amount"])),
-            predicate: DslExpr::BinaryOp {
-                left: Box::new(DslExpr::Column { name: "amount".into(), qualifier: None }),
-                op: BinaryOp::Gt,
-                right: Box::new(DslExpr::Number(100.0)),
-            },
+            predicate: bin(col("amount"), BinaryOp::Gt, int(100)),
         });
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
@@ -468,12 +463,8 @@ mod plan_emission {
             meta: meta(),
             input: Box::new(scan("orders", &["id", "amount", "tax"])),
             expressions: vec![
-                DslExpr::Column { name: "id".into(), qualifier: None },
-                DslExpr::BinaryOp {
-                    left: Box::new(DslExpr::Column { name: "amount".into(), qualifier: None }),
-                    op: BinaryOp::Add,
-                    right: Box::new(DslExpr::Column { name: "tax".into(), qualifier: None }),
-                },
+                col("id"),
+                bin(col("amount"), BinaryOp::Add, col("tax")),
             ],
         });
         let sql = e.emit(&plan(root)).unwrap();
@@ -489,10 +480,10 @@ mod plan_emission {
         let root = PlanNode::Aggregate(AggNode {
             meta: meta(),
             input: Box::new(scan("orders", &["region", "amount"])),
-            group_by: vec![DslExpr::Column { name: "region".into(), qualifier: None }],
+            group_by: vec![col("region")],
             aggregates: vec![AggregateMeasure {
                 function: Aggregation::Sum,
-                expr: DslExpr::Column { name: "amount".into(), qualifier: None },
+                expr: col("amount"),
                 distinct: false,
             }],
         });
@@ -512,7 +503,7 @@ mod plan_emission {
             group_by: vec![],
             aggregates: vec![AggregateMeasure {
                 function: Aggregation::Count,
-                expr: DslExpr::Column { name: "amount".into(), qualifier: None },
+                expr: col("amount"),
                 distinct: false,
             }],
         });
@@ -531,17 +522,7 @@ mod plan_emission {
             left: Box::new(scan("orders", &["id", "customer_id"])),
             right: Box::new(scan("customers", &["id", "name"])),
             join_type: JoinType::Inner,
-            condition: DslExpr::BinaryOp {
-                left: Box::new(DslExpr::Column {
-                    name: "customer_id".into(),
-                    qualifier: None,
-                }),
-                op: BinaryOp::Eq,
-                right: Box::new(DslExpr::Column {
-                    name: "id".into(),
-                    qualifier: None,
-                }),
-            },
+            condition: bin(col("customer_id"), BinaryOp::Eq, col("id")),
         });
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
@@ -561,11 +542,7 @@ mod plan_emission {
             left: Box::new(scan("a", &["x"])),
             right: Box::new(scan("b", &["y"])),
             join_type: JoinType::Left,
-            condition: DslExpr::BinaryOp {
-                left: Box::new(DslExpr::Column { name: "x".into(), qualifier: None }),
-                op: BinaryOp::Eq,
-                right: Box::new(DslExpr::Column { name: "y".into(), qualifier: None }),
-            },
+            condition: bin(col("x"), BinaryOp::Eq, col("y")),
         });
         let sql = e.emit(&plan(root)).unwrap();
         assert!(sql.contains("LEFT JOIN"));
@@ -619,11 +596,11 @@ mod plan_emission {
             input: Box::new(scan("orders", &["id", "amount"])),
             sort_keys: vec![
                 SortKey {
-                    expr: DslExpr::Column { name: "amount".into(), qualifier: None },
+                    expr: col("amount"),
                     direction: SortDirection::Descending,
                 },
                 SortKey {
-                    expr: DslExpr::Column { name: "id".into(), qualifier: None },
+                    expr: col("id"),
                     direction: SortDirection::Ascending,
                 },
             ],
@@ -677,20 +654,16 @@ mod plan_emission {
         let filter_node = PlanNode::Filter(FilterNode {
             meta: meta(),
             input: Box::new(scan_node),
-            predicate: DslExpr::BinaryOp {
-                left: Box::new(DslExpr::Column { name: "event_type".into(), qualifier: None }),
-                op: BinaryOp::Eq,
-                right: Box::new(DslExpr::StringLit("purchase".into())),
-            },
+            predicate: bin(col("event_type"), BinaryOp::Eq, str_lit("purchase")),
         });
 
         let agg_node = PlanNode::Aggregate(AggNode {
             meta: meta(),
             input: Box::new(filter_node),
-            group_by: vec![DslExpr::Column { name: "user_id".into(), qualifier: None }],
+            group_by: vec![col("user_id")],
             aggregates: vec![AggregateMeasure {
                 function: Aggregation::Sum,
-                expr: DslExpr::Column { name: "value".into(), qualifier: None },
+                expr: col("value"),
                 distinct: false,
             }],
         });
@@ -699,7 +672,7 @@ mod plan_emission {
             meta: meta(),
             input: Box::new(agg_node),
             sort_keys: vec![SortKey {
-                expr: DslExpr::Column { name: "user_id".into(), qualifier: None },
+                expr: col("user_id"),
                 direction: SortDirection::Ascending,
             }],
         });
@@ -817,11 +790,7 @@ mod dialect_tests {
         let root = PlanNode::Filter(FilterNode {
             meta: meta(),
             input: Box::new(scan("t", &["a"])),
-            predicate: DslExpr::BinaryOp {
-                left: Box::new(DslExpr::Column { name: "a".into(), qualifier: None }),
-                op: BinaryOp::Gt,
-                right: Box::new(DslExpr::Number(5.0)),
-            },
+            predicate: bin(col("a"), BinaryOp::Gt, int(5)),
         });
         let sql = e.emit(&plan(root)).unwrap();
         assert!(sql.contains("\"a\""));
@@ -968,19 +937,15 @@ mod polyglot_tests {
         let filter_node = PlanNode::Filter(FilterNode {
             meta: meta(),
             input: Box::new(scan_node),
-            predicate: DslExpr::BinaryOp {
-                left: Box::new(DslExpr::Column { name: "event_type".into(), qualifier: None }),
-                op: BinaryOp::Eq,
-                right: Box::new(DslExpr::StringLit("purchase".into())),
-            },
+            predicate: bin(col("event_type"), BinaryOp::Eq, str_lit("purchase")),
         });
         let agg_node = PlanNode::Aggregate(AggNode {
             meta: meta(),
             input: Box::new(filter_node),
-            group_by: vec![DslExpr::Column { name: "user_id".into(), qualifier: None }],
+            group_by: vec![col("user_id")],
             aggregates: vec![AggregateMeasure {
                 function: Aggregation::Sum,
-                expr: DslExpr::Column { name: "value".into(), qualifier: None },
+                expr: col("value"),
                 distinct: false,
             }],
         });
@@ -988,7 +953,7 @@ mod polyglot_tests {
             meta: meta(),
             input: Box::new(agg_node),
             sort_keys: vec![SortKey {
-                expr: DslExpr::Column { name: "user_id".into(), qualifier: None },
+                expr: col("user_id"),
                 direction: SortDirection::Ascending,
             }],
         });
@@ -1012,10 +977,10 @@ mod polyglot_tests {
         let agg_node = PlanNode::Aggregate(AggNode {
             meta: meta(),
             input: Box::new(scan_node),
-            group_by: vec![DslExpr::Column { name: "user_id".into(), qualifier: None }],
+            group_by: vec![col("user_id")],
             aggregates: vec![AggregateMeasure {
                 function: Aggregation::Sum,
-                expr: DslExpr::Column { name: "value".into(), qualifier: None },
+                expr: col("value"),
                 distinct: false,
             }],
         });
@@ -1054,11 +1019,7 @@ mod polyglot_tests {
             left: Box::new(scan("a", &["id", "x"])),
             right: Box::new(scan("b", &["id", "y"])),
             join_type: JoinType::Full,
-            condition: DslExpr::BinaryOp {
-                left: Box::new(DslExpr::Column { name: "x".into(), qualifier: None }),
-                op: BinaryOp::Eq,
-                right: Box::new(DslExpr::Column { name: "y".into(), qualifier: None }),
-            },
+            condition: bin(col("x"), BinaryOp::Eq, col("y")),
         });
         let sql = e.emit(&plan(root)).unwrap();
         assert!(
@@ -1074,11 +1035,7 @@ mod polyglot_tests {
             let root = PlanNode::Project(ProjectNode {
                 meta: meta(),
                 input: Box::new(scan("orders", &["revenue", "count"])),
-                expressions: vec![DslExpr::BinaryOp {
-                    left: Box::new(DslExpr::Column { name: "revenue".into(), qualifier: None }),
-                    op: BinaryOp::SafeDivide,
-                    right: Box::new(DslExpr::Column { name: "count".into(), qualifier: None }),
-                }],
+                expressions: vec![bin(col("revenue"), BinaryOp::SafeDivide, col("count"))],
             });
             let sql = e.emit(&plan(root)).unwrap();
             assert!(sql.contains("CASE WHEN"), "SafeDivide should emit CASE WHEN for {target:?}, got: {sql}");

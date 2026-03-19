@@ -1,9 +1,13 @@
-//! DslExpr → polyglot_sql::builder::Expr conversion.
+//! Expr → polyglot_sql::builder::Expr conversion.
 
 use crate::error::EmitError;
 use polyglot_sql::builder::{self, Expr};
 use polyglot_sql::expressions::{Column, Expression, Function, Identifier, UnaryOp};
-use semstrait_ir::{Aggregation, AggregateMeasure, BinaryOp, DslExpr};
+use semstrait_core::expr::{
+    AggregateExpr, BetweenExpr, BinaryExpr, CaseExpr, CoalesceExpr, DateTruncExpr,
+    FunctionCallExpr, InListExpr, LikeExpr, NullIfExpr, UnaryExpr,
+};
+use semstrait_ir::{Aggregation, AggregateMeasure, BinaryOp, Expr as IrExpr};
 
 /// Create a column reference with quoted identifiers so every dialect applies
 /// its native quoting style (double-quotes, backticks, brackets, etc.).
@@ -22,37 +26,24 @@ pub(crate) fn quoted_col(name: &str) -> Expr {
     }))
 }
 
-/// Converts IR `DslExpr` trees into polyglot-sql builder `Expr` nodes.
+/// Converts IR `Expr` trees into polyglot-sql builder `Expr` nodes.
 pub struct ExprBuilder;
 
 impl ExprBuilder {
-    /// Convert a `DslExpr` to a polyglot-sql `Expr`.
-    pub fn build(&self, expr: &DslExpr) -> Result<Expr, EmitError> {
+    /// Convert an `Expr` to a polyglot-sql `Expr`.
+    pub fn build(&self, expr: &IrExpr) -> Result<Expr, EmitError> {
         match expr {
-            DslExpr::Column { name, qualifier } => {
-                if let Some(q) = qualifier {
-                    Ok(quoted_col(&format!("{q}.{name}")))
+            IrExpr::Column(col) => {
+                if let Some(q) = &col.qualifier {
+                    Ok(quoted_col(&format!("{q}.{}", col.name)))
                 } else {
-                    Ok(quoted_col(name))
+                    Ok(quoted_col(&col.name))
                 }
             }
 
-            DslExpr::Number(n) => {
-                // Guard against precision loss near i64 boundary (f64 has 53-bit mantissa).
-                if n.fract() == 0.0 && n.abs() < (1_i64 << 53) as f64 {
-                    Ok(builder::lit(*n as i64))
-                } else {
-                    Ok(builder::lit(*n))
-                }
-            }
+            IrExpr::Literal(lit) => self.build_literal(lit),
 
-            DslExpr::StringLit(s) => Ok(builder::lit(s.as_str())),
-
-            DslExpr::Bool(b) => Ok(builder::boolean(*b)),
-
-            DslExpr::Null => Ok(builder::null()),
-
-            DslExpr::BinaryOp { left, op, right } => {
+            IrExpr::BinaryOp(BinaryExpr { left, op, right }) => {
                 let l = self.build(left)?;
                 let r = self.build(right)?;
 
@@ -81,11 +72,7 @@ impl ExprBuilder {
                 }
             }
 
-            DslExpr::FunctionCall {
-                name,
-                args,
-                distinct,
-            } => {
+            IrExpr::FunctionCall(FunctionCallExpr { name, args, distinct }) => {
                 let built_args = args
                     .iter()
                     .map(|a| self.build(a))
@@ -102,22 +89,43 @@ impl ExprBuilder {
                 }
             }
 
-            DslExpr::Negate(inner) => {
-                let e = self.build(inner)?;
+            IrExpr::Aggregate(AggregateExpr { function, expr, distinct }) => {
+                let inner = self.build(expr)?;
+                let is_distinct =
+                    *distinct || matches!(function, Aggregation::CountDistinct);
+
+                if is_distinct {
+                    match function {
+                        Aggregation::Count | Aggregation::CountDistinct => {
+                            Ok(builder::count_distinct(inner))
+                        }
+                        _ => Ok(distinct_func(function.sql_name(), [inner])),
+                    }
+                } else {
+                    match function {
+                        Aggregation::Sum => Ok(builder::sum(inner)),
+                        Aggregation::Avg => Ok(builder::avg(inner)),
+                        Aggregation::Count => Ok(builder::count(inner)),
+                        Aggregation::CountDistinct => Ok(builder::count_distinct(inner)),
+                        Aggregation::Min => Ok(builder::min_(inner)),
+                        Aggregation::Max => Ok(builder::max_(inner)),
+                    }
+                }
+            }
+
+            IrExpr::Negate(UnaryExpr { expr }) => {
+                let e = self.build(expr)?;
                 Ok(Expr(Expression::Neg(Box::new(UnaryOp::new(
                     e.into_inner(),
                 )))))
             }
 
-            DslExpr::Not(inner) => Ok(builder::not(self.build(inner)?)),
+            IrExpr::Not(UnaryExpr { expr }) => Ok(builder::not(self.build(expr)?)),
 
-            DslExpr::Case {
-                when_then,
-                else_expr,
-            } => {
+            IrExpr::Case(CaseExpr { when_then, else_expr }) => {
                 let mut case = builder::case();
-                for (when, then) in when_then {
-                    case = case.when(self.build(when)?, self.build(then)?);
+                for clause in when_then {
+                    case = case.when(self.build(&clause.condition)?, self.build(&clause.result)?);
                 }
                 if let Some(else_e) = else_expr {
                     case = case.else_(self.build(else_e)?);
@@ -125,15 +133,11 @@ impl ExprBuilder {
                 Ok(case.build())
             }
 
-            DslExpr::IsNull(inner) => Ok(self.build(inner)?.is_null()),
+            IrExpr::IsNull(UnaryExpr { expr }) => Ok(self.build(expr)?.is_null()),
 
-            DslExpr::IsNotNull(inner) => Ok(self.build(inner)?.is_not_null()),
+            IrExpr::IsNotNull(UnaryExpr { expr }) => Ok(self.build(expr)?.is_not_null()),
 
-            DslExpr::InList {
-                expr,
-                list,
-                negated,
-            } => {
+            IrExpr::InList(InListExpr { expr, list, negated }) => {
                 let e = self.build(expr)?;
                 let items = list
                     .iter()
@@ -146,12 +150,7 @@ impl ExprBuilder {
                 }
             }
 
-            DslExpr::Between {
-                expr,
-                low,
-                high,
-                negated,
-            } => {
+            IrExpr::Between(BetweenExpr { expr, low, high, negated }) => {
                 let e = self.build(expr)?;
                 let l = self.build(low)?;
                 let h = self.build(high)?;
@@ -162,11 +161,11 @@ impl ExprBuilder {
                 }
             }
 
-            DslExpr::Like { expr, pattern } => {
+            IrExpr::Like(LikeExpr { expr, pattern }) => {
                 Ok(self.build(expr)?.like(self.build(pattern)?))
             }
 
-            DslExpr::Coalesce(exprs) => {
+            IrExpr::Coalesce(CoalesceExpr { exprs }) => {
                 let items = exprs
                     .iter()
                     .map(|e| self.build(e))
@@ -174,16 +173,26 @@ impl ExprBuilder {
                 Ok(builder::coalesce(items))
             }
 
-            DslExpr::NullIf { expr, null_expr } => {
+            IrExpr::NullIf(NullIfExpr { expr, null_expr }) => {
                 Ok(builder::null_if(self.build(expr)?, self.build(null_expr)?))
             }
 
-            DslExpr::DateTrunc { grain, expr } => {
+            IrExpr::DateTrunc(DateTruncExpr { grain, expr }) => {
                 Ok(builder::func(
                     "DATE_TRUNC",
-                    [builder::lit(grain.as_str()), self.build(expr)?],
+                    [builder::lit(grain.to_string().as_str()), self.build(expr)?],
                 ))
             }
+
+            // EntityRef and Guard should never appear in plan nodes (resolved during planning).
+            IrExpr::EntityRef(e) => Err(EmitError::UnsupportedExpr(format!(
+                "EntityRef('{}') should have been resolved during planning",
+                e.name
+            ))),
+
+            IrExpr::Guard(_) => Err(EmitError::UnsupportedExpr(
+                "Guard should have been resolved during planning".to_string(),
+            )),
         }
     }
 
@@ -198,7 +207,7 @@ impl ExprBuilder {
                 Aggregation::Count | Aggregation::CountDistinct => {
                     Ok(builder::count_distinct(inner))
                 }
-                _ => Ok(distinct_func(aggregation_name(&measure.function), [inner])),
+                _ => Ok(distinct_func(measure.function.sql_name(), [inner])),
             }
         } else {
             match measure.function {
@@ -209,6 +218,18 @@ impl ExprBuilder {
                 Aggregation::Min => Ok(builder::min_(inner)),
                 Aggregation::Max => Ok(builder::max_(inner)),
             }
+        }
+    }
+
+    /// Build a polyglot-sql `Expr` from a `Literal`.
+    fn build_literal(&self, lit: &semstrait_core::expr::Literal) -> Result<Expr, EmitError> {
+        use semstrait_core::expr::Literal;
+        match lit {
+            Literal::Integer { value } => Ok(builder::lit(*value)),
+            Literal::Float { value } => Ok(builder::lit(*value)),
+            Literal::String { value } => Ok(builder::lit(value.as_str())),
+            Literal::Boolean { value } => Ok(builder::boolean(*value)),
+            Literal::Null => Ok(builder::null()),
         }
     }
 }
@@ -222,14 +243,4 @@ fn distinct_func(name: &str, args: impl IntoIterator<Item = Expr>) -> Expr {
         distinct: true,
         ..Function::default()
     })))
-}
-
-fn aggregation_name(agg: &Aggregation) -> &'static str {
-    match agg {
-        Aggregation::Sum => "SUM",
-        Aggregation::Avg => "AVG",
-        Aggregation::Count | Aggregation::CountDistinct => "COUNT",
-        Aggregation::Min => "MIN",
-        Aggregation::Max => "MAX",
-    }
 }

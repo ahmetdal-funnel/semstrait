@@ -15,7 +15,7 @@ use duckdb_engine::Connection;
 use tokio::sync::Mutex;
 
 use crate::payload::{
-    AdaptError, ComputePayload, ComputeRequest, ComputeResult, ComputeResultData,
+    ComputePayload, ComputeRequest, ComputeResult, ComputeResultData,
     ConnectorError, EmitError, ExecutionStats, PayloadKind,
 };
 use crate::traits::{ComputeAdapter, ComputeConnector, ComputeEmitter};
@@ -60,7 +60,9 @@ impl DuckDbConnector {
         let sql = sql.to_string();
         tokio::task::spawn_blocking(move || {
             let conn = conn.blocking_lock();
-            conn.execute_batch(&sql)
+            conn.prepare(&sql)
+                .and_then(|mut stmt| stmt.execute([]))
+                .map(|_| ())
                 .map_err(|e| ConnectorError::Execution(e.to_string()))
         })
         .await
@@ -176,20 +178,6 @@ impl ComputeAdapter for DuckDbConnector {
         &self.profile
     }
 
-    fn adapt(&self, payload: ComputePayload) -> Result<ComputeRequest, AdaptError> {
-        match payload {
-            ComputePayload::Sql(_) => Ok(ComputeRequest {
-                payload,
-                timeout: None,
-            }),
-            ComputePayload::SubstraitPlan(_) => {
-                Err(AdaptError::UnsupportedPayload(PayloadKind::SubstraitPlan))
-            }
-            ComputePayload::NativePlan(_) => {
-                Err(AdaptError::UnsupportedPayload(PayloadKind::NativePlan))
-            }
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -303,10 +291,11 @@ mod tests {
     async fn setup_with_orders() -> DuckDbConnector {
         let connector = DuckDbConnector::new().unwrap();
         connector
-            .execute_sql(
-                "CREATE TABLE orders (region TEXT, amount DOUBLE, order_id INTEGER);
-                 INSERT INTO orders VALUES ('US', 100.0, 1), ('EU', 200.0, 2), ('US', 150.0, 3), ('EU', 50.0, 4);",
-            )
+            .execute_sql("CREATE TABLE orders (region TEXT, amount DOUBLE, order_id INTEGER)")
+            .await
+            .unwrap();
+        connector
+            .execute_sql("INSERT INTO orders VALUES ('US', 100.0, 1), ('EU', 200.0, 2), ('US', 150.0, 3), ('EU', 50.0, 4)")
             .await
             .unwrap();
         connector

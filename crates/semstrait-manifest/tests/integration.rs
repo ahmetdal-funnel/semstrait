@@ -100,6 +100,64 @@ semantic_model:
 }
 
 // ============================================================================
+// Auto column mapping
+// ============================================================================
+
+#[tokio::test]
+async fn test_auto_column_mapping_expansion() {
+    let yaml = r#"
+semantic_model:
+  name: auto_test
+  kinds:
+    - name: orders
+      type:
+        grainset:
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: region
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders_daily
+          extras:
+            column_mapping: auto
+            storage:
+              path: warehouse.orders_daily
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("compilation with auto mapping should succeed");
+
+    let kind = &manifest.kinds["orders"];
+    let ds = &kind.datasets[0];
+
+    // Auto should have expanded to identity mappings for all interface names.
+    assert!(ds.extras.column_mapping.contains_key("order_date"));
+    assert!(ds.extras.column_mapping.contains_key("region"));
+    assert!(ds.extras.column_mapping.contains_key("revenue"));
+
+    // Each mapping should be identity (name → name).
+    use semstrait_manifest::ColumnMappingValue;
+    match ds.extras.column_mapping.get("revenue").unwrap() {
+        ColumnMappingValue::Simple(s) => assert_eq!(s, "revenue"),
+        _ => panic!("expected Simple mapping"),
+    }
+}
+
+// ============================================================================
 // Validation errors
 // ============================================================================
 
@@ -440,7 +498,7 @@ semantic_model:
     assert_eq!(orig_orders.metrics.len(), rt_orders.metrics.len());
     assert_eq!(orig_orders.domain, rt_orders.domain);
 
-    // The DslExpr should also roundtrip
+    // The Expr should also roundtrip
     let orig_revenue = &orig_orders.measures["revenue"];
     let rt_revenue = &rt_orders.measures["revenue"];
     assert_eq!(orig_revenue.expr, rt_revenue.expr);
@@ -557,7 +615,7 @@ semantic_model:
 // ============================================================================
 
 #[tokio::test]
-async fn test_compiled_expressions_are_dsl_expr() {
+async fn test_compiled_expressions_are_expr() {
     let yaml = r#"
 semantic_model:
   name: expr_test
@@ -583,22 +641,25 @@ semantic_model:
 
     let orders = &manifest.datasets["orders"];
 
-    // revenue should be Sum(Column("amount"))
+    // revenue should be Aggregate(Sum, Column("amount"))
     let revenue = &orders.measures["revenue"];
     assert!(
-        matches!(&revenue.expr, semstrait_core::DslExpr::Sum(_)),
-        "revenue expr should be Sum, got {:?}",
+        matches!(&revenue.expr, semstrait_core::Expr::Aggregate(agg)
+            if matches!(agg.function, semstrait_core::Aggregation::Sum)),
+        "revenue expr should be Aggregate(Sum), got {:?}",
         revenue.expr
     );
     assert_eq!(revenue.expr_source, "SUM(amount)");
 
-    // order_count should be Count(Column("id"))
+    // order_count should be Aggregate(Count, Column("id"))
     let count = &orders.measures["order_count"];
-    assert!(matches!(&count.expr, semstrait_core::DslExpr::Count(_)));
+    assert!(matches!(&count.expr, semstrait_core::Expr::Aggregate(agg)
+        if matches!(agg.function, semstrait_core::Aggregation::Count)));
 
-    // avg_amount should be Avg(Column("price"))
+    // avg_amount should be Aggregate(Avg, Column("price"))
     let avg = &orders.measures["avg_amount"];
-    assert!(matches!(&avg.expr, semstrait_core::DslExpr::Avg(_)));
+    assert!(matches!(&avg.expr, semstrait_core::Expr::Aggregate(agg)
+        if matches!(agg.function, semstrait_core::Aggregation::Avg)));
 }
 
 // ============================================================================

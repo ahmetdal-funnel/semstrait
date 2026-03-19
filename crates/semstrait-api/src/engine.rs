@@ -6,9 +6,10 @@
 use crate::error::EngineError;
 use crate::parse::RequestParser;
 use crate::types::{ExplainResult, RawQueryRequest, ValidationResult};
+use semstrait_catalog::{CatalogProvider, TableRef};
 use semstrait_connectors::{ComputeConnector, ComputePayload, ComputeResultData};
-use semstrait_ir::SubstraitSerializer;
-use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
+use semstrait_ir::{PlannerWarning, SubstraitSerializer};
+use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler, SchemaColumn};
 use semstrait_planner::SemanticPlanner;
 use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
 #[cfg(feature = "polyglot")]
@@ -279,6 +280,84 @@ impl SemstraitEngine {
             }
         }
     }
+
+    /// Check for schema drift between the compiled manifest and the live catalog.
+    ///
+    /// Returns PLAN_W003 warnings for each dataset where the catalog schema
+    /// differs from the compiled schema snapshot. Requires a catalog provider.
+    ///
+    /// This is a best-effort check: datasets without compiled schema snapshots
+    /// or inaccessible in the catalog are silently skipped.
+    pub async fn check_schema_drift(
+        &self,
+        catalog: &dyn CatalogProvider,
+        namespace: &str,
+    ) -> Vec<PlannerWarning> {
+        let mut warnings = Vec::new();
+        let manifest = match &self.manifest {
+            Some(m) => m,
+            None => return warnings,
+        };
+
+        for (_, dataset) in &manifest.datasets {
+            let compiled = match &dataset.compiled_schema {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let table_ref = TableRef::new(namespace, &dataset.name);
+            let live_columns = match catalog.get_schema(&table_ref).await {
+                Ok(cols) => cols,
+                Err(_) => continue,
+            };
+
+            let live: Vec<SchemaColumn> = live_columns
+                .into_iter()
+                .map(|c| SchemaColumn {
+                    name: c.name,
+                    data_type: format!("{:?}", c.data_type),
+                    nullable: c.nullable,
+                })
+                .collect();
+
+            if compiled != &live {
+                let mut diffs = Vec::new();
+                // Check for missing/added/changed columns.
+                for cc in compiled {
+                    match live.iter().find(|lc| lc.name == cc.name) {
+                        None => diffs.push(format!("column '{}' removed", cc.name)),
+                        Some(lc) if lc.data_type != cc.data_type => {
+                            diffs.push(format!(
+                                "column '{}' type changed: {} -> {}",
+                                cc.name, cc.data_type, lc.data_type
+                            ));
+                        }
+                        Some(lc) if lc.nullable != cc.nullable => {
+                            diffs.push(format!(
+                                "column '{}' nullability changed",
+                                cc.name
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                for lc in &live {
+                    if !compiled.iter().any(|cc| cc.name == lc.name) {
+                        diffs.push(format!("column '{}' added", lc.name));
+                    }
+                }
+
+                if !diffs.is_empty() {
+                    warnings.push(PlannerWarning::SchemaDrift {
+                        dataset: dataset.name.clone(),
+                        details: diffs.join("; "),
+                    });
+                }
+            }
+        }
+
+        warnings
+    }
 }
 
 impl Default for SemstraitEngine {
@@ -409,6 +488,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_explain_with_auto_column_mapping() {
+        let yaml = r#"
+semantic_model:
+  name: auto_test
+  kinds:
+    - name: orders
+      type:
+        grainset:
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders_fact
+          extras:
+            column_mapping: auto
+            storage:
+              path: db.orders_fact
+"#;
+
+        let engine = SemstraitEngine::with_manifest_yaml(yaml)
+            .await
+            .expect("engine should compile with auto mapping");
+
+        let raw = RawQueryRequest {
+            kind: "orders".to_string(),
+            dimensions: vec!["order_date".to_string()],
+            measures: vec!["revenue".to_string()],
+            ..Default::default()
+        };
+
+        let result = engine.explain(&raw).await;
+        assert!(result.is_ok(), "explain should succeed: {:?}", result.err());
+
+        let sql = result.unwrap().sql.unwrap();
+        // With auto mapping, physical names = semantic names (identity).
+        assert!(sql.contains("order_date"), "SQL should use identity-mapped column: {}", sql);
+        assert!(sql.contains("SELECT"), "SQL should contain SELECT: {}", sql);
+    }
+
+    #[tokio::test]
     async fn test_query_not_configured() {
         let engine = SemstraitEngine::new();
         let raw = RawQueryRequest {
@@ -419,5 +546,57 @@ mod tests {
 
         let result = engine.query(&raw).await;
         assert!(matches!(result, Err(EngineError::NotConfigured(_))));
+    }
+
+    #[tokio::test]
+    async fn test_schema_drift_detection() {
+        use semstrait_catalog::NullCatalogProvider;
+        use semstrait_manifest::CompiledDataset;
+
+        // Build a manifest and inject a top-level dataset with a schema snapshot.
+        let yaml = load_model("orders_simple");
+        let mut engine = SemstraitEngine::with_manifest_yaml(&yaml)
+            .await
+            .expect("engine should compile manifest");
+
+        // Insert a dataset with a compiled schema snapshot into manifest.datasets.
+        if let Some(ref mut manifest) = engine.manifest {
+            manifest.datasets.insert(
+                "orders".to_string(),
+                CompiledDataset {
+                    name: "orders".to_string(),
+                    description: None,
+                    domain: None,
+                    keys: None,
+                    dimensions: Default::default(),
+                    measures: Default::default(),
+                    metrics: Default::default(),
+                    compiled_schema: Some(vec![
+                        SchemaColumn {
+                            name: "id".to_string(),
+                            data_type: "Int64".to_string(),
+                            nullable: false,
+                        },
+                        SchemaColumn {
+                            name: "amount".to_string(),
+                            data_type: "Float64".to_string(),
+                            nullable: true,
+                        },
+                    ]),
+                },
+            );
+        }
+
+        // NullCatalogProvider returns empty schemas, so all compiled columns look "removed".
+        let warnings = engine
+            .check_schema_drift(&NullCatalogProvider, "default")
+            .await;
+        // NullCatalogProvider returns Ok(Vec::new()), so empty schema vs 2 columns = drift
+        assert!(!warnings.is_empty());
+        assert!(matches!(
+            &warnings[0],
+            PlannerWarning::SchemaDrift { dataset, details }
+            if dataset == "orders" && details.contains("removed")
+        ));
     }
 }

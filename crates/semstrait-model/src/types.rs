@@ -333,13 +333,107 @@ pub struct GlobPattern(pub String);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KindDatasetExtras {
-    pub column_mapping: HashMap<String, ColumnMappingValue>,
+    pub column_mapping: ColumnMapping,
     #[serde(default)]
     pub temporal: Option<TemporalConfig>,
     #[serde(default)]
     pub storage: Option<StorageConfig>,
     #[serde(default)]
     pub catalog: Option<CatalogConfig>,
+}
+
+/// Column mapping: either `auto` (expand from catalog at compile time)
+/// or an explicit map of semantic name → physical column.
+#[derive(Debug, Clone)]
+pub enum ColumnMapping {
+    /// Auto-map: all kind interface names are matched 1:1 to physical columns.
+    /// Expanded to `Explicit` identity mapping during compilation (step 4.5).
+    Auto,
+    /// Explicit mapping of semantic name → physical column.
+    Explicit(HashMap<String, ColumnMappingValue>),
+}
+
+impl ColumnMapping {
+    /// Create an explicit column mapping.
+    pub fn explicit(map: HashMap<String, ColumnMappingValue>) -> Self {
+        ColumnMapping::Explicit(map)
+    }
+
+    /// Returns true if this is `Auto`.
+    pub fn is_auto(&self) -> bool {
+        matches!(self, ColumnMapping::Auto)
+    }
+
+    /// Get the underlying map. Panics if `Auto` (should be expanded before use).
+    pub fn as_map(&self) -> &HashMap<String, ColumnMappingValue> {
+        match self {
+            ColumnMapping::Explicit(m) => m,
+            ColumnMapping::Auto => {
+                panic!("column_mapping: auto should have been expanded during compilation")
+            }
+        }
+    }
+}
+
+impl From<HashMap<String, ColumnMappingValue>> for ColumnMapping {
+    fn from(map: HashMap<String, ColumnMappingValue>) -> Self {
+        ColumnMapping::Explicit(map)
+    }
+}
+
+impl std::ops::Deref for ColumnMapping {
+    type Target = HashMap<String, ColumnMappingValue>;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_map()
+    }
+}
+
+impl Serialize for ColumnMapping {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            ColumnMapping::Auto => serializer.serialize_str("auto"),
+            ColumnMapping::Explicit(map) => map.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ColumnMapping {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct ColumnMappingVisitor;
+
+        impl<'de> de::Visitor<'de> for ColumnMappingVisitor {
+            type Value = ColumnMapping;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("\"auto\" or a column mapping object")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<ColumnMapping, E> {
+                if v == "auto" {
+                    Ok(ColumnMapping::Auto)
+                } else {
+                    Err(E::custom(format!("expected \"auto\", got \"{}\"", v)))
+                }
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<ColumnMapping, M::Error> {
+                let inner =
+                    HashMap::<String, ColumnMappingValue>::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(ColumnMapping::Explicit(inner))
+            }
+        }
+
+        deserializer.deserialize_any(ColumnMappingVisitor)
+    }
 }
 
 /// Column mapping value: simple string or structured with grain override.
@@ -775,8 +869,6 @@ pub struct Metric {
 pub struct DatasetFilter {
     pub name: String,
     pub expr: String,
-    #[serde(default)]
-    pub user_attribute: Option<String>,
 }
 
 // =============================================================================

@@ -8,4 +8,5 @@ license = "Apache-2.0"
 # Foundation dependencies only - no internal workspace dependencies
 serde = { workspace = true }
 serde_json = { workspace = true }
+strum = { workspace = true }
 thiserror = { workspace = true }

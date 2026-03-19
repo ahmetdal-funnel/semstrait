@@ -12,12 +12,13 @@ mod steps;
 pub use compiled::*;
 pub use compiler::{CompileSource, ManifestCompiler};
 pub use error::{CompileError, RepositoryError};
-pub use repository::{InMemoryRepository, Repository};
+pub use repository::{FileSystemRepository, InMemoryRepository, Repository};
 
 // Re-export model types needed by downstream crates (planner, tests).
 // This avoids forcing planner to depend directly on semstrait-model.
 pub use semstrait_model::{
-    AdditivityType, AggregationConstraints, Cardinality, CategoricalDimension, ColumnMappingValue,
-    DimensionConstraints, DimensionType, JoinAssociativity, JoinColumnPair,
-    JoinType, KindDatasetExtras, KindTypeSpec, MeasureConstraints, UnionMode,
+    AdditivityType, AggregationConstraints, Cardinality, CategoricalDimension,
+    ColumnMapping, ColumnMappingValue, DimensionConstraints, DimensionType,
+    JoinAssociativity, JoinColumnPair, JoinType, KindDatasetExtras, KindTypeSpec,
+    MeasureConstraints, UnionMode,
 };

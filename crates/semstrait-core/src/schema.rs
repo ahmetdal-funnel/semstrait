@@ -97,7 +97,7 @@ impl Schema {
             .collect();
 
         // Sort by the order specified in keep
-        columns.sort_by_key(|c| keep_set.get(c.name.as_str()).unwrap());
+        columns.sort_by_key(|c| keep_set.get(c.name.as_str()).copied().unwrap_or(0));
 
         // Reassign ordinals sequentially
         for (i, col) in columns.iter_mut().enumerate() {

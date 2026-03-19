@@ -29,7 +29,7 @@ pub use semstrait_core::{
 };
 
 // Re-export IR types
-pub use semstrait_ir::{LogicalPlan, PlanNode};
+pub use semstrait_ir::LogicalPlan;
 
 // Re-export connector traits
 pub use semstrait_connectors::{

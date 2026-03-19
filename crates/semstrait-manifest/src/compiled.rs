@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
-use semstrait_core::DslExpr;
+use semstrait_core::Expr;
 use semstrait_model::{
     Additivity, AdditivityType, Cardinality, DimensionType, JoinAssociativity,
     JoinColumnPair, JoinType, Keys, KindDatasetExtras, KindTypeSpec, MeasureConstraints,
@@ -56,6 +56,18 @@ pub struct CompiledDataset {
     pub dimensions: IndexMap<String, CompiledDimension>,
     pub measures: IndexMap<String, CompiledMeasure>,
     pub metrics: IndexMap<String, CompiledMetric>,
+    /// Schema snapshot captured at compile time (when catalog was available).
+    /// Used for drift detection (PLAN_W003).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled_schema: Option<Vec<SchemaColumn>>,
+}
+
+/// A column in the compiled schema snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SchemaColumn {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
 }
 
 // ============================================================================
@@ -154,7 +166,7 @@ pub struct CompiledDimension {
 // CompiledMeasure
 // ============================================================================
 
-/// A compiled measure with parsed DslExpr.
+/// A compiled measure with parsed Expr.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledMeasure {
     pub name: String,
@@ -162,7 +174,7 @@ pub struct CompiledMeasure {
     pub description: Option<String>,
     pub data_type: String,
     /// Parsed DSL expression tree (never a raw string).
-    pub expr: DslExpr,
+    pub expr: Expr,
     /// Original expression string for debugging.
     pub expr_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,7 +189,7 @@ pub struct CompiledMeasure {
 // CompiledMetric
 // ============================================================================
 
-/// A compiled metric with parsed DslExpr.
+/// A compiled metric with parsed Expr.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledMetric {
     pub name: String,
@@ -185,7 +197,7 @@ pub struct CompiledMetric {
     pub description: Option<String>,
     pub data_type: String,
     /// Parsed DSL expression tree.
-    pub expr: DslExpr,
+    pub expr: Expr,
     /// Original expression string.
     pub expr_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,16 +214,16 @@ pub struct CompiledMetric {
 // CompiledFilter
 // ============================================================================
 
-/// A compiled filter with parsed DslExpr.
+/// A compiled filter with parsed Expr.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledFilter {
     pub name: String,
-    pub expr: DslExpr,
+    pub expr: Expr,
     pub expr_source: String,
 }
 
 impl CompiledFilter {
-    pub fn from_measure_filter(mf: &MeasureFilter, parsed_expr: DslExpr) -> Self {
+    pub fn from_measure_filter(mf: &MeasureFilter, parsed_expr: Expr) -> Self {
         Self {
             name: mf.name.clone(),
             expr: parsed_expr,

@@ -10,7 +10,7 @@ use datafusion_engine::arrow::array::RecordBatch;
 use datafusion_engine::prelude::*;
 
 use crate::payload::{
-    AdaptError, ComputePayload, ComputeRequest, ComputeResult, ComputeResultData,
+    ComputePayload, ComputeRequest, ComputeResult, ComputeResultData,
     ConnectorError, EmitError, ExecutionStats, PayloadKind,
 };
 use crate::traits::{ComputeAdapter, ComputeConnector, ComputeEmitter};
@@ -154,20 +154,6 @@ impl ComputeAdapter for DataFusionConnector {
         &self.profile
     }
 
-    fn adapt(&self, payload: ComputePayload) -> Result<ComputeRequest, AdaptError> {
-        match payload {
-            ComputePayload::Sql(_) => Ok(ComputeRequest {
-                payload,
-                timeout: None,
-            }),
-            ComputePayload::SubstraitPlan(_) => {
-                Err(AdaptError::UnsupportedPayload(PayloadKind::SubstraitPlan))
-            }
-            ComputePayload::NativePlan(_) => {
-                Err(AdaptError::UnsupportedPayload(PayloadKind::NativePlan))
-            }
-        }
-    }
 }
 
 #[async_trait::async_trait]

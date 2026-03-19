@@ -5,6 +5,8 @@ use semstrait_connectors::{ComputeConnector, ComputePayload, ComputeResult};
 use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
 use semstrait_planner::SemanticPlanner;
 use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
+#[cfg(feature = "polyglot")]
+use semstrait_sql::{PolyglotEmitter, TargetDialect};
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -154,6 +156,21 @@ impl SemstraitInstance {
         request: &semstrait_planner::request::ResolvedQueryRequest,
     ) -> Result<String, BuildError> {
         let plan = self.planner.plan(request, &self.manifest)?;
+
+        #[cfg(feature = "polyglot")]
+        {
+            let target = self
+                .connector
+                .as_ref()
+                .map(|c| c.preferred_dialect())
+                .unwrap_or(TargetDialect::Ansi);
+
+            if target != TargetDialect::Ansi {
+                let emitter = PolyglotEmitter::new(target);
+                return Ok(emitter.emit(&plan)?);
+            }
+        }
+
         let emitter = AnsiSqlEmitter::new(AnsiDialect);
         Ok(emitter.emit(&plan)?)
     }

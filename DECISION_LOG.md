@@ -8,28 +8,24 @@ Architectural decisions that code must respect. Historical entries archived — 
 
 | ID | Constraint | Rationale |
 |----|-----------|-----------|
-| DL-004 | Substrait is always produced; SQL is on-demand | Substrait is the canonical IR — engine-agnostic, inspectable, versionable. Do not bypass. |
-| DL-008 | Measure filters use conditional aggregation (`CASE WHEN`) | Different measures share GROUP BY. Pre-aggregate filter nodes would fork scan branches. Standard semantic layer pattern (MetricFlow, Cube.js). |
-| DL-009 | DataFusion connector uses `datafusion::arrow::*` re-exports only | Separate `arrow` dep causes type mismatch. Never add standalone arrow to connectors that use DataFusion's arrow. |
-| DL-013 | `SemanticPlanner::plan()` is synchronous | No I/O in planning — pure computation over in-memory `CompiledManifest` and `ConsumerProfile`. Async would add overhead for zero benefit. |
-| DL-020 | `core::DslExpr` and `ir::DslExpr` are different types | Known name collision. Core uses typed variants (Sum, Add, Eq, Guard). IR uses `BinaryOp { op }` + `FunctionCall`. Future: rename IR type to `IrExpr`. |
-| DL-023 | `ComputeEmitter` is NOT in engine hot path | Engine uses `SqlEmitter` + `SubstraitSerializer` directly. `ComputeEmitter` is optional connector capability for custom payload creation. Intentional divergence from D6 diagram. |
-| DL-024 | `SafeDivide` → `Divide` after Substrait round-trip | Intentional. Substrait has no safe-divide function. Null-guard (`CASE WHEN b=0 THEN NULL`) is SQL-emission only. Not a bug. |
-| DL-030 | Polyglot SQL: transpilation layer, not builder replacement | ANSI SQL generated first via `AnsiSqlEmitter`, then transpiled via `polyglot_sql::transpile()`. Requires `profile.dev.package.polyglot-sql.opt-level = 1` (1000x slower unoptimized). `dialect-presto` feature required with `dialect-trino` (upstream bug). |
-| DL-031 | DuckDB: pin `duckdb >=1.3.0, <1.4.0`, use `Arc<Mutex<Connection>>` | Arrow 55 alignment — v1.4+ uses arrow 56+. `Connection` is `Send` but `!Sync`; all DB ops via `spawn_blocking`. Collect `Vec<RecordBatch>` inside blocking closure (borrow lifetime). Package aliased as `duckdb-engine` in Cargo.toml. |
+| DL-004 | Substrait is always produced; SQL is on-demand | Substrait is the canonical IR — engine-agnostic, inspectable, versionable. |
+| DL-008 | Measure filters use conditional aggregation (`CASE WHEN`) | Measures share GROUP BY. Standard semantic layer pattern (MetricFlow, Cube.js). |
+| DL-009 | DataFusion uses `datafusion::arrow::*` re-exports only | Separate `arrow` dep causes type mismatch. Never add standalone arrow to DataFusion connectors. |
+| DL-013 | `SemanticPlanner::plan()` is synchronous | Pure computation over in-memory data. Async adds overhead for zero benefit. |
+| DL-020 | Unified `Expr` in `semstrait-core::expr` | IR, planner, SQL all use unified `Expr` with typed `Aggregation`, `BinaryOp`, preserved `i64` precision. |
+| DL-023 | `ComputeEmitter` is NOT in engine hot path | Engine uses `SqlEmitter` + `SubstraitSerializer` directly. `ComputeEmitter` is optional connector capability. |
+| DL-024 | `SafeDivide` → `Divide` after Substrait round-trip | Substrait has no safe-divide. Null-guard is SQL-emission only. |
+| DL-030 | Polyglot SQL: AST builder approach | `PlanBuilder` → polyglot-sql `Expression` AST → `generate()` to target dialect. Requires `opt-level = 1` in dev profile. |
+| DL-031 | DuckDB: pin `>=1.3.0,<1.4.0`, `Arc<Mutex<Connection>>` | Arrow 55 alignment. `Connection` is `Send` but `!Sync`; all DB ops via `spawn_blocking`. |
+| DL-032 | Trino connector via `reqwest` (not client crate) | Direct REST v1/statement API. Pagination via nextUri polling. Basic/JWT auth. |
+| DL-033 | Spark connector: structural impl only | Full trait interface, `execute()` returns NotImplemented. gRPC client deferred. |
+| DL-035 | Grainset horizontal join: greedy set-cover + FULL OUTER JOIN | Multi-dataset join when no single dataset covers all fields. COALESCE for null handling. |
+| DL-037 | Schema drift covers `manifest.datasets` only | Kind-bound datasets lack `compiled_schema`. Extending deferred. |
+| DL-038 | `column_mapping: auto` = identity mapping | Expanded to 1:1 identity (semantic name → same name). No catalog lookup needed. |
 
 ---
 
-## Archived Entries
+## Archived
 
-Entries DL-001, 002, 003, 005, 006, 007, 010–012, 014–019, 025–026 recorded historical
-implementation choices now baked into the codebase. Key context absorbed into CONTEXT.md v3.6.
-Consult git history for original narratives.
-
-### Connector Roadmap Decisions (not yet implemented)
-
-| ID | Decision | Library | Notes |
-|----|----------|---------|-------|
-| DL-027 | Trino connector | `trino-rust-client` v0.9.3 | REST v1/statement, JSON→Arrow conversion. Fallback: raw reqwest. |
-| DL-028 | Spark connector | Apache `spark-connect-rs` (forked) | Fork needed: bump tonic 0.11→0.12, prost 0.12→0.14. SQL path via `spark.sql()`. |
-| DL-029 | Arrow Flight SQL | `arrow-flight` v58 | Deferred to v2+. Databricks-specific, not Spark/Trino. |
+Entries DL-001–003, 005–007, 010–012, 014–019, 025–029, 034, 036 recorded historical
+implementation choices now baked into the codebase. Consult git history for original narratives.

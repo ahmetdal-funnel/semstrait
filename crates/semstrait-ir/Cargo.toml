@@ -7,7 +7,6 @@ license = "Apache-2.0"
 [dependencies]
 semstrait-core = { workspace = true }
 substrait = { workspace = true }
-prost = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

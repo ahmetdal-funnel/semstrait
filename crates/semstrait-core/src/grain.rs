@@ -1,11 +1,13 @@
 //! Temporal grain levels for dimensions and date truncation.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use strum::{Display, EnumString};
 
 /// Temporal grain levels used in dimension types and DateTrunc expressions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Display, EnumString)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
 pub enum Grain {
     Minute,
     Hour,
@@ -14,20 +16,6 @@ pub enum Grain {
     Month,
     Quarter,
     Year,
-}
-
-impl fmt::Display for Grain {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Grain::Minute => write!(f, "minute"),
-            Grain::Hour => write!(f, "hour"),
-            Grain::Day => write!(f, "day"),
-            Grain::Week => write!(f, "week"),
-            Grain::Month => write!(f, "month"),
-            Grain::Quarter => write!(f, "quarter"),
-            Grain::Year => write!(f, "year"),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -43,6 +31,14 @@ mod tests {
         assert_eq!(Grain::Month.to_string(), "month");
         assert_eq!(Grain::Quarter.to_string(), "quarter");
         assert_eq!(Grain::Year.to_string(), "year");
+    }
+
+    #[test]
+    fn test_from_str() {
+        assert_eq!("day".parse::<Grain>().unwrap(), Grain::Day);
+        assert_eq!("DAY".parse::<Grain>().unwrap(), Grain::Day);
+        assert_eq!("Month".parse::<Grain>().unwrap(), Grain::Month);
+        assert!("unknown".parse::<Grain>().is_err());
     }
 
     #[test]

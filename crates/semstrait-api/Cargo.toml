@@ -28,15 +28,25 @@ axum = { workspace = true, optional = true }
 
 # gRPC (feature-gated)
 tonic = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+tonic-prost = { version = "0.14", optional = true }
+
+[build-dependencies]
+tonic-build = { version = "0.14", optional = true }
+tonic-prost-build = { version = "0.14", optional = true }
 
 [features]
 default = ["cli", "rest"]
 cli = ["dep:clap"]
 rest = ["dep:axum"]
-grpc = ["dep:tonic"]
+grpc = ["dep:tonic", "dep:prost", "dep:tonic-prost", "dep:tonic-build", "dep:tonic-prost-build"]
 datafusion = ["semstrait-connectors/datafusion"]
 duckdb = ["semstrait-connectors/duckdb"]
 polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot"]
+iceberg = ["semstrait-catalog/iceberg"]
+unity = ["semstrait-catalog/unity"]
+trino = ["semstrait-connectors/trino"]
+spark = ["semstrait-connectors/spark"]
 
 [[bin]]
 name = "semstrait"

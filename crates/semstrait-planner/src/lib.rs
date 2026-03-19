@@ -17,14 +17,11 @@
 
 pub mod error;
 pub mod request;
-pub mod constraint_evaluator;
-pub mod kind_planner;
-pub mod expr_lower;
-pub mod grainset_planner;
-pub mod unionset_planner;
-pub mod joinset_planner;
-pub mod additivity_resolver;
-pub mod optimizer;
+pub(crate) mod constraint_evaluator;
+pub(crate) mod kind;
+pub(crate) mod expr_lower;
+pub(crate) mod additivity_resolver;
+pub(crate) mod optimizer;
 pub mod planner;
 
 #[cfg(test)]
@@ -38,11 +35,4 @@ pub use request::{
     FilterOperator, FilterValue, OrderByClause, QueryFilter, ResolvedQueryRequest,
     SessionVariables, SortDirection,
 };
-pub use constraint_evaluator::ConstraintEvaluator;
-pub use kind_planner::{resolve_column_name, KindPlanner, KindPlannerRegistry, PlanFragment, PlannerContext};
-pub use grainset_planner::GrainsetPlanner;
-pub use unionset_planner::UnionsetPlanner;
-pub use joinset_planner::JoinsetPlanner;
-pub use additivity_resolver::AdditivityResolver;
-pub use optimizer::{Optimizer, OptimizerPass};
 pub use planner::{SemanticPlanner, SemanticPlannerBuilder};

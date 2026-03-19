@@ -5,7 +5,7 @@
 //! - DoubleAggregate: sub-query with MAX/LATEST, then re-aggregate
 
 use crate::error::PlannerError;
-use crate::kind_planner::PlanFragment;
+use crate::kind::PlanFragment;
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::{ConsumerProfile, SemiAdditiveStrategy};
 use semstrait_manifest::CompiledMeasure;

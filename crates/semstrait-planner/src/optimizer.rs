@@ -52,7 +52,8 @@ impl Optimizer {
     }
 
     /// Returns the number of registered passes.
-    pub fn pass_count(&self) -> usize {
+    #[allow(dead_code)] // Used in tests; public API for future introspection
+    pub(crate) fn pass_count(&self) -> usize {
         self.passes.len()
     }
 }

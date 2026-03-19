@@ -4,7 +4,7 @@
 mod tests {
     use std::collections::HashMap;
 
-    use semstrait_ir::{DslExpr, LogicalPlan, PlanNode};
+    use semstrait_ir::{Expr, LogicalPlan, PlanNode};
 
     use crate::error::PlannerError;
     use crate::optimizer::OptimizerPass;
@@ -177,18 +177,18 @@ mod tests {
         if let PlanNode::Filter(filter) = &plan.root {
             // Check the predicate is region = 'US'.
             match &filter.predicate {
-                DslExpr::BinaryOp { left, op, right } => {
+                Expr::BinaryOp(bin) => {
                     assert_eq!(
-                        *op,
+                        bin.op,
                         semstrait_ir::BinaryOp::Eq,
                         "should be equality filter"
                     );
                     assert!(
-                        matches!(left.as_ref(), DslExpr::Column { name, .. } if name == "region"),
+                        matches!(bin.left.as_ref(), Expr::Column(col) if col.name == "region"),
                         "left should be column 'region'"
                     );
                     assert!(
-                        matches!(right.as_ref(), DslExpr::StringLit(s) if s == "US"),
+                        matches!(bin.right.as_ref(), Expr::Literal(semstrait_core::Literal::String { value }) if value == "US"),
                         "right should be string 'US'"
                     );
                 }

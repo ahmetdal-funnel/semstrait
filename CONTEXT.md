@@ -1,5 +1,5 @@
 # Semstrait Architecture Document
-**Version:** 3.6 | **Status:** Implementation — authoritative reference for per-module documentation
+**Version:** 4.0 | **Status:** V1 Complete — authoritative reference for per-module documentation
 
 ---
 
@@ -114,7 +114,7 @@ semstrait/                       Cargo workspace root
                                │
 ┌──────────────────────────────▼──────────────────────────────────────┐
 │  Foundation — semstrait-core                                         │
-│  Schema · DataType · DslExpr · ConsumerProfile · Grain · errors      │
+│  Schema · DataType · Expr · ConsumerProfile · Grain · errors          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -184,7 +184,7 @@ InMemoryRepository.save()         │    Substrait-serializable + SemAnnotation
 ///   1. `semstrait_core::Schema` — simple Vec<SchemaColumn> with linear ordinal scan.
 ///      Used by manifest compiler for compile-time schema tracking.
 ///   2. `semstrait_ir::Schema` — with HashMap<String, usize> index for O(1) ordinal.
-///      Used by PlanNode metadata, ExprConverter, and DslExprSqlRenderer.
+///      Used by PlanNode metadata, ExprConverter, and SQL renderers.
 ///      See §5.5 for the full IR Schema definition.
 ///
 /// The IR Schema's HashMap index is built at construction and maintained through Clone.
@@ -249,36 +249,33 @@ pub struct AggregationConstraints {
     pub prohibited: Option<Vec<String>>,
 }
 
-/// DSL expression tree — the ONLY way to express computations in v1.
+/// Unified expression tree — the ONLY way to express computations.
 /// Raw SQL strings are rejected at compile time.
 ///
-/// Note: There are TWO DslExpr types in the workspace (DL-020):
-///   1. `semstrait_core::DslExpr` — used by manifest compiler. Uses typed variants
-///      per operator (Sum, Add, Eq, Guard). Internal to compile pipeline.
-///   2. `semstrait_ir::DslExpr` — used by PlanNode/IR for plan representation.
-///      Uses BinaryOp { op } enum and FunctionCall. Documented below.
-/// The two types have DIFFERENT variant sets. The IR variant is the canonical
-/// one used in PlanNode trees, ExprConverter (Substrait), and DslExprSqlRenderer.
-/// Future: rename IR variant to `IrExpr` to eliminate the name collision.
-pub enum DslExpr {
-    Column { name: String, qualifier: Option<String> },
-    Number(f64),
-    StringLit(String),
-    Bool(bool),
-    Null,
-    BinaryOp { left: Box<DslExpr>, op: BinaryOp, right: Box<DslExpr> },
-    FunctionCall { name: String, args: Vec<DslExpr>, distinct: bool },
-    Negate(Box<DslExpr>),
-    Not(Box<DslExpr>),
-    Case { when_then: Vec<(DslExpr, DslExpr)>, else_expr: Option<Box<DslExpr>> },
-    InList { expr: Box<DslExpr>, list: Vec<DslExpr>, negated: bool },
-    Between { expr: Box<DslExpr>, low: Box<DslExpr>, high: Box<DslExpr>, negated: bool },
-    Like { expr: Box<DslExpr>, pattern: Box<DslExpr> },
-    IsNull(Box<DslExpr>),
-    IsNotNull(Box<DslExpr>),
-    Coalesce(Vec<DslExpr>),
-    NullIf { expr: Box<DslExpr>, null_expr: Box<DslExpr> },
-    DateTrunc { grain: String, expr: Box<DslExpr> },
+/// Unified `Expr` in `semstrait-core::expr` (DL-020, Phases 1-5 complete).
+/// Used from YAML parsing through planning, IR, SQL emission, and Substrait
+/// serialization. Replaces the former dual DslExpr architecture.
+///
+/// Old `core::DslExpr` and `ir::DslExpr` alias removed (Phases 4+6 complete).
+pub enum Expr {
+    Column(ColumnRef),
+    Literal(Literal),          // Integer(i64), Float(f64), String, Boolean, Null
+    EntityRef(EntityRef),      // pre-resolution only; resolved to Column during planning
+    Aggregate(AggregateExpr),  // typed: Sum, Avg, Count, CountDistinct, Min, Max
+    BinaryOp(BinaryExpr),
+    Negate(UnaryExpr),
+    Not(UnaryExpr),
+    Case(CaseExpr),
+    InList(InListExpr),
+    Between(BetweenExpr),
+    Like(LikeExpr),
+    IsNull(UnaryExpr),
+    IsNotNull(UnaryExpr),
+    Coalesce(CoalesceExpr),
+    NullIf(NullIfExpr),
+    DateTrunc(DateTruncExpr),  // typed Grain enum, not String
+    FunctionCall(FunctionCallExpr),
+    Guard(GuardExpr),          // sugar; resolved to Case during planning
 }
 
 pub enum BinaryOp {
@@ -286,6 +283,9 @@ pub enum BinaryOp {
     Eq, NotEq, Lt, LtEq, Gt, GtEq,
     And, Or,
 }
+
+pub enum Aggregation { Sum, Avg, Count, CountDistinct, Min, Max }
+pub enum Literal { Integer(i64), Float(f64), String(String), Boolean(bool), Null }
 ```
 
 **External deps:** `serde`, `thiserror`, `arrow-schema` (type compat only)
@@ -471,7 +471,7 @@ Step 5  validate_mappings  column_mapping keys exist in kind interface;
                            physical columns verified against catalog.get_schema() if available
 Step 6  build_metric_graph petgraph DiGraph — detect cycles, enforce depth ≤ 3
 Step 7  build_rel_graph    petgraph DiGraph — joinset anchor inference (in-degree = 0)
-Step 8  compile_exprs      parse DslExpr fields; reject raw SQL strings
+Step 8  compile_exprs      parse expression fields (Expr); reject raw SQL strings
 Step 9  emit               serialize to CompiledManifest (JSON, versioned)
 ```
 
@@ -527,7 +527,7 @@ pub struct CompiledKind {
 pub struct CompiledMeasure {
     pub name:        String,
     pub data_type:   DataType,
-    pub expr:        DslExpr,
+    pub expr:        Expr,
     pub additivity:  Additivity,
     pub constraints: Option<MeasureConstraints>,  // field = `constraints:` in YAML
     pub filters:     Vec<MeasureFilter>,
@@ -597,40 +597,43 @@ pub enum FilterSource {
 | `FetchNode` | `FetchRel` | `count` for LIMIT; `offset` for OFFSET |
 | `SemAnnotation` | `AdvancedExtension.detail` | prost-encoded `SemstraitAnnotation` proto |
 
-#### ExprConverter — DslExpr ↔ Substrait Expression
+#### ExprConverter — Expr ↔ Substrait Expression
 
 ```rust
-/// Converts DslExpr to/from substrait::proto::Expression.
+/// Converts unified Expr to/from substrait::proto::Expression.
 /// Schema is required for Column → FieldReference ordinal lookup.
 pub struct ExprConverter<'s> {
     schema: &'s Schema,
 }
 
 impl<'s> ExprConverter<'s> {
-    pub fn to_substrait(&self, expr: &DslExpr)
+    pub fn to_substrait(&self, expr: &Expr)
         -> Result<substrait::proto::Expression, ConvertError>;
     pub fn from_substrait(&self, expr: &substrait::proto::Expression)
-        -> Result<DslExpr, ConvertError>;
+        -> Result<Expr, ConvertError>;
 }
 ```
 
-**DslExpr ↔ Substrait Expression mappings (full round-trip tested):**
+**Expr ↔ Substrait Expression mappings (full round-trip tested):**
 
-| `DslExpr` | `Expression` |
+| `Expr` | `Expression` |
 |---|---|
-| `Column { name, .. }` | `FieldReference { struct_field: { field: schema.ordinal(name) } }` |
-| `Number(n)` / `StringLit(s)` / `Bool(b)` / `Null` | `Literal { literal_type: ... }` |
-| `BinaryOp { l, Eq, r }` | `ScalarFunction { fn_anchor: 100, args: [l, r] }` |
-| `Case { when_then, else_expr }` | `IfThen { ifs: [..], else_: .. }` |
-| `Not(inner)` | `ScalarFunction { fn_anchor: 205 }` |
-| `IsNull(inner)` | `ScalarFunction { fn_anchor: 202 }` |
-| `IsNotNull(inner)` | `ScalarFunction { fn_anchor: 203 }` |
-| `InList { expr, list }` | `ScalarFunction { fn_anchor: 206, args: [expr, list..] }` |
-| `Between { expr, low, high }` | `ScalarFunction { fn_anchor: 207, args: [expr, low, high] }` |
-| `Like { expr, pattern }` | `ScalarFunction { fn_anchor: 208 }` |
-| `Coalesce(exprs)` | `ScalarFunction { fn_anchor: 204 }` |
-| `NullIf { expr, null_expr }` | `ScalarFunction { fn_anchor: 209 }` |
-| `DateTrunc { grain, expr }` | `ScalarFunction { fn_anchor: 210, args: [grain_lit, expr] }` |
+| `Column(ColumnRef { name, .. })` | `FieldReference { struct_field: { field: schema.ordinal(name) } }` |
+| `Literal(Integer(i64))` | `Literal { literal_type: I64 }` |
+| `Literal(Float(f64))` | `Literal { literal_type: Fp64 }` |
+| `Literal(String/Boolean/Null)` | `Literal { literal_type: ... }` |
+| `BinaryOp(BinaryExpr { l, Eq, r })` | `ScalarFunction { fn_anchor: 100, args: [l, r] }` |
+| `Aggregate(AggregateExpr { Sum, expr })` | mapped to function call (aggregate handling in serializer) |
+| `Case(CaseExpr { when_then, else_expr })` | `IfThen { ifs: [..], else_: .. }` |
+| `Not(UnaryExpr)` | `ScalarFunction { fn_anchor: 205 }` |
+| `IsNull(UnaryExpr)` | `ScalarFunction { fn_anchor: 202 }` |
+| `IsNotNull(UnaryExpr)` | `ScalarFunction { fn_anchor: 203 }` |
+| `InList(InListExpr)` | `ScalarFunction { fn_anchor: 206, args: [expr, list..] }` |
+| `Between(BetweenExpr)` | `ScalarFunction { fn_anchor: 207, args: [expr, low, high] }` |
+| `Like(LikeExpr)` | `ScalarFunction { fn_anchor: 208 }` |
+| `Coalesce(CoalesceExpr)` | `ScalarFunction { fn_anchor: 204 }` |
+| `NullIf(NullIfExpr)` | `ScalarFunction { fn_anchor: 209 }` |
+| `DateTrunc(DateTruncExpr { grain, expr })` | `ScalarFunction { fn_anchor: 210, args: [grain_lit, expr] }` |
 | Aggregation (Sum/Avg/...) | Used inside `AggregateRel.measures[i].function` |
 
 #### SubstraitSerializer
@@ -760,7 +763,7 @@ pub struct PlannerContext<'a> {
 pub struct PlanFragment {
     pub root:            PlanNode,
     pub output_schema:   Schema,
-    pub pending_filters: Vec<DslExpr>,  // filters not yet injected
+    pub pending_filters: Vec<Expr>,     // filters not yet injected (unified Expr)
 }
 ```
 
@@ -834,7 +837,7 @@ pub struct ResolvedQueryRequest {
     pub limit:             Option<u64>,
     pub order_by:          Vec<OrderByClause>,
     pub domain_hint:       Option<String>,    // optional pre-filter hint
-    pub session_variables: SessionVariables,  // runtime values (RLS, tenant_id)
+    pub session_variables: SessionVariables,  // runtime values (e.g. tenant_id)
 }
 ```
 
@@ -846,9 +849,9 @@ pub struct ResolvedQueryRequest {
 
 **Role:** Emit SQL strings from `LogicalPlan`. Pure, synchronous, no I/O. One dialect per `SqlEmitter` implementation.
 
-**Design:** SQL is generated by walking the `PlanNode` tree and emitting SQL fragments via direct string building through the dialect. The base emitter (`AnsiSqlEmitter`) uses no Jinja templates and no sqlparser-rs AST intermediate — it produces SQL strings directly from `PlanNode` + `DslExprSqlRenderer`. The optional `PolyglotEmitter` (§5.7 below) uses polyglot-sql's internal AST for dialect transpilation.
+**Design:** SQL is generated by walking the `PlanNode` tree and emitting SQL fragments via direct string building through the dialect. The base emitter (`AnsiSqlEmitter`) uses no Jinja templates and no sqlparser-rs AST intermediate — it produces SQL strings directly from `PlanNode` + `ExprSqlRenderer`. Both emitters use the unified `Expr` type from `semstrait-core::expr`. The optional `PolyglotEmitter` (§5.7 below) uses polyglot-sql's internal AST for dialect transpilation.
 
-**Note:** Per DL-025/DL-030, `AnsiSqlEmitter`, `DslExprSqlRenderer`, and per-dialect `SqlDialect` impls are deprecated in favor of `PolyglotEmitter`. They remain as fallback when the `polyglot` feature is disabled.
+**Note:** Per DL-025/DL-030, `AnsiSqlEmitter`, `ExprSqlRenderer`, and per-dialect `SqlDialect` impls are deprecated in favor of `PolyglotEmitter`. They remain as fallback when the `polyglot` feature is disabled.
 
 ```rust
 pub trait SqlEmitter: Send + Sync {
@@ -867,10 +870,10 @@ pub trait SqlDialect: Send + Sync {
     fn limit_clause(&self, count: Option<i64>, offset: i64) -> String;
 }
 
-// DslExpr → dialect SQL string
-pub struct DslExprSqlRenderer<'d> { dialect: &'d dyn SqlDialect }
-impl<'d> DslExprSqlRenderer<'d> {
-    pub fn render(&self, expr: &DslExpr) -> Result<String, EmitError>;
+// Expr → dialect SQL string
+pub struct ExprSqlRenderer<'d> { dialect: &'d dyn SqlDialect }
+impl<'d> ExprSqlRenderer<'d> {
+    pub fn render(&self, expr: &Expr) -> Result<String, EmitError>;
     pub fn render_aggregate(&self, measure: &AggregateMeasure) -> Result<String, EmitError>;
 }
 
@@ -882,28 +885,29 @@ pub struct DuckDbDialect;  // LIMIT, lowercase date_trunc
 pub struct TrinoDialect;   // FETCH FIRST, lowercase date_trunc
 ```
 
-**IR DslExpr → SQL lowering table:**
+**Expr → SQL lowering table:**
 
-| `DslExpr` | ANSI SQL |
+| `Expr` | ANSI SQL |
 |---|---|
-| `Column { name, .. }` | `"name"` (quoted per dialect) |
-| `Number(n)` / `StringLit(s)` / `Bool(b)` / `Null` | literal |
-| `BinaryOp { l, Add, r }` | `(l + r)` |
-| `BinaryOp { l, SafeDivide, r }` | `CASE WHEN r = 0 THEN NULL ELSE l / r END` |
-| `FunctionCall { name: "SUM", args }` | `SUM(args)` |
-| `FunctionCall { distinct: true }` | `COUNT(DISTINCT args)` |
-| `Case { when_then, else_expr }` | `CASE WHEN w THEN t ... ELSE e END` |
-| `Not(inner)` | `NOT (inner)` |
-| `IsNull(inner)` | `inner IS NULL` |
-| `IsNotNull(inner)` | `inner IS NOT NULL` |
-| `InList { expr, list }` | `expr IN (list)` |
-| `Between { expr, low, high }` | `expr BETWEEN low AND high` |
-| `Like { expr, pattern }` | `expr LIKE pattern` |
-| `Coalesce(exprs)` | `COALESCE(exprs)` |
-| `NullIf { expr, null_expr }` | `NULLIF(expr, null_expr)` |
-| `DateTrunc { grain, expr }` | `DATE_TRUNC('grain', expr)` (dialect-specific) |
+| `Column(ColumnRef { name, .. })` | `"name"` (quoted per dialect) |
+| `Literal(Integer/Float/String/Boolean/Null)` | literal value (i64 preserves precision) |
+| `BinaryOp(BinaryExpr { l, Add, r })` | `(l + r)` |
+| `BinaryOp(BinaryExpr { l, SafeDivide, r })` | `CASE WHEN r = 0 THEN NULL ELSE l / r END` |
+| `Aggregate(AggregateExpr { Sum, expr })` | `SUM(expr)` — typed dispatch, no string matching |
+| `Aggregate(AggregateExpr { CountDistinct, .. })` | `COUNT(DISTINCT expr)` |
+| `FunctionCall(FunctionCallExpr { name, args })` | `name(args)` — escape hatch for non-standard functions |
+| `Case(CaseExpr { when_then, else_expr })` | `CASE WHEN w THEN t ... ELSE e END` |
+| `Not(UnaryExpr)` | `NOT (inner)` |
+| `IsNull(UnaryExpr)` | `inner IS NULL` |
+| `IsNotNull(UnaryExpr)` | `inner IS NOT NULL` |
+| `InList(InListExpr)` | `expr IN (list)` |
+| `Between(BetweenExpr)` | `expr BETWEEN low AND high` |
+| `Like(LikeExpr)` | `expr LIKE pattern` |
+| `Coalesce(CoalesceExpr)` | `COALESCE(exprs)` |
+| `NullIf(NullIfExpr)` | `NULLIF(expr, null_expr)` |
+| `DateTrunc(DateTruncExpr { grain, expr })` | `DATE_TRUNC('grain', expr)` (typed Grain enum, dialect-specific) |
 
-**Note:** `Guard` is a `semstrait_core::DslExpr` variant only. The IR DslExpr uses `Case` with `else_expr: None` for the same semantics. Aggregates (SUM, AVG, etc.) are in `AggregateMeasure`, rendered via `DslExprSqlRenderer::render_aggregate()`.
+**Note:** `Guard` and `EntityRef` are resolved during planning (to `Case` and `Column` respectively) and never appear in SQL emission. Both emitters return `EmitError::UnsupportedExpr` if encountered. Aggregates use typed `Aggregation` enum dispatch — no string-based function name matching.
 
 **Polyglot SQL transpilation (V2-A, feature-gated):**
 
@@ -939,8 +943,8 @@ semstrait-connectors/
 │   ├── payload.rs       ComputePayload, ComputeRequest, ComputeResult
 │   ├── duckdb.rs        #[cfg(feature = "duckdb")]
 │   ├── datafusion.rs    #[cfg(feature = "datafusion")]
-│   ├── trino.rs         #[cfg(feature = "trino")]  (planned — not yet created)
-│   └── spark.rs         #[cfg(feature = "spark")]  (planned — not yet created)
+│   ├── trino.rs         #[cfg(feature = "trino")]  — REST v1/statement via reqwest
+│   └── spark.rs         #[cfg(feature = "spark")]  — structural impl (execution deferred)
 ```
 
 #### Core traits
@@ -1016,7 +1020,7 @@ ComputeEmitter.emit() ───────────────────�
         ▼                ▼                  ▼              ▼
     DuckDB         DataFusion            Trino           Spark
   C API (bundled)  native SessionCtx   REST client    spark-connect
-  embedded         in-process          (planned)      gRPC (planned)
+  embedded         in-process          reqwest         structural (deferred)
         │                │                  │              │
         └────────────────┴──────────────────┴──────────────┘
                          │
@@ -1030,16 +1034,16 @@ ComputeEmitter.emit() ───────────────────�
 |---|---|---|---|
 | DuckDB | `Sql` only | DuckDB C API (embedded, `bundled`) | `Connection` is `Send`/`!Sync` — wrapped in `Arc<Mutex<Connection>>` + `spawn_blocking`; `query_arrow` → Arrow 55 batches → JSON via `arrow::json::ArrayWriter`; CSV/Parquet via `read_csv_auto()`/`read_parquet()`; `preferred_dialect = DuckDb` |
 | DataFusion | `Sql` only (v1) | In-process Rust | Returns `ComputeResultData::Json` via Arrow→JSON; timeout enforcement via `tokio::time::timeout` |
-| Trino | `Sql` only (planned) | `trino-rust-client` v0.9.3 REST (DL-027) | Not yet implemented. JSON→Arrow conversion needed. Fallback: raw reqwest. |
-| Spark | `Sql` + `SubstraitPlan` (planned) | Forked `spark-connect-rs` gRPC (DL-028) | Not yet implemented. Fork needed for dep alignment (tonic 0.12, prost 0.14). |
+| Trino | `Sql` only | reqwest REST v1/statement (DL-032) | POST→poll nextUri→collect pages. Basic/JWT auth. JSON rows in `ComputeResultData::Json`. `preferred_dialect = Trino` |
+| Spark | `Sql` only (structural) | uuid only (DL-033) | Builder pattern, full trait interface. `execute()` returns `NotImplemented`. gRPC client deferred pending spark-connect-rs fork. `preferred_dialect = Spark` |
 
 **External deps:** `semstrait-core`, `semstrait-ir`, `semstrait-sql`, `arrow`, `async-trait`
 
 Engine deps (feature-gated):
 - `duckdb`: `duckdb` crate v1.3.x (>=1.3.0, <1.4.0 — pinned for arrow 55 per DL-031), aliased as `duckdb-engine` in Cargo.toml; `arrow` v55 (for `json` feature)
 - `datafusion`: `datafusion` v52
-- `trino`: planned — `trino-rust-client` v0.9.3 or raw reqwest (DL-027)
-- `spark`: planned — forked `spark-connect-rs` (DL-028)
+- `trino`: `reqwest` v0.12 (DL-032) — REST v1/statement API with pagination
+- `spark`: `uuid` v1 (DL-033) — structural impl only; spark-connect-rs deferred
 
 ---
 
@@ -1087,12 +1091,13 @@ impl SemstraitEngine {
         -> Result<serde_json::Value, EngineError>;      // requires connector
 }
 
-// gRPC transport — feature = "grpc"
+// gRPC transport — feature = "grpc" (tonic 0.14, DL-034)
 #[cfg(feature = "grpc")]
 pub mod grpc {
-    pub struct SemstraitGrpcService { engine: Arc<SemstraitEngine> }
-    // implements tonic generated service trait
-    // Proto: SemstraitService { Query, Explain, Validate, Schema, Compile }
+    // Proto generated via tonic-prost-build from proto/semstrait/v1/service.proto
+    pub struct SemstraitGrpcService { engine: SharedEngine }
+    // Implements: Explain, Validate, Query, Health RPCs
+    // Proto: semstrait.v1.SemstraitService
 }
 
 // REST transport — feature = "rest"
@@ -1254,7 +1259,7 @@ This table records every cross-crate type reference and confirms no cycle is int
 
 | Type | Defined in | Used in | Verification |
 |---|---|---|---|
-| `Schema`, `DataType`, `DslExpr` | `core` | All crates | ✓ all depend on core |
+| `Schema`, `DataType`, `Expr` | `core` | All crates | ✓ all depend on core |
 | `ConsumerProfile` | `core` | `planner`, `connectors` | ✓ breaks old cycle; both only depend on core |
 | `GlobPattern` | `model` | `manifest` (expand_globs), `catalog` (list_tables) | ✓ model → core; no reverse dep |
 | `SemanticModel`, `Kind`, `Dataset` | `model` | `manifest` only | ✓ model is input to manifest compiler |
@@ -1280,28 +1285,27 @@ This table records every cross-crate type reference and confirms no cycle is int
 
 | Item | Decision | Notes |
 |---|---|---|
-| `column_mapping: auto` | Deferred v1.1 | Map all physical columns from catalog |
+| `column_mapping: auto` | **Done** (DL-038) | Identity mapping expansion in step 4.5; `ColumnMapping` enum with `Auto`/`Explicit` |
 | Domain filter step | **Done** (v1.1-B.2) | Planner step 3 filters datasets by `domain_hint` using `Cow<CompiledKind>` |
 | Aggregation constraints | **Done** (v1.1-B.1) | `check_aggregation_constraints()` validates allowed/prohibited lists against `expr_source` |
 | REST /schema and /compile endpoints | **Done** (v1.1-B.4) | GET /schema returns kind introspection; POST /compile accepts YAML, returns manifest JSON |
-| gRPC transport | Deferred v2 | Stub file exists, no implementation |
+| gRPC transport | **Done** (V2-F.1, DL-034) | tonic 0.14 server with 4 RPCs (Explain, Validate, Query, Health). Proto at `proto/semstrait/v1/service.proto`. |
 | Polyglot SQL transpilation | **Done** (V2-A, DL-030) | `PolyglotEmitter` transpiles ANSI SQL to 34+ dialects via `polyglot-sql`. Feature-gated behind `polyglot`. |
 | DuckDB connector | **Done** (V2-B, DL-031) | `DuckDbConnector` — embedded DuckDB 1.3.2, `Arc<Mutex<Connection>>` + `spawn_blocking`, CSV/Parquet registration, CLI `query-duckdb` command |
-| Trino connector | Deferred v2 (DL-027) | `trino-rust-client` v0.9.3; feature flag exists, no source file |
-| Spark connector | Deferred v2 (DL-028) | Forked `spark-connect-rs`; feature flag exists, no source file |
+| Trino connector | **Done** (V2-C, DL-032) | reqwest REST v1/statement with pagination, Basic/JWT auth, 10 tests |
+| Spark connector | **Done** structural (V2-D, DL-033) | Full trait interface, builder pattern. `execute()` returns `NotImplemented`. gRPC client deferred. |
 | Arrow Flight SQL | Deferred v2+ (DL-029) | Databricks-specific, not Spark/Trino |
 | Spark Substrait support | Default to SQL emitter | Spark 3.4+ experimental |
 | Multi-engine query fan-out | Deferred v2 | Single connector per `Semstrait` instance |
-| `FileSystemRepository` | Deferred v2 | `InMemoryRepository` sufficient for v1 stateless operation |
+| `FileSystemRepository` | **Done** | JSON-backed persistent manifest storage with atomic write (tmp+rename) |
 | Cross-kind metric refs | Prohibited v1 (COMP_E006) | Multi-kind planning deferred |
 | UNION DISTINCT | **Done** (v1.1-B.6) | `UnionMode::All` (default) or `UnionMode::Distinct` on Unionset kind type |
 | Many-to-many junction tables | Deferred v2 | Bridge as explicit dataset in joinset |
 | Kind-level filter block | **Done** (v1.1-B.5) | `CompiledKind.filters` injected as FilterNodes before user filters |
-| Schema drift detection | Warn PLAN_W003 | Physical schema changed since compile |
-| Row-level security user_attribute | Schema exists | Session parameter required; missing → PLAN_E005 |
-| ComputeEmitter integration | Deferred v1.1 (DL-023) | Trait exists but engine bypasses it via direct SqlEmitter |
-| Unity/Glue/Hive catalogs | Deferred v2 | Only IcebergRestCatalog implemented |
-| Dual DslExpr rename | Deferred v2 (DL-020) | IR type should be renamed to IrExpr |
+| Schema drift detection | **Done** (DL-037) | `check_schema_drift()` on `SemstraitEngine`, `PlannerWarning::SchemaDrift`, schema snapshots in `CompiledDataset` |
+| ComputeEmitter integration | **Closed** by-design (DL-023) | Engine uses `SqlEmitter` + `SubstraitSerializer` directly. `ComputeEmitter` is optional connector capability. |
+| Unity/Glue/Hive catalogs | Unity **Done**, Glue/Hive deferred | `UnityCatalogProvider` implemented; Glue/Hive deferred (heavy deps) |
+| Unified Expr migration | **Complete** (DL-020, Phases 1-6) | Single `Expr` type in `core::expr` used across entire pipeline. Old `core::DslExpr` and `ir::DslExpr` alias removed. |
 | SafeDivide Substrait anchor | By design (DL-024) | SafeDivide maps to Divide in Substrait; null-guard is SQL-only |
 | Glob namespace hardcoded | **Done** (v1.1-B.3) | `SemanticModel.namespace` field used; defaults to `"default"` |
 
@@ -1328,13 +1332,13 @@ Each crate's `MODULE.md` is derived from the corresponding section in this docum
 
 | Document | Primary source section | Additional content |
 |---|---|---|
-| `semstrait-core/MODULE.md` | §5.1 | Complete `DslExpr` variant catalog; `DataType` ↔ Arrow mapping table; error type hierarchy |
+| `semstrait-core/MODULE.md` | §5.1 | Unified `Expr` variant catalog; `DataType` ↔ Arrow mapping table; error type hierarchy |
 | `semstrait-model/MODULE.md` | §5.2 | Full YAML schema specification (v1.2); ref resolution algorithm; `GlobPattern` grammar |
 | `semstrait-catalog/MODULE.md` | §5.3 | `CatalogProvider` contract; per-impl authentication flows; `NullCatalogProvider` behavior spec |
 | `semstrait-manifest/MODULE.md` | §5.4 | Compilation pipeline step-by-step; `CompiledManifest` JSON schema; error codes (COMP_E*) |
 | `semstrait-ir/MODULE.md` | §5.5 | Complete `PlanNode` variant specs; Substrait extension proto definition; ordinal invariant proofs |
 | `semstrait-planner/MODULE.md` | §5.6 | Full evaluation order spec; `GrainsetPlanner` coverage algorithm; `UnionsetPlanner` branch pruning; `JoinsetPlanner` BFS; error codes (PLAN_E*, PLAN_W*) |
-| `semstrait-sql/MODULE.md` | §5.7 | DslExpr → SQL lowering rules per dialect; dialect quirk registry; test matrix |
+| `semstrait-sql/MODULE.md` | §5.7 | Expr → SQL lowering rules per dialect; dialect quirk registry; test matrix |
 | `semstrait-connectors/MODULE.md` | §5.8 | Trait contracts; per-engine: wire protocol, auth methods, `ConsumerProfile` values, known limitations, payload support matrix. See also D6 in `crates/semstrait-connectors/docs/`. |
 | `semstrait-api/MODULE.md` | §5.9 | Proto definitions; `RequestParser` algorithm; per-transport setup guide |
 | `semstrait/MODULE.md` | §5.10 | Builder usage examples; feature flag combinations; embedding guide |

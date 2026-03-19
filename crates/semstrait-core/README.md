@@ -12,7 +12,7 @@ No I/O. No network. No engine dependencies. Pure type definitions and shared pri
 - **`Schema`**, **`SchemaColumn`** — ordinal-based column schema for plan nodes
 - **`ConsumerProfile`** — capability flags shared by planner and connectors (e.g., `SemiAdditiveStrategy`)
 - **`Grain`** — temporal granularity levels (Day, Month, Quarter, Year)
-- **`DslExpr`** — DSL expression tree (aggregations, arithmetic, CASE, DATE_TRUNC, etc.)
+- **`Expr`** — unified expression tree (aggregations, arithmetic, CASE, DATE_TRUNC, etc.)
 - **`GlobPattern`** — glob pattern matching for catalog table names (`*`, `?`)
 - **Constraint types** — `MeasureConstraints`, `DimensionConstraints`, `AggregationConstraints`
 
@@ -27,7 +27,7 @@ semstrait-core/src/
 ├── schema.rs               Schema, SchemaColumn
 ├── consumer_profile.rs     ConsumerProfile, SemiAdditiveStrategy
 ├── grain.rs                Grain enum (Day, Month, Quarter, Year)
-├── dsl_expr.rs             DslExpr AST (Agg, Binary, Case, DateTrunc, etc.)
+├── expr.rs                 Unified Expr AST (Aggregate, BinaryOp, Case, DateTrunc, etc.)
 ├── constraints.rs          Measure/dimension/aggregation constraint types
 ├── types.rs                GlobPattern with glob_match()
 └── error.rs                CoreError, SchemaError
@@ -40,4 +40,4 @@ semstrait-core/src/
 - **Zero dependencies on other workspace crates** — everything above depends on core, never the reverse
 - **No I/O** — no file system, network, or database access
 - **Pure data types** — types are `Clone`, `Debug`, `Serialize`/`Deserialize` where needed
-- **DSL only** — raw SQL is never stored; all expressions are typed `DslExpr` trees
+- **DSL only** — raw SQL is never stored; all expressions are typed `Expr` trees

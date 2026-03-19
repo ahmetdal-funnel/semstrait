@@ -9,7 +9,9 @@ use sha2::{Digest, Sha256};
 use semstrait_catalog::CatalogProvider;
 use semstrait_model::{parse, resolve_refs};
 
-use crate::compiled::CompiledManifest;
+use semstrait_catalog::TableRef;
+
+use crate::compiled::{CompiledManifest, SchemaColumn};
 use crate::error::CompileError;
 use crate::steps;
 
@@ -51,7 +53,7 @@ impl ManifestCompiler {
     /// 5. validate_mappings — column_mapping keys exist in kind interface
     /// 6. build_metric_graph — petgraph DiGraph, cycle detection, depth <= 3
     /// 7. build_rel_graph — relationship graph, joinset anchor inference
-    /// 8. compile_exprs — parse DslExpr fields, reject raw SQL
+    /// 8. compile_exprs — parse Expr fields, reject raw SQL
     /// 9. emit — serialize to CompiledManifest
     pub async fn compile(&self, source: CompileSource) -> Result<CompiledManifest, CompileError> {
         // Load YAML source(s) into a single string
@@ -76,6 +78,10 @@ impl ManifestCompiler {
         // Step 4: Validate structure
         steps::validate_structure(&model)?;
 
+        // Step 4.5: Expand auto column mappings (before validation)
+        let mut model = model;
+        steps::expand_auto_mappings(&mut model);
+
         // Step 5: Validate mappings
         steps::validate_mappings(&model)?;
 
@@ -85,14 +91,24 @@ impl ManifestCompiler {
         // Step 7: Build relationship graph
         let _rel_graph = steps::build_rel_graph(&model)?;
 
+        // Capture namespace before model is consumed by emit().
+        let model_namespace = model.namespace.clone();
+
         // Step 8: Compile expressions
         // Step 9: Emit CompiledManifest
         let manifest = steps::emit(model, source_hash, &metric_depths)?;
 
-        let manifest = CompiledManifest {
+        let mut manifest = CompiledManifest {
             compiled_at: Utc::now(),
             ..manifest
         };
+
+        // Step 9.5: Capture schema snapshots from catalog (when available).
+        if let Some(ref catalog) = self.catalog {
+            let namespace = model_namespace.as_deref().unwrap_or("default");
+            self.capture_schema_snapshots(&mut manifest, catalog.as_ref(), namespace)
+                .await;
+        }
 
         Ok(manifest)
     }
@@ -134,6 +150,41 @@ impl ManifestCompiler {
                     )));
                 }
                 Ok(combined)
+            }
+        }
+    }
+
+    /// Capture schema snapshots from the catalog for all datasets in the manifest.
+    /// Best-effort: failures are logged but don't fail compilation.
+    async fn capture_schema_snapshots(
+        &self,
+        manifest: &mut CompiledManifest,
+        catalog: &dyn CatalogProvider,
+        namespace: &str,
+    ) {
+        for (_, dataset) in manifest.datasets.iter_mut() {
+            let table_ref = TableRef::new(namespace, &dataset.name);
+            match catalog.get_schema(&table_ref).await {
+                Ok(columns) => {
+                    let snapshot: Vec<SchemaColumn> = columns
+                        .into_iter()
+                        .map(|c| SchemaColumn {
+                            name: c.name,
+                            data_type: format!("{:?}", c.data_type),
+                            nullable: c.nullable,
+                        })
+                        .collect();
+                    if !snapshot.is_empty() {
+                        dataset.compiled_schema = Some(snapshot);
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "skipping schema snapshot for dataset '{}': {}",
+                        dataset.name,
+                        e
+                    );
+                }
             }
         }
     }
