@@ -193,6 +193,10 @@ pub struct Kind {
     /// Kind-level filters applied to all queries against this kind.
     #[serde(default)]
     pub filters: Vec<MeasureFilter>,
+    /// Kind-level default extras inherited by all datasets in this kind.
+    /// Per-dataset extras override these defaults field by field.
+    #[serde(default)]
+    pub extras: Option<KindExtras>,
 }
 
 /// Kind type specification (grainset, unionset, or joinset).
@@ -333,6 +337,7 @@ pub struct GlobPattern(pub String);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KindDatasetExtras {
+    #[serde(default = "ColumnMapping::default_inherited")]
     pub column_mapping: ColumnMapping,
     #[serde(default)]
     pub temporal: Option<TemporalConfig>,
@@ -342,13 +347,29 @@ pub struct KindDatasetExtras {
     pub catalog: Option<CatalogConfig>,
 }
 
-/// Column mapping: either `auto` (expand from catalog at compile time)
-/// or an explicit map of semantic name → physical column.
+/// Kind-level default extras applied to all datasets in this kind.
+/// Per-dataset extras (KindDataset.extras) override these defaults field by field.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KindExtras {
+    #[serde(default)]
+    pub default_column_mapping: Option<ColumnMapping>,
+    #[serde(default)]
+    pub default_temporal: Option<TemporalConfig>,
+    #[serde(default)]
+    pub default_catalog: Option<CatalogConfig>,
+    #[serde(default)]
+    pub default_partition_defs: Option<Vec<PartitionDef>>,
+}
+
+/// Column mapping: either `auto`, `inherited`, or an explicit map.
 #[derive(Debug, Clone)]
 pub enum ColumnMapping {
     /// Auto-map: all kind interface names are matched 1:1 to physical columns.
     /// Expanded to `Explicit` identity mapping during compilation (step 4.5).
     Auto,
+    /// Inherit from kind.extras.default_column_mapping. Resolved in step 4.5.
+    /// This is the default when `column_mapping:` is absent from a dataset's extras.
+    Inherited,
     /// Explicit mapping of semantic name → physical column.
     Explicit(HashMap<String, ColumnMappingValue>),
 }
@@ -364,12 +385,23 @@ impl ColumnMapping {
         matches!(self, ColumnMapping::Auto)
     }
 
-    /// Get the underlying map. Panics if `Auto` (should be expanded before use).
+    /// Returns true if this is `Inherited`.
+    pub fn is_inherited(&self) -> bool {
+        matches!(self, ColumnMapping::Inherited)
+    }
+
+    /// Default value for `KindDatasetExtras.column_mapping` when the field is absent.
+    /// Used by `#[serde(default = "ColumnMapping::default_inherited")]`.
+    pub fn default_inherited() -> Self {
+        ColumnMapping::Inherited
+    }
+
+    /// Get the underlying map. Panics if `Auto` or `Inherited` (must be expanded before use).
     pub fn as_map(&self) -> &HashMap<String, ColumnMappingValue> {
         match self {
             ColumnMapping::Explicit(m) => m,
-            ColumnMapping::Auto => {
-                panic!("column_mapping: auto should have been expanded during compilation")
+            ColumnMapping::Auto | ColumnMapping::Inherited => {
+                panic!("column_mapping must be expanded before use (call expand_auto_mappings first)")
             }
         }
     }
@@ -396,6 +428,7 @@ impl Serialize for ColumnMapping {
     {
         match self {
             ColumnMapping::Auto => serializer.serialize_str("auto"),
+            ColumnMapping::Inherited => serializer.serialize_str("inherited"),
             ColumnMapping::Explicit(map) => map.serialize(serializer),
         }
     }
@@ -414,14 +447,17 @@ impl<'de> Deserialize<'de> for ColumnMapping {
             type Value = ColumnMapping;
 
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("\"auto\" or a column mapping object")
+                f.write_str("\"auto\", \"inherited\", or a column mapping object")
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<ColumnMapping, E> {
-                if v == "auto" {
-                    Ok(ColumnMapping::Auto)
-                } else {
-                    Err(E::custom(format!("expected \"auto\", got \"{}\"", v)))
+                match v {
+                    "auto" => Ok(ColumnMapping::Auto),
+                    "inherited" => Ok(ColumnMapping::Inherited),
+                    _ => Err(E::custom(format!(
+                        "expected \"auto\", \"inherited\", or a mapping object, got \"{}\"",
+                        v
+                    ))),
                 }
             }
 
@@ -1005,7 +1041,14 @@ pub struct ScdVersionedColumns {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
-    pub path: String,
+    /// File/object store path (e.g. "warehouse.orders_daily").
+    /// Mutually exclusive with `table`; exactly one must be set.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Catalog table reference (e.g. "schema_name.orders_monthly").
+    /// Mutually exclusive with `path`; exactly one must be set.
+    #[serde(default)]
+    pub table: Option<String>,
     #[serde(default)]
     pub partition_def: Option<PartitionDef>,
 }

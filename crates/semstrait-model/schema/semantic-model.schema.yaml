@@ -14,6 +14,14 @@
 #   - Added: SemanticModel.namespace field
 #   - Added: x-since, x-examples, x-category annotations
 #   - Separated MeasureFilter from DatasetFilter (different shapes)
+#
+# Changelog v1.3 vs v1.2:
+#   - Added: KindExtras definition — kind-level default extras for all datasets
+#     (default_column_mapping, default_temporal, default_partition_defs, default_catalog)
+#   - Added: Kind.extras property pointing to KindExtras
+#   - Changed: KindDatasetInline.extras.column_mapping is now optional;
+#     may be inherited from kind.extras.default_column_mapping
+#   - Changed: StorageConfig now accepts table (catalog ref) as alternative to path (file/object store)
 # =============================================================================
 
 $schema: https://json-schema.org/draft-07/schema#
@@ -179,6 +187,10 @@ definitions:
         items: { $ref: "#/definitions/MeasureFilter" }
         description: Kind-level filters applied to all queries against this kind.
         x-since: v1.1
+      extras:
+        $ref: "#/definitions/KindExtras"
+        description: Kind-level default extras (column_mapping, temporal, catalog, partition_defs) applied to all datasets; overridden per dataset.
+        x-since: v1.3
 
   KindType:
     type: object
@@ -245,8 +257,10 @@ definitions:
         $ref: "#/definitions/AiContext"
       extras:
         type: object
-        required: [column_mapping]
         additionalProperties: false
+        description: >
+          Per-dataset extras. column_mapping is optional when a kind-level
+          default_column_mapping is defined in kind.extras.
         properties:
           column_mapping:
             $ref: "#/definitions/ColumnMapping"
@@ -705,6 +719,25 @@ definitions:
   # ---------------------------------------------------------------------------
   # Extras (storage, temporal, catalog)
   # ---------------------------------------------------------------------------
+  KindExtras:
+    type: object
+    additionalProperties: false
+    x-category: binding
+    x-since: v1.3
+    description: >
+      Kind-level default extras applied to all datasets in this kind.
+      Per-dataset extras override these defaults.
+    properties:
+      default_column_mapping:
+        $ref: "#/definitions/ColumnMapping"
+      default_temporal:
+        $ref: "#/definitions/TemporalConfig"
+      default_partition_defs:
+        type: array
+        items: { $ref: "#/definitions/PartitionDef" }
+      default_catalog:
+        $ref: "#/definitions/CatalogConfig"
+
   DatasetExtras:
     type: object
     additionalProperties: false
@@ -811,14 +844,26 @@ definitions:
 
   StorageConfig:
     type: object
-    required: [path]
     additionalProperties: false
+    description: >
+      Physical storage location. Exactly one of path or table must be specified.
+      Use path for file/object store references; use table for catalog table references.
+    oneOf:
+      - required: [path]
+        description: File or object store path.
+      - required: [table]
+        description: Catalog table reference.
     properties:
       path:
         type: string
         minLength: 1
-        description: Fully qualified table path.
+        description: Fully qualified file or object store path.
         x-examples: [warehouse.orders, lakehouse.marketing.events]
+      table:
+        type: string
+        minLength: 1
+        description: Catalog table reference (e.g. schema_name.orders_monthly).
+        x-examples: [schema_name.orders_monthly, main.public.events]
       partition_def:
         $ref: "#/definitions/PartitionDef"
 

@@ -733,3 +733,269 @@ semantic_model:
         semstrait_manifest::CompiledKindType::Unionset { .. }
     ));
 }
+
+// ============================================================================
+// Kind extras defaults
+// ============================================================================
+
+#[tokio::test]
+async fn test_kind_extras_default_column_mapping_inherited() {
+    // A dataset with no column_mapping should inherit kind.extras.default_column_mapping.
+    let yaml = r#"
+semantic_model:
+  name: kind_extras_test
+  kinds:
+    - name: sales
+      type:
+        grainset:
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      extras:
+        default_column_mapping:
+          order_date: created_at
+          revenue: amount_usd
+      datasets:
+        - name: orders_daily
+          extras:
+            storage:
+              path: warehouse.orders_daily
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("compilation with inherited column mapping should succeed");
+
+    let kind = &manifest.kinds["sales"];
+    let ds = &kind.datasets[0];
+
+    // Should have inherited the kind-level default mapping.
+    use semstrait_manifest::ColumnMappingValue;
+    match ds.extras.column_mapping.get("order_date").unwrap() {
+        ColumnMappingValue::Simple(s) => assert_eq!(s, "created_at"),
+        _ => panic!("expected Simple mapping for order_date"),
+    }
+    match ds.extras.column_mapping.get("revenue").unwrap() {
+        ColumnMappingValue::Simple(s) => assert_eq!(s, "amount_usd"),
+        _ => panic!("expected Simple mapping for revenue"),
+    }
+}
+
+#[tokio::test]
+async fn test_kind_extras_explicit_overrides_default() {
+    // Per-dataset explicit column_mapping entries override the kind default; entries
+    // not present in the dataset mapping are filled in from the kind default.
+    let yaml = r#"
+semantic_model:
+  name: kind_extras_override_test
+  kinds:
+    - name: sales
+      type:
+        grainset:
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      extras:
+        default_column_mapping:
+          order_date: default_date_col
+          revenue: default_revenue_col
+      datasets:
+        - name: orders_daily
+          extras:
+            column_mapping:
+              revenue: actual_amount
+            storage:
+              path: warehouse.orders_daily
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("compilation with override mapping should succeed");
+
+    let kind = &manifest.kinds["sales"];
+    let ds = &kind.datasets[0];
+
+    use semstrait_manifest::ColumnMappingValue;
+    // order_date not set on dataset — should come from kind default.
+    match ds.extras.column_mapping.get("order_date").unwrap() {
+        ColumnMappingValue::Simple(s) => assert_eq!(s, "default_date_col"),
+        _ => panic!("expected Simple mapping for order_date"),
+    }
+    // revenue is overridden by the dataset.
+    match ds.extras.column_mapping.get("revenue").unwrap() {
+        ColumnMappingValue::Simple(s) => assert_eq!(s, "actual_amount"),
+        _ => panic!("expected Simple mapping for revenue"),
+    }
+}
+
+#[tokio::test]
+async fn test_kind_extras_default_temporal_propagated() {
+    // default_temporal from kind.extras should be propagated to datasets that do not set temporal.
+    let yaml = r#"
+semantic_model:
+  name: kind_extras_temporal_test
+  kinds:
+    - name: sales
+      type:
+        grainset:
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      extras:
+        default_column_mapping:
+          order_date: created_at
+          revenue: amount
+        default_temporal:
+          type:
+            snapshot:
+              snapshotted_at: snapshot_ts
+      datasets:
+        - name: orders_daily
+          extras:
+            storage:
+              path: warehouse.orders_daily
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("compilation with default temporal should succeed");
+
+    let kind = &manifest.kinds["sales"];
+    let ds = &kind.datasets[0];
+
+    // temporal should have been propagated from kind.extras.default_temporal.
+    let temporal = ds.extras.temporal.as_ref().expect("temporal should be present");
+    use semstrait_model::TemporalHistorization;
+    match &temporal.temporal_type {
+        TemporalHistorization::Snapshot(s) => {
+            assert_eq!(s.snapshotted_at, "snapshot_ts");
+        }
+        other => panic!("expected Snapshot temporal, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_storage_table_field() {
+    // storage: { table: ... } should parse and compile without error.
+    let yaml = r#"
+semantic_model:
+  name: storage_table_test
+  kinds:
+    - name: sales
+      type:
+        grainset:
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders_daily
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              table: schema_name.orders_daily
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("storage with table field should compile");
+
+    // Compilation success is the primary assertion; verify the dataset is present.
+    assert_eq!(manifest.kinds["sales"].datasets.len(), 1);
+    assert_eq!(manifest.kinds["sales"].datasets[0].name, "orders_daily");
+}
+
+#[tokio::test]
+async fn test_column_mapping_inherited_sentinel() {
+    // The explicit string `column_mapping: inherited` should resolve identically
+    // to an absent column_mapping — both inherit from kind.extras.default_column_mapping.
+    let yaml = r#"
+semantic_model:
+  name: inherited_sentinel_test
+  kinds:
+    - name: sales
+      type:
+        grainset:
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      extras:
+        default_column_mapping:
+          order_date: created_at
+          revenue: amount
+      datasets:
+        - name: orders
+          extras:
+            column_mapping: inherited
+            storage:
+              path: warehouse.orders
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("column_mapping: inherited should compile");
+
+    let kind = &manifest.kinds["sales"];
+    let ds = &kind.datasets[0];
+
+    use semstrait_manifest::ColumnMappingValue;
+    match ds.extras.column_mapping.get("order_date").unwrap() {
+        ColumnMappingValue::Simple(s) => assert_eq!(s, "created_at"),
+        _ => panic!("expected Simple mapping for order_date"),
+    }
+    match ds.extras.column_mapping.get("revenue").unwrap() {
+        ColumnMappingValue::Simple(s) => assert_eq!(s, "amount"),
+        _ => panic!("expected Simple mapping for revenue"),
+    }
+}

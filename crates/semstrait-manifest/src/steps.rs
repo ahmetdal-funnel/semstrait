@@ -188,22 +188,68 @@ fn check_metric_uniqueness(entries: &[MetricEntry], container: &str, errors: &mu
 // Step 4.5: Expand Auto Column Mappings
 // ============================================================================
 
-/// Expand `column_mapping: auto` into explicit identity mappings.
+/// Expand `column_mapping: auto` / `inherited` into explicit identity mappings,
+/// and merge kind-level defaults into each dataset's extras.
 ///
-/// For each dataset with `Auto`, generates a 1:1 mapping where each
-/// interface name (dimension/measure/metric) maps to itself.
+/// Handles three cases for a dataset's `column_mapping`:
+///   - `Auto`:      1:1 identity from all kind interface names.
+///   - `Inherited`: use `kind.extras.default_column_mapping`, falling back to identity.
+///   - `Explicit`:  start from kind default (if any), then apply dataset overrides.
+///
+/// After this step every dataset has `ColumnMapping::Explicit`. `temporal` and
+/// `catalog` defaults from `kind.extras` are also propagated (dataset value wins).
 pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
     for kind in &mut model.kinds {
         let interface_names: Vec<String> = collect_interface_names(kind).collect();
 
+        // Resolve the kind-level default mapping once per kind.
+        let kind_default: Option<HashMap<String, ColumnMappingValue>> =
+            kind.extras.as_ref().and_then(|e| e.default_column_mapping.as_ref()).map(|cm| {
+                match cm {
+                    ColumnMapping::Auto | ColumnMapping::Inherited => interface_names
+                        .iter()
+                        .map(|n| (n.clone(), ColumnMappingValue::Simple(n.clone())))
+                        .collect(),
+                    ColumnMapping::Explicit(m) => m.clone(),
+                }
+            });
+
         for ds_entry in &mut kind.datasets {
             if let KindDatasetEntry::Inline(ds) = ds_entry {
-                if ds.extras.column_mapping.is_auto() {
-                    let map: HashMap<String, ColumnMappingValue> = interface_names
-                        .iter()
-                        .map(|name| (name.clone(), ColumnMappingValue::Simple(name.clone())))
-                        .collect();
-                    ds.extras.column_mapping = ColumnMapping::Explicit(map);
+                let effective: HashMap<String, ColumnMappingValue> = match &ds.extras.column_mapping {
+                    ColumnMapping::Auto => {
+                        // Identity map — same behaviour as before.
+                        interface_names
+                            .iter()
+                            .map(|n| (n.clone(), ColumnMappingValue::Simple(n.clone())))
+                            .collect()
+                    }
+                    ColumnMapping::Inherited => {
+                        // Use kind default; fall back to identity if no kind default exists.
+                        kind_default.clone().unwrap_or_else(|| {
+                            interface_names
+                                .iter()
+                                .map(|n| (n.clone(), ColumnMappingValue::Simple(n.clone())))
+                                .collect()
+                        })
+                    }
+                    ColumnMapping::Explicit(ds_map) => {
+                        // Merge: kind default is the base; dataset entries override.
+                        let mut merged = kind_default.clone().unwrap_or_default();
+                        merged.extend(ds_map.clone());
+                        merged
+                    }
+                };
+                ds.extras.column_mapping = ColumnMapping::Explicit(effective);
+
+                // Propagate temporal and catalog defaults (dataset value always wins).
+                if let Some(kind_extras) = &kind.extras {
+                    if ds.extras.temporal.is_none() {
+                        ds.extras.temporal = kind_extras.default_temporal.clone();
+                    }
+                    if ds.extras.catalog.is_none() {
+                        ds.extras.catalog = kind_extras.default_catalog.clone();
+                    }
                 }
             }
         }
@@ -1020,6 +1066,7 @@ mod tests {
                 datasets: vec![],
                 relationships: vec![],
                 filters: vec![],
+                extras: None,
             }],
             relationships: vec![],
             dimensions: vec![],

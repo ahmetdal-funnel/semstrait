@@ -607,6 +607,22 @@ semantic_model:
               - string
 
           extras: # required
+            storage: # required
+                path: string # e.g. "/s3://warehouse/orders_monthly"
+                # OR if catalog in use
+                table: string # e.g. "schema_name.orders_monthly"
+            catalog: # optional - required if other than default values
+              type: string # e.g. "hive", "polaris", "glue"
+            column_mapping: # optional - required if other than default values
+            # Temporal historization — same structure as dataset.extras.temporal.
+            temporal: # # optional - required if other than default value
+
+        # (b) Kind reference (for nesting — see NESTING MATRIX above)
+        - ref: string # kind name; nesting restrictions enforced by compiler
+
+      extras: # required - unless user defines all the datasets extras in "kind.datasets[]"
+        # Default values for the dataset.
+        # These can be overridden by the dataset-level extras.
             # COLUMN MAPPING — primary binding: semantic name → physical column.
             # Format 1 (simple):   revenue: amount_usd
             # Format 2 (complex):  order_date:
@@ -618,14 +634,14 @@ semantic_model:
             #     grainset: planner skips this dataset for queries needing that field.
             #     unionset: planner substitutes NULL for this field.
             #     joinset:  planner skips joining this dataset if no needed fields.
-            column_mapping: # required for inline dataset
+            default_column_mapping: # required - unless user defines the datasets column mappings in "kind.datasets[]"
               # Each key is a kind-level semantic name.
               # Each value is either a string (physical column) or:
               #   column: string    (physical column name)
               #   grain: string     (temporal grain — must be in kind dimension's grains list)
 
             # Temporal historization — same structure as dataset.extras.temporal.
-            temporal: # optional
+            default_temporal: # required - unless user defines the datasets temporal in "kind.datasets[]"
               type:
                 timeseries:
                   occurred_at: string
@@ -644,15 +660,18 @@ semantic_model:
                   type_6:
                     valid_from: string
                     valid_to: string
-
-            storage: # optional
-              path: string # e.g. "warehouse.orders_monthly"
-
-            catalog: # optional
+            default_partition_defs: # required - unless user defines the datasets partition definitions in "kind.datasets[]"
+              - type: # discriminated union
+                  range:
+                    column: string # partition column
+                    start: string # inclusive, ISO or numeric string
+                    end: string # exclusive
+                  list:
+                    column: string # partition column
+                    values: # array of partition values
+                      - string
+            default_catalog: # required - unless user defines the datasets catalog in "kind.datasets[]"
               type: string
-
-        # (b) Kind reference (for nesting — see NESTING MATRIX above)
-        - ref: string # kind name; nesting restrictions enforced by compiler
 
       # -----------------------------------------------------------------------
       # KIND RELATIONSHIPS
