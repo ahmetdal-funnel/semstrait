@@ -1,0 +1,741 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://semstrait.io/schemas/semantical-model/v1.1.json",
+  "title": "SemanticModel",
+  "description": "Semstrait semantical model definition schema v1.1",
+  "type": "object",
+  "required": ["semantic_model"],
+  "additionalProperties": false,
+  "properties": {
+    "semantic_model": { "$ref": "#/definitions/SemanticModel" }
+  },
+
+  "definitions": {
+    "SemanticModel": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "ai_context": { "type": "string" },
+        "labels": { "type": "array", "items": { "type": "string" } },
+        "datasets": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Dataset" }
+        },
+        "kinds": { "type": "array", "items": { "$ref": "#/definitions/Kind" } },
+        "relationships": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Relationship" }
+        },
+        "dimensions": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/DimensionDef" }
+        },
+        "measures": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/MeasureDef" }
+        },
+        "metrics": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/MetricDef" }
+        }
+      }
+    },
+
+    "Dataset": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "tags": { "$ref": "#/definitions/Tags" },
+        "domain": { "$ref": "#/definitions/Domain" },
+        "ai_context": { "$ref": "#/definitions/AiContext" },
+        "keys": { "$ref": "#/definitions/Keys" },
+        "dimensions": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/DimensionEntry" }
+        },
+        "measures": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/MeasureEntry" }
+        },
+        "metrics": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/MetricEntry" }
+        },
+        "filters": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/FilterDef" }
+        },
+        "extras": { "$ref": "#/definitions/DatasetExtras" }
+      }
+    },
+
+    "Tags": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_type": { "type": "string" },
+        "visibility": { "type": "string", "enum": ["public", "private"] }
+      }
+    },
+
+    "Keys": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "primary": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "unique": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["columns"],
+            "properties": {
+              "columns": {
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "foreign": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["columns", "reference", "cardinality"],
+            "additionalProperties": false,
+            "properties": {
+              "columns": {
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 1
+              },
+              "reference": { "type": "string" },
+              "cardinality": { "$ref": "#/definitions/Cardinality" }
+            }
+          }
+        }
+      }
+    },
+
+    "Cardinality": {
+      "type": "string",
+      "enum": ["one_to_one", "one_to_many", "many_to_one", "many_to_many"]
+    },
+
+    "JoinType": {
+      "type": "string",
+      "enum": ["inner", "left", "right", "full"]
+    },
+
+    "TemporalGrain": {
+      "type": "string",
+      "enum": ["minute", "hour", "day", "week", "month", "quarter", "year"]
+    },
+
+    "Expr": {
+      "description": "DSL expression node object. Raw SQL strings are not supported in v1. See architecture/02_dsl_expression_system.md.",
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1
+    },
+
+    "Domain": {
+      "description": "Semantic data domain for AI routing and planner pruning. Dot-delimited hierarchy. Scalar or array.",
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        }
+      ]
+    },
+
+    "AiContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "synonyms": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Alternative names users may use to refer to this field or entity"
+        },
+        "query_patterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Example natural-language queries that map to this field — few-shot examples for AI resolution"
+        },
+        "value_examples": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Representative sample values (format/cardinality hints). Critical for categorical dimensions."
+        },
+        "semantic_tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Free-form labels for embedding-based retrieval (e.g. 'kpi', 'financial', 'outcome')"
+        },
+        "aggregation_intent": {
+          "type": "string",
+          "enum": ["sum", "avg", "count", "count_distinct", "max", "min"],
+          "description": "Typical aggregation when a user asks for this measure. Descriptive only — planner uses expr."
+        },
+        "unit": {
+          "type": "string",
+          "description": "Unit or currency of the measure/dimension (e.g. 'USD', 'seconds', 'users')"
+        },
+        "not": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What this field is NOT — prevents AI misresolution (e.g. 'revenue' is not 'refunds')"
+        },
+        "entity": {
+          "type": "string",
+          "description": "The business entity this field describes (e.g. 'order', 'customer', 'campaign')"
+        },
+        "importance": {
+          "type": "string",
+          "enum": ["high", "medium", "low"],
+          "default": "medium",
+          "description": "How likely this field is to be requested. High fields are surfaced first in AI disambiguation."
+        },
+        "description": {
+          "type": "string",
+          "description": "What this dataset/kind represents in business terms (for dataset/kind-level ai_context)"
+        },
+        "authoritative_for": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What this entity is the source of truth for (e.g. ['revenue', 'order count'])"
+        },
+        "not_for": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What this entity should NOT be used for — prevents incorrect routing"
+        }
+      }
+    },
+
+    "FilterDef": {
+      "type": "object",
+      "required": ["name", "expr"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "expr": { "$ref": "#/definitions/Expr" }
+      }
+    },
+
+    "Additivity": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "maxProperties": 1,
+          "properties": {
+            "full": { "type": "object", "additionalProperties": false },
+            "semi": {
+              "type": "object",
+              "required": ["non_additive_dimensions"],
+              "additionalProperties": false,
+              "properties": {
+                "non_additive_dimensions": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 1
+                },
+                "resolution_strategy": {
+                  "type": "string",
+                  "enum": ["latest", "earliest", "max", "min"],
+                  "default": "latest"
+                }
+              }
+            },
+            "non": { "type": "object", "additionalProperties": false }
+          }
+        }
+      }
+    },
+
+    "Constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "one_of": { "type": "array", "items": { "type": "string" } },
+            "none_of": { "type": "array", "items": { "type": "string" } },
+            "all": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "aggregations": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allowed": { "type": "array", "items": { "type": "string" } },
+            "prohibited": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+
+    "DimensionDef": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "data_type": { "type": "string" },
+        "ai_context": { "$ref": "#/definitions/AiContext" },
+        "type": { "$ref": "#/definitions/DimensionType" }
+      }
+    },
+
+    "DimensionType": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "temporal": {
+          "type": "object",
+          "required": ["grains"],
+          "additionalProperties": false,
+          "properties": {
+            "grains": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/TemporalGrain" },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "categorical": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enum": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "binary": {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "enum": ["boolean", "bit", "string"] }
+          }
+        },
+        "geo": {
+          "type": "object",
+          "required": ["lat", "lon"],
+          "additionalProperties": false,
+          "properties": {
+            "lat": { "type": "string" },
+            "lon": { "type": "string" }
+          }
+        },
+        "bucketed": {
+          "type": "object",
+          "required": ["column", "buckets"],
+          "additionalProperties": false,
+          "properties": {
+            "column": { "type": "string" },
+            "buckets": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["name", "start", "end"],
+                "additionalProperties": false,
+                "properties": {
+                  "name": { "type": "string" },
+                  "start": { "type": "number" },
+                  "end": { "type": "number" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "MeasureDef": {
+      "type": "object",
+      "required": ["name", "expr"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "data_type": { "type": "string" },
+        "ai_context": { "$ref": "#/definitions/AiContext" },
+        "expr": { "$ref": "#/definitions/Expr" },
+        "additivity": { "$ref": "#/definitions/Additivity" },
+        "constraints": { "$ref": "#/definitions/Constraints" },
+        "filters": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/FilterDef" }
+        }
+      }
+    },
+
+    "MetricDef": {
+      "type": "object",
+      "required": ["name", "expr"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "data_type": { "type": "string" },
+        "ai_context": { "$ref": "#/definitions/AiContext" },
+        "expr": { "$ref": "#/definitions/Expr" },
+        "additivity": { "$ref": "#/definitions/Additivity" },
+        "constraints": { "$ref": "#/definitions/Constraints" },
+        "filters": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/FilterDef" }
+        }
+      }
+    },
+
+    "DimensionEntry": {
+      "oneOf": [
+        { "$ref": "#/definitions/DimensionDef" },
+        { "$ref": "#/definitions/RefEntry" }
+      ]
+    },
+
+    "MeasureEntry": {
+      "oneOf": [
+        { "$ref": "#/definitions/MeasureDef" },
+        { "$ref": "#/definitions/RefEntry" }
+      ]
+    },
+
+    "MetricEntry": {
+      "oneOf": [
+        { "$ref": "#/definitions/MetricDef" },
+        { "$ref": "#/definitions/RefEntry" }
+      ]
+    },
+
+    "RefEntry": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "DatasetExtras": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "catalog": { "$ref": "#/definitions/CatalogConfig" },
+        "temporal": { "$ref": "#/definitions/TemporalConfig" },
+        "storage": { "$ref": "#/definitions/StorageConfig" }
+      }
+    },
+
+    "CatalogConfig": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string" }
+      }
+    },
+
+    "TemporalConfig": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "maxProperties": 1,
+          "properties": {
+            "timeseries": {
+              "type": "object",
+              "required": ["occurred_at"],
+              "additionalProperties": false,
+              "properties": {
+                "occurred_at": { "type": "string" }
+              }
+            },
+            "snapshot": {
+              "type": "object",
+              "required": ["snapshotted_at"],
+              "additionalProperties": false,
+              "properties": {
+                "snapshotted_at": { "type": "string" }
+              }
+            },
+            "scd": { "$ref": "#/definitions/ScdConfig" }
+          }
+        }
+      }
+    },
+
+    "ScdConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "type_1": { "type": "object", "additionalProperties": false },
+        "type_2": {
+          "type": "object",
+          "required": ["valid_from", "valid_to"],
+          "additionalProperties": false,
+          "properties": {
+            "valid_from": { "type": "string" },
+            "valid_to": { "type": "string" }
+          }
+        },
+        "type_3": { "type": "object", "additionalProperties": false },
+        "type_4": { "type": "object", "additionalProperties": false },
+        "type_5": {
+          "type": "object",
+          "required": ["valid_from", "valid_to"],
+          "additionalProperties": false,
+          "properties": {
+            "valid_from": { "type": "string" },
+            "valid_to": { "type": "string" }
+          }
+        },
+        "type_6": {
+          "type": "object",
+          "required": ["valid_from", "valid_to"],
+          "additionalProperties": false,
+          "properties": {
+            "valid_from": { "type": "string" },
+            "valid_to": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "StorageConfig": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "partition_def": { "$ref": "#/definitions/PartitionDef" }
+      }
+    },
+
+    "PartitionDef": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "maxProperties": 1,
+          "properties": {
+            "range": {
+              "type": "object",
+              "required": ["column", "start", "end"],
+              "additionalProperties": false,
+              "properties": {
+                "column": { "type": "string" },
+                "start": { "type": "string" },
+                "end": { "type": "string" }
+              }
+            },
+            "list": {
+              "type": "object",
+              "required": ["column", "values"],
+              "additionalProperties": false,
+              "properties": {
+                "column": { "type": "string" },
+                "values": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "ColumnMappingValue": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "required": ["column"],
+          "additionalProperties": false,
+          "properties": {
+            "column": { "type": "string", "minLength": 1 },
+            "grain": { "$ref": "#/definitions/TemporalGrain" }
+          }
+        }
+      ]
+    },
+
+    "ColumnMapping": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/definitions/ColumnMappingValue" }
+    },
+
+    "KindDatasetInline": {
+      "type": "object",
+      "required": ["name", "extras"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "ai_context": { "$ref": "#/definitions/AiContext" },
+        "extras": {
+          "type": "object",
+          "required": ["column_mapping"],
+          "additionalProperties": false,
+          "properties": {
+            "column_mapping": { "$ref": "#/definitions/ColumnMapping" },
+            "temporal": { "$ref": "#/definitions/TemporalConfig" },
+            "storage": { "$ref": "#/definitions/StorageConfig" },
+            "catalog": { "$ref": "#/definitions/CatalogConfig" }
+          }
+        }
+      }
+    },
+
+    "KindDatasetEntry": {
+      "oneOf": [
+        { "$ref": "#/definitions/KindDatasetInline" },
+        { "$ref": "#/definitions/RefEntry" }
+      ]
+    },
+
+    "KindRelationship": {
+      "type": "object",
+      "required": ["name", "from", "to", "type", "columns", "cardinality"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "type": { "$ref": "#/definitions/JoinType" },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["from", "to"],
+            "additionalProperties": false,
+            "properties": {
+              "from": { "type": "string" },
+              "to": { "type": "string" }
+            }
+          }
+        },
+        "cardinality": { "$ref": "#/definitions/Cardinality" }
+      }
+    },
+
+    "Kind": {
+      "type": "object",
+      "required": ["name", "type", "datasets"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "domain": { "$ref": "#/definitions/Domain" },
+        "ai_context": { "$ref": "#/definitions/AiContext" },
+        "type": { "$ref": "#/definitions/KindType" },
+        "keys": { "$ref": "#/definitions/Keys" },
+        "dimensions": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/DimensionEntry" }
+        },
+        "measures": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/MeasureEntry" }
+        },
+        "metrics": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/MetricEntry" }
+        },
+        "datasets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/KindDatasetEntry" }
+        },
+        "relationships": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/KindRelationship" }
+        }
+      }
+    },
+
+    "KindType": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "grainset": { "type": "object", "additionalProperties": false },
+        "unionset": { "type": "object", "additionalProperties": false },
+        "joinset": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "associativity": { "$ref": "#/definitions/JoinType" }
+          }
+        }
+      }
+    },
+
+    "Relationship": {
+      "type": "object",
+      "required": ["name", "from", "to", "type", "columns", "cardinality"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "type": { "$ref": "#/definitions/JoinType" },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["from", "to"],
+            "additionalProperties": false,
+            "properties": {
+              "from": { "type": "string" },
+              "to": { "type": "string" }
+            }
+          }
+        },
+        "cardinality": { "$ref": "#/definitions/Cardinality" }
+      }
+    }
+  }
+}

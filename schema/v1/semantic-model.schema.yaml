@@ -1,0 +1,987 @@
+# yaml-language-server: $schema=https://json-schema.org/draft-07/schema#
+# =============================================================================
+# Semstrait Semantic Model — JSON Schema v1.2 (YAML encoding)
+# =============================================================================
+#
+# Canonical machine-validatable schema for semstrait YAML model files.
+# For human-readable annotated reference, see reference.yaml.
+#
+# Changelog v1.2 vs v1.1:
+#   - Fixed: Expr fields are type: string (was incorrectly type: object)
+#   - Fixed: Kind.filters added (was missing)
+#   - Fixed: data_type required on DimensionDef, MeasureDef, MetricDef
+#   - Fixed: KindType.unionset supports union_mode property
+#   - Added: SemanticModel.namespace field
+#   - Added: x-since, x-examples, x-category annotations
+#   - Separated MeasureFilter from DatasetFilter (different shapes)
+# =============================================================================
+
+$schema: https://json-schema.org/draft-07/schema#
+$id: https://semstrait.io/schemas/semantic-model/v1.2.yaml
+title: SemanticModel
+description: >
+  Semstrait semantic model definition. Defines datasets, kinds (grainset,
+  unionset, joinset), dimensions, measures, metrics, and relationships.
+
+type: object
+required: [semantic_model]
+additionalProperties: false
+properties:
+  semantic_model:
+    $ref: "#/definitions/SemanticModel"
+
+# =============================================================================
+# Definitions
+# =============================================================================
+definitions:
+
+  # ---------------------------------------------------------------------------
+  # Root model
+  # ---------------------------------------------------------------------------
+  SemanticModel:
+    type: object
+    required: [name]
+    additionalProperties: false
+    x-category: root
+    x-since: v1.0
+    properties:
+      name:
+        type: string
+        minLength: 1
+        description: Unique model identifier.
+        x-examples: [ecommerce_model, marketing_analytics]
+      description:
+        type: string
+        description: Human-readable model description.
+      ai_context:
+        type: string
+        description: Free-form context injected into AI query parsing prompts.
+      labels:
+        type: array
+        items: { type: string }
+        description: Arbitrary labels for tooling and governance.
+        x-since: v1.1
+      namespace:
+        type: string
+        description: Catalog namespace for glob dataset expansion (defaults to "default").
+        x-since: v1.2
+        x-examples: [default, production, staging]
+      datasets:
+        type: array
+        items: { $ref: "#/definitions/Dataset" }
+      kinds:
+        type: array
+        items: { $ref: "#/definitions/Kind" }
+      relationships:
+        type: array
+        items: { $ref: "#/definitions/Relationship" }
+      dimensions:
+        type: array
+        items: { $ref: "#/definitions/DimensionDef" }
+        description: Reusable dimension definitions, referenced via ref syntax.
+      measures:
+        type: array
+        items: { $ref: "#/definitions/MeasureDef" }
+        description: Reusable measure definitions, referenced via ref syntax.
+      metrics:
+        type: array
+        items: { $ref: "#/definitions/MetricDef" }
+        description: Reusable metric definitions, referenced via ref syntax.
+
+  # ---------------------------------------------------------------------------
+  # Dataset
+  # ---------------------------------------------------------------------------
+  Dataset:
+    type: object
+    required: [name]
+    additionalProperties: false
+    x-category: entity
+    x-since: v1.0
+    description: >
+      A queryable dataset backed by a physical table or view.
+      Contains dimensions, measures, and metrics.
+    properties:
+      name:
+        type: string
+        minLength: 1
+      description:
+        type: string
+      tags:
+        $ref: "#/definitions/Tags"
+      domain:
+        $ref: "#/definitions/Domain"
+      ai_context:
+        $ref: "#/definitions/AiContext"
+      keys:
+        $ref: "#/definitions/Keys"
+      dimensions:
+        type: array
+        items: { $ref: "#/definitions/DimensionEntry" }
+      measures:
+        type: array
+        items: { $ref: "#/definitions/MeasureEntry" }
+      metrics:
+        type: array
+        items: { $ref: "#/definitions/MetricEntry" }
+      filters:
+        type: array
+        items: { $ref: "#/definitions/DatasetFilter" }
+        description: Base WHERE predicates applied to every query on this dataset.
+      extras:
+        $ref: "#/definitions/DatasetExtras"
+
+  # ---------------------------------------------------------------------------
+  # Kind
+  # ---------------------------------------------------------------------------
+  Kind:
+    type: object
+    required: [name, type, datasets]
+    additionalProperties: false
+    x-category: entity
+    x-since: v1.0
+    description: >
+      A semantic abstraction over one or more datasets. Kinds define a
+      queryable interface (dimensions, measures, metrics) and bind to
+      physical datasets via column_mapping.
+    properties:
+      name:
+        type: string
+        minLength: 1
+      description:
+        type: string
+      domain:
+        $ref: "#/definitions/Domain"
+      ai_context:
+        $ref: "#/definitions/AiContext"
+      type:
+        $ref: "#/definitions/KindType"
+      keys:
+        $ref: "#/definitions/Keys"
+      dimensions:
+        type: array
+        items: { $ref: "#/definitions/DimensionEntry" }
+      measures:
+        type: array
+        items: { $ref: "#/definitions/MeasureEntry" }
+      metrics:
+        type: array
+        items: { $ref: "#/definitions/MetricEntry" }
+      datasets:
+        type: array
+        minItems: 1
+        items: { $ref: "#/definitions/KindDatasetEntry" }
+      relationships:
+        type: array
+        items: { $ref: "#/definitions/KindRelationship" }
+        description: Join paths between kind-internal datasets (required for joinset).
+      filters:
+        type: array
+        items: { $ref: "#/definitions/MeasureFilter" }
+        description: Kind-level filters applied to all queries against this kind.
+        x-since: v1.1
+
+  KindType:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    maxProperties: 1
+    description: >
+      Discriminated union: exactly one of grainset, unionset, or joinset.
+    properties:
+      grainset:
+        type: ["object", "null"]
+        additionalProperties: false
+        description: >
+          Datasets representing the same entity at different grains.
+          Planner picks the optimal dataset(s) to answer the query.
+      unionset:
+        type: ["object", "null"]
+        additionalProperties: false
+        description: >
+          Datasets combined via UNION ALL/DISTINCT. Missing columns are NULL-filled.
+        properties:
+          union_mode:
+            type: string
+            enum: [all, distinct]
+            default: all
+            description: UNION ALL (default) or UNION DISTINCT.
+            x-since: v1.2
+      joinset:
+        type: object
+        additionalProperties: false
+        description: >
+          Datasets joined together. Unused datasets are pruned from the join tree.
+        properties:
+          associativity:
+            type: string
+            enum: [left, right, full]
+            default: left
+            description: Default join type for all edges unless overridden per-relationship.
+
+  # ---------------------------------------------------------------------------
+  # Kind Dataset Entry
+  # ---------------------------------------------------------------------------
+  KindDatasetEntry:
+    oneOf:
+      - $ref: "#/definitions/KindDatasetInline"
+      - $ref: "#/definitions/RefEntry"
+
+  KindDatasetInline:
+    type: object
+    required: [name, extras]
+    additionalProperties: false
+    x-category: binding
+    properties:
+      name:
+        type: string
+        minLength: 1
+        description: >
+          Dataset name. Can be a literal name or a glob pattern (e.g. "orders_*")
+          for multi-dataset resolution. Globs require a catalog provider.
+        x-examples: [orders_daily, "orders_*"]
+      description:
+        type: string
+      ai_context:
+        $ref: "#/definitions/AiContext"
+      extras:
+        type: object
+        required: [column_mapping]
+        additionalProperties: false
+        properties:
+          column_mapping:
+            $ref: "#/definitions/ColumnMapping"
+          temporal:
+            $ref: "#/definitions/TemporalConfig"
+          storage:
+            $ref: "#/definitions/StorageConfig"
+          catalog:
+            $ref: "#/definitions/CatalogConfig"
+
+  ColumnMapping:
+    type: object
+    description: >
+      Maps kind-level semantic names to physical column names.
+      Keys are semantic names; values are strings or structured objects.
+    additionalProperties:
+      $ref: "#/definitions/ColumnMappingValue"
+
+  ColumnMappingValue:
+    oneOf:
+      - type: string
+        minLength: 1
+        description: Simple mapping to a physical column name.
+      - type: object
+        required: [column]
+        additionalProperties: false
+        description: Structured mapping with optional grain override.
+        properties:
+          column:
+            type: string
+            minLength: 1
+            description: Physical column name.
+          grain:
+            $ref: "#/definitions/TemporalGrain"
+
+  # ---------------------------------------------------------------------------
+  # Dimensions
+  # ---------------------------------------------------------------------------
+  DimensionEntry:
+    oneOf:
+      - $ref: "#/definitions/DimensionDef"
+      - $ref: "#/definitions/RefEntry"
+
+  DimensionDef:
+    type: object
+    required: [name, data_type, type]
+    additionalProperties: false
+    x-category: interface
+    x-since: v1.0
+    properties:
+      name:
+        type: string
+        minLength: 1
+      description:
+        type: string
+      data_type:
+        $ref: "#/definitions/DataType"
+      ai_context:
+        $ref: "#/definitions/AiContext"
+      type:
+        $ref: "#/definitions/DimensionType"
+
+  DimensionType:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    maxProperties: 1
+    description: >
+      Discriminated union: exactly one of temporal, categorical, binary, geo, or bucketed.
+    properties:
+      temporal:
+        type: object
+        required: [grains]
+        additionalProperties: false
+        properties:
+          grains:
+            type: array
+            items: { $ref: "#/definitions/TemporalGrain" }
+            minItems: 1
+            uniqueItems: true
+      categorical:
+        type: ["object", "null"]
+        additionalProperties: false
+        properties:
+          enum:
+            type: array
+            items: { type: string }
+            description: Optional allow-list of valid values.
+      binary:
+        type: object
+        required: [type]
+        additionalProperties: false
+        properties:
+          type:
+            type: string
+            enum: [boolean, bit, string]
+      geo:
+        type: object
+        required: [lat, lon]
+        additionalProperties: false
+        properties:
+          lat:
+            type: string
+            description: Physical column name for latitude.
+          lon:
+            type: string
+            description: Physical column name for longitude.
+      bucketed:
+        type: object
+        required: [column, buckets]
+        additionalProperties: false
+        properties:
+          column:
+            type: string
+            description: Source numeric physical column.
+          buckets:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              required: [name, start, end]
+              additionalProperties: false
+              properties:
+                name: { type: string }
+                start: { type: number }
+                end: { type: number }
+
+  # ---------------------------------------------------------------------------
+  # Measures
+  # ---------------------------------------------------------------------------
+  MeasureEntry:
+    oneOf:
+      - $ref: "#/definitions/MeasureDef"
+      - $ref: "#/definitions/RefEntry"
+
+  MeasureDef:
+    type: object
+    required: [name, data_type, expr]
+    additionalProperties: false
+    x-category: interface
+    x-since: v1.0
+    description: >
+      A quantitative aggregation definition. The expr field must be a
+      DSL expression (e.g. "SUM(amount)"), not raw SQL.
+    properties:
+      name:
+        type: string
+        minLength: 1
+        x-examples: [revenue, order_count, avg_price]
+      description:
+        type: string
+      data_type:
+        $ref: "#/definitions/DataType"
+      ai_context:
+        $ref: "#/definitions/AiContext"
+      expr:
+        type: string
+        minLength: 1
+        description: >
+          DSL expression. Supported aggregations: SUM, AVG, COUNT,
+          COUNT_DISTINCT (or COUNT(DISTINCT ...)), MIN, MAX.
+          Raw SQL strings (containing SELECT, FROM, WHERE) are rejected.
+        x-examples:
+          - "SUM(amount)"
+          - "COUNT(DISTINCT user_id)"
+          - "AVG(price)"
+          - "SUM(CASE WHEN status = 'active' THEN amount ELSE 0 END)"
+      additivity:
+        $ref: "#/definitions/Additivity"
+      constraints:
+        $ref: "#/definitions/Constraints"
+      filters:
+        type: array
+        items: { $ref: "#/definitions/MeasureFilter" }
+        description: >
+          Per-measure predicates. Applied via conditional aggregation
+          (CASE WHEN filter THEN expr ELSE NULL END) when multiple measures
+          share a dataset.
+
+  # ---------------------------------------------------------------------------
+  # Metrics
+  # ---------------------------------------------------------------------------
+  MetricEntry:
+    oneOf:
+      - $ref: "#/definitions/MetricDef"
+      - $ref: "#/definitions/RefEntry"
+
+  MetricDef:
+    type: object
+    required: [name, data_type, expr]
+    additionalProperties: false
+    x-category: interface
+    x-since: v1.0
+    description: >
+      A derived computation referencing measures or other metrics.
+      Chaining depth limit: 3 levels in v1 (metric -> metric -> measure).
+    properties:
+      name:
+        type: string
+        minLength: 1
+        x-examples: [avg_order_value, profit_margin, conversion_rate]
+      description:
+        type: string
+      data_type:
+        $ref: "#/definitions/DataType"
+      ai_context:
+        $ref: "#/definitions/AiContext"
+      expr:
+        type: string
+        minLength: 1
+        description: >
+          DSL expression referencing measure names or other metric names.
+        x-examples:
+          - "revenue / order_count"
+          - "profit / revenue"
+          - "(revenue - cost) / revenue"
+      additivity:
+        $ref: "#/definitions/Additivity"
+      constraints:
+        $ref: "#/definitions/Constraints"
+      filters:
+        type: array
+        items: { $ref: "#/definitions/MeasureFilter" }
+
+  # ---------------------------------------------------------------------------
+  # Filters
+  # ---------------------------------------------------------------------------
+  DatasetFilter:
+    type: object
+    required: [name, expr]
+    additionalProperties: false
+    x-category: predicate
+    description: >
+      Dataset-level base WHERE predicate. Applied before measure/user filters.
+    properties:
+      name:
+        type: string
+        minLength: 1
+      expr:
+        type: string
+        minLength: 1
+        description: DSL filter expression.
+        x-examples:
+          - "status != 'cancelled'"
+          - "is_deleted = false"
+
+  MeasureFilter:
+    type: object
+    required: [name, expr]
+    additionalProperties: false
+    x-category: predicate
+    description: >
+      Measure/metric/kind-level filter predicate.
+    properties:
+      name:
+        type: string
+        minLength: 1
+      expr:
+        type: string
+        minLength: 1
+        description: DSL filter expression.
+        x-examples:
+          - "status != 'cancelled'"
+          - "amount > 0"
+
+  # ---------------------------------------------------------------------------
+  # Additivity
+  # ---------------------------------------------------------------------------
+  Additivity:
+    type: object
+    required: [type]
+    additionalProperties: false
+    x-category: property
+    description: >
+      Informs the planner how to handle re-aggregation across grains.
+    properties:
+      type:
+        type: object
+        additionalProperties: false
+        minProperties: 1
+        maxProperties: 1
+        properties:
+          full:
+            type: ["object", "null"]
+            additionalProperties: false
+            description: Fully additive. SUM of SUMs is correct.
+          semi:
+            type: object
+            required: [non_additive_dimensions]
+            additionalProperties: false
+            description: >
+              Blocked on specific dimensions. Planner injects a
+              pre-resolution sub-query to collapse the non-additive
+              dimension before aggregation.
+            properties:
+              non_additive_dimensions:
+                type: array
+                items: { type: string }
+                minItems: 1
+              resolution_strategy:
+                type: string
+                enum: [latest, earliest, max, min]
+                default: latest
+          non:
+            type: ["object", "null"]
+            additionalProperties: false
+            description: >
+              Never re-aggregatable. Dataset must be at exact source grain.
+
+  # ---------------------------------------------------------------------------
+  # Constraints
+  # ---------------------------------------------------------------------------
+  Constraints:
+    type: object
+    additionalProperties: false
+    x-category: property
+    description: >
+      Evaluated BEFORE additivity. Violation rejects the query.
+    properties:
+      dimensions:
+        type: object
+        additionalProperties: false
+        properties:
+          one_of:
+            type: array
+            items: { type: string }
+            description: At least one must be in GROUP BY or WHERE.
+          none_of:
+            type: array
+            items: { type: string }
+            description: None may be in the query scope.
+          all:
+            type: array
+            items: { type: string }
+            description: All must be in GROUP BY or WHERE.
+      aggregations:
+        type: object
+        additionalProperties: false
+        properties:
+          allowed:
+            type: array
+            items: { type: string }
+            description: Only these aggregation functions are valid.
+          prohibited:
+            type: array
+            items: { type: string }
+            description: These aggregation functions are never valid.
+
+  # ---------------------------------------------------------------------------
+  # Relationships
+  # ---------------------------------------------------------------------------
+  Relationship:
+    type: object
+    required: [name, from, to, type, columns, cardinality]
+    additionalProperties: false
+    x-category: binding
+    x-since: v1.0
+    description: >
+      Top-level join path between datasets and/or kinds.
+    properties:
+      name:
+        type: string
+        minLength: 1
+      from:
+        type: string
+        description: Source dataset or kind name.
+      to:
+        type: string
+        description: Target dataset or kind name.
+      type:
+        $ref: "#/definitions/JoinType"
+      columns:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          required: [from, to]
+          additionalProperties: false
+          properties:
+            from: { type: string }
+            to: { type: string }
+      cardinality:
+        $ref: "#/definitions/Cardinality"
+
+  KindRelationship:
+    type: object
+    required: [name, from, to, type, columns, cardinality]
+    additionalProperties: false
+    x-category: binding
+    description: >
+      Kind-internal join path between datasets within the same kind.
+    properties:
+      name:
+        type: string
+        minLength: 1
+      from:
+        type: string
+        description: Source dataset name within this kind.
+      to:
+        type: string
+        description: Target dataset name within this kind.
+      type:
+        $ref: "#/definitions/JoinType"
+      columns:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          required: [from, to]
+          additionalProperties: false
+          properties:
+            from: { type: string }
+            to: { type: string }
+      cardinality:
+        $ref: "#/definitions/Cardinality"
+
+  # ---------------------------------------------------------------------------
+  # Keys
+  # ---------------------------------------------------------------------------
+  Keys:
+    type: object
+    additionalProperties: false
+    x-category: property
+    properties:
+      primary:
+        type: array
+        items: { type: string }
+        minItems: 1
+      unique:
+        type: array
+        items:
+          type: object
+          required: [columns]
+          additionalProperties: false
+          properties:
+            columns:
+              type: array
+              items: { type: string }
+              minItems: 1
+      foreign:
+        type: array
+        items:
+          type: object
+          required: [columns, reference, cardinality]
+          additionalProperties: false
+          properties:
+            columns:
+              type: array
+              items: { type: string }
+              minItems: 1
+            reference:
+              type: string
+            cardinality:
+              $ref: "#/definitions/Cardinality"
+
+  # ---------------------------------------------------------------------------
+  # Extras (storage, temporal, catalog)
+  # ---------------------------------------------------------------------------
+  DatasetExtras:
+    type: object
+    additionalProperties: false
+    x-category: binding
+    properties:
+      catalog:
+        $ref: "#/definitions/CatalogConfig"
+      temporal:
+        $ref: "#/definitions/TemporalConfig"
+      storage:
+        $ref: "#/definitions/StorageConfig"
+
+  CatalogConfig:
+    type: object
+    required: [type]
+    additionalProperties: false
+    properties:
+      type:
+        type: string
+        description: Catalog provider type.
+        x-examples: [iceberg, polaris, hive, glue]
+
+  TemporalConfig:
+    type: object
+    required: [type]
+    additionalProperties: false
+    description: >
+      Temporal historization pattern. Orthogonal to grain resolution
+      (which lives on dimension.temporal.grains). Both can coexist.
+    properties:
+      type:
+        type: object
+        additionalProperties: false
+        minProperties: 1
+        maxProperties: 1
+        properties:
+          timeseries:
+            type: object
+            required: [occurred_at]
+            additionalProperties: false
+            description: Event data with an event timestamp column.
+            properties:
+              occurred_at:
+                type: string
+                description: Physical column name for event timestamp.
+          snapshot:
+            type: object
+            required: [snapshotted_at]
+            additionalProperties: false
+            description: >
+              Periodic loads identified by a snapshot column.
+              Planner injects: col = (SELECT MAX(col) FROM same_table).
+            properties:
+              snapshotted_at:
+                type: string
+                description: Physical column name for snapshot timestamp.
+          scd:
+            $ref: "#/definitions/ScdConfig"
+
+  ScdConfig:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    maxProperties: 1
+    description: Slowly Changing Dimension strategy.
+    properties:
+      type_1:
+        type: ["object", "null"]
+        additionalProperties: false
+        description: Always overwrite. No temporal filter needed.
+      type_2:
+        type: object
+        required: [valid_from, valid_to]
+        additionalProperties: false
+        description: >
+          Versioned rows. Planner injects: valid_to IS NULL.
+        properties:
+          valid_from: { type: string }
+          valid_to: { type: string }
+      type_3:
+        type: ["object", "null"]
+        additionalProperties: false
+        description: Current + previous value in same row.
+      type_4:
+        type: ["object", "null"]
+        additionalProperties: false
+        description: History in a separate table.
+      type_5:
+        type: object
+        required: [valid_from, valid_to]
+        additionalProperties: false
+        description: Type 1 + Type 4 hybrid.
+        properties:
+          valid_from: { type: string }
+          valid_to: { type: string }
+      type_6:
+        type: object
+        required: [valid_from, valid_to]
+        additionalProperties: false
+        description: Type 1 + Type 2 + Type 3 hybrid.
+        properties:
+          valid_from: { type: string }
+          valid_to: { type: string }
+
+  StorageConfig:
+    type: object
+    required: [path]
+    additionalProperties: false
+    properties:
+      path:
+        type: string
+        minLength: 1
+        description: Fully qualified table path.
+        x-examples: [warehouse.orders, lakehouse.marketing.events]
+      partition_def:
+        $ref: "#/definitions/PartitionDef"
+
+  PartitionDef:
+    type: object
+    required: [type]
+    additionalProperties: false
+    properties:
+      type:
+        type: object
+        additionalProperties: false
+        minProperties: 1
+        maxProperties: 1
+        properties:
+          range:
+            type: object
+            required: [column, start, end]
+            additionalProperties: false
+            properties:
+              column: { type: string }
+              start: { type: string }
+              end: { type: string }
+          list:
+            type: object
+            required: [column, values]
+            additionalProperties: false
+            properties:
+              column: { type: string }
+              values:
+                type: array
+                items: { type: string }
+                minItems: 1
+
+  # ---------------------------------------------------------------------------
+  # AI Context
+  # ---------------------------------------------------------------------------
+  AiContext:
+    type: object
+    additionalProperties: false
+    x-category: metadata
+    x-since: v1.1
+    description: >
+      AI-facing metadata for query understanding, disambiguation,
+      and semantic search. All fields optional.
+    properties:
+      synonyms:
+        type: array
+        items: { type: string }
+        description: Alternative names users may use to refer to this entity.
+        x-examples: [["order date", "purchase date", "transaction date"]]
+      query_patterns:
+        type: array
+        items: { type: string }
+        description: Example natural-language queries for few-shot AI resolution.
+        x-examples: [["What was our total revenue?", "How much did we sell?"]]
+      value_examples:
+        type: array
+        items: { type: string }
+        description: Representative sample values (format/cardinality hints).
+        x-examples: [["2024-01-15", "electronics", "1234.56"]]
+      semantic_tags:
+        type: array
+        items: { type: string }
+        description: Free-form labels for embedding-based retrieval.
+        x-examples: [["kpi", "financial", "outcome"]]
+      aggregation_intent:
+        type: string
+        enum: [sum, avg, count, count_distinct, max, min]
+        description: >
+          Typical aggregation when a user asks for this measure.
+          Descriptive only; planner uses the expr field.
+        x-since: v1.2
+      unit:
+        type: string
+        description: Unit or currency of the measure/dimension.
+        x-examples: [USD, seconds, users]
+        x-since: v1.2
+      not:
+        type: array
+        items: { type: string }
+        description: What this field is NOT (prevents AI misresolution).
+        x-examples: [["refunds", "returns"]]
+        x-since: v1.2
+      entity:
+        type: string
+        description: The business entity this field describes.
+        x-examples: [order, customer, campaign]
+        x-since: v1.2
+      importance:
+        type: string
+        enum: [high, medium, low]
+        default: medium
+        description: How likely this field is to be requested.
+        x-since: v1.2
+      description:
+        type: string
+        description: Business-facing description (for dataset/kind-level ai_context).
+        x-since: v1.2
+      authoritative_for:
+        type: array
+        items: { type: string }
+        description: What this entity is the source of truth for.
+        x-since: v1.2
+      not_for:
+        type: array
+        items: { type: string }
+        description: What this entity should NOT be used for.
+        x-since: v1.2
+
+  # ---------------------------------------------------------------------------
+  # Shared enums and references
+  # ---------------------------------------------------------------------------
+  Tags:
+    type: object
+    additionalProperties: false
+    x-category: metadata
+    description: Flat tag object for tooling and governance.
+    properties:
+      source_type:
+        type: string
+        x-examples: [fact, dimension, staging, bigquery, snowflake]
+      visibility:
+        type: string
+        enum: [public, private]
+
+  RefEntry:
+    type: object
+    required: [ref]
+    additionalProperties: false
+    description: Reference to a top-level reusable definition.
+    properties:
+      ref:
+        type: string
+        minLength: 1
+
+  DataType:
+    type: string
+    description: >
+      YAML-facing data type name. Parsed by semstrait-model into typed enum.
+    x-examples: [i8, i16, i32, i64, f32, f64, bool, string, date, timestamp, "decimal(18, 2)"]
+
+  Domain:
+    description: >
+      Semantic data domain. Dot-delimited hierarchy for AI routing
+      and planner branch pruning. Scalar or array.
+    oneOf:
+      - type: string
+        minLength: 1
+      - type: array
+        items: { type: string, minLength: 1 }
+        minItems: 1
+    x-examples:
+      - financial.transactions
+      - [marketing.paid_social.facebook_ads, marketing.paid_social.google_ads]
+
+  TemporalGrain:
+    type: string
+    enum: [minute, hour, day, week, month, quarter, year]
+
+  JoinType:
+    type: string
+    enum: [inner, left, right, full]
+
+  Cardinality:
+    type: string
+    enum: [one_to_one, one_to_many, many_to_one, many_to_many]

@@ -1,0 +1,795 @@
+# =============================================================================
+# SEMSTRAIT SEMANTIC MODEL — SCHEMA v1.2
+# =============================================================================
+#
+# CHANGELOG vs v1.0 (original):
+#   - Removed wrapper objects in kind.dimensions/measures/metrics
+#     (was `- dimension: { name: ... }`, now `- name: ...` consistent with dataset level)
+#   - Unified column_mapping: moved out of extras.storage, now lives at extras root
+#     for kind datasets; top-level datasets use dimension/measure expr for physical refs
+#   - extras.storage.column_mapping removed (was ambiguous and unused)
+#   - Plural naming enforced throughout: grains (not grain), columns (always), values (list values)
+#   - `ref:` syntax formalized as a first-class entry in any dimensions[]/measures[]/metrics[]/datasets[]
+#   - Kind nesting restrictions documented and enforced (see NESTING MATRIX below)
+#   - scd.type flattened from double-nested `type: { type_2: ... }` to `type_2: { ... }` directly
+#   - temporal at kind-dataset level mirrors dataset-level temporal (snapshotted_at — consistent naming)
+#   - `tags` normalized to a flat object (was inconsistent array-of-objects)
+#   - `ai_context` extended: synonyms, query_patterns, domain_hints, value_examples (see AI TAGS section)
+#   - `keys.primary` is now `keys.primary: [col1, col2]` (explicit array literal, not `array` keyword)
+#   - `constraints` replaces `requires` (naming consistency with planner terminology)
+#   - `resolution_strategy` spelling fixed (was `resoltuion_strategy`)
+#   - Categorical dimension gets optional `enum` list (was listed on kind-level only)
+#   - Temporal grain RESOLUTION stays on dimension.type.temporal.grains
+#   - Temporal HISTORIZATION stays on extras.temporal (they are orthogonal, both can coexist)
+#   - junction block marked v2-only; removed from v1 schema
+#   - `partition_def` simplified and kept under extras.storage
+#   - geo.ltt/geo.lgt renamed to geo.lat/geo.lon (typo + non-standard abbreviation)
+#   - [v1.2] DSL-ONLY for all expr fields. Raw SQL strings rejected in v1 for type safety.
+#   - [v1.2] `domain` tag added to datasets and kinds for semantic data domain classification
+#            and AI-assisted query routing (virtual filter on planner resolution tree)
+
+# =============================================================================
+# KIND NESTING MATRIX
+# =============================================================================
+#
+# A kind.datasets[] entry can be an inline dataset OR a `ref:` to another kind.
+# Not all nesting combinations are meaningful. The compiler enforces:
+#
+#   Parent Kind   │ grainset  │ unionset  │ joinset
+#   ──────────────┼───────────┼───────────┼──────────────────────────────────────
+#   grainset      │  ❌ No    │  ✅ Yes   │  ✅ Yes
+#   unionset      │  ✅ Yes   │  ⚠️ Warn  │  ✅ Yes
+#   joinset       │  ✅ Yes   │  ✅ Yes   │  ❌ No
+#
+#   grainset → grainset  PROHIBITED: same grain alternatives of same grain alternatives
+#                        is redundant recursion. Flatten to a single grainset.
+#   joinset  → joinset   PROHIBITED: creates ambiguous join graph (shared anchor risk,
+#                        circular relationship paths). Flatten relationships instead.
+#   unionset → unionset  ALLOWED WITH WARNING: valid but should be flattened.
+#                        Compiler emits COMP_W010.
+#
+# Depth limit: max 2 levels of kind nesting in v1. Deeper nesting → compile error.
+#
+# =============================================================================
+
+semantic_model:
+  # Required. Unique identifier for this semantic model.
+  name: string # required
+
+  # Human-readable description.
+  description: string # optional
+
+  # Free-form context injected into AI query parsing prompts.
+  ai_context: string # optional
+
+  # Arbitrary labels for tooling / governance.
+  labels: # optional, array of strings
+    - string
+
+  # ===========================================================================
+  # TOP-LEVEL DATASETS
+  # ===========================================================================
+  # Physical data sources with full semantic definitions.
+  # A dataset lives here OR inside a kind — never in both.
+  datasets: # optional, array
+    - name: string # required, unique within semantic_model
+      description: string # optional
+
+      # Flat tag object. Extend freely; tooling reads known keys.
+      tags: # optional
+        source_type: string # e.g. "bigquery", "snowflake", "iceberg"
+        visibility: public | private # default: public
+
+      # -----------------------------------------------------------------------
+      # DOMAIN
+      # -----------------------------------------------------------------------
+      # Semantic data domain — hierarchical classification using dot notation.
+      # Primary purpose: AI-assisted query routing and planner branch pruning.
+      #
+      # When a query request includes a domain hint, the planner filters the
+      # resolution candidate tree to only datasets/kinds whose domain matches.
+      # Non-matching nodes are excluded BEFORE coverage analysis — they never
+      # enter the candidate set regardless of column coverage.
+      #
+      # Domain hierarchy:
+      #   top-level:   "financial", "marketing", "product", "logistics", "hr"
+      #   second-level: "financial.transactions", "marketing.paid_social"
+      #   third-level:  "marketing.paid_social.facebook_ads"
+      #
+      # Rules:
+      #   - Omitted domain = unrestricted; this dataset is always a candidate.
+      #   - Multiple domains: list form allowed (dataset covers multiple domains).
+      #   - Partial match: "marketing" matches "marketing.paid_social.facebook_ads".
+      #   - Planner domain filter is pre-step, runs before Step 1 (constraints check).
+      #
+      # Examples:
+      #   domain: financial.transactions
+      #   domain: [marketing.paid_social.facebook_ads, marketing.paid_social.google_ads]
+      domain: string | [string] # optional; dot-delimited hierarchy
+
+      # -----------------------------------------------------------------------
+      # KEYS
+      # -----------------------------------------------------------------------
+      # Logical quality and join-hint metadata. NOT integrity constraints.
+      # Planner uses these to validate aggregation operations on key columns.
+      #
+      # Allowed aggregations on any key column:
+      #   COUNT(DISTINCT), MIN, MAX, COUNT, FIRST/LAST/NTH_VALUE (with OVER)
+      # Prohibited:
+      #   SUM, AVG, MEDIAN, PERCENTILE
+      # Violation → planner rejects query with PLAN_E001.
+      #
+      # keys.foreign and semantic_model.relationships[] are complementary:
+      #   keys.foreign = semantic role ("this IS a foreign key")
+      #   relationships = physical join path (takes precedence)
+      keys: # optional
+        primary: # array of column names
+          - string
+        unique: # array, each entry is one uniqueness constraint
+          - columns:
+              - string
+        foreign: # array
+          - columns:
+              - string
+            reference: string # dataset name or kind name
+            cardinality: one_to_one | one_to_many | many_to_one | many_to_many
+
+      # -----------------------------------------------------------------------
+      # DIMENSIONS
+      # -----------------------------------------------------------------------
+      # Physical columns or derived expressions used as GROUP BY / filter axes.
+      # Same key aggregation constraints apply (COUNT DISTINCT, MIN, MAX, etc.).
+      # SUM/AVG on a dimension → planner rejects.
+      # Exception: bucketed dimensions derive from numeric values; model SUM/AVG
+      # as a separate measure on the source column, not on the bucket.
+      #
+      # A dimension entry is either:
+      #   (a) an inline definition, or
+      #   (b) a `ref:` pulling from semantic_model.dimensions[]
+      dimensions: # optional, array
+        # --- Inline definition ---
+        - name: string # required, unique within dataset
+          description: string # optional; human-readable
+          data_type: string # e.g. "date", "timestamp", "string", "float64"
+
+          # AI context — enriches AI query understanding for this dimension.
+          # All fields optional. Richer context = better AI query resolution.
+          ai_context: # optional
+            synonyms: # alternative names users may query by
+              - string # e.g. ["order date", "purchase date", "transaction date"]
+            query_patterns: # example natural-language queries that map to this dimension
+              - string # e.g. ["orders last month", "sales in Q3", "weekly trend"]
+            value_examples: # representative sample values (helps AI understand format/cardinality)
+              - string # e.g. ["2024-01-15", "2024-03-01"]
+            semantic_tags: # free-form semantic labels for embedding/retrieval
+              - string # e.g. ["time", "event-date", "fact-date"]
+
+          # Dimension type — discriminated union, exactly one branch.
+          type: # required
+            # Temporal: time-based axis with explicit grain resolution.
+            # Constrained data types: date, timestamp, datetime, time.
+            # grains: explicit list of AVAILABLE grain levels.
+            #   Finest grain = default. Planner derives coarser via DATE_TRUNC.
+            #   Only listed grains are valid query targets.
+            temporal:
+              grains: # required, array, at least one
+                - minute | hour | day | week | month | quarter | year
+
+            # Categorical: discrete string/integer categories.
+            categorical:
+              enum: # optional allow-list; omit = open cardinality
+                - string
+
+            # Binary: two-state dimension.
+            binary:
+              type: boolean | bit | string # required
+
+            # Geo: composite from two physical columns (WGS-84 lat/lon).
+            geo:
+              lat: string # physical column name for latitude  (was `ltt` — FIXED)
+              lon: string # physical column name for longitude (was `lgt` — FIXED)
+
+            # Bucketed: runtime-computed buckets from a numeric physical column.
+            # Planner emits CASE WHEN start <= col AND col < end THEN name END.
+            # Buckets are non-overlapping; gaps produce NULL.
+            bucketed:
+              column: string # source numeric physical column
+              buckets: # required, array
+                - name: string # bucket label, e.g. "0-100"
+                  start: number # inclusive lower bound
+                  end: number # exclusive upper bound
+
+        # --- Reference form ---
+        - ref: string # name of entry in semantic_model.dimensions[]
+
+      # -----------------------------------------------------------------------
+      # MEASURES
+      # -----------------------------------------------------------------------
+      # Numeric aggregation definitions.
+      # Three orthogonal blocks — strict evaluation order in planner:
+      #   1. constraints  → reject or allow query
+      #   2. additivity   → restructure query if needed
+      #   3. filters      → which rows contribute (CASE WHEN or WHERE)
+      measures: # optional, array
+        - name: string # required, unique within dataset
+          description: string # optional
+          data_type: string # e.g. "float64", "int64"
+
+          ai_context: # optional
+            synonyms: # alternative names users may query by
+              - string # e.g. ["total sales", "gross revenue", "income"]
+            query_patterns: # example NL queries mapping to this measure
+              - string # e.g. ["what is our revenue?", "total sales last quarter"]
+            semantic_tags: # semantic labels for embedding/retrieval
+              - string # e.g. ["kpi", "financial", "revenue"]
+
+          # Aggregation expression — DSL only in v1.
+          # See architecture/02_dsl_expression_system.md for full DSL reference.
+          # Planner does NOT change the aggregation function. additivity changes
+          # query STRUCTURE (sub-queries, routing), not the function.
+          expr: dsl # required
+
+          # ADDITIVITY — PROPERTY (not a constraint).
+          # Informs the planner how to handle re-aggregation.
+          additivity: # optional; default: full
+            type: # discriminated union, one branch
+              # Full: summable everywhere. SUM of SUMs is correct.
+              # Planner does nothing special.
+              full:
+
+              # Semi: blocked on specific non-additive dimensions.
+              # Planner injects a pre-resolution sub-query to collapse the
+              # non-additive dimension to a single value BEFORE aggregation.
+              # If the dimension IS in the user GROUP BY → no sub-query needed.
+              semi:
+                non_additive_dimensions: # required, array, at least one
+                  - string
+                resolution_strategy: latest | earliest | max | min # default: latest
+
+              # Non: never re-aggregatable from pre-computed values.
+              # Dataset must be at exact source grain; planner reroutes to source
+              # if a pre-aggregated version is at a different grain.
+              non:
+
+          # CONSTRAINTS — evaluated BEFORE additivity. Violation → query rejected.
+          constraints: # optional
+            dimensions:
+              one_of: # at least one of these must be in GROUP BY or WHERE
+                - string
+              none_of: # none of these may be in the query scope
+                - string
+              all: # all of these must be in GROUP BY or WHERE
+                - string
+            aggregations:
+              allowed: # ONLY these aggregation functions are valid for this measure
+                - string
+              prohibited: # these aggregation functions are never valid
+                - string
+
+          # FILTERS — PREDICATES applied when this measure is computed.
+          # Applied AFTER additivity resolution and after dataset-level filter.
+          # Single-measure query: injected as WHERE clause.
+          # Multi-measure same dataset: CASE WHEN inside aggregation expression.
+          #   e.g. SUM(CASE WHEN status != 'cancelled' THEN amount END)
+          # Multiple filter entries AND together.
+          filters: # optional, array
+            - name: string # required, unique within measure
+              expr: dsl # required
+
+        # --- Reference form ---
+        - ref: string # name of entry in semantic_model.measures[]
+
+      # -----------------------------------------------------------------------
+      # METRICS
+      # -----------------------------------------------------------------------
+      # Business-level derived aggregations.
+      # Inherit additivity and constraints from referenced measures (trace through expr).
+      # Own blocks add further restrictions — on conflict, STRICTER wins.
+      # Chaining depth limit: 3 levels in v1 (metric → metric → measure).
+      metrics: # optional, array
+        - name: string # required, unique within dataset
+          description: string # optional
+          data_type: string
+
+          ai_context:
+            synonyms:
+              - string
+
+          expr: dsl # required; references measure names or other metric names
+
+          additivity: # optional; inherited from referenced measures if omitted
+            type:
+              full:
+              semi:
+                non_additive_dimensions:
+                  - string
+                resolution_strategy: latest | earliest | max | min
+              non:
+
+          constraints: # optional; merged with inherited constraints (stricter wins)
+            dimensions:
+              one_of:
+                - string
+              none_of:
+                - string
+              all:
+                - string
+            aggregations:
+              allowed:
+                - string
+              prohibited:
+                - string
+
+          # Metric-level filter: outer WHERE on the ENTIRE metric computation scope.
+          # Distinct from measure filter (per-aggregation CASE WHEN).
+          filters: # optional, array
+            - name: string
+              expr: dsl
+
+        # --- Reference form ---
+        - ref: string # name of entry in semantic_model.metrics[]
+
+      # -----------------------------------------------------------------------
+      # DATASET-LEVEL FILTERS
+      # -----------------------------------------------------------------------
+      # Always applied as base WHERE when this dataset is read.
+      # Applied BEFORE measure/metric/user filters.
+      # Multiple entries AND together.
+      filters: # optional, array
+        - name: string # required, unique within dataset
+          expr: dsl # required
+
+      # -----------------------------------------------------------------------
+      # EXTRAS
+      # -----------------------------------------------------------------------
+      extras: # optional
+        # Catalog integration (polaris/iceberg or hive/iceberg).
+        catalog: # optional
+          type: string # e.g. "polaris", "hive", "glue"
+
+        # Temporal HISTORIZATION — how data changes over time.
+        # ORTHOGONAL to grain RESOLUTION (which lives on dimension.temporal.grains).
+        # Both can coexist: a snapshot dataset can also have a temporal dimension at day grain.
+        temporal: # optional
+          type: # discriminated union, one branch
+            # Time-series: event data with an event timestamp column.
+            timeseries:
+              occurred_at: string # required; physical column name (was `occuried_at` — FIXED)
+
+            # Snapshot: periodic full or partial loads identified by a snapshot column.
+            # Planner injects: col = (SELECT MAX(col) FROM same_table)
+            snapshot:
+              snapshotted_at: string # required; physical column name of the snapshot timestamp
+
+            # SCD: Slowly Changing Dimension strategies.
+            # Discriminated union — exactly one scd type.
+            scd:
+              # type_1: always overwrite. No temporal filter needed.
+              type_1:
+
+              # type_2: versioned rows. Planner injects: valid_to IS NULL
+              type_2:
+                valid_from: string # required; physical column name
+                valid_to: string # required; NULL = current row
+
+              # type_3: current + previous value in same row. No row-level filter.
+              # Column selection handled in dimension/measure expr.
+              type_3:
+
+              # type_4: history in a separate table.
+              # Model the history table as a separate dataset in the joinset/relationship.
+              type_4:
+
+              # type_5: type_1 + type_4 hybrid (current + mini-dimension).
+              type_5:
+                valid_from: string
+                valid_to: string
+
+              # type_6: type_1 + type_2 + type_3 hybrid.
+              type_6:
+                valid_from: string
+                valid_to: string
+
+        # Storage location and optional partition metadata.
+        storage: # optional
+          path: string # required if storage block present; e.g. "warehouse.orders"
+          partition_def: # optional
+            type: # discriminated union
+              range:
+                column: string # partition column
+                start: string # inclusive, ISO or numeric string
+                end: string # exclusive
+              list:
+                column: string # partition column
+                values: # array of partition values
+                  - string
+
+  # ===========================================================================
+  # KINDS
+  # ===========================================================================
+  kinds: # optional, array
+    - name: string # required, unique within semantic_model
+      description: string # optional
+
+      # Domain — same semantics as dataset.domain; see dataset section for full docs.
+      # When set on a kind, the domain applies to the entire virtual entity.
+      # Individual kind-internal datasets can override with their own domain.
+      domain: string | [string] # optional; dot-delimited hierarchy
+
+      # Kind type — discriminated union, exactly one branch.
+      type: # required
+        # -------------------------------------------------------------------
+        # GRAINSET
+        # -------------------------------------------------------------------
+        # Datasets representing the SAME semantic entity at DIFFERENT grains.
+        # Planner picks the optimal dataset(s) to answer the query.
+        #
+        # RESOLUTION ALGORITHM (see architecture/01_system_overview.md for full):
+        #   Step 1  CONSTRAINTS CHECK — reject if violated
+        #   Step 2  REQUIRED COVERAGE — dims + filter-referenced dims + measures
+        #   Step 3  FIND COVERING DATASETS — column_mapping grain <= requested grain
+        #   Step 4  ADDITIVITY CHECK — semi/non rules per dataset
+        #   Step 5a Single covering dataset → pick coarsest grain
+        #   Step 5b Multiple same-grain covering datasets → UNION ALL (partitions)
+        #   Step 5c No single covers all → HORIZONTAL JOIN if consumer supports FULL OUTER
+        #   Step 5d Nothing works → PARTIAL RESULT or REJECT
+        #   Step 6  GENERATE SQL with filters and GROUP BY
+        grainset:
+
+        # -------------------------------------------------------------------
+        # UNIONSET
+        # -------------------------------------------------------------------
+        # Datasets that are semantically equal and combined via UNION ALL.
+        # Current version: UNION ALL only.
+        #
+        # RESOLUTION ALGORITHM:
+        #   Step 1  CONSTRAINTS CHECK
+        #   Step 2  BUILD UNION BRANCHES — map or NULL-fill each kind-level column per dataset
+        #   Step 3  PRUNE BRANCHES — if a filter excludes NULLs and dataset lacks the column → prune
+        #   Step 4  UNION ALL non-pruned branches
+        #   Step 5  AGGREGATE on combined result
+        #   Step 6  APPLY FILTERS — dataset filters per branch; measure/user filters on result
+        unionset:
+
+        # -------------------------------------------------------------------
+        # JOINSET
+        # -------------------------------------------------------------------
+        # Datasets joined together to construct one entity.
+        # Join pruning: datasets not needed for the query are not joined.
+        #
+        # RESOLUTION ALGORITHM:
+        #   Step 1  CONSTRAINTS CHECK
+        #   Step 2  IDENTIFY NEEDED DATASETS — via column_mapping lookup per requested field
+        #   Step 3  ANCHOR — always included; inferred as in-degree=0 node in relationship graph
+        #   Step 4  BUILD JOIN TREE — BFS from anchor; include all intermediate datasets on path
+        #   Step 5  PRUNE — exclude unreachable datasets from join tree
+        #   Step 6  TEMPORAL FILTERS — inject SCD/snapshot predicates per joined dataset
+        #   Step 7  GENERATE SQL — SELECT, GROUP BY, aggregations, all filter layers
+        joinset:
+          associativity: left | right | full # default join type for all edges unless overridden
+
+      # -----------------------------------------------------------------------
+      # KIND-LEVEL SEMANTIC CONTRACT
+      # -----------------------------------------------------------------------
+      # The queryable interface. Kind-internal datasets bind to these via column_mapping.
+      # Computation constraints identical to dataset-level (see above).
+
+      keys: # optional; same structure as dataset.keys
+        primary:
+          - string
+        unique:
+          - columns:
+              - string
+        foreign:
+          - columns:
+              - string
+            reference: string
+            cardinality: one_to_one | one_to_many | many_to_one | many_to_many
+
+      # Kind-level dimensions — SAME STRUCTURE as dataset.dimensions.
+      # NO wrapper object (was `- dimension: { ... }` — FIXED to `- name: ...`).
+      dimensions: # optional, array
+        - name: string
+          description: string
+          data_type: string
+          ai_context:
+            synonyms:
+              - string
+          type:
+            temporal:
+              grains:
+                - minute | hour | day | week | month | quarter | year
+            categorical:
+              enum:
+                - string
+            binary:
+              type: boolean | bit | string
+            geo:
+              lat: string
+              lon: string
+            bucketed:
+              column: string
+              buckets:
+                - name: string
+                  start: number
+                  end: number
+        - ref: string # pulls from semantic_model.dimensions[]
+
+      # Kind-level measures — SAME STRUCTURE as dataset.measures.
+      # NO wrapper object (was `- measure: { ... }` — FIXED).
+      measures: # optional, array
+        - name: string
+          description: string
+          data_type: string
+          ai_context:
+            synonyms:
+              - string
+          expr: dsl
+          additivity:
+            type:
+              full:
+              semi:
+                non_additive_dimensions:
+                  - string
+                resolution_strategy: latest | earliest | max | min
+              non:
+          constraints:
+            dimensions:
+              one_of:
+                - string
+              none_of:
+                - string
+              all:
+                - string
+            aggregations:
+              allowed:
+                - string
+              prohibited:
+                - string
+          filters:
+            - name: string
+              expr: dsl
+        - ref: string # pulls from semantic_model.measures[]
+
+      # Kind-level metrics — SAME STRUCTURE as dataset.metrics.
+      # NO wrapper object (was `- metric: { ... }` — FIXED).
+      metrics: # optional, array
+        - name: string
+          description: string
+          data_type: string
+          ai_context:
+            synonyms:
+              - string
+          expr: dsl
+          additivity:
+            type:
+              full:
+              semi:
+                non_additive_dimensions:
+                  - string
+                resolution_strategy: latest | earliest | max | min
+              non:
+          constraints:
+            dimensions:
+              one_of:
+                - string
+              none_of:
+                - string
+              all:
+                - string
+            aggregations:
+              allowed:
+                - string
+              prohibited:
+                - string
+          filters:
+            - name: string
+              expr: dsl
+        - ref: string # pulls from semantic_model.metrics[]
+
+      # -----------------------------------------------------------------------
+      # KIND DATASETS
+      # -----------------------------------------------------------------------
+      # Self-contained physical bindings for this kind.
+      # No keys/dimensions/measures/metrics — defined at kind level above.
+      # No cross-reference to semantic_model.datasets[].
+      #
+      # Each entry is ONE OF:
+      #   (a) Inline dataset definition
+      #   (b) `ref: kind_name` — embeds another kind (nesting restrictions apply)
+      datasets: # required, array, at least one entry
+        # (a) Inline dataset
+        - name: string # required
+          description: string # optional
+
+          ai_context: # optional
+            synonyms:
+              - string
+
+          extras: # required
+            # COLUMN MAPPING — primary binding: semantic name → physical column.
+            # Format 1 (simple):   revenue: amount_usd
+            # Format 2 (complex):  order_date:
+            #                        column: created_at_month
+            #                        grain: month
+            # Rules:
+            #   - Omitted grain on temporal → inherits finest grain from kind dimension.grains.
+            #   - Omitted semantic field → not available in this dataset.
+            #     grainset: planner skips this dataset for queries needing that field.
+            #     unionset: planner substitutes NULL for this field.
+            #     joinset:  planner skips joining this dataset if no needed fields.
+            column_mapping: # required for inline dataset
+              # Each key is a kind-level semantic name.
+              # Each value is either a string (physical column) or:
+              #   column: string    (physical column name)
+              #   grain: string     (temporal grain — must be in kind dimension's grains list)
+
+            # Temporal historization — same structure as dataset.extras.temporal.
+            temporal: # optional
+              type:
+                timeseries:
+                  occurred_at: string
+                snapshot:
+                  snapshotted_at: string
+                scd:
+                  type_1:
+                  type_2:
+                    valid_from: string
+                    valid_to: string
+                  type_3:
+                  type_4:
+                  type_5:
+                    valid_from: string
+                    valid_to: string
+                  type_6:
+                    valid_from: string
+                    valid_to: string
+
+            storage: # optional
+              path: string # e.g. "warehouse.orders_monthly"
+
+            catalog: # optional
+              type: string
+
+        # (b) Kind reference (for nesting — see NESTING MATRIX above)
+        - ref: string # kind name; nesting restrictions enforced by compiler
+
+      # -----------------------------------------------------------------------
+      # KIND RELATIONSHIPS
+      # -----------------------------------------------------------------------
+      # Scoped to this kind's internal datasets (inline or nested).
+      # Only REQUIRED for joinset. Not needed for grainset or unionset.
+      # Exception: grainset may use relationships for horizontal join case,
+      #   but that join is implicit (on shared GROUP BY dims) — not configured here.
+      #
+      # Physical join keys (e.g., customer_hk) are specified here.
+      # These keys are NOT kind-level semantic entities.
+      relationships: # optional (required for joinset)
+        - name: string # required, unique within kind
+          from: string # dataset name in this kind
+          to: string # dataset name in this kind
+          type: inner | left | right | full # overrides joinset.associativity for this edge
+          columns: # required, at least one pair
+            - from: string # physical column name in `from` dataset
+              to: string # physical column name in `to` dataset
+          cardinality: one_to_one | one_to_many | many_to_one | many_to_many # required
+
+  # ===========================================================================
+  # TOP-LEVEL RELATIONSHIPS
+  # ===========================================================================
+  # Joins between top-level datasets and/or kinds.
+  # Planner uses these when a query spans multiple top-level entities.
+  # Kind-internal joins use kind.relationships[], NOT this block.
+  #
+  # Complementary with keys.foreign:
+  #   keys.foreign = semantic role
+  #   relationships = physical join path (takes precedence)
+  relationships: # optional, array
+    - name: string # required, unique within semantic_model
+      from: string # dataset or kind name
+      to: string # dataset or kind name
+      type: inner | left | right | full # required
+      columns: # required, at least one pair
+        - from: string # semantic column name on `from` side
+          to: string # semantic column name on `to` side
+      cardinality: one_to_one | one_to_many | many_to_one | many_to_many # required
+      # NOTE: junction (many-to-many bridge table) is deferred to v2.
+
+  # ===========================================================================
+  # TOP-LEVEL REUSABLE DEFINITIONS
+  # ===========================================================================
+  # Define once; reference via `ref: name` in any dimensions[]/measures[]/metrics[].
+  # No local overrides at the ref site — for variations, define a separate inline entry.
+  # These definitions CANNOT themselves contain `ref:` entries (no transitive refs).
+
+  dimensions: # optional, array; same structure as dataset.dimensions
+    - name: string
+      description: string
+      data_type: string
+      ai_context:
+        synonyms:
+          - string
+      type:
+        temporal:
+          grains:
+            - minute | hour | day | week | month | quarter | year
+        categorical:
+          enum:
+            - string
+        binary:
+          type: boolean | bit | string
+        geo:
+          lat: string
+          lon: string
+        bucketed:
+          column: string
+          buckets:
+            - name: string
+              start: number
+              end: number
+
+  measures: # optional, array; same structure as dataset.measures
+    - name: string
+      description: string
+      data_type: string
+      ai_context:
+        synonyms:
+          - string
+      expr: dsl
+      additivity:
+        type:
+          full:
+          semi:
+            non_additive_dimensions:
+              - string
+            resolution_strategy: latest | earliest | max | min
+          non:
+      constraints:
+        dimensions:
+          one_of:
+            - string
+          none_of:
+            - string
+          all:
+            - string
+        aggregations:
+          allowed:
+            - string
+          prohibited:
+            - string
+      filters:
+        - name: string
+          expr: dsl
+
+  metrics: # optional, array; same structure as dataset.metrics
+    - name: string
+      description: string
+      data_type: string
+      ai_context:
+        synonyms:
+          - string
+      expr: dsl
+      additivity:
+        type:
+          full:
+          semi:
+            non_additive_dimensions:
+              - string
+            resolution_strategy: latest | earliest | max | min
+          non:
+      constraints:
+        dimensions:
+          one_of:
+            - string
+          none_of:
+            - string
+          all:
+            - string
+        aggregations:
+          allowed:
+            - string
+          prohibited:
+            - string
+      filters:
+        - name: string
+          expr: dsl
