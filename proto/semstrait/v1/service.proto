@@ -18,18 +18,26 @@ service SemstraitService {
 }
 
 message QueryRequest {
-  string kind = 1;
-  repeated string dimensions = 2;
-  repeated string measures = 3;
-  repeated Filter filters = 4;
-  optional string grain = 5;
-  optional uint64 limit = 6;
-  repeated OrderBy order_by = 7;
-  map<string, string> session = 8;
+  // Semantic model source (inline YAML/JSON).
+  optional string model = 1;
+  // Entity to query: a kind name or a dataset name.
+  string from = 2;
+  // Semantic names to select (system classifies into dimensions/measures/metrics).
+  // Use ["*"] to select all columns.
+  repeated string select = 3;
+  // Named filters from the manifest.
+  repeated string filters = 4;
+  // Inline filter expressions (stub — not implemented in v1).
+  repeated RawFilter raw_filters = 5;
+  optional string grain = 6;
+  optional uint64 limit = 7;
+  repeated OrderBy order_by = 8;
+  map<string, string> session = 9;
 }
 
-message Filter {
-  string dimension = 1;
+// Inline filter expression (stub — not implemented in v1).
+message RawFilter {
+  string field = 1;
   string operator = 2;
   string value_json = 3; // JSON-encoded filter value
 }

@@ -53,8 +53,8 @@ impl SemanticPlanner {
 
         // Step 2: Look up the kind.
         let kind = manifest
-            .get_kind(&request.kind_name)
-            .ok_or_else(|| PlannerError::KindNotFound(request.kind_name.clone()))?;
+            .get_kind(&request.entity_name)
+            .ok_or_else(|| PlannerError::KindNotFound(request.entity_name.clone()))?;
 
         // Step 3: Apply domain filter — narrow datasets if domain_hint is present.
         let kind = if let Some(ref domain_hint) = request.domain_hint {

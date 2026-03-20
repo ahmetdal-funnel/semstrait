@@ -1,10 +1,10 @@
 //! RequestParser — converts RawQueryRequest → validated/resolved request.
 
 use crate::error::ParseError;
-use crate::types::{RawFilter, RawQueryRequest};
-use semstrait_manifest::CompiledManifest;
+use crate::types::RawQueryRequest;
+use semstrait_manifest::{CompiledKind, CompiledManifest};
 use semstrait_planner::request::{
-    FilterOperator, FilterValue, OrderByClause, QueryFilter, ResolvedQueryRequest, SortDirection,
+    OrderByClause, ResolvedQueryRequest, SortDirection,
 };
 
 /// Parses raw query requests against a compiled manifest.
@@ -13,20 +13,25 @@ pub struct RequestParser;
 impl RequestParser {
     /// Basic structural validation (no manifest needed).
     pub fn parse(raw: &RawQueryRequest) -> Result<ValidatedRequest, ParseError> {
-        if raw.kind.is_empty() {
-            return Err(ParseError::KindNotFound("empty kind name".to_string()));
+        if raw.from.is_empty() {
+            return Err(ParseError::EntityNotFound("empty entity name".to_string()));
         }
 
-        if raw.dimensions.is_empty() && raw.measures.is_empty() {
+        if raw.select.is_empty() {
             return Err(ParseError::Validation(
-                "at least one dimension or measure must be specified".to_string(),
+                "select must contain at least one column name or \"*\"".to_string(),
             ));
         }
 
+        // Reject inline raw filters in v1.
+        if !raw.raw_filters.is_empty() {
+            return Err(ParseError::RawFiltersNotImplemented);
+        }
+
         Ok(ValidatedRequest {
-            kind_name: raw.kind.clone(),
-            dimensions: raw.dimensions.clone(),
-            measures: raw.measures.clone(),
+            entity_name: raw.from.clone(),
+            select: raw.select.clone(),
+            filters: raw.filters.clone(),
             grain: raw.grain.clone(),
             limit: raw.limit,
         })
@@ -41,37 +46,25 @@ impl RequestParser {
         // Basic validation.
         let _ = Self::parse(raw)?;
 
-        // Validate kind exists.
-        let kind = manifest
-            .get_kind(&raw.kind)
-            .ok_or_else(|| ParseError::KindNotFound(raw.kind.clone()))?;
+        // Resolve entity (kind or dataset).
+        let entity = manifest
+            .resolve_entity(&raw.from)
+            .ok_or_else(|| ParseError::EntityNotFound(raw.from.clone()))?;
+        let kind = entity.as_kind();
 
-        // Validate dimensions.
-        for dim in &raw.dimensions {
-            if !kind.dimensions.contains_key(dim) {
-                return Err(ParseError::DimensionNotFound {
-                    kind: raw.kind.clone(),
-                    name: dim.clone(),
+        // Expand "*" and classify select names.
+        let select_names = expand_select(&raw.select, kind);
+        let (dimensions, measures) = classify_select(&select_names, kind, &raw.from)?;
+
+        // Resolve named filters against kind-level filters.
+        for filter_name in &raw.filters {
+            if !kind.filters.iter().any(|f| f.name == *filter_name) {
+                return Err(ParseError::FilterNotFound {
+                    entity: raw.from.clone(),
+                    name: filter_name.clone(),
                 });
             }
         }
-
-        // Validate measures/metrics.
-        for mea in &raw.measures {
-            if !kind.measures.contains_key(mea) && !kind.metrics.contains_key(mea) {
-                return Err(ParseError::MeasureNotFound {
-                    kind: raw.kind.clone(),
-                    name: mea.clone(),
-                });
-            }
-        }
-
-        // Convert filters.
-        let filters = raw
-            .filters
-            .iter()
-            .map(convert_filter)
-            .collect::<Result<Vec<_>, _>>()?;
 
         // Convert order_by.
         let order_by = raw
@@ -88,10 +81,10 @@ impl RequestParser {
             .collect();
 
         Ok(ResolvedQueryRequest {
-            kind_name: raw.kind.clone(),
-            dimensions: raw.dimensions.clone(),
-            measures: raw.measures.clone(),
-            filters,
+            entity_name: raw.from.clone(),
+            dimensions,
+            measures,
+            filters: vec![], // v1: named filters are applied by the planner via kind-level filters
             grain: None, // v1: grain conversion deferred
             limit: raw.limit,
             order_by,
@@ -101,70 +94,52 @@ impl RequestParser {
     }
 }
 
-/// Convert a raw API filter to a planner QueryFilter.
-fn convert_filter(raw: &RawFilter) -> Result<QueryFilter, ParseError> {
-    let operator = match raw.operator.to_lowercase().as_str() {
-        "eq" | "=" | "==" => FilterOperator::Eq,
-        "neq" | "!=" | "<>" => FilterOperator::NotEq,
-        "lt" | "<" => FilterOperator::Lt,
-        "lte" | "<=" => FilterOperator::LtEq,
-        "gt" | ">" => FilterOperator::Gt,
-        "gte" | ">=" => FilterOperator::GtEq,
-        "in" => FilterOperator::In,
-        "not_in" | "notin" => FilterOperator::NotIn,
-        "between" => FilterOperator::Between,
-        "is_null" | "isnull" => FilterOperator::IsNull,
-        "is_not_null" | "isnotnull" => FilterOperator::IsNotNull,
-        other => {
-            return Err(ParseError::InvalidFilter(format!(
-                "unknown operator: {}",
-                other
-            )))
-        }
-    };
-
-    let values = convert_filter_value(&raw.value)?;
-
-    Ok(QueryFilter {
-        field: raw.dimension.clone(),
-        operator,
-        values,
-    })
-}
-
-/// Convert a serde_json::Value to FilterValue(s).
-fn convert_filter_value(value: &serde_json::Value) -> Result<Vec<FilterValue>, ParseError> {
-    match value {
-        serde_json::Value::String(s) => Ok(vec![FilterValue::String(s.clone())]),
-        serde_json::Value::Number(n) => {
-            let f = n
-                .as_f64()
-                .ok_or_else(|| ParseError::InvalidFilter("non-numeric number".to_string()))?;
-            Ok(vec![FilterValue::Number(f)])
-        }
-        serde_json::Value::Bool(b) => Ok(vec![FilterValue::Bool(*b)]),
-        serde_json::Value::Null => Ok(vec![FilterValue::Null]),
-        serde_json::Value::Array(arr) => {
-            let mut values = Vec::new();
-            for item in arr {
-                let mut v = convert_filter_value(item)?;
-                values.append(&mut v);
-            }
-            Ok(values)
-        }
-        _ => Err(ParseError::InvalidFilter(format!(
-            "unsupported filter value: {}",
-            value
-        ))),
+/// Expand `["*"]` into all dimension + measure + metric names from the entity.
+/// If no `*` is present, returns the select list as-is.
+fn expand_select(select: &[String], kind: &CompiledKind) -> Vec<String> {
+    if select.len() == 1 && select[0] == "*" {
+        let mut names: Vec<String> = Vec::new();
+        names.extend(kind.dimensions.keys().cloned());
+        names.extend(kind.measures.keys().cloned());
+        names.extend(kind.metrics.keys().cloned());
+        names
+    } else {
+        select.to_vec()
     }
 }
 
-/// A validated query request (subset of ResolvedQueryRequest from planner).
+/// Classify select names into dimensions and measures/metrics.
+/// Returns `(dimensions, measures)` where measures includes both measures and metrics.
+fn classify_select(
+    names: &[String],
+    kind: &CompiledKind,
+    entity_name: &str,
+) -> Result<(Vec<String>, Vec<String>), ParseError> {
+    let mut dimensions = Vec::new();
+    let mut measures = Vec::new();
+
+    for name in names {
+        if kind.dimensions.contains_key(name) {
+            dimensions.push(name.clone());
+        } else if kind.measures.contains_key(name) || kind.metrics.contains_key(name) {
+            measures.push(name.clone());
+        } else {
+            return Err(ParseError::UnknownSelectName {
+                entity: entity_name.to_string(),
+                name: name.clone(),
+            });
+        }
+    }
+
+    Ok((dimensions, measures))
+}
+
+/// A validated query request (structural validation only, no manifest).
 #[derive(Debug, Clone)]
 pub struct ValidatedRequest {
-    pub kind_name: String,
-    pub dimensions: Vec<String>,
-    pub measures: Vec<String>,
+    pub entity_name: String,
+    pub select: Vec<String>,
+    pub filters: Vec<String>,
     pub grain: Option<String>,
     pub limit: Option<u64>,
 }
@@ -176,36 +151,46 @@ mod tests {
     #[test]
     fn test_parse_valid_request() {
         let raw = RawQueryRequest {
-            kind: "sales".to_string(),
-            dimensions: vec!["region".to_string()],
-            measures: vec!["revenue".to_string()],
+            from: "sales".to_string(),
+            select: vec!["region".to_string(), "revenue".to_string()],
             ..Default::default()
         };
 
         let result = RequestParser::parse(&raw);
         assert!(result.is_ok());
         let req = result.unwrap();
-        assert_eq!(req.kind_name, "sales");
-        assert_eq!(req.dimensions, vec!["region"]);
-        assert_eq!(req.measures, vec!["revenue"]);
+        assert_eq!(req.entity_name, "sales");
+        assert_eq!(req.select, vec!["region", "revenue"]);
     }
 
     #[test]
-    fn test_parse_empty_kind() {
+    fn test_parse_star_select() {
         let raw = RawQueryRequest {
-            kind: "".to_string(),
-            measures: vec!["revenue".to_string()],
+            from: "sales".to_string(),
+            select: vec!["*".to_string()],
             ..Default::default()
         };
 
         let result = RequestParser::parse(&raw);
-        assert!(matches!(result, Err(ParseError::KindNotFound(_))));
+        assert!(result.is_ok());
     }
 
     #[test]
-    fn test_parse_no_dimensions_or_measures() {
+    fn test_parse_empty_from() {
         let raw = RawQueryRequest {
-            kind: "sales".to_string(),
+            from: "".to_string(),
+            select: vec!["revenue".to_string()],
+            ..Default::default()
+        };
+
+        let result = RequestParser::parse(&raw);
+        assert!(matches!(result, Err(ParseError::EntityNotFound(_))));
+    }
+
+    #[test]
+    fn test_parse_empty_select() {
+        let raw = RawQueryRequest {
+            from: "sales".to_string(),
             ..Default::default()
         };
 
@@ -214,33 +199,21 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_filter_operators() {
-        let tests = vec![
-            ("eq", FilterOperator::Eq),
-            ("=", FilterOperator::Eq),
-            ("neq", FilterOperator::NotEq),
-            ("!=", FilterOperator::NotEq),
-            ("lt", FilterOperator::Lt),
-            ("gt", FilterOperator::Gt),
-            ("in", FilterOperator::In),
-            ("between", FilterOperator::Between),
-            ("is_null", FilterOperator::IsNull),
-        ];
+    fn test_raw_filters_rejected() {
+        use crate::types::RawFilter;
 
-        for (op_str, expected) in tests {
-            let raw = RawFilter {
-                dimension: "region".to_string(),
-                operator: op_str.to_string(),
+        let raw = RawQueryRequest {
+            from: "sales".to_string(),
+            select: vec!["revenue".to_string()],
+            raw_filters: vec![RawFilter {
+                field: "region".to_string(),
+                operator: "=".to_string(),
                 value: serde_json::json!("US"),
-            };
-            let filter = convert_filter(&raw).unwrap();
-            assert_eq!(filter.operator, expected, "operator '{}' failed", op_str);
-        }
-    }
+            }],
+            ..Default::default()
+        };
 
-    #[test]
-    fn test_convert_array_filter_value() {
-        let values = convert_filter_value(&serde_json::json!(["US", "EU"])).unwrap();
-        assert_eq!(values.len(), 2);
+        let result = RequestParser::parse(&raw);
+        assert!(matches!(result, Err(ParseError::RawFiltersNotImplemented)));
     }
 }

@@ -7,10 +7,11 @@ use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use semstrait_core::Expr;
 use semstrait_model::{
-    Additivity, AdditivityType, Cardinality, DimensionType, JoinAssociativity,
-    JoinColumnPair, JoinType, Keys, KindDatasetExtras, KindTypeSpec, MeasureConstraints,
-    MeasureFilter, TemporalGrain, UnionMode,
+    Additivity, AdditivityType, Cardinality, ColumnMapping, ColumnMappingValue, DimensionType,
+    JoinAssociativity, JoinColumnPair, JoinType, Keys, KindDatasetExtras, KindTypeSpec,
+    MeasureConstraints, MeasureFilter, TemporalGrain, UnionMode,
 };
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -251,6 +252,24 @@ pub struct CompiledRelationship {
 // Convenience accessors
 // ============================================================================
 
+/// A queryable entity — either an explicit kind or a dataset auto-wrapped as an implicit kind.
+pub enum QueryableEntity<'a> {
+    /// An explicitly defined kind in the manifest.
+    Kind(&'a CompiledKind),
+    /// A dataset auto-synthesized into an implicit grainset kind.
+    ImplicitKind(Box<CompiledKind>),
+}
+
+impl<'a> QueryableEntity<'a> {
+    /// Get a reference to the underlying `CompiledKind`.
+    pub fn as_kind(&self) -> &CompiledKind {
+        match self {
+            QueryableEntity::Kind(k) => k,
+            QueryableEntity::ImplicitKind(k) => k,
+        }
+    }
+}
+
 impl CompiledManifest {
     /// Look up a kind by name.
     pub fn get_kind(&self, name: &str) -> Option<&CompiledKind> {
@@ -260,6 +279,66 @@ impl CompiledManifest {
     /// Look up a dataset by name.
     pub fn get_dataset(&self, name: &str) -> Option<&CompiledDataset> {
         self.datasets.get(name)
+    }
+
+    /// Resolve a query entity by name: checks kinds first, then datasets.
+    ///
+    /// If the name matches a kind, returns `Kind(...)`.
+    /// If the name matches a dataset, auto-wraps it as an implicit grainset kind.
+    /// Returns `None` if neither exists.
+    pub fn resolve_entity(&self, name: &str) -> Option<QueryableEntity<'_>> {
+        // Kinds take precedence (name uniqueness is enforced at compile time).
+        if let Some(kind) = self.kinds.get(name) {
+            return Some(QueryableEntity::Kind(kind));
+        }
+
+        // Auto-synthesize dataset as an implicit grainset kind.
+        if let Some(dataset) = self.datasets.get(name) {
+            return Some(QueryableEntity::ImplicitKind(
+                Box::new(dataset_to_implicit_kind(dataset)),
+            ));
+        }
+
+        None
+    }
+}
+
+/// Synthesize a `CompiledKind` from a `CompiledDataset` by wrapping it
+/// as a single-dataset grainset with identity column mapping.
+fn dataset_to_implicit_kind(ds: &CompiledDataset) -> CompiledKind {
+    // Build identity column mapping from the dataset's interface names.
+    let interface_names: Vec<&String> = ds
+        .dimensions
+        .keys()
+        .chain(ds.measures.keys())
+        .chain(ds.metrics.keys())
+        .collect();
+
+    let mapping: HashMap<String, ColumnMappingValue> = interface_names
+        .iter()
+        .map(|name| ((*name).clone(), ColumnMappingValue::Simple((*name).clone())))
+        .collect();
+
+    CompiledKind {
+        name: ds.name.clone(),
+        description: ds.description.clone(),
+        dimensions: ds.dimensions.clone(),
+        measures: ds.measures.clone(),
+        metrics: ds.metrics.clone(),
+        keys: ds.keys.clone(),
+        kind_type: CompiledKindType::Grainset,
+        datasets: vec![CompiledKindDataset {
+            name: ds.name.clone(),
+            extras: KindDatasetExtras {
+                column_mapping: ColumnMapping::Explicit(mapping),
+                temporal: None,
+                storage: None,
+                catalog: None,
+            },
+        }],
+        relationships: vec![],
+        domain: ds.domain.clone(),
+        filters: vec![],
     }
 }
 

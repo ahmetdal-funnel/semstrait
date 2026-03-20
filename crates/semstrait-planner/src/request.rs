@@ -9,8 +9,8 @@ use std::collections::HashMap;
 /// The resolved query request — input to `SemanticPlanner::plan()`.
 #[derive(Debug, Clone)]
 pub struct ResolvedQueryRequest {
-    /// The kind (semantic entity) to query.
-    pub kind_name: String,
+    /// The entity to query (kind name, or dataset name for implicit kinds).
+    pub entity_name: String,
     /// Semantic dimension names to include in GROUP BY.
     pub dimensions: Vec<String>,
     /// Semantic measure/metric names to include.

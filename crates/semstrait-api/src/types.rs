@@ -3,17 +3,25 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Raw query request from external clients (JSON/CLI).
+/// Raw query request from external clients (JSON/CLI/gRPC).
 /// Parsed into ResolvedQueryRequest by RequestParser.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RawQueryRequest {
-    pub kind: String,
+    /// Semantic model source (file path for CLI, inline YAML/JSON for REST/gRPC).
     #[serde(default)]
-    pub dimensions: Vec<String>,
+    pub model: Option<String>,
+    /// Entity to query: a kind name or a dataset name.
+    pub from: String,
+    /// Semantic names to select — system classifies into dimensions/measures/metrics.
+    /// Use `["*"]` to select all columns from the entity.
     #[serde(default)]
-    pub measures: Vec<String>,
+    pub select: Vec<String>,
+    /// Named filters from the manifest.
     #[serde(default)]
-    pub filters: Vec<RawFilter>,
+    pub filters: Vec<String>,
+    /// Inline filter expressions (stub — not implemented in v1).
+    #[serde(default)]
+    pub raw_filters: Vec<RawFilter>,
     pub grain: Option<String>,
     pub limit: Option<u64>,
     #[serde(default)]
@@ -25,10 +33,10 @@ pub struct RawQueryRequest {
 /// Convenience alias — same as RawQueryRequest for now.
 pub type QueryRequest = RawQueryRequest;
 
-/// A filter in the raw query request.
+/// A filter in the raw query request (inline expression — stub, not implemented in v1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawFilter {
-    pub dimension: String,
+    pub field: String,
     pub operator: String,
     pub value: serde_json::Value,
 }

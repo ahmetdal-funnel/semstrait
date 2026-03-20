@@ -43,7 +43,7 @@ async fn test_yaml_compile_plan_sql() {
 
     // Step 2: Build a query request
     let request = ResolvedQueryRequest {
-        kind_name: "orders".to_string(),
+        entity_name: "orders".to_string(),
         dimensions: vec!["date".to_string(), "region".to_string()],
         measures: vec!["revenue".to_string()],
         filters: vec![],
@@ -106,7 +106,7 @@ async fn test_constraint_violation_e2e() {
 
     // Build a request that violates the constraint (no date dimension)
     let request = ResolvedQueryRequest {
-        kind_name: "sales".to_string(),
+        entity_name: "sales".to_string(),
         dimensions: vec!["region".to_string()], // missing 'date'
         measures: vec!["revenue".to_string()],
         filters: vec![],
@@ -177,7 +177,7 @@ async fn test_plan_with_filters_and_order() {
     use semstrait_planner::{FilterOperator, FilterValue, OrderByClause, QueryFilter, SortDirection};
 
     let request = ResolvedQueryRequest {
-        kind_name: "products".to_string(),
+        entity_name: "products".to_string(),
         dimensions: vec!["category".to_string(), "brand".to_string()],
         measures: vec!["total_sales".to_string()],
         filters: vec![QueryFilter {
@@ -227,7 +227,7 @@ async fn test_multiple_measures() {
         .expect("compilation should succeed");
 
     let request = ResolvedQueryRequest {
-        kind_name: "transactions".to_string(),
+        entity_name: "transactions".to_string(),
         dimensions: vec!["date".to_string()],
         measures: vec![
             "revenue".to_string(),
@@ -278,7 +278,7 @@ async fn test_kind_not_found() {
 
     // Request a non-existent kind
     let request = ResolvedQueryRequest {
-        kind_name: "nonexistent_kind".to_string(),
+        entity_name: "nonexistent_kind".to_string(),
         dimensions: vec!["date".to_string()],
         measures: vec!["revenue".to_string()],
         filters: vec![],
@@ -316,9 +316,8 @@ async fn test_explain_includes_substrait() {
         .expect("engine should compile manifest");
 
     let raw = RawQueryRequest {
-        kind: "orders".to_string(),
-        dimensions: vec!["date".to_string(), "region".to_string()],
-        measures: vec!["revenue".to_string()],
+        from: "orders".to_string(),
+        select: vec!["date".to_string(), "region".to_string(), "revenue".to_string()],
         ..Default::default()
     };
 
@@ -375,9 +374,8 @@ mod datafusion_tests {
         let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
 
         let raw = RawQueryRequest {
-            kind: "orders".to_string(),
-            dimensions: vec!["region".to_string()],
-            measures: vec!["revenue".to_string()],
+            from: "orders".to_string(),
+            select: vec!["region".to_string(), "revenue".to_string()],
             ..Default::default()
         };
 

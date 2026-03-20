@@ -54,21 +54,21 @@ pub enum Commands {
 
     /// Show the query plan, SQL, and Substrait JSON for a query.
     Explain {
-        /// Path to YAML manifest file.
+        /// Path to YAML model file.
         #[arg(short, long)]
-        manifest: PathBuf,
+        model: PathBuf,
 
-        /// Kind name to query.
+        /// Entity to query (kind or dataset name).
         #[arg(short, long)]
-        kind: String,
+        from: String,
 
-        /// Dimensions to include.
+        /// Semantic names to select (auto-classified as dimensions/measures).
         #[arg(short, long, num_args = 1..)]
-        dimensions: Vec<String>,
+        select: Vec<String>,
 
-        /// Measures to include.
-        #[arg(short = 'e', long, num_args = 1..)]
-        measures: Vec<String>,
+        /// Named filters to apply.
+        #[arg(long, num_args = 0..)]
+        filters: Vec<String>,
 
         /// Output as JSON instead of text.
         #[arg(long)]
@@ -77,41 +77,41 @@ pub enum Commands {
 
     /// Validate a query request against a manifest.
     Validate {
-        /// Path to YAML manifest file.
+        /// Path to YAML model file.
         #[arg(short, long)]
-        manifest: PathBuf,
+        model: PathBuf,
 
-        /// Kind name to query.
+        /// Entity to query (kind or dataset name).
         #[arg(short, long)]
-        kind: String,
+        from: String,
 
-        /// Dimensions to include.
+        /// Semantic names to select (auto-classified as dimensions/measures).
         #[arg(short, long, num_args = 1..)]
-        dimensions: Vec<String>,
+        select: Vec<String>,
 
-        /// Measures to include.
-        #[arg(short = 'e', long, num_args = 1..)]
-        measures: Vec<String>,
+        /// Named filters to apply.
+        #[arg(long, num_args = 0..)]
+        filters: Vec<String>,
     },
 
     /// Execute a query against local data files via DataFusion.
     #[cfg(feature = "datafusion")]
     Query {
-        /// Path to YAML manifest file.
+        /// Path to YAML model file.
         #[arg(short, long)]
-        manifest: PathBuf,
+        model: PathBuf,
 
-        /// Kind name to query.
+        /// Entity to query (kind or dataset name).
         #[arg(short, long)]
-        kind: String,
+        from: String,
 
-        /// Dimensions to include.
+        /// Semantic names to select (auto-classified as dimensions/measures).
         #[arg(short, long, num_args = 1..)]
-        dimensions: Vec<String>,
+        select: Vec<String>,
 
-        /// Measures to include.
-        #[arg(short = 'e', long, num_args = 1..)]
-        measures: Vec<String>,
+        /// Named filters to apply.
+        #[arg(long, num_args = 0..)]
+        filters: Vec<String>,
 
         /// Register data files: name=path pairs (e.g., orders_data=data/orders.csv).
         #[arg(short, long, num_args = 1..)]
@@ -136,21 +136,21 @@ pub enum Commands {
     /// Execute a query against local data files via DuckDB.
     #[cfg(feature = "duckdb")]
     QueryDuckdb {
-        /// Path to YAML manifest file.
+        /// Path to YAML model file.
         #[arg(short, long)]
-        manifest: PathBuf,
+        model: PathBuf,
 
-        /// Kind name to query.
+        /// Entity to query (kind or dataset name).
         #[arg(short, long)]
-        kind: String,
+        from: String,
 
-        /// Dimensions to include.
+        /// Semantic names to select (auto-classified as dimensions/measures).
         #[arg(short, long, num_args = 1..)]
-        dimensions: Vec<String>,
+        select: Vec<String>,
 
-        /// Measures to include.
-        #[arg(short = 'e', long, num_args = 1..)]
-        measures: Vec<String>,
+        /// Named filters to apply.
+        #[arg(long, num_args = 0..)]
+        filters: Vec<String>,
 
         /// Register data files: name=path pairs (e.g., orders_data=data/orders.csv).
         #[arg(short, long, num_args = 1..)]
@@ -179,21 +179,21 @@ pub enum Commands {
     /// Execute a query against a Trino cluster.
     #[cfg(feature = "trino")]
     QueryTrino {
-        /// Path to YAML manifest file.
+        /// Path to YAML model file.
         #[arg(short, long)]
-        manifest: PathBuf,
+        model: PathBuf,
 
-        /// Kind name to query.
+        /// Entity to query (kind or dataset name).
         #[arg(short, long)]
-        kind: String,
+        from: String,
 
-        /// Dimensions to include.
+        /// Semantic names to select (auto-classified as dimensions/measures).
         #[arg(short, long, num_args = 1..)]
-        dimensions: Vec<String>,
+        select: Vec<String>,
 
-        /// Measures to include.
-        #[arg(short = 'e', long, num_args = 1..)]
-        measures: Vec<String>,
+        /// Named filters to apply.
+        #[arg(long, num_args = 0..)]
+        filters: Vec<String>,
 
         /// Trino coordinator URL (e.g., http://trino:8080).
         #[arg(long)]
@@ -234,9 +234,9 @@ pub enum Commands {
     /// Start the REST API server.
     #[cfg(feature = "rest")]
     Serve {
-        /// Path to YAML manifest file.
+        /// Path to YAML model file.
         #[arg(short, long)]
-        manifest: PathBuf,
+        model: PathBuf,
 
         /// Port to bind to.
         #[arg(short, long, default_value = "8080")]
@@ -279,15 +279,15 @@ fn build_compiler() -> ManifestCompiler {
     ManifestCompiler::new()
 }
 
-/// Compile a manifest from a YAML file, optionally using an Iceberg catalog.
+/// Compile a manifest from a YAML model file, optionally using an Iceberg catalog.
 #[cfg(feature = "iceberg")]
 async fn compile_from_file(
-    path: &PathBuf,
+    model: &PathBuf,
     catalog_url: Option<String>,
     catalog_warehouse: Option<String>,
     catalog_token: Option<String>,
 ) -> Result<semstrait_manifest::CompiledManifest, Box<dyn std::error::Error>> {
-    let yaml = tokio::fs::read_to_string(path).await?;
+    let yaml = tokio::fs::read_to_string(model).await?;
     let compiler = build_compiler(catalog_url, catalog_warehouse, catalog_token);
     Ok(compiler
         .compile(CompileSource::Yaml(yaml))
@@ -297,9 +297,9 @@ async fn compile_from_file(
 
 #[cfg(not(feature = "iceberg"))]
 async fn compile_from_file(
-    path: &PathBuf,
+    model: &PathBuf,
 ) -> Result<semstrait_manifest::CompiledManifest, Box<dyn std::error::Error>> {
-    let yaml = tokio::fs::read_to_string(path).await?;
+    let yaml = tokio::fs::read_to_string(model).await?;
     let compiler = build_compiler();
     Ok(compiler
         .compile(CompileSource::Yaml(yaml))
@@ -308,11 +308,12 @@ async fn compile_from_file(
 }
 
 /// Build a RawQueryRequest from common CLI args.
-fn build_raw_request(kind: String, dimensions: Vec<String>, measures: Vec<String>) -> RawQueryRequest {
+fn build_raw_request(from: String, select: Vec<String>, filters: Vec<String>) -> RawQueryRequest {
     RawQueryRequest {
-        kind,
-        dimensions,
-        measures,
+        model: None, // model is loaded separately
+        from,
+        select,
+        filters,
         ..Default::default()
     }
 }
@@ -358,15 +359,15 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Explain {
-            manifest,
-            kind,
-            dimensions,
-            measures,
+            model,
+            from,
+            select,
+            filters,
             json,
         } => {
-            let yaml = tokio::fs::read_to_string(&manifest).await?;
+            let yaml = tokio::fs::read_to_string(&model).await?;
             let engine = SemstraitEngine::with_manifest_yaml(&yaml).await?;
-            let raw = build_raw_request(kind, dimensions, measures);
+            let raw = build_raw_request(from, select, filters);
             let result = engine.explain(&raw).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
@@ -383,14 +384,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Validate {
-            manifest,
-            kind,
-            dimensions,
-            measures,
+            model,
+            from,
+            select,
+            filters,
         } => {
-            let yaml = tokio::fs::read_to_string(&manifest).await?;
+            let yaml = tokio::fs::read_to_string(&model).await?;
             let engine = SemstraitEngine::with_manifest_yaml(&yaml).await?;
-            let raw = build_raw_request(kind, dimensions, measures);
+            let raw = build_raw_request(from, select, filters);
             let result = engine.validate(&raw);
             if result.valid {
                 println!("Valid");
@@ -409,10 +410,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         #[cfg(feature = "datafusion")]
         Commands::Query {
-            manifest,
-            kind,
-            dimensions,
-            measures,
+            model,
+            from,
+            select,
+            filters,
             register,
             #[cfg(feature = "iceberg")]
             catalog_url,
@@ -422,9 +423,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             catalog_token,
         } => {
             #[cfg(feature = "iceberg")]
-            let compiled = compile_from_file(&manifest, catalog_url, catalog_warehouse, catalog_token).await?;
+            let compiled = compile_from_file(&model, catalog_url, catalog_warehouse, catalog_token).await?;
             #[cfg(not(feature = "iceberg"))]
-            let compiled = compile_from_file(&manifest).await?;
+            let compiled = compile_from_file(&model).await?;
 
             let connector = semstrait_connectors::datafusion::DataFusionConnector::new();
             for pair in &register {
@@ -437,16 +438,16 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
-            let raw = build_raw_request(kind, dimensions, measures);
+            let raw = build_raw_request(from, select, filters);
             run_query(&engine, &raw).await
         }
 
         #[cfg(feature = "duckdb")]
         Commands::QueryDuckdb {
-            manifest,
-            kind,
-            dimensions,
-            measures,
+            model,
+            from,
+            select,
+            filters,
             register,
             db,
             #[cfg(feature = "iceberg")]
@@ -457,9 +458,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             catalog_token,
         } => {
             #[cfg(feature = "iceberg")]
-            let compiled = compile_from_file(&manifest, catalog_url, catalog_warehouse, catalog_token).await?;
+            let compiled = compile_from_file(&model, catalog_url, catalog_warehouse, catalog_token).await?;
             #[cfg(not(feature = "iceberg"))]
-            let compiled = compile_from_file(&manifest).await?;
+            let compiled = compile_from_file(&model).await?;
 
             let connector = match db {
                 Some(path) => semstrait_connectors::duckdb::DuckDbConnector::with_path(
@@ -477,16 +478,16 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
-            let raw = build_raw_request(kind, dimensions, measures);
+            let raw = build_raw_request(from, select, filters);
             run_query(&engine, &raw).await
         }
 
         #[cfg(feature = "trino")]
         Commands::QueryTrino {
-            manifest,
-            kind,
-            dimensions,
-            measures,
+            model,
+            from,
+            select,
+            filters,
             trino_url,
             trino_catalog,
             trino_schema,
@@ -500,9 +501,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             catalog_token,
         } => {
             #[cfg(feature = "iceberg")]
-            let compiled = compile_from_file(&manifest, catalog_url, catalog_warehouse, catalog_token).await?;
+            let compiled = compile_from_file(&model, catalog_url, catalog_warehouse, catalog_token).await?;
             #[cfg(not(feature = "iceberg"))]
-            let compiled = compile_from_file(&manifest).await?;
+            let compiled = compile_from_file(&model).await?;
 
             let mut connector =
                 semstrait_connectors::trino::TrinoConnector::new(trino_url, trino_catalog, trino_schema)
@@ -512,19 +513,19 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
-            let raw = build_raw_request(kind, dimensions, measures);
+            let raw = build_raw_request(from, select, filters);
             run_query(&engine, &raw).await
         }
 
         #[cfg(feature = "rest")]
         Commands::Serve {
-            manifest,
+            model,
             port,
             host,
             #[cfg(feature = "grpc")]
             grpc_port,
         } => {
-            let yaml = tokio::fs::read_to_string(&manifest).await?;
+            let yaml = tokio::fs::read_to_string(&model).await?;
             let engine = SemstraitEngine::with_manifest_yaml(&yaml).await?;
             let shared = Arc::new(engine);
 

@@ -118,6 +118,16 @@ pub(crate) fn validate_structure(model: &SemanticModel) -> Result<(), CompileErr
         check_metric_uniqueness(&kind.metrics, &kind.name, &mut errors);
     }
 
+    // Check that dataset and kind names don't overlap (unique entity namespace).
+    for ds_name in &ds_names {
+        if kind_names.contains(ds_name) {
+            errors.push(format!(
+                "name '{}' is used as both a dataset and a kind; all entity names must be unique",
+                ds_name
+            ));
+        }
+    }
+
     // Check dimension/measure/metric uniqueness in top-level datasets
     for ds in &model.datasets {
         check_dim_uniqueness(&ds.dimensions, &ds.name, &mut errors);

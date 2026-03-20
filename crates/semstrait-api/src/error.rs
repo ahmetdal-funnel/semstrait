@@ -33,14 +33,23 @@ pub enum EngineError {
 /// Errors from request parsing.
 #[derive(Debug, Error)]
 pub enum ParseError {
-    #[error("kind not found: {0}")]
-    KindNotFound(String),
+    #[error("entity not found: {0}")]
+    EntityNotFound(String),
 
-    #[error("dimension not found: {name} in kind {kind}")]
-    DimensionNotFound { kind: String, name: String },
+    #[error("dimension not found: {name} in entity {entity}")]
+    DimensionNotFound { entity: String, name: String },
 
-    #[error("measure not found: {name} in kind {kind}")]
-    MeasureNotFound { kind: String, name: String },
+    #[error("measure not found: {name} in entity {entity}")]
+    MeasureNotFound { entity: String, name: String },
+
+    #[error("unknown select name: {name} in entity {entity}")]
+    UnknownSelectName { entity: String, name: String },
+
+    #[error("named filter not found: {name} in entity {entity}")]
+    FilterNotFound { entity: String, name: String },
+
+    #[error("inline raw filters are not implemented in v1")]
+    RawFiltersNotImplemented,
 
     #[error("invalid grain: {0}")]
     InvalidGrain(String),

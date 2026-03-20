@@ -245,7 +245,7 @@ pub fn make_test_request(
     measures: Vec<&str>,
 ) -> ResolvedQueryRequest {
     ResolvedQueryRequest {
-        kind_name: kind_name.to_string(),
+        entity_name: kind_name.to_string(),
         dimensions: dimensions.into_iter().map(String::from).collect(),
         measures: measures.into_iter().map(String::from).collect(),
         filters: vec![],

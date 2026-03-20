@@ -18,11 +18,11 @@ use proto::{
 
 /// Convert a proto `QueryRequest` into the internal `RawQueryRequest`.
 fn proto_to_raw(req: QueryRequest) -> RawQueryRequest {
-    let filters = req
-        .filters
+    let raw_filters = req
+        .raw_filters
         .into_iter()
         .map(|f| RawFilter {
-            dimension: f.dimension,
+            field: f.field,
             operator: f.operator,
             value: serde_json::from_str(&f.value_json).unwrap_or(serde_json::Value::Null),
         })
@@ -42,10 +42,11 @@ fn proto_to_raw(req: QueryRequest) -> RawQueryRequest {
         .collect();
 
     RawQueryRequest {
-        kind: req.kind,
-        dimensions: req.dimensions,
-        measures: req.measures,
-        filters,
+        model: req.model,
+        from: req.from,
+        select: req.select,
+        filters: req.filters,
+        raw_filters,
         grain: req.grain,
         limit: req.limit,
         order_by,

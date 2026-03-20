@@ -150,7 +150,7 @@ mod tests {
         let manifest = make_test_manifest();
 
         let request = ResolvedQueryRequest {
-            kind_name: "orders".to_string(),
+            entity_name: "orders".to_string(),
             dimensions: vec!["date".to_string()],
             measures: vec!["revenue".to_string()],
             filters: vec![QueryFilter {
@@ -203,7 +203,7 @@ mod tests {
         let manifest = make_test_manifest();
 
         let request = ResolvedQueryRequest {
-            kind_name: "orders".to_string(),
+            entity_name: "orders".to_string(),
             dimensions: vec!["date".to_string()],
             measures: vec!["revenue".to_string()],
             filters: vec![
@@ -244,7 +244,7 @@ mod tests {
         let manifest = make_test_manifest();
 
         let request = ResolvedQueryRequest {
-            kind_name: "orders".to_string(),
+            entity_name: "orders".to_string(),
             dimensions: vec!["date".to_string()],
             measures: vec!["revenue".to_string()],
             filters: vec![],
@@ -271,7 +271,7 @@ mod tests {
         let manifest = make_test_manifest();
 
         let request = ResolvedQueryRequest {
-            kind_name: "orders".to_string(),
+            entity_name: "orders".to_string(),
             dimensions: vec!["date".to_string()],
             measures: vec!["revenue".to_string()],
             filters: vec![],

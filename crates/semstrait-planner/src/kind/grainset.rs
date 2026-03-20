@@ -258,7 +258,7 @@ fn build_horizontal_join_plan(
 
     for (idx, assignment) in assignments.iter().enumerate() {
         let sub_request = ResolvedQueryRequest {
-            kind_name: request.kind_name.clone(),
+            entity_name: request.entity_name.clone(),
             dimensions: request.dimensions.clone(),
             measures: assignment.measures.clone(),
             filters: vec![],

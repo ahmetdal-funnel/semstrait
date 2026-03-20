@@ -119,40 +119,19 @@ impl SemstraitEngine {
             };
         }
 
-        // If we have a manifest, validate names.
+        // If we have a manifest, validate names via full resolution.
         if let Some(manifest) = &self.manifest {
-            let mut errors = Vec::new();
-
-            if let Some(kind) = manifest.get_kind(&raw.kind) {
-                for dim in &raw.dimensions {
-                    if !kind.dimensions.contains_key(dim) {
-                        errors.push(format!("dimension '{}' not found in kind '{}'", dim, raw.kind));
-                    }
-                }
-                for mea in &raw.measures {
-                    if !kind.measures.contains_key(mea) && !kind.metrics.contains_key(mea) {
-                        errors.push(format!(
-                            "measure/metric '{}' not found in kind '{}'",
-                            mea, raw.kind
-                        ));
-                    }
-                }
-            } else {
-                errors.push(format!("kind '{}' not found in manifest", raw.kind));
-            }
-
-            if errors.is_empty() {
-                ValidationResult {
+            match RequestParser::to_resolved(raw, manifest) {
+                Ok(_) => ValidationResult {
                     valid: true,
                     errors: vec![],
                     warnings: vec![],
-                }
-            } else {
-                ValidationResult {
+                },
+                Err(e) => ValidationResult {
                     valid: false,
-                    errors,
+                    errors: vec![e.to_string()],
                     warnings: vec![],
-                }
+                },
             }
         } else {
             // No manifest — structural validation only.
@@ -377,9 +356,8 @@ mod tests {
     fn test_validate_valid_request() {
         let engine = SemstraitEngine::new();
         let raw = RawQueryRequest {
-            kind: "sales".to_string(),
-            dimensions: vec!["region".to_string()],
-            measures: vec!["revenue".to_string()],
+            from: "sales".to_string(),
+            select: vec!["region".to_string(), "revenue".to_string()],
             ..Default::default()
         };
 
@@ -391,7 +369,7 @@ mod tests {
     fn test_validate_invalid_request() {
         let engine = SemstraitEngine::new();
         let raw = RawQueryRequest {
-            kind: "".to_string(),
+            from: "".to_string(),
             ..Default::default()
         };
 
@@ -404,9 +382,8 @@ mod tests {
     async fn test_explain_no_manifest() {
         let engine = SemstraitEngine::new();
         let raw = RawQueryRequest {
-            kind: "sales".to_string(),
-            dimensions: vec!["region".to_string()],
-            measures: vec!["revenue".to_string()],
+            from: "sales".to_string(),
+            select: vec!["region".to_string(), "revenue".to_string()],
             ..Default::default()
         };
 
@@ -433,9 +410,8 @@ mod tests {
             .expect("engine should compile manifest");
 
         let raw = RawQueryRequest {
-            kind: "orders".to_string(),
-            dimensions: vec!["date".to_string(), "region".to_string()],
-            measures: vec!["revenue".to_string()],
+            from: "orders".to_string(),
+            select: vec!["date".to_string(), "region".to_string(), "revenue".to_string()],
             ..Default::default()
         };
 
@@ -467,19 +443,17 @@ mod tests {
 
         // Valid request.
         let raw = RawQueryRequest {
-            kind: "orders".to_string(),
-            dimensions: vec!["date".to_string()],
-            measures: vec!["revenue".to_string()],
+            from: "orders".to_string(),
+            select: vec!["date".to_string(), "revenue".to_string()],
             ..Default::default()
         };
         let result = engine.validate(&raw);
         assert!(result.valid);
 
-        // Invalid dimension.
+        // Invalid select name.
         let raw_bad = RawQueryRequest {
-            kind: "orders".to_string(),
-            dimensions: vec!["nonexistent".to_string()],
-            measures: vec!["revenue".to_string()],
+            from: "orders".to_string(),
+            select: vec!["nonexistent".to_string()],
             ..Default::default()
         };
         let result_bad = engine.validate(&raw_bad);
@@ -520,9 +494,8 @@ semantic_model:
             .expect("engine should compile with auto mapping");
 
         let raw = RawQueryRequest {
-            kind: "orders".to_string(),
-            dimensions: vec!["order_date".to_string()],
-            measures: vec!["revenue".to_string()],
+            from: "orders".to_string(),
+            select: vec!["order_date".to_string(), "revenue".to_string()],
             ..Default::default()
         };
 
@@ -539,8 +512,8 @@ semantic_model:
     async fn test_query_not_configured() {
         let engine = SemstraitEngine::new();
         let raw = RawQueryRequest {
-            kind: "sales".to_string(),
-            measures: vec!["revenue".to_string()],
+            from: "sales".to_string(),
+            select: vec!["revenue".to_string()],
             ..Default::default()
         };
 

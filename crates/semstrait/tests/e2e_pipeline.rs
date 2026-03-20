@@ -26,7 +26,7 @@ fn make_request(
     measures: &[&str],
 ) -> ResolvedQueryRequest {
     ResolvedQueryRequest {
-        kind_name: kind.to_string(),
+        entity_name: kind.to_string(),
         dimensions: dims.iter().map(|s| s.to_string()).collect(),
         measures: measures.iter().map(|s| s.to_string()).collect(),
         filters: vec![],

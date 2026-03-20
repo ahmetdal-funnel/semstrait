@@ -23,8 +23,8 @@ impl ConstraintEvaluator {
         manifest: &CompiledManifest,
     ) -> Result<(), PlannerError> {
         let kind = manifest
-            .get_kind(&request.kind_name)
-            .ok_or_else(|| PlannerError::KindNotFound(request.kind_name.clone()))?;
+            .get_kind(&request.entity_name)
+            .ok_or_else(|| PlannerError::KindNotFound(request.entity_name.clone()))?;
 
         // Build the query scope: all dimensions in GROUP BY + filter dimensions.
         let mut scope: HashSet<&str> = HashSet::new();
