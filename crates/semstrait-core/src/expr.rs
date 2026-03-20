@@ -681,8 +681,8 @@ mod tests {
     fn test_literals_preserve_types() {
         assert_eq!(Expr::int(42), Expr::Literal(Literal::Integer { value: 42 }));
         assert_eq!(
-            Expr::float(3.14),
-            Expr::Literal(Literal::Float { value: 3.14 })
+            Expr::float(2.72),
+            Expr::Literal(Literal::Float { value: 2.72 })
         );
         assert_eq!(
             Expr::string("hello"),
@@ -806,7 +806,7 @@ mod tests {
         let exprs = vec![
             Expr::column("amount"),
             Expr::int(42),
-            Expr::float(3.14),
+            Expr::float(2.72),
             Expr::sum(Expr::column("revenue")),
             Expr::add(Expr::column("a"), Expr::column("b")),
             Expr::eq(Expr::column("status"), Expr::string("active")),

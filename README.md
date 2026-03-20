@@ -27,16 +27,20 @@ semstrait/                       Cargo workspace root
 ├── crates/
 │   ├── semstrait-core/          Foundation — shared primitives, zero internal deps
 │   ├── semstrait-model/         YAML model parsing and ref resolution
-│   ├── semstrait-catalog/       CatalogProvider trait + Iceberg REST catalog
+│   │   └── schema/              Model JSON Schema definitions
+│   ├── semstrait-catalog/       CatalogProvider trait + Iceberg/Unity catalogs
 │   ├── semstrait-manifest/      ManifestCompiler pipeline (parse → validate → compile)
 │   ├── semstrait-ir/            PlanNode IR + Substrait bridge
 │   ├── semstrait-planner/       SemanticPlanner + KindPlanners + Optimizer
 │   ├── semstrait-sql/           SqlEmitter trait + dialect implementations
 │   ├── semstrait-connectors/    Compute traits + feature-gated engine impls
 │   ├── semstrait-api/           REST + CLI + gRPC transports (feature-gated)
+│   │   └── proto/               gRPC service proto definitions
 │   └── semstrait/               Facade — builder, public API, feature flags
+├── examples/
+│   └── models/                  Curated user-facing showcase models
 ├── tests/
-│   ├── fixtures/models/         Shared YAML model fixtures for integration tests
+│   ├── fixtures/models/         Edge-case and invalid models for testing
 │   ├── e2e_pipeline_test.rs     Workspace-level E2E tests
 │   └── test_helpers.rs          Fixture loading utilities
 └── docs/                        Workspace-level diagrams (D1, D2)
@@ -199,9 +203,8 @@ use semstrait_api::{SemstraitEngine, RawQueryRequest};
 let engine = SemstraitEngine::with_manifest_yaml(yaml).await?;
 
 let result = engine.explain(&RawQueryRequest {
-    kind: "orders".into(),
-    dimensions: vec!["region".into()],
-    measures: vec!["revenue".into()],
+    from: "orders".into(),
+    select: vec!["region".into(), "revenue".into()],
     ..Default::default()
 }).await?;
 
@@ -232,7 +235,7 @@ println!("SQL: {}", result.sql.unwrap());
 # Build all crates
 cargo build --workspace
 
-# Run all tests (311 tests with all features)
+# Run all tests (328 tests with all features)
 cargo test --workspace --features datafusion,duckdb,polyglot
 
 # Build CLI binary with all connectors

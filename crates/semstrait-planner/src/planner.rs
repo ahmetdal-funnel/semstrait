@@ -525,7 +525,7 @@ mod tests {
             PlanNode::Sort(n) => contains_filter_node(&n.input),
             PlanNode::Fetch(n) => contains_filter_node(&n.input),
             PlanNode::Join(n) => contains_filter_node(&n.left) || contains_filter_node(&n.right),
-            PlanNode::Union(n) => n.inputs.iter().any(|i| contains_filter_node(i)),
+            PlanNode::Union(n) => n.inputs.iter().any(contains_filter_node),
             PlanNode::Scan(_) => false,
         }
     }
@@ -538,7 +538,7 @@ mod tests {
             PlanNode::Filter(n) => contains_sort_node(&n.input),
             PlanNode::Fetch(n) => contains_sort_node(&n.input),
             PlanNode::Join(n) => contains_sort_node(&n.left) || contains_sort_node(&n.right),
-            PlanNode::Union(n) => n.inputs.iter().any(|i| contains_sort_node(i)),
+            PlanNode::Union(n) => n.inputs.iter().any(contains_sort_node),
             PlanNode::Scan(_) => false,
         }
     }
@@ -551,7 +551,7 @@ mod tests {
             PlanNode::Filter(n) => contains_fetch_node(&n.input),
             PlanNode::Sort(n) => contains_fetch_node(&n.input),
             PlanNode::Join(n) => contains_fetch_node(&n.left) || contains_fetch_node(&n.right),
-            PlanNode::Union(n) => n.inputs.iter().any(|i| contains_fetch_node(i)),
+            PlanNode::Union(n) => n.inputs.iter().any(contains_fetch_node),
             PlanNode::Scan(_) => false,
         }
     }

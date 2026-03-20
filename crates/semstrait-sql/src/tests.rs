@@ -110,7 +110,7 @@ mod expr_rendering {
     #[test]
     fn number_float() {
         let r = renderer();
-        assert_eq!(r.render(&float(3.14)).unwrap(), "3.14");
+        assert_eq!(r.render(&float(2.72)).unwrap(), "2.72");
     }
 
     #[test]

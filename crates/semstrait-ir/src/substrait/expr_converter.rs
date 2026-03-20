@@ -573,10 +573,10 @@ mod tests {
         let schema = Schema::empty();
         let converter = ExprConverter::new(&schema);
 
-        let expr = Expr::float(3.14);
+        let expr = Expr::float(2.72);
         let substrait = converter.to_substrait(&expr).unwrap();
         let back = converter.from_substrait(&substrait).unwrap();
-        assert_eq!(back, Expr::float(3.14));
+        assert_eq!(back, Expr::float(2.72));
     }
 
     #[test]

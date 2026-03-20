@@ -319,6 +319,7 @@ fn build_raw_request(from: String, select: Vec<String>, filters: Vec<String>) ->
 }
 
 /// Execute a query and print the result as pretty JSON.
+#[cfg(any(feature = "datafusion", feature = "duckdb", feature = "trino"))]
 async fn run_query(
     engine: &SemstraitEngine,
     raw: &RawQueryRequest,

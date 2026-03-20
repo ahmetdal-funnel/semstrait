@@ -94,6 +94,16 @@ Feature flags exist (`trino`, `spark`) but implementations are not yet wired. Co
 
 ---
 
+## Diagram: Connector Architecture
+
+![Connector Architecture](docs/D6_connector_architecture.svg)
+
+The diagram shows the three-phase pipeline from `LogicalPlan` through emission, adaptation, and execution. The `ComputeEmitter` layer produces payloads (SQL strings, Substrait bytes, or native plans). The `ComputeAdapter` adapts payloads into engine-specific `ComputeRequest`s using `ConsumerProfile` capabilities. Each connector (DuckDB, DataFusion, Trino, Spark) implements the `ComputeConnector` trait for async execution, returning `ComputeResult` with JSON rows or Arrow batches.
+
+**Implementation note:** In the current engine hot path (`SemstraitEngine`), SQL emission uses `SqlEmitter` directly (not `ComputeEmitter`). The `SubstraitEmitter` and `NativeEmitter` paths shown in the diagram are defined in the trait but not yet wired in the engine.
+
+---
+
 ## Dependencies
 
 - `semstrait-core` — `ConsumerProfile`, `DataType`

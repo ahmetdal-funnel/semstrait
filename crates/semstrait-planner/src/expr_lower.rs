@@ -256,8 +256,8 @@ mod tests {
             Expr::int(42)
         );
         assert_eq!(
-            lower_expr(&Expr::float(3.14), &mapping).unwrap(),
-            Expr::float(3.14)
+            lower_expr(&Expr::float(2.72), &mapping).unwrap(),
+            Expr::float(2.72)
         );
         assert_eq!(
             lower_expr(&Expr::string("hello"), &mapping).unwrap(),

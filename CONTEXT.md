@@ -1094,7 +1094,7 @@ impl SemstraitEngine {
 // gRPC transport — feature = "grpc" (tonic 0.14, DL-034)
 #[cfg(feature = "grpc")]
 pub mod grpc {
-    // Proto generated via tonic-prost-build from proto/semstrait/v1/service.proto
+    // Proto generated via tonic-prost-build from crates/semstrait-api/proto/service.proto
     pub struct SemstraitGrpcService { engine: SharedEngine }
     // Implements: Explain, Validate, Query, Health RPCs
     // Proto: semstrait.v1.SemstraitService
@@ -1289,7 +1289,7 @@ This table records every cross-crate type reference and confirms no cycle is int
 | Domain filter step | **Done** (v1.1-B.2) | Planner step 3 filters datasets by `domain_hint` using `Cow<CompiledKind>` |
 | Aggregation constraints | **Done** (v1.1-B.1) | `check_aggregation_constraints()` validates allowed/prohibited lists against `expr_source` |
 | REST /schema and /compile endpoints | **Done** (v1.1-B.4) | GET /schema returns kind introspection; POST /compile accepts YAML, returns manifest JSON |
-| gRPC transport | **Done** (V2-F.1, DL-034) | tonic 0.14 server with 4 RPCs (Explain, Validate, Query, Health). Proto at `proto/semstrait/v1/service.proto`. |
+| gRPC transport | **Done** (V2-F.1, DL-034) | tonic 0.14 server with 4 RPCs (Explain, Validate, Query, Health). Proto at `crates/semstrait-api/proto/service.proto`. |
 | Polyglot SQL transpilation | **Done** (V2-A, DL-030) | `PolyglotEmitter` transpiles ANSI SQL to 34+ dialects via `polyglot-sql`. Feature-gated behind `polyglot`. |
 | DuckDB connector | **Done** (V2-B, DL-031) | `DuckDbConnector` — embedded DuckDB 1.3.2, `Arc<Mutex<Connection>>` + `spawn_blocking`, CSV/Parquet registration, CLI `query-duckdb` command |
 | Trino connector | **Done** (V2-C, DL-032) | reqwest REST v1/statement with pagination, Basic/JWT auth, 10 tests |

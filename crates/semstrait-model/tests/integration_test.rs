@@ -131,7 +131,7 @@ fn test_parse_joinset_basic_yaml() {
     }
 
     // Check relationships
-    assert!(kind.relationships.len() > 0);
+    assert!(!kind.relationships.is_empty());
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn test_parse_full_model_yaml() {
     assert_eq!(model.name, "full_model");
 
     // Should have datasets, kinds, and relationships
-    assert!(model.datasets.len() > 0 || model.kinds.len() > 0);
+    assert!(!model.datasets.is_empty() || !model.kinds.is_empty());
 }
 
 #[test]
@@ -152,18 +152,12 @@ fn test_parse_grainset_semi_additive_yaml() {
 
     for kind in &model.kinds {
         for measure_entry in &kind.measures {
-            match measure_entry {
-                semstrait_model::MeasureEntry::Inline(m) => {
-                    if let Some(additivity) = &m.additivity {
-                        match &additivity.additivity_type {
-                            semstrait_model::AdditivityType::Semi(_) => {
-                                found_semi = true;
-                            }
-                            _ => {}
-                        }
+            if let semstrait_model::MeasureEntry::Inline(m) = measure_entry {
+                if let Some(additivity) = &m.additivity {
+                    if matches!(&additivity.additivity_type, semstrait_model::AdditivityType::Semi(_)) {
+                        found_semi = true;
                     }
                 }
-                _ => {}
             }
         }
     }
@@ -180,16 +174,10 @@ fn test_parse_grainset_bucketed_yaml() {
 
     for kind in &model.kinds {
         for dim_entry in &kind.dimensions {
-            match dim_entry {
-                semstrait_model::DimensionEntry::Inline(d) => {
-                    match &d.dim_type {
-                        semstrait_model::DimensionType::Bucketed(_) => {
-                            found_bucketed = true;
-                        }
-                        _ => {}
-                    }
+            if let semstrait_model::DimensionEntry::Inline(d) = dim_entry {
+                if matches!(&d.dim_type, semstrait_model::DimensionType::Bucketed(_)) {
+                    found_bucketed = true;
                 }
-                _ => {}
             }
         }
     }
@@ -205,7 +193,7 @@ fn test_parse_grainset_metrics_yaml() {
     let mut found_metrics = false;
 
     for kind in &model.kinds {
-        if kind.metrics.len() > 0 {
+        if !kind.metrics.is_empty() {
             found_metrics = true;
             break;
         }
@@ -223,13 +211,10 @@ fn test_parse_grainset_measure_filter_yaml() {
 
     for kind in &model.kinds {
         for measure_entry in &kind.measures {
-            match measure_entry {
-                semstrait_model::MeasureEntry::Inline(m) => {
-                    if m.filters.len() > 0 {
-                        found_filtered = true;
-                    }
+            if let semstrait_model::MeasureEntry::Inline(m) = measure_entry {
+                if !m.filters.is_empty() {
+                    found_filtered = true;
                 }
-                _ => {}
             }
         }
     }
