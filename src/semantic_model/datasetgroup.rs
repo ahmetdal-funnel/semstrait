@@ -5,11 +5,11 @@
 //! (optional shared dimensions/measures + nested union_set). Dimensions and measures
 //! from ancestor groups are merged into each leaf grain set when resolving "effective" grain sets.
 
-use serde::Deserialize;
-use std::collections::HashMap;
 use super::column::Column;
 use super::dimension::{Attribute, Join};
 use super::measure::Measure;
+use serde::Deserialize;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Root and recursive union tree
@@ -170,7 +170,9 @@ fn resolve_grain_set_by_path_impl(
         return None;
     }
     let segment = path[0];
-    let member = members.iter().find(|m| m.container_name() == Some(segment))?;
+    let member = members
+        .iter()
+        .find(|m| m.container_name() == Some(segment))?;
     match member {
         UnionMember::GrainSetLeaf(leaf) => {
             if path.len() == 1 {
@@ -191,7 +193,13 @@ fn resolve_grain_set_by_path_impl(
             }
             let dims = merge_dimensions(parent_dims, &group.dimensions);
             let measures = merge_measures(parent_measures, &group.measures);
-            resolve_grain_set_by_path_impl(&group.union_set, &dims, &measures, &path[1..], full_path)
+            resolve_grain_set_by_path_impl(
+                &group.union_set,
+                &dims,
+                &measures,
+                &path[1..],
+                full_path,
+            )
         }
     }
 }
@@ -300,14 +308,14 @@ pub enum Source {
 }
 
 /// Resolve template variables in a path string
-/// 
+///
 /// Supports the following variables:
 /// - `{model.name}` - Model name
 /// - `{model.namespace}` - Model namespace (errors if not set)
 /// - `{container.path}` - Container path from root to grain set (e.g. "adwords" or "facebookads.facebookads_111")
 /// - `{dataset.name}` - Physical dataset name
 /// - `{dataset.uuid}` - Dataset UUID (errors if not set)
-/// 
+///
 /// # Example
 /// ```ignore
 /// let path = resolve_path_template(
@@ -329,34 +337,37 @@ pub fn resolve_path_template(
     dataset_uuid: Option<&str>,
 ) -> Result<String, String> {
     let mut path = template.to_string();
-    
+
     // Required variables (always available)
     path = path.replace("{model.name}", model_name);
     path = path.replace("{container.path}", container_path);
     path = path.replace("{dataset.name}", dataset_name);
-    
-    
+
     // Optional variables - error if used but not present
     if path.contains("{model.namespace}") {
         match model_namespace {
             Some(ns) => path = path.replace("{model.namespace}", ns),
-            None => return Err(format!(
+            None => {
+                return Err(format!(
                 "Path template uses {{model.namespace}} but model '{}' has no namespace defined",
                 model_name
-            )),
+            ))
+            }
         }
     }
-    
+
     if path.contains("{dataset.uuid}") {
         match dataset_uuid {
             Some(uuid) => path = path.replace("{dataset.uuid}", uuid),
-            None => return Err(format!(
-                "Path template uses {{dataset.uuid}} but dataset '{}' has no uuid defined",
-                dataset_name
-            )),
+            None => {
+                return Err(format!(
+                    "Path template uses {{dataset.uuid}} but dataset '{}' has no uuid defined",
+                    dataset_name
+                ))
+            }
         }
     }
-    
+
     // Check for unresolved variables
     if let Some(start) = path.find('{') {
         if let Some(end) = path[start..].find('}') {
@@ -364,18 +375,18 @@ pub fn resolve_path_template(
             return Err(format!("Unknown variable in path template: {}", var));
         }
     }
-    
+
     Ok(path)
 }
 
 /// Resolve template variables in a dimension path string
-/// 
+///
 /// Supports the following variables:
 /// - `{model.name}` - Model name
 /// - `{model.namespace}` - Model namespace (errors if not set)
 /// - `{dimension.name}` - Dimension name
 /// - `{dimension.table}` - Dimension table name
-/// 
+///
 /// # Example
 /// ```ignore
 /// let path = resolve_dimension_path_template(
@@ -395,31 +406,36 @@ pub fn resolve_dimension_path_template(
     dimension_table: &str,
 ) -> Result<String, String> {
     let mut path = template.to_string();
-    
+
     // Required variables (always available)
     path = path.replace("{model.name}", model_name);
     path = path.replace("{dimension.name}", dimension_name);
     path = path.replace("{dimension.table}", dimension_table);
-    
+
     // Optional variables - error if used but not present
     if path.contains("{model.namespace}") {
         match model_namespace {
             Some(ns) => path = path.replace("{model.namespace}", ns),
-            None => return Err(format!(
+            None => {
+                return Err(format!(
                 "Path template uses {{model.namespace}} but model '{}' has no namespace defined",
                 model_name
-            )),
+            ))
+            }
         }
     }
-    
+
     // Check for unresolved variables
     if let Some(start) = path.find('{') {
         if let Some(end) = path[start..].find('}') {
             let var = &path[start..start + end + 1];
-            return Err(format!("Unknown variable in dimension path template: {}", var));
+            return Err(format!(
+                "Unknown variable in dimension path template: {}",
+                var
+            ));
         }
     }
-    
+
     Ok(path)
 }
 
@@ -443,7 +459,7 @@ pub struct GrainSet {
 }
 
 /// A dimension reference within a grain set
-/// 
+///
 /// Can be either:
 /// - A reference to a top-level dimension (has join)
 /// - A degenerate dimension (no join, has inline attributes)
@@ -561,7 +577,8 @@ impl Dataset {
 
     /// Check if this dataset has a specific column in the explicit columns list
     pub fn has_column(&self, name: &str) -> bool {
-        self.columns.as_ref()
+        self.columns
+            .as_ref()
             .map(|cols| cols.iter().any(|c| c.name == name))
             .unwrap_or(false)
     }
@@ -587,10 +604,12 @@ impl Dataset {
     }
 
     /// Check if a dimension needs a join on this dataset (legacy method)
-    /// 
+    ///
     /// If the join key column exists on this dataset, a join is needed.
     /// If the join key is absent, assume attributes are denormalized.
-    #[deprecated(note = "Use needs_join_for_dimension instead, which uses attribute-based detection")]
+    #[deprecated(
+        note = "Use needs_join_for_dimension instead, which uses attribute-based detection"
+    )]
     pub fn needs_join(&self, dim: &GrainSetDimension) -> bool {
         match dim.join_key() {
             Some(key) => self.has_column(key),
@@ -693,7 +712,7 @@ datasets:
     fn test_parse_grain_set_without_columns() {
         let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
-        
+
         // columns should be None when not specified
         assert!(dataset.columns.is_none());
     }
@@ -702,7 +721,7 @@ datasets:
     fn test_parse_grain_set_with_columns() {
         let group = sample_grain_set_with_columns();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
-        
+
         // columns should be Some when specified
         assert!(dataset.columns.is_some());
         assert_eq!(dataset.columns.as_ref().unwrap().len(), 3);
@@ -711,12 +730,12 @@ datasets:
     #[test]
     fn test_dimension_types() {
         let group = sample_grain_set();
-        
+
         let dates = group.get_dimension("dates").unwrap();
         assert!(dates.is_reference());
         assert!(!dates.is_degenerate());
         assert_eq!(dates.join_key(), Some("time_id"));
-        
+
         let flags = group.get_dimension("flags").unwrap();
         assert!(!flags.is_reference());
         assert!(flags.is_degenerate());
@@ -727,7 +746,7 @@ datasets:
     fn test_dataset_columns_optional() {
         let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
-        
+
         // Without explicit columns, has_column returns false
         assert!(!dataset.has_column("time_id"));
         assert!(!dataset.has_column("totalprice"));
@@ -738,7 +757,7 @@ datasets:
     fn test_dataset_columns_explicit() {
         let group = sample_grain_set_with_columns();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
-        
+
         // With explicit columns, has_column works
         assert!(dataset.has_column("time_id"));
         assert!(dataset.has_column("totalprice"));
@@ -749,11 +768,11 @@ datasets:
     fn test_dataset_dimensions() {
         let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
-        
+
         assert!(dataset.has_dimension("dates"));
         assert!(dataset.has_dimension("flags"));
         assert!(!dataset.has_dimension("markets"));
-        
+
         let attrs = dataset.get_dimension_attributes("dates").unwrap();
         assert_eq!(attrs, &vec!["year".to_string(), "month".to_string()]);
     }
@@ -762,7 +781,7 @@ datasets:
     fn test_has_dimension_attribute() {
         let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
-        
+
         assert!(dataset.has_dimension_attribute("dates", "year"));
         assert!(dataset.has_dimension_attribute("dates", "month"));
         assert!(!dataset.has_dimension_attribute("dates", "quarter"));
@@ -774,7 +793,7 @@ datasets:
     fn test_dataset_measures() {
         let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
-        
+
         assert!(dataset.has_measure("sales"));
         assert!(!dataset.has_measure("quantity"));
     }
@@ -783,7 +802,7 @@ datasets:
     fn test_attribute_count() {
         let group = sample_grain_set();
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
-        
+
         // dates: [year, month] = 2, flags: [is_premium] = 1
         assert_eq!(dataset.attribute_count(), 3);
     }
@@ -811,7 +830,10 @@ datasets:
             "warehouse.orderfact",
             None,
         );
-        assert_eq!(result.unwrap(), "/data/sales/orders/warehouse.orderfact.parquet");
+        assert_eq!(
+            result.unwrap(),
+            "/data/sales/orders/warehouse.orderfact.parquet"
+        );
     }
 
     #[test]
@@ -832,7 +854,7 @@ datasets:
         let result = resolve_path_template(
             "{model.namespace}/data.parquet",
             "sales",
-            None,  // namespace not set
+            None, // namespace not set
             "orders",
             "dataset",
             None,
@@ -849,7 +871,7 @@ datasets:
             None,
             "orders",
             "dataset",
-            None,  // uuid not set
+            None, // uuid not set
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("dataset.uuid"));
@@ -906,8 +928,10 @@ datasets:
         let dataset = group.get_dataset("warehouse.orderfact").unwrap();
 
         assert_eq!(dataset.source_ref(), "/data/warehouse/orderfact.parquet");
-        assert_eq!(dataset.parquet_path(), Some("/data/warehouse/orderfact.parquet"));
+        assert_eq!(
+            dataset.parquet_path(),
+            Some("/data/warehouse/orderfact.parquet")
+        );
         assert!(dataset.iceberg_table().is_none());
     }
-
 }

@@ -1,9 +1,25 @@
 //! Shared utility types and helpers for the planner
 
-use std::collections::HashMap;
-use crate::semantic_model::{ConditionExpr, DataType, Dataset, Dimension, ExprArg, ExprNode, GrainSet, GrainSetDimension, MeasureExpr, SemanticModel};
+/// Composite column name for a subquery branch: `{alias}_{base}` (e.g. `t0_cost`, `t0_campaign_name`).
+///
+/// Used consistently across same-grain multi-table plans (`join`, `table` builders) so Substrait
+/// emission resolves columns by a single unqualified name (no `table.column` split).
+pub fn prefixed_subquery_col(table_alias: &str, base: &str) -> String {
+    format!("{}_{}", table_alias, base)
+}
+
+/// Turn `dimension.attribute` into a single segment safe for [`prefixed_subquery_col`] (dots → underscores).
+pub fn semantic_path_as_key(semantic_dim_attr: &str) -> String {
+    semantic_dim_attr.replace('.', "_")
+}
+
 use crate::plan::{Column, Expr, Literal, LiteralValue as PlanLiteralValue};
 use crate::resolver::{AttributeRef, ResolvedDimension, ResolvedQuery};
+use crate::semantic_model::{
+    ConditionExpr, DataType, Dataset, Dimension, ExprArg, ExprNode, GrainSet, GrainSetDimension,
+    MeasureExpr, SemanticModel,
+};
+use std::collections::HashMap;
 
 /// Determine if a table needs a join for a given dimension
 ///
@@ -31,7 +47,12 @@ pub fn build_column(attr: &AttributeRef<'_>, table: &Dataset, fact_alias: &str) 
         AttributeRef::Degenerate { attribute, .. } => {
             Column::new(fact_alias, attribute.column_name())
         }
-        AttributeRef::Joined { group_dim, dimension, attribute, .. } => {
+        AttributeRef::Joined {
+            group_dim,
+            dimension,
+            attribute,
+            ..
+        } => {
             if needs_join_for_dimension(table, group_dim, dimension) {
                 let dim_alias = dimension.alias.as_deref().unwrap_or(&dimension.name);
                 Column::new(dim_alias, attribute.column_name())
@@ -56,9 +77,7 @@ pub fn build_attribute_expr(attr: &AttributeRef<'_>, table: &Dataset, fact_alias
                 Expr::Literal(Literal::String(value.clone()))
             }
         }
-        _ => {
-            Expr::Column(build_column(attr, table, fact_alias))
-        }
+        _ => Expr::Column(build_column(attr, table, fact_alias)),
     }
 }
 
@@ -83,19 +102,30 @@ pub fn build_sort_keys(resolved: &ResolvedQuery<'_>) -> Vec<crate::plan::SortKey
 /// Collect required columns for each table based on the resolved query.
 /// Returns (fact_columns, fact_types, dimension_columns_by_name with types).
 pub fn collect_required_columns(
-    resolved: &ResolvedQuery<'_>
-) -> (Vec<String>, Vec<String>, HashMap<String, (Vec<String>, Vec<String>)>) {
+    resolved: &ResolvedQuery<'_>,
+) -> (
+    Vec<String>,
+    Vec<String>,
+    HashMap<String, (Vec<String>, Vec<String>)>,
+) {
     let mut fact_columns: HashMap<String, String> = HashMap::new();
     let mut dimension_columns: HashMap<String, HashMap<String, String>> = HashMap::new();
 
     for dim in &resolved.dimensions {
-        if let ResolvedDimension::Joined { group_dim, dimension } = dim {
+        if let ResolvedDimension::Joined {
+            group_dim,
+            dimension,
+        } = dim
+        {
             if needs_join_for_dimension(resolved.dataset, group_dim, dimension) {
                 if let Some(join) = &group_dim.join {
-                    let right_type = dimension.key_attribute(&join.right_key)
+                    let right_type = dimension
+                        .key_attribute(&join.right_key)
                         .map(|a| a.data_type().to_string())
                         .unwrap_or_else(|| DataType::I32.to_string());
-                    fact_columns.entry(join.left_key.clone()).or_insert(right_type.clone());
+                    fact_columns
+                        .entry(join.left_key.clone())
+                        .or_insert(right_type.clone());
                     dimension_columns
                         .entry(dimension.name.clone())
                         .or_default()
@@ -106,16 +136,37 @@ pub fn collect_required_columns(
     }
 
     for attr in &resolved.row_attributes {
-        add_attribute_column_with_type(attr, resolved.dataset, &mut fact_columns, &mut dimension_columns);
+        add_attribute_column_with_type(
+            attr,
+            resolved.dataset,
+            &mut fact_columns,
+            &mut dimension_columns,
+        );
     }
     for attr in &resolved.column_attributes {
-        add_attribute_column_with_type(attr, resolved.dataset, &mut fact_columns, &mut dimension_columns);
+        add_attribute_column_with_type(
+            attr,
+            resolved.dataset,
+            &mut fact_columns,
+            &mut dimension_columns,
+        );
     }
     for filter in &resolved.filters {
-        add_attribute_column_with_type(&filter.attribute, resolved.dataset, &mut fact_columns, &mut dimension_columns);
+        add_attribute_column_with_type(
+            &filter.attribute,
+            resolved.dataset,
+            &mut fact_columns,
+            &mut dimension_columns,
+        );
     }
     for measure in &resolved.measures {
-        collect_measure_columns(&measure.expr, &measure.data_type(), resolved.dataset, resolved.grain_set, &mut fact_columns);
+        collect_measure_columns(
+            &measure.expr,
+            &measure.data_type(),
+            resolved.dataset,
+            resolved.grain_set,
+            &mut fact_columns,
+        );
     }
 
     let (fact_cols, fact_types): (Vec<String>, Vec<String>) = fact_columns.into_iter().unzip();
@@ -144,7 +195,12 @@ fn add_attribute_column_with_type(
                 .entry(attribute.column_name().to_string())
                 .or_insert(data_type);
         }
-        AttributeRef::Joined { group_dim, dimension, attribute, .. } => {
+        AttributeRef::Joined {
+            group_dim,
+            dimension,
+            attribute,
+            ..
+        } => {
             let data_type = attribute.data_type().to_string();
             if needs_join_for_dimension(table, group_dim, dimension) {
                 dimension_columns
@@ -163,7 +219,12 @@ fn add_attribute_column_with_type(
 }
 
 /// Look up the type of a column from explicit columns, degenerate dimension attributes, or fallback.
-pub fn lookup_column_type(name: &str, table: &Dataset, grain_set: &GrainSet, fallback_type: &DataType) -> String {
+pub fn lookup_column_type(
+    name: &str,
+    table: &Dataset,
+    grain_set: &GrainSet,
+    fallback_type: &DataType,
+) -> String {
     if let Some(col) = table.get_column(name) {
         return col.data_type().to_string();
     }
@@ -193,7 +254,9 @@ pub fn collect_measure_columns(
             let col_type = lookup_column_type(name, table, grain_set, fallback_type);
             columns.entry(name.clone()).or_insert(col_type);
         }
-        MeasureExpr::Structured(node) => collect_node_columns(node, fallback_type, table, grain_set, columns),
+        MeasureExpr::Structured(node) => {
+            collect_node_columns(node, fallback_type, table, grain_set, columns)
+        }
     }
 }
 
@@ -210,14 +273,23 @@ fn collect_node_columns(
             columns.entry(name.clone()).or_insert(col_type);
         }
         ExprNode::Literal(_) => {}
-        ExprNode::Add(args) | ExprNode::Subtract(args) | ExprNode::Multiply(args) | ExprNode::Divide(args) => {
+        ExprNode::Add(args)
+        | ExprNode::Subtract(args)
+        | ExprNode::Multiply(args)
+        | ExprNode::Divide(args) => {
             for arg in args {
                 collect_arg_columns(arg, fallback_type, table, grain_set, columns);
             }
         }
         ExprNode::Case(case_expr) => {
             for when_branch in &case_expr.when {
-                collect_condition_columns(&when_branch.condition, fallback_type, table, grain_set, columns);
+                collect_condition_columns(
+                    &when_branch.condition,
+                    fallback_type,
+                    table,
+                    grain_set,
+                    columns,
+                );
                 collect_arg_columns(&when_branch.then, fallback_type, table, grain_set, columns);
             }
             if let Some(else_val) = &case_expr.else_value {
@@ -235,9 +307,12 @@ fn collect_condition_columns(
     columns: &mut HashMap<String, String>,
 ) {
     match cond {
-        ConditionExpr::Eq(args) | ConditionExpr::Ne(args) |
-        ConditionExpr::Gt(args) | ConditionExpr::Gte(args) |
-        ConditionExpr::Lt(args) | ConditionExpr::Lte(args) => {
+        ConditionExpr::Eq(args)
+        | ConditionExpr::Ne(args)
+        | ConditionExpr::Gt(args)
+        | ConditionExpr::Gte(args)
+        | ConditionExpr::Lt(args)
+        | ConditionExpr::Lte(args) => {
             for arg in args {
                 collect_arg_columns(arg, fallback_type, table, grain_set, columns);
             }
@@ -291,12 +366,16 @@ pub fn get_virtual_attribute_value_with_dataset(
     if dim_name == "_dataset" {
         match attr_name {
             "path" => PlanLiteralValue::String(
-                grain_set.container_path.as_ref()
+                grain_set
+                    .container_path
+                    .as_ref()
                     .map(|p| p.join("."))
                     .unwrap_or_else(|| grain_set.name.clone()),
             ),
             "model" => PlanLiteralValue::String(model.name.clone()),
-            "namespace" => model.namespace.as_ref()
+            "namespace" => model
+                .namespace
+                .as_ref()
                 .map(|ns| PlanLiteralValue::String(ns.clone()))
                 .unwrap_or(PlanLiteralValue::Null),
             "dataset" => dataset
@@ -313,10 +392,20 @@ pub fn get_virtual_attribute_value_with_dataset(
 #[derive(Debug, Clone)]
 pub enum ParsedDimensionAttr {
     /// Conformed: dimension.attribute (declared at highest level of semantic model).
-    Standard { dim_name: String, attr_name: String },
+    Standard {
+        dim_name: String,
+        attr_name: String,
+    },
     /// Path-qualified: path.dimension.attribute (path reflects container levels).
-    Qualified { container_path: Vec<String>, dim_name: String, attr_name: String },
-    Virtual { dim_name: String, attr_name: String },
+    Qualified {
+        container_path: Vec<String>,
+        dim_name: String,
+        attr_name: String,
+    },
+    Virtual {
+        dim_name: String,
+        attr_name: String,
+    },
 }
 
 impl ParsedDimensionAttr {
@@ -325,7 +414,11 @@ impl ParsedDimensionAttr {
         match parts.len() {
             2 => {
                 let (dim_name, attr_name) = (parts[0], parts[1]);
-                if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
+                if model
+                    .get_dimension(dim_name)
+                    .map(|d| d.is_virtual())
+                    .unwrap_or(false)
+                {
                     ParsedDimensionAttr::Virtual {
                         dim_name: dim_name.to_string(),
                         attr_name: attr_name.to_string(),
@@ -338,7 +431,8 @@ impl ParsedDimensionAttr {
                 }
             }
             n if n >= 3 => {
-                let container_path: Vec<String> = parts[0..n - 2].iter().map(|s| (*s).to_string()).collect();
+                let container_path: Vec<String> =
+                    parts[0..n - 2].iter().map(|s| (*s).to_string()).collect();
                 let dim_name = parts[n - 2].to_string();
                 let attr_name = parts[n - 1].to_string();
                 ParsedDimensionAttr::Qualified {
@@ -347,12 +441,10 @@ impl ParsedDimensionAttr {
                     attr_name,
                 }
             }
-            _ => {
-                ParsedDimensionAttr::Standard {
-                    dim_name: attr_path.to_string(),
-                    attr_name: String::new(),
-                }
-            }
+            _ => ParsedDimensionAttr::Standard {
+                dim_name: attr_path.to_string(),
+                attr_name: String::new(),
+            },
         }
     }
 
@@ -401,11 +493,7 @@ impl ParsedDimensionAttr {
 }
 
 /// Get the physical column name for a dimension attribute.
-pub fn get_dimension_column_name(
-    grain_set: &GrainSet,
-    dim_name: &str,
-    attr_name: &str,
-) -> String {
+pub fn get_dimension_column_name(grain_set: &GrainSet, dim_name: &str, attr_name: &str) -> String {
     if let Some(group_dim) = grain_set.get_dimension(dim_name) {
         if group_dim.is_degenerate() {
             if let Some(attr) = group_dim.get_attribute(attr_name) {
@@ -417,8 +505,12 @@ pub fn get_dimension_column_name(
 }
 
 /// Extract physical dimension pairs from dimension paths, skipping virtual dimensions.
-pub fn extract_physical_dims(dimension_attrs: &[String], model: &SemanticModel) -> Vec<(String, String)> {
-    dimension_attrs.iter()
+pub fn extract_physical_dims(
+    dimension_attrs: &[String],
+    model: &SemanticModel,
+) -> Vec<(String, String)> {
+    dimension_attrs
+        .iter()
         .filter_map(|attr_path| {
             let parts: Vec<&str> = attr_path.split('.').collect();
             let (dim_name, attr_name) = match parts.len() {
@@ -426,7 +518,11 @@ pub fn extract_physical_dims(dimension_attrs: &[String], model: &SemanticModel) 
                 n if n >= 3 => (parts[n - 2], parts[n - 1]),
                 _ => return None,
             };
-            if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
+            if model
+                .get_dimension(dim_name)
+                .map(|d| d.is_virtual())
+                .unwrap_or(false)
+            {
                 return None;
             }
             Some((dim_name.to_string(), attr_name.to_string()))

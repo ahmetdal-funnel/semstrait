@@ -39,4 +39,3 @@ impl fmt::Display for EmitError {
 }
 
 impl std::error::Error for EmitError {}
-

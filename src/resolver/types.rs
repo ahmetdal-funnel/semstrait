@@ -1,9 +1,11 @@
 //! Types for resolved query components
 
-use crate::semantic_model::{Attribute, Dataset, Dimension, GrainSet, GrainSetDimension, Measure, Metric, SemanticModel};
+use crate::semantic_model::{
+    Attribute, Dataset, Dimension, GrainSet, GrainSetDimension, Measure, Metric, SemanticModel,
+};
 
 /// A resolved attribute reference (dimension.attribute)
-/// 
+///
 /// Can be either from a joined dimension table, a degenerate dimension
 /// where the columns live directly on the fact dataset, or a virtual
 /// metadata attribute from the `_dataset` dimension.
@@ -45,7 +47,7 @@ impl<'a> AttributeRef<'a> {
             Self::Meta { .. } => None,
         }
     }
-    
+
     /// Get the attribute (panics for Meta - use attribute_opt instead)
     pub fn attribute(&self) -> &'a Attribute {
         match self {
@@ -54,7 +56,7 @@ impl<'a> AttributeRef<'a> {
             Self::Meta { .. } => panic!("Meta attributes don't have an Attribute reference"),
         }
     }
-    
+
     /// Get the attribute if available (None for Meta)
     pub fn attribute_opt(&self) -> Option<&'a Attribute> {
         match self {
@@ -63,7 +65,7 @@ impl<'a> AttributeRef<'a> {
             Self::Meta { .. } => None,
         }
     }
-    
+
     /// Get the dimension name
     pub fn dimension_name(&self) -> &str {
         match self {
@@ -72,7 +74,7 @@ impl<'a> AttributeRef<'a> {
             Self::Meta { .. } => "_dataset",
         }
     }
-    
+
     /// Get the attribute name
     pub fn attribute_name(&self) -> &str {
         match self {
@@ -81,7 +83,7 @@ impl<'a> AttributeRef<'a> {
             Self::Meta { name, .. } => name,
         }
     }
-    
+
     /// Get the full dimension (only for Joined)
     pub fn dimension(&self) -> Option<&'a Dimension> {
         match self {
@@ -90,17 +92,17 @@ impl<'a> AttributeRef<'a> {
             Self::Meta { .. } => None,
         }
     }
-    
+
     /// Is this a degenerate dimension?
     pub fn is_degenerate(&self) -> bool {
         matches!(self, Self::Degenerate { .. })
     }
-    
+
     /// Is this a virtual metadata attribute?
     pub fn is_meta(&self) -> bool {
         matches!(self, Self::Meta { .. })
     }
-    
+
     /// Is this an inline attribute (no join needed)?
     /// Meta attributes are always inline (they're literals).
     pub fn is_inline(&self) -> bool {
@@ -110,7 +112,7 @@ impl<'a> AttributeRef<'a> {
             Self::Meta { .. } => true,
         }
     }
-    
+
     /// Get the meta value (only for Meta variant)
     pub fn meta_value(&self) -> Option<&str> {
         match self {
@@ -118,21 +120,27 @@ impl<'a> AttributeRef<'a> {
             _ => None,
         }
     }
-    
+
     /// Get the grain set qualifier if this attribute is explicitly scoped
     pub fn grain_set_qualifier(&self) -> Option<&str> {
         match self {
-            Self::Joined { grain_set_qualifier, .. } => grain_set_qualifier.as_deref(),
-            Self::Degenerate { grain_set_qualifier, .. } => grain_set_qualifier.as_deref(),
+            Self::Joined {
+                grain_set_qualifier,
+                ..
+            } => grain_set_qualifier.as_deref(),
+            Self::Degenerate {
+                grain_set_qualifier,
+                ..
+            } => grain_set_qualifier.as_deref(),
             Self::Meta { .. } => None,
         }
     }
-    
+
     /// Is this attribute qualified with a specific grain set?
     pub fn is_grain_set_qualified(&self) -> bool {
         self.grain_set_qualifier().is_some()
     }
-    
+
     /// Get the semantic name for this attribute
     /// Returns "grainSet.dimension.attribute" if qualified, "dimension.attribute" otherwise
     pub fn semantic_name(&self) -> String {
@@ -179,22 +187,22 @@ impl<'a> ResolvedQuery<'a> {
     /// Returns names in order: row_attributes, column_attributes, metrics
     pub fn output_names(&self) -> Vec<String> {
         let mut names = Vec::new();
-        
+
         // Row attributes: "dimension.attribute", "_dataset.attribute", or "grainSet.dimension.attribute"
         for attr in &self.row_attributes {
             names.push(attr.semantic_name());
         }
-        
+
         // Column attributes: "dimension.attribute", "_dataset.attribute", or "grainSet.dimension.attribute"
         for attr in &self.column_attributes {
             names.push(attr.semantic_name());
         }
-        
+
         // Metrics: the public query interface
         for metric in &self.metrics {
             names.push(metric.name.clone());
         }
-        
+
         names
     }
 }
@@ -208,9 +216,7 @@ pub enum ResolvedDimension<'a> {
         dimension: &'a Dimension,
     },
     /// Degenerate dimension (columns on fact dataset)
-    Degenerate {
-        group_dim: &'a GrainSetDimension,
-    },
+    Degenerate { group_dim: &'a GrainSetDimension },
     /// Virtual `_dataset` metadata dimension
     /// No physical table - all attributes are constant literals
     Meta,
@@ -225,7 +231,7 @@ impl<'a> ResolvedDimension<'a> {
             Self::Meta => None,
         }
     }
-    
+
     /// Get the dimension name
     pub fn name(&self) -> &str {
         match self {
@@ -234,17 +240,17 @@ impl<'a> ResolvedDimension<'a> {
             Self::Meta => "_dataset",
         }
     }
-    
+
     /// Is this a degenerate dimension?
     pub fn is_degenerate(&self) -> bool {
         matches!(self, Self::Degenerate { .. })
     }
-    
+
     /// Is this the virtual metadata dimension?
     pub fn is_meta(&self) -> bool {
         matches!(self, Self::Meta)
     }
-    
+
     /// Returns true if this dimension doesn't require a join
     /// Meta dimensions are always inline (they're literals).
     pub fn is_inline(&self) -> bool {
@@ -254,7 +260,7 @@ impl<'a> ResolvedDimension<'a> {
             Self::Meta => true,
         }
     }
-    
+
     /// Get the full dimension (only for Joined)
     pub fn dimension(&self) -> Option<&'a Dimension> {
         match self {

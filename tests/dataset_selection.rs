@@ -17,7 +17,8 @@ fn test_select_yearly_for_year_only() {
     let measures = vec!["revenue".to_string()];
     let grain_sets = model.grain_sets();
 
-    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures).expect("Selection should succeed");
+    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures)
+        .expect("Selection should succeed");
 
     assert!(!selected.is_empty(), "Should select at least one dataset");
     assert_eq!(
@@ -36,7 +37,8 @@ fn test_select_monthly_for_month_query() {
     let measures = vec!["revenue".to_string()];
     let grain_sets = model.grain_sets();
 
-    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures).expect("Selection should succeed");
+    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures)
+        .expect("Selection should succeed");
 
     assert!(!selected.is_empty(), "Should select at least one dataset");
     assert_eq!(
@@ -55,7 +57,8 @@ fn test_select_daily_for_day_query() {
     let measures = vec!["revenue".to_string()];
     let grain_sets = model.grain_sets();
 
-    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures).expect("Selection should succeed");
+    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures)
+        .expect("Selection should succeed");
 
     assert!(!selected.is_empty(), "Should select at least one dataset");
     assert_eq!(
@@ -74,7 +77,8 @@ fn test_select_most_aggregated_when_possible() {
     let measures = vec!["revenue".to_string()];
     let grain_sets = model.grain_sets();
 
-    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures).expect("Selection should succeed");
+    let selected = select_datasets(&schema, model, &grain_sets, &dims, &measures)
+        .expect("Selection should succeed");
 
     assert!(!selected.is_empty(), "Should select at least one dataset");
     assert_eq!(

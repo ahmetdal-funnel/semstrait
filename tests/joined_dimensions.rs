@@ -25,7 +25,11 @@ fn test_single_joined_dimension() {
     assert_eq!(count_joins(&plan), 1, "Should have exactly 1 JOIN");
 
     // Should scan 2 tables: fact + dates dimension
-    assert_eq!(count_scans(&plan), 2, "Should scan fact table + 1 dimension");
+    assert_eq!(
+        count_scans(&plan),
+        2,
+        "Should scan fact table + 1 dimension"
+    );
 }
 
 #[test]

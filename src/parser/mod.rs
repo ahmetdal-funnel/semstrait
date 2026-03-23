@@ -2,9 +2,9 @@
 //!
 //! Transforms YAML files into model types.
 
-use std::path::Path;
 use crate::error::ParseError;
 use crate::semantic_model::Schema;
+use std::path::Path;
 
 /// Parse a schema from a YAML file
 pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<Schema, ParseError> {
@@ -24,78 +24,81 @@ pub fn parse_str(yaml: &str) -> Result<Schema, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic_model::{MeasureExpr, MetricExpr, ExprNode, Aggregation};
+    use crate::semantic_model::{Aggregation, ExprNode, MeasureExpr, MetricExpr};
 
     #[test]
     fn test_parse_steelwheels() {
         let schema = parse_file("test_data/steelwheels.yaml").unwrap();
-        
+
         // Check models
         assert_eq!(schema.semantic_models.len(), 1);
         let model = schema.get_model("steelwheels").unwrap();
-        
+
         // Check grain sets
         assert_eq!(model.grain_sets().len(), 1);
         let group = model.first_grain_set().unwrap();
         assert_eq!(group.name, "orders");
-        
+
         // Check datasets within group
         assert_eq!(group.datasets.len(), 1);
         let dataset = group.get_dataset("steelwheels.orderfact").unwrap();
         assert_eq!(dataset.name, "steelwheels.orderfact");
-        
+
         // Check dimensions (now on model) - includes _dataset virtual dimension
         assert_eq!(model.dimensions.len(), 3);
         let dates = model.get_dimension("dates").unwrap();
         assert_eq!(dates.table, Some("steelwheels.dates".to_string()));
         assert!(!dates.is_virtual());
         assert_eq!(dates.attributes.len(), 4);
-        
+
         // Check _dataset virtual dimension
         let table_dim = model.get_dimension("_dataset").unwrap();
         assert!(table_dim.is_virtual());
         assert!(table_dim.table.is_none());
-        
+
         // Check key attribute detection for dates dimension
         // The join key is time_id, which maps to the 'date' attribute
         let date_key_attr = dates.key_attribute("time_id").unwrap();
         assert_eq!(date_key_attr.name, "date");
-        
+
         // Check measures (now on group, not table)
         assert_eq!(group.measures.len(), 4);
         let sales = group.get_measure("sales").unwrap();
         assert_eq!(sales.aggregation, Aggregation::Sum);
         assert!(matches!(&sales.expr, MeasureExpr::Column(s) if s == "totalprice"));
-        
+
         // Check structured expression measure
         let revenue = group.get_measure("revenue").unwrap();
         assert!(matches!(&revenue.expr, MeasureExpr::Structured(_)));
-        
+
         // Check CASE WHEN measure
         let premium = group.get_measure("premium_sales").unwrap();
-        assert!(matches!(&premium.expr, MeasureExpr::Structured(ExprNode::Case(_))));
-        
+        assert!(matches!(
+            &premium.expr,
+            MeasureExpr::Structured(ExprNode::Case(_))
+        ));
+
         // Check metrics (still on model)
         let metric = model.get_metric("avg_unit_price").unwrap();
         assert_eq!(metric.label.as_deref(), Some("Average Unit Price"));
         assert!(matches!(&metric.expr, MetricExpr::Structured(_)));
-        
+
         // Columns are now optional - join detection is based on attribute inclusion
         // The dataset should NOT have explicit columns defined (they're inferred)
         assert!(dataset.columns.is_none());
-        
+
         // Check dataset's dimension and measure references
         assert!(dataset.has_dimension("dates"));
         assert!(dataset.has_dimension("markets"));
         assert!(dataset.has_dimension("flags"));
         assert!(dataset.has_measure("sales"));
         assert!(dataset.has_measure("quantity"));
-        
+
         // Check attribute-based join detection:
         // - dates: [date, year, quarter, month] includes 'date' (key attr) → needs join
         // - markets: [customer, ...] includes 'customer' (key attr) → needs join
-        assert!(dataset.has_dimension_attribute("dates", "date"));  // Key attr present → JOIN
-        assert!(dataset.has_dimension_attribute("markets", "customer"));  // Key attr present → JOIN
+        assert!(dataset.has_dimension_attribute("dates", "date")); // Key attr present → JOIN
+        assert!(dataset.has_dimension_attribute("markets", "customer")); // Key attr present → JOIN
     }
 
     #[test]
@@ -144,7 +147,11 @@ mod tests {
 
         let mappings = fun_cost.grain_set_measures();
         assert_eq!(mappings.len(), 2);
-        assert!(mappings.iter().any(|(gs, m)| gs == "adwords" && m == "cost"));
-        assert!(mappings.iter().any(|(gs, m)| gs == "facebookads" && m == "spend"));
+        assert!(mappings
+            .iter()
+            .any(|(gs, m)| gs == "adwords" && m == "cost"));
+        assert!(mappings
+            .iter()
+            .any(|(gs, m)| gs == "facebookads" && m == "spend"));
     }
 }

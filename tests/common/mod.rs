@@ -1,23 +1,19 @@
 //! Shared test utilities for integration tests
 #![allow(dead_code)]
 
-use semstrait::{
-    emit_plan, parser,
-    QueryRequest, Schema,
-};
+use semstrait::{emit_plan, parser, QueryRequest, Schema};
 use substrait::proto::Plan;
 
 /// Load a test fixture from the tests/test_data directory
 pub fn load_fixture(name: &str) -> Schema {
     let path = format!("tests/test_data/{}", name);
-    parser::parse_file(&path)
-        .unwrap_or_else(|e| panic!("Failed to load test data {}: {}", name, e))
+    parser::parse_file(&path).unwrap_or_else(|e| panic!("Failed to load test data {}: {}", name, e))
 }
 
 /// Run the full pipeline: schema + request -> Substrait Plan
 pub fn run_pipeline(schema: &Schema, request: &QueryRequest) -> Result<Plan, String> {
     use semstrait::planner::plan_semantic_query;
-    
+
     let model = schema
         .get_model(&request.model)
         .ok_or_else(|| format!("Model '{}' not found", request.model))?;
@@ -50,7 +46,11 @@ fn count_scans_in_rel_type(rel_type: &substrait::proto::plan_rel::RelType) -> us
     use substrait::proto::plan_rel::RelType as PlanRelType;
     match rel_type {
         PlanRelType::Rel(rel) => count_scans_in_rel(rel),
-        PlanRelType::Root(root) => root.input.as_ref().map(|r| count_scans_in_rel(r)).unwrap_or(0),
+        PlanRelType::Root(root) => root
+            .input
+            .as_ref()
+            .map(|r| count_scans_in_rel(r))
+            .unwrap_or(0),
     }
 }
 
@@ -90,7 +90,11 @@ fn has_join_in_rel_type(rel_type: &substrait::proto::plan_rel::RelType) -> bool 
     use substrait::proto::plan_rel::RelType as PlanRelType;
     match rel_type {
         PlanRelType::Rel(rel) => has_join_in_rel(rel),
-        PlanRelType::Root(root) => root.input.as_ref().map(|r| has_join_in_rel(r)).unwrap_or(false),
+        PlanRelType::Root(root) => root
+            .input
+            .as_ref()
+            .map(|r| has_join_in_rel(r))
+            .unwrap_or(false),
     }
 }
 
@@ -101,10 +105,26 @@ fn has_join_in_rel(rel: &substrait::proto::Rel) -> bool {
 
     match rel_type {
         RelType::Join(_) => true,
-        RelType::Filter(f) => f.input.as_ref().map(|r| has_join_in_rel(r)).unwrap_or(false),
-        RelType::Project(p) => p.input.as_ref().map(|r| has_join_in_rel(r)).unwrap_or(false),
-        RelType::Aggregate(a) => a.input.as_ref().map(|r| has_join_in_rel(r)).unwrap_or(false),
-        RelType::Sort(s) => s.input.as_ref().map(|r| has_join_in_rel(r)).unwrap_or(false),
+        RelType::Filter(f) => f
+            .input
+            .as_ref()
+            .map(|r| has_join_in_rel(r))
+            .unwrap_or(false),
+        RelType::Project(p) => p
+            .input
+            .as_ref()
+            .map(|r| has_join_in_rel(r))
+            .unwrap_or(false),
+        RelType::Aggregate(a) => a
+            .input
+            .as_ref()
+            .map(|r| has_join_in_rel(r))
+            .unwrap_or(false),
+        RelType::Sort(s) => s
+            .input
+            .as_ref()
+            .map(|r| has_join_in_rel(r))
+            .unwrap_or(false),
         RelType::Set(s) => s.inputs.iter().any(has_join_in_rel),
         _ => false,
     }
@@ -125,7 +145,11 @@ fn has_union_in_rel_type(rel_type: &substrait::proto::plan_rel::RelType) -> bool
     use substrait::proto::plan_rel::RelType as PlanRelType;
     match rel_type {
         PlanRelType::Rel(rel) => has_union_in_rel(rel),
-        PlanRelType::Root(root) => root.input.as_ref().map(|r| has_union_in_rel(r)).unwrap_or(false),
+        PlanRelType::Root(root) => root
+            .input
+            .as_ref()
+            .map(|r| has_union_in_rel(r))
+            .unwrap_or(false),
     }
 }
 
@@ -136,13 +160,35 @@ fn has_union_in_rel(rel: &substrait::proto::Rel) -> bool {
 
     match rel_type {
         RelType::Set(_) => true,
-        RelType::Filter(f) => f.input.as_ref().map(|r| has_union_in_rel(r)).unwrap_or(false),
-        RelType::Project(p) => p.input.as_ref().map(|r| has_union_in_rel(r)).unwrap_or(false),
-        RelType::Aggregate(a) => a.input.as_ref().map(|r| has_union_in_rel(r)).unwrap_or(false),
-        RelType::Sort(s) => s.input.as_ref().map(|r| has_union_in_rel(r)).unwrap_or(false),
+        RelType::Filter(f) => f
+            .input
+            .as_ref()
+            .map(|r| has_union_in_rel(r))
+            .unwrap_or(false),
+        RelType::Project(p) => p
+            .input
+            .as_ref()
+            .map(|r| has_union_in_rel(r))
+            .unwrap_or(false),
+        RelType::Aggregate(a) => a
+            .input
+            .as_ref()
+            .map(|r| has_union_in_rel(r))
+            .unwrap_or(false),
+        RelType::Sort(s) => s
+            .input
+            .as_ref()
+            .map(|r| has_union_in_rel(r))
+            .unwrap_or(false),
         RelType::Join(j) => {
-            j.left.as_ref().map(|r| has_union_in_rel(r)).unwrap_or(false)
-                || j.right.as_ref().map(|r| has_union_in_rel(r)).unwrap_or(false)
+            j.left
+                .as_ref()
+                .map(|r| has_union_in_rel(r))
+                .unwrap_or(false)
+                || j.right
+                    .as_ref()
+                    .map(|r| has_union_in_rel(r))
+                    .unwrap_or(false)
         }
         _ => false,
     }
@@ -162,7 +208,11 @@ fn count_joins_in_rel_type(rel_type: &substrait::proto::plan_rel::RelType) -> us
     use substrait::proto::plan_rel::RelType as PlanRelType;
     match rel_type {
         PlanRelType::Rel(rel) => count_joins_in_rel(rel),
-        PlanRelType::Root(root) => root.input.as_ref().map(|r| count_joins_in_rel(r)).unwrap_or(0),
+        PlanRelType::Root(root) => root
+            .input
+            .as_ref()
+            .map(|r| count_joins_in_rel(r))
+            .unwrap_or(0),
     }
 }
 
@@ -189,12 +239,16 @@ fn count_joins_in_rel(rel: &substrait::proto::Rel) -> usize {
 pub fn debug_plan_structure(plan: &Plan) {
     println!("Plan has {} relations", plan.relations.len());
     for (i, plan_rel) in plan.relations.iter().enumerate() {
-        println!("  Relation {}: {:?}", i, plan_rel.rel_type.as_ref().map(|r| {
-            use substrait::proto::plan_rel::RelType as PlanRelType;
-            match r {
-                PlanRelType::Rel(_) => "Rel",
-                PlanRelType::Root(_) => "Root",
-            }
-        }));
+        println!(
+            "  Relation {}: {:?}",
+            i,
+            plan_rel.rel_type.as_ref().map(|r| {
+                use substrait::proto::plan_rel::RelType as PlanRelType;
+                match r {
+                    PlanRelType::Rel(_) => "Rel",
+                    PlanRelType::Root(_) => "Root",
+                }
+            })
+        );
     }
 }

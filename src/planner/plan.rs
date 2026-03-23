@@ -3,17 +3,17 @@
 //! `plan_semantic_query` is the main router that classifies queries and
 //! dispatches to the appropriate planner.
 
-use std::collections::HashSet;
-use crate::semantic_model::{Schema, SemanticModel, Metric};
-use crate::plan::PlanNode;
-use crate::resolver::{resolve_query, collect_required_measure_names};
-use crate::selector::{select_datasets, select_datasets_for_join, SelectedDataset};
-use crate::query::QueryRequest;
-use super::error::PlanError;
-use super::table::plan_query;
 use super::cross::{plan_cross_grain_set_query, plan_multi_cross_grain_set_query};
-use super::union::{plan_conformed_query, plan_multi_grain_set_query, plan_single_grain_set_query};
+use super::error::PlanError;
 use super::join::plan_same_grain_set_join;
+use super::table::plan_query;
+use super::union::{plan_conformed_query, plan_multi_grain_set_query, plan_single_grain_set_query};
+use crate::plan::PlanNode;
+use crate::query::QueryRequest;
+use crate::resolver::{collect_required_measure_names, resolve_query};
+use crate::selector::{select_datasets, select_datasets_for_join, SelectedDataset};
+use crate::semantic_model::{Metric, Schema, SemanticModel};
+use std::collections::HashSet;
 
 /// Plan a semantic query, automatically handling all query types.
 ///
@@ -33,22 +33,29 @@ pub fn plan_semantic_query(
         dimension_attrs.extend(cols.clone());
     }
 
-    let cross_dataset_metrics: Vec<&Metric> = request.metrics
+    let cross_dataset_metrics: Vec<&Metric> = request
+        .metrics
         .as_ref()
         .map(|names| {
-            names.iter()
+            names
+                .iter()
                 .filter_map(|name| model.get_metric(name))
                 .filter(|m| m.is_cross_grain_set())
                 .collect()
         })
         .unwrap_or_default();
 
-    let qualified_groups: HashSet<String> = dimension_attrs.iter()
+    let qualified_groups: HashSet<String> = dimension_attrs
+        .iter()
         .flat_map(|path| {
             let parts: Vec<&str> = path.split('.').collect();
             if parts.len() >= 3 {
                 let path_segments = &parts[0..parts.len() - 2];
-                model.grain_sets_under_path(path_segments).into_iter().map(|gs| gs.name).collect::<Vec<_>>()
+                model
+                    .grain_sets_under_path(path_segments)
+                    .into_iter()
+                    .map(|gs| gs.name)
+                    .collect::<Vec<_>>()
             } else {
                 vec![]
             }
@@ -124,15 +131,24 @@ fn plan_default_no_qualified(
     let required_measures: Vec<String> = collect_required_measure_names(model, &metric_names);
 
     let grain_sets = model.grain_sets();
-    match select_datasets(schema, model, &grain_sets, dimension_attrs, &required_measures) {
+    match select_datasets(
+        schema,
+        model,
+        &grain_sets,
+        dimension_attrs,
+        &required_measures,
+    ) {
         Ok(selected_tables) => {
             if is_conformed && grain_sets.len() > 1 {
                 plan_conformed_query(schema, model, request, dimension_attrs)
             } else {
-                let selected = selected_tables.into_iter().next()
-                    .ok_or_else(|| PlanError::InvalidQuery("No feasible table found for query".to_string()))?;
-                let resolved = resolve_query(schema, request, &selected, &grain_sets)
-                    .map_err(|e| PlanError::InvalidQuery(format!("Query resolution error: {:?}", e)))?;
+                let selected = selected_tables.into_iter().next().ok_or_else(|| {
+                    PlanError::InvalidQuery("No feasible table found for query".to_string())
+                })?;
+                let resolved =
+                    resolve_query(schema, request, &selected, &grain_sets).map_err(|e| {
+                        PlanError::InvalidQuery(format!("Query resolution error: {:?}", e))
+                    })?;
                 plan_query(&resolved)
             }
         }
@@ -147,15 +163,19 @@ fn plan_default_no_qualified(
                     dimension_attrs,
                     &required_measures,
                 )
-                .map_err(|_| PlanError::InvalidQuery(format!("Dataset selection error: {:?}", select_err)))?;
+                .map_err(|_| {
+                    PlanError::InvalidQuery(format!("Dataset selection error: {:?}", select_err))
+                })?;
 
                 if multi_selection.datasets.len() == 1 {
                     let selected = SelectedDataset {
                         group: multi_selection.group,
                         dataset: multi_selection.datasets[0].dataset,
                     };
-                    let resolved = resolve_query(schema, request, &selected, &grain_sets)
-                        .map_err(|e| PlanError::InvalidQuery(format!("Query resolution error: {:?}", e)))?;
+                    let resolved =
+                        resolve_query(schema, request, &selected, &grain_sets).map_err(|e| {
+                            PlanError::InvalidQuery(format!("Query resolution error: {:?}", e))
+                        })?;
                     plan_query(&resolved)
                 } else {
                     plan_same_grain_set_join(

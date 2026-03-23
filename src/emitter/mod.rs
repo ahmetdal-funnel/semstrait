@@ -5,11 +5,10 @@
 //! - `substrait` – Substrait protobuf Plan
 //! - `sql` – ANSI SQL string
 
-mod substrait;
-mod sql;
 mod error;
+mod sql;
+mod substrait;
 
-pub use substrait::emit_plan;
-pub use sql::emit_sql;
 pub use error::EmitError;
-
+pub use sql::emit_sql;
+pub use substrait::emit_plan;

@@ -3,16 +3,16 @@
 //! Used when no single table has all required measures but multiple tables
 //! together can satisfy the query. Tables are JOINed on their common dimensions.
 
-use crate::semantic_model::{Dataset, GrainSet, MeasureExpr, MetricExpr, SemanticModel};
+use super::error::PlanError;
+use super::expr::convert_measure_expr;
+use super::util::{get_dimension_column_name, get_virtual_attribute_value, prefixed_subquery_col};
 use crate::plan::{
-    Aggregate, AggregateExpr, Column, CrossJoin, Expr, Join, JoinType,
-    Literal, PlanNode, Scan, Project, ProjectExpr, Sort, SortKey, SortDirection,
-    LiteralValue as PlanLiteralValue,
+    Aggregate, AggregateExpr, Column, CrossJoin, Expr, Join, JoinType, Literal,
+    LiteralValue as PlanLiteralValue, PlanNode, Project, ProjectExpr, Scan, Sort, SortDirection,
+    SortKey,
 };
 use crate::selector::MultiDatasetSelection;
-use super::error::PlanError;
-use super::util::{get_virtual_attribute_value, get_dimension_column_name};
-use super::expr::convert_measure_expr;
+use crate::semantic_model::{Dataset, GrainSet, MeasureExpr, MetricExpr, SemanticModel};
 
 /// Plan a query that JOINs multiple tables within the same tableGroup.
 pub fn plan_same_grain_set_join(
@@ -23,18 +23,27 @@ pub fn plan_same_grain_set_join(
 ) -> Result<PlanNode, PlanError> {
     let grain_set = selection.group;
 
-    let physical_dims: Vec<(String, String)> = dimension_attrs.iter()
+    let physical_dims: Vec<(String, String)> = dimension_attrs
+        .iter()
         .filter_map(|attr_path| {
             let parts: Vec<&str> = attr_path.split('.').collect();
             if parts.len() == 2 {
                 let dim_name = parts[0];
-                if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
+                if model
+                    .get_dimension(dim_name)
+                    .map(|d| d.is_virtual())
+                    .unwrap_or(false)
+                {
                     return None;
                 }
                 Some((dim_name.to_string(), parts[1].to_string()))
             } else if parts.len() == 3 {
                 let dim_name = parts[1];
-                if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
+                if model
+                    .get_dimension(dim_name)
+                    .map(|d| d.is_virtual())
+                    .unwrap_or(false)
+                {
                     return None;
                 }
                 Some((dim_name.to_string(), parts[2].to_string()))
@@ -45,7 +54,9 @@ pub fn plan_same_grain_set_join(
         .collect();
 
     if selection.datasets.is_empty() {
-        return Err(PlanError::InvalidQuery("No tables selected for JOIN".to_string()));
+        return Err(PlanError::InvalidQuery(
+            "No tables selected for JOIN".to_string(),
+        ));
     }
 
     let mut sub_queries: Vec<(PlanNode, String)> = Vec::new();
@@ -55,7 +66,12 @@ pub fn plan_same_grain_set_join(
         let measures = &table_with_measures.measures;
         let table_alias = format!("t{}", idx);
         let sub_plan = build_table_subquery(
-            model, grain_set, table, &physical_dims, measures, &table_alias,
+            model,
+            grain_set,
+            table,
+            &physical_dims,
+            measures,
+            &table_alias,
         )?;
         sub_queries.push((sub_plan, table_alias));
     }
@@ -63,12 +79,19 @@ pub fn plan_same_grain_set_join(
     let (first_plan, first_alias) = sub_queries.remove(0);
     let mut joined_plan = first_plan;
     let mut left_alias = first_alias;
+    let anchor_alias = "t0".to_string();
 
-    for (right_plan, right_alias) in sub_queries {
+    for (step_idx, (right_plan, right_alias)) in sub_queries.into_iter().enumerate() {
         if let Some((dim_name, attr_name)) = physical_dims.first() {
             let col_name = get_dimension_column_name(grain_set, dim_name, attr_name);
-            let left_key = Column::new(&left_alias, &col_name);
-            let right_key = Column::new(&right_alias, &col_name);
+            let left_key_name = if step_idx == 0 {
+                prefixed_subquery_col(&left_alias, &col_name)
+            } else {
+                prefixed_subquery_col(&anchor_alias, &col_name)
+            };
+            let right_key_name = prefixed_subquery_col(&right_alias, &col_name);
+            let left_key = Column::unqualified(&left_key_name);
+            let right_key = Column::unqualified(&right_key_name);
             joined_plan = PlanNode::Join(Join {
                 left: Box::new(joined_plan),
                 right: Box::new(right_plan),
@@ -91,8 +114,14 @@ pub fn plan_same_grain_set_join(
     for (dim_name, attr_name) in &physical_dims {
         let col_name = get_dimension_column_name(grain_set, dim_name, attr_name);
         let semantic_name = format!("{}.{}", dim_name, attr_name);
-        let coalesce_args: Vec<Expr> = selection.datasets.iter().enumerate()
-            .map(|(idx, _)| Expr::Column(Column::new(&format!("t{}", idx), &col_name)))
+        let coalesce_args: Vec<Expr> = selection
+            .datasets
+            .iter()
+            .enumerate()
+            .map(|(idx, _)| {
+                let name = prefixed_subquery_col(&format!("t{}", idx), &col_name);
+                Expr::Column(Column::unqualified(&name))
+            })
             .collect();
         let expr = if coalesce_args.len() == 1 {
             coalesce_args.into_iter().next().unwrap()
@@ -110,7 +139,11 @@ pub fn plan_same_grain_set_join(
         if parts.len() == 2 {
             let dim_name = parts[0];
             let attr_name = parts[1];
-            if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
+            if model
+                .get_dimension(dim_name)
+                .map(|d| d.is_virtual())
+                .unwrap_or(false)
+            {
                 let value = get_virtual_attribute_value(model, grain_set, dim_name, attr_name);
                 let expr = match value {
                     PlanLiteralValue::String(s) => Expr::Literal(Literal::String(s)),
@@ -141,8 +174,9 @@ pub fn plan_same_grain_set_join(
             })
         });
         if let Some(idx) = table_idx {
+            let col = prefixed_subquery_col(&format!("t{}", idx), metric_name);
             projections.push(ProjectExpr {
-                expr: Expr::Column(Column::new(&format!("t{}", idx), metric_name)),
+                expr: Expr::Column(Column::unqualified(&col)),
                 alias: metric_name.clone(),
             });
         }
@@ -153,7 +187,8 @@ pub fn plan_same_grain_set_join(
         expressions: projections,
     });
 
-    let sort_keys: Vec<SortKey> = physical_dims.iter()
+    let sort_keys: Vec<SortKey> = physical_dims
+        .iter()
         .map(|(dim_name, attr_name)| SortKey {
             column: format!("{}.{}", dim_name, attr_name),
             direction: SortDirection::Ascending,
@@ -205,10 +240,11 @@ fn build_table_subquery(
     let scan = PlanNode::Scan(
         Scan::new(&table.name)
             .with_alias(alias)
-            .with_columns(columns, types)
+            .with_columns(columns, types),
     );
 
-    let group_by: Vec<Column> = physical_dims.iter()
+    let group_by: Vec<Column> = physical_dims
+        .iter()
         .filter_map(|(dim_name, attr_name)| {
             if let Some(group_dim) = grain_set.get_dimension(dim_name) {
                 if group_dim.is_degenerate() {
@@ -226,10 +262,13 @@ fn build_table_subquery(
         })
         .collect();
 
-    let aggregates: Vec<AggregateExpr> = measures.iter()
+    let aggregates: Vec<AggregateExpr> = measures
+        .iter()
         .filter_map(|measure_name| {
             grain_set.get_measure(measure_name).map(|measure| {
-                let metric_name = model.metrics.as_ref()
+                let metric_name = model
+                    .metrics
+                    .as_ref()
                     .and_then(|metrics| {
                         metrics.iter().find(|m| {
                             matches!(&m.expr, MetricExpr::MeasureRef(name) if name == measure_name)
@@ -250,16 +289,18 @@ fn build_table_subquery(
 
     for (dim_name, attr_name) in physical_dims {
         let col_name = get_dimension_column_name(grain_set, dim_name, attr_name);
+        let out_alias = prefixed_subquery_col(alias, &col_name);
         projections.push(ProjectExpr {
             expr: Expr::Column(Column::unqualified(&col_name)),
-            alias: col_name.clone(),
+            alias: out_alias,
         });
     }
 
     for agg in &aggregates {
+        let out_alias = prefixed_subquery_col(alias, &agg.alias);
         projections.push(ProjectExpr {
             expr: Expr::Column(Column::unqualified(&agg.alias)),
-            alias: agg.alias.clone(),
+            alias: out_alias,
         });
     }
 

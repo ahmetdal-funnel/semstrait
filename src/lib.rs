@@ -37,22 +37,25 @@
 //! let substrait = emit_plan(&plan)?;
 //! ```
 
-pub mod semantic_model;
-pub mod query;
-pub mod selector;
-pub mod resolver;
+pub mod emitter;
+pub mod error;
+pub mod parser;
 pub mod plan;
 pub mod planner;
-pub mod emitter;
-pub mod parser;
-pub mod error;
+pub mod query;
+pub mod resolver;
+pub mod selector;
+pub mod semantic_model;
 
 // Re-export commonly used types
-pub use semantic_model::{Aggregation, DataType, Dataset, GrainSet, GrainSetDimension, resolve_dimension_path_template, resolve_path_template, Schema, SemanticModel};
-pub use query::{QueryRequest, DataFilter};
-pub use selector::{select_datasets, SelectedDataset, SelectError};
-pub use resolver::{resolve_query, ResolvedQuery, ResolveError};
-pub use plan::{PlanNode, Expr, Column, AggregateExpr};
-pub use planner::{plan_query, plan_semantic_query, PlanError};
 pub use emitter::{emit_plan, emit_sql, EmitError};
 pub use error::ParseError;
+pub use plan::{AggregateExpr, Column, Expr, PlanNode};
+pub use planner::{plan_query, plan_semantic_query, PlanError};
+pub use query::{DataFilter, QueryRequest};
+pub use resolver::{resolve_query, ResolveError, ResolvedQuery};
+pub use selector::{select_datasets, SelectError, SelectedDataset};
+pub use semantic_model::{
+    resolve_dimension_path_template, resolve_path_template, Aggregation, DataType, Dataset,
+    GrainSet, GrainSetDimension, Schema, SemanticModel,
+};

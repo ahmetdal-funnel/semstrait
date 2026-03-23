@@ -2,35 +2,32 @@
 
 use substrait::proto::{
     self,
-    plan_rel::RelType as PlanRelType,
-    rel::RelType,
-    read_rel::{NamedTable, ReadType},
+    aggregate_function::AggregationInvocation,
+    aggregate_rel::{Grouping, Measure},
     expression::{
         self,
         literal::LiteralType,
         reference_segment::{ReferenceType, StructField},
         ReferenceSegment,
     },
-    aggregate_rel::{Grouping, Measure},
-    aggregate_function::AggregationInvocation,
-    function_argument::ArgType,
     extensions::{
-        SimpleExtensionUri,
-        SimpleExtensionDeclaration,
-        simple_extension_declaration::MappingType,
+        simple_extension_declaration::MappingType, SimpleExtensionDeclaration, SimpleExtensionUri,
     },
+    function_argument::ArgType,
+    plan_rel::RelType as PlanRelType,
+    r#type::{Kind, Nullability},
+    read_rel::{NamedTable, ReadType},
+    rel::RelType,
     rel_common::EmitKind,
     AggregationPhase,
-    r#type::{Kind, Nullability},
 };
 
+use super::error::EmitError;
 use crate::plan::{
-    PlanNode, Scan, Join, JoinType, CrossJoin, Filter, Aggregate, Project, Sort, SortDirection, Union,
-    VirtualTable, LiteralValue,
-    Expr, Column, Literal, BinaryOperator, AggregateExpr,
+    Aggregate, AggregateExpr, BinaryOperator, Column, CrossJoin, Expr, Filter, Join, JoinType,
+    Literal, LiteralValue, PlanNode, Project, Scan, Sort, SortDirection, Union, VirtualTable,
 };
 use crate::semantic_model::Aggregation;
-use super::error::EmitError;
 
 // Extension URI anchors
 const URI_AGGREGATE: u32 = 1;
@@ -82,7 +79,9 @@ struct SchemaContext {
 
 impl SchemaContext {
     fn new() -> Self {
-        Self { columns: Vec::new() }
+        Self {
+            columns: Vec::new(),
+        }
     }
 
     /// Add columns from a scan
@@ -99,7 +98,28 @@ impl SchemaContext {
 
     /// Find the index of a column by table alias and column name
     fn find_column(&self, table: &str, name: &str) -> Option<usize> {
-        self.columns.iter().position(|(t, c)| t == table && c == name)
+        self.columns
+            .iter()
+            .position(|(t, c)| t == table && c == name)
+    }
+
+    /// Resolve a column reference for emission: unqualified `name`, or `table`+`name`,
+    /// or a single output alias `table_name` (e.g. `t0_cost` after `emit_project`).
+    fn find_column_resolved(&self, table: &str, name: &str) -> Option<usize> {
+        if table.is_empty() {
+            return self.columns.iter().position(|(_, c)| c == name);
+        }
+        self.find_column(table, name)
+            .or_else(|| {
+                let composite_underscore = format!("{}_{}", table, name);
+                self.columns
+                    .iter()
+                    .position(|(_, c)| c == &composite_underscore)
+            })
+            .or_else(|| {
+                let composite_dot = format!("{}.{}", table, name);
+                self.columns.iter().position(|(_, c)| c == &composite_dot)
+            })
     }
 
     /// Get total column count
@@ -137,7 +157,7 @@ fn build_extensions() -> Vec<SimpleExtensionDeclaration> {
         make_function_extension(URI_AGGREGATE, FUNC_SUM, "sum"),
         make_function_extension(URI_AGGREGATE, FUNC_AVG, "avg"),
         make_function_extension(URI_AGGREGATE, FUNC_COUNT, "count"),
-        make_function_extension(URI_AGGREGATE, FUNC_COUNT_DISTINCT, "count"),  // count with distinct flag
+        make_function_extension(URI_AGGREGATE, FUNC_COUNT_DISTINCT, "count"), // count with distinct flag
         make_function_extension(URI_AGGREGATE, FUNC_MIN, "min"),
         make_function_extension(URI_AGGREGATE, FUNC_MAX, "max"),
         // Comparison functions
@@ -165,30 +185,34 @@ fn make_function_extension(uri_ref: u32, anchor: u32, name: &str) -> SimpleExten
         mapping_type: Some(MappingType::ExtensionFunction(
             proto::extensions::simple_extension_declaration::ExtensionFunction {
                 extension_uri_reference: uri_ref,
-                extension_urn_reference: uri_ref,  // URN replaces URI in newer versions
+                extension_urn_reference: uri_ref, // URN replaces URI in newer versions
                 function_anchor: anchor,
                 name: name.to_string(),
-            }
+            },
         )),
     }
 }
 
 /// Emit a Substrait Plan from a PlanNode
-/// 
+///
 /// If `output_names` is provided, those semantic names will be used for the output columns.
 /// Otherwise, physical column names (table.column) are used.
 #[allow(deprecated)]
-pub fn emit_plan(node: &PlanNode, output_names: Option<Vec<String>>) -> Result<proto::Plan, EmitError> {
+pub fn emit_plan(
+    node: &PlanNode,
+    output_names: Option<Vec<String>>,
+) -> Result<proto::Plan, EmitError> {
     let mut ctx = SchemaContext::new();
     let rel = emit_rel(node, &mut ctx)?;
-    
+
     // Use provided semantic names or fall back to physical names
     let names = output_names.unwrap_or_else(|| {
-        ctx.columns.iter()
+        ctx.columns
+            .iter()
             .map(|(t, c)| format!("{}.{}", t, c))
             .collect()
     });
-    
+
     Ok(proto::Plan {
         version: Some(proto::Version {
             major_number: 0,
@@ -227,12 +251,12 @@ fn emit_rel(node: &PlanNode, ctx: &mut SchemaContext) -> Result<proto::Rel, Emit
 /// Convert a type name string to Substrait Type
 fn type_to_substrait(type_name: &str) -> proto::Type {
     let lower = type_name.to_lowercase();
-    
+
     // Check for decimal type with precision and scale: decimal(p, s)
     if let Some(kind) = parse_decimal_type(&lower) {
         return proto::Type { kind: Some(kind) };
     }
-    
+
     let kind = match lower.as_str() {
         "i8" => Kind::I8(proto::r#type::I8 {
             type_variation_reference: 0,
@@ -285,18 +309,18 @@ fn parse_decimal_type(type_str: &str) -> Option<Kind> {
     if !type_str.starts_with("decimal(") || !type_str.ends_with(")") {
         return None;
     }
-    
+
     // Extract the part between parentheses
     let inner = &type_str[8..type_str.len() - 1];
     let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
-    
+
     if parts.len() != 2 {
         return None;
     }
-    
+
     let precision: i32 = parts[0].parse().ok()?;
     let scale: i32 = parts[1].parse().ok()?;
-    
+
     Some(Kind::Decimal(proto::r#type::Decimal {
         precision,
         scale,
@@ -308,12 +332,17 @@ fn parse_decimal_type(type_str: &str) -> Option<Kind> {
 /// Emit a ReadRel (table scan) with base_schema
 fn emit_scan(scan: &Scan, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitError> {
     let alias = scan.reference_name();
-    
+
     // Build the base schema with column names and types
-    let types: Vec<proto::Type> = scan.columns.iter().enumerate().map(|(i, _)| {
-        let type_name = scan.column_type(i);
-        type_to_substrait(type_name)
-    }).collect();
+    let types: Vec<proto::Type> = scan
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            let type_name = scan.column_type(i);
+            type_to_substrait(type_name)
+        })
+        .collect();
 
     let base_schema = proto::NamedStruct {
         names: scan.columns.clone(),
@@ -347,16 +376,16 @@ fn emit_join(join: &Join, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitErr
     // Emit left side first
     let mut left_ctx = SchemaContext::new();
     let left = emit_rel(&join.left, &mut left_ctx)?;
-    
+
     // Emit right side
     let mut right_ctx = SchemaContext::new();
     let right = emit_rel(&join.right, &mut right_ctx)?;
-    
+
     // Merge contexts - left columns come first, then right
     ctx.merge(left_ctx.clone());
     let right_offset = ctx.len();
     ctx.merge(right_ctx.clone());
-    
+
     let join_type = match join.join_type {
         JoinType::Inner => proto::join_rel::JoinType::Inner,
         JoinType::Left => proto::join_rel::JoinType::Left,
@@ -364,10 +393,12 @@ fn emit_join(join: &Join, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitErr
         JoinType::Full => proto::join_rel::JoinType::Outer,
     };
 
-    // Find column indices for join keys
-    let left_idx = left_ctx.find_column(&join.left_key.table, &join.left_key.name)
+    // Find column indices for join keys (plan may use unqualified prefixed aliases, e.g. t0_campaign_name)
+    let left_idx = left_ctx
+        .find_column_resolved(&join.left_key.table, &join.left_key.name)
         .ok_or_else(|| EmitError::ColumnNotFound(join.left_key.qualified_name()))?;
-    let right_idx = right_ctx.find_column(&join.right_key.table, &join.right_key.name)
+    let right_idx = right_ctx
+        .find_column_resolved(&join.right_key.table, &join.right_key.name)
         .ok_or_else(|| EmitError::ColumnNotFound(join.right_key.qualified_name()))?;
 
     // Build join condition: left_key = right_key
@@ -392,13 +423,13 @@ fn emit_join(join: &Join, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitErr
 fn emit_cross_join(cross: &CrossJoin, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitError> {
     let mut left_ctx = SchemaContext::new();
     let left = emit_rel(&cross.left, &mut left_ctx)?;
-    
+
     let mut right_ctx = SchemaContext::new();
     let right = emit_rel(&cross.right, &mut right_ctx)?;
-    
+
     ctx.merge(left_ctx);
     ctx.merge(right_ctx);
-    
+
     Ok(proto::Rel {
         rel_type: Some(RelType::Cross(Box::new(proto::CrossRel {
             left: Some(Box::new(left)),
@@ -429,7 +460,8 @@ fn emit_aggregate(agg: &Aggregate, ctx: &mut SchemaContext) -> Result<proto::Rel
     let input = emit_rel(&agg.input, ctx)?;
 
     // GROUP BY expressions - get indices for each column
-    let grouping_expressions: Vec<proto::Expression> = agg.group_by
+    let grouping_expressions: Vec<proto::Expression> = agg
+        .group_by
         .iter()
         .map(|col| emit_column_ref(col, ctx))
         .collect::<Result<Vec<_>, _>>()?;
@@ -445,7 +477,8 @@ fn emit_aggregate(agg: &Aggregate, ctx: &mut SchemaContext) -> Result<proto::Rel
     };
 
     // Aggregate measures
-    let measures: Vec<Measure> = agg.aggregates
+    let measures: Vec<Measure> = agg
+        .aggregates
         .iter()
         .map(|agg_expr| emit_measure(agg_expr, ctx))
         .collect::<Result<Vec<_>, _>>()?;
@@ -457,7 +490,9 @@ fn emit_aggregate(agg: &Aggregate, ctx: &mut SchemaContext) -> Result<proto::Rel
         new_ctx.columns.push((col.table.clone(), col.name.clone()));
     }
     for agg_expr in &agg.aggregates {
-        new_ctx.columns.push(("".to_string(), agg_expr.alias.clone()));
+        new_ctx
+            .columns
+            .push(("".to_string(), agg_expr.alias.clone()));
     }
     *ctx = new_ctx;
 
@@ -473,37 +508,41 @@ fn emit_aggregate(agg: &Aggregate, ctx: &mut SchemaContext) -> Result<proto::Rel
 }
 
 /// Emit a Project relation for computed expressions (metrics)
-/// 
+///
 /// In Substrait, ProjectRel appends expressions to the input schema.
 /// We use the `emit` field to select only the columns we want in the output.
 fn emit_project(proj: &Project, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitError> {
     // First emit the input
     let input = emit_rel(&proj.input, ctx)?;
-    
+
     // Remember input column count - ProjectRel output = input + projections
     let input_col_count = ctx.columns.len();
-    
+
     // Build expressions for the projection
-    let expressions: Result<Vec<proto::Expression>, EmitError> = proj.expressions
+    let expressions: Result<Vec<proto::Expression>, EmitError> = proj
+        .expressions
         .iter()
         .map(|proj_expr| emit_expr(&proj_expr.expr, ctx))
         .collect();
     let expressions = expressions?;
-    
+
     // Build output mapping to select only the projected columns
     // The projected expressions come after input columns, so indices are:
     // input_col_count, input_col_count+1, ..., input_col_count+proj_count-1
     let output_mapping: Vec<i32> = (0..proj.expressions.len())
         .map(|i| (input_col_count + i) as i32)
         .collect();
-    
+
     // Update schema context with only the projected column names
-    let new_columns: Vec<(String, String)> = proj.expressions
+    let new_columns: Vec<(String, String)> = proj
+        .expressions
         .iter()
         .map(|p| (String::new(), p.alias.clone()))
         .collect();
-    *ctx = SchemaContext { columns: new_columns };
-    
+    *ctx = SchemaContext {
+        columns: new_columns,
+    };
+
     Ok(proto::Rel {
         rel_type: Some(RelType::Project(Box::new(proto::ProjectRel {
             input: Some(Box::new(input)),
@@ -521,29 +560,31 @@ fn emit_project(proj: &Project, ctx: &mut SchemaContext) -> Result<proto::Rel, E
 fn emit_sort(sort: &Sort, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitError> {
     // First emit the input
     let input = emit_rel(&sort.input, ctx)?;
-    
+
     // Build sort fields
-    let sorts: Vec<proto::SortField> = sort.sort_keys
+    let sorts: Vec<proto::SortField> = sort
+        .sort_keys
         .iter()
         .map(|key| {
             // Find the column index in the schema context
-            let col_idx = ctx.columns
+            let col_idx = ctx
+                .columns
                 .iter()
                 .position(|(_, name)| name == &key.column)
                 .unwrap_or(0) as u32;
-            
+
             let direction = match key.direction {
                 SortDirection::Ascending => proto::sort_field::SortDirection::AscNullsLast as i32,
                 SortDirection::Descending => proto::sort_field::SortDirection::DescNullsLast as i32,
             };
-            
+
             proto::SortField {
                 expr: Some(emit_field_reference(col_idx).unwrap()),
                 sort_kind: Some(proto::sort_field::SortKind::Direction(direction)),
             }
         })
         .collect();
-    
+
     Ok(proto::Rel {
         rel_type: Some(RelType::Sort(Box::new(proto::SortRel {
             input: Some(Box::new(input)),
@@ -555,32 +596,32 @@ fn emit_sort(sort: &Sort, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitErr
 }
 
 /// Emit a Union relation (UNION ALL)
-/// 
+///
 /// Combines multiple input relations with compatible schemas.
 /// Used for cross-tableGroup queries and multi-grain-set union queries.
 fn emit_union(union: &Union, ctx: &mut SchemaContext) -> Result<proto::Rel, EmitError> {
     if union.inputs.len() < 2 {
         return Err(EmitError::InvalidPlan(
-            "Union requires at least 2 inputs".to_string()
+            "Union requires at least 2 inputs".to_string(),
         ));
     }
 
-        // Emit all inputs, each with a fresh context
+    // Emit all inputs, each with a fresh context
     // Each branch is independent and should not share column indices
     let mut inputs: Vec<proto::Rel> = Vec::new();
     let mut first_branch_ctx: Option<SchemaContext> = None;
-    
+
     for (i, input) in union.inputs.iter().enumerate() {
         let mut branch_ctx = SchemaContext::new();
         let rel = emit_rel(input, &mut branch_ctx)?;
         inputs.push(rel);
-        
+
         // Save the first branch's context - this is the output schema
         if i == 0 {
             first_branch_ctx = Some(branch_ctx);
         }
     }
-    
+
     // Update the output context with the first branch's schema
     // (all branches should produce the same schema for UNION ALL)
     if let Some(first_ctx) = first_branch_ctx {
@@ -602,23 +643,28 @@ fn emit_virtual_table(vt: &VirtualTable, ctx: &mut SchemaContext) -> Result<prot
     // Update schema context with column info
     // For virtual tables, we use empty table name since there's no physical table
     ctx.add_scan("", &vt.columns);
-    
+
     // Build the schema (column types)
-    let types: Vec<proto::Type> = vt.column_types.iter()
+    let types: Vec<proto::Type> = vt
+        .column_types
+        .iter()
         .map(|t| type_to_substrait(t))
         .collect();
-    
+
     // Build expressions for each row
     // Each row is a struct containing all column values
-    let expressions: Vec<proto::expression::nested::Struct> = vt.rows.iter()
+    let expressions: Vec<proto::expression::nested::Struct> = vt
+        .rows
+        .iter()
         .map(|row| {
-            let fields: Vec<proto::Expression> = row.iter()
+            let fields: Vec<proto::Expression> = row
+                .iter()
                 .map(|val| literal_value_to_expression(val))
                 .collect();
             proto::expression::nested::Struct { fields }
         })
         .collect();
-    
+
     // Create the VirtualTable read relation
     Ok(proto::Rel {
         rel_type: Some(RelType::Read(Box::new(proto::ReadRel {
@@ -658,7 +704,7 @@ fn literal_value_to_expression(val: &LiteralValue) -> proto::Expression {
             })),
         }),
     };
-    
+
     proto::Expression {
         rex_type: Some(expression::RexType::Literal(proto::expression::Literal {
             nullable: true,
@@ -717,7 +763,10 @@ fn emit_expr(expr: &Expr, ctx: &SchemaContext) -> Result<proto::Expression, Emit
                 }
             }
             // Fall back to placeholder for complex SQL
-            Err(EmitError::UnsupportedExpression(format!("SQL expression: {}", sql)))
+            Err(EmitError::UnsupportedExpression(format!(
+                "SQL expression: {}",
+                sql
+            )))
         }
         Expr::Add(left, right) => emit_arithmetic_expr(left, right, FUNC_ADD, ctx),
         Expr::Subtract(left, right) => emit_arithmetic_expr(left, right, FUNC_SUBTRACT, ctx),
@@ -726,27 +775,19 @@ fn emit_expr(expr: &Expr, ctx: &SchemaContext) -> Result<proto::Expression, Emit
         Expr::Or(exprs) => emit_or(exprs, ctx),
         Expr::IsNull(inner) => emit_is_null(inner, ctx),
         Expr::IsNotNull(inner) => emit_is_not_null(inner, ctx),
-        Expr::Case { when_then, else_result } => emit_case(when_then, else_result.as_deref(), ctx),
+        Expr::Case {
+            when_then,
+            else_result,
+        } => emit_case(when_then, else_result.as_deref(), ctx),
         Expr::Coalesce(exprs) => emit_coalesce(exprs, ctx),
     }
 }
 
 /// Emit a column reference using schema context
 fn emit_column_ref(col: &Column, ctx: &SchemaContext) -> Result<proto::Expression, EmitError> {
-    // Handle unqualified column references (e.g., from metrics referencing measures)
-    if col.table.is_empty() {
-        // Search by column name only
-        for (i, (_, c)) in ctx.columns.iter().enumerate() {
-            if c == &col.name {
-                return emit_field_reference(i as u32);
-            }
-        }
-        return Err(EmitError::ColumnNotFound(col.name.clone()));
-    }
-    
-    let idx = ctx.find_column(&col.table, &col.name)
+    let idx = ctx
+        .find_column_resolved(&col.table, &col.name)
         .ok_or_else(|| EmitError::ColumnNotFound(col.qualified_name()))?;
-    
     emit_field_reference(idx as u32)
 }
 
@@ -761,10 +802,10 @@ fn emit_field_reference(field: u32) -> Result<proto::Expression, EmitError> {
                             field: field as i32,
                             child: None,
                         }))),
-                    }
+                    },
                 )),
                 root_type: None,
-            }
+            },
         ))),
     })
 }
@@ -772,9 +813,7 @@ fn emit_field_reference(field: u32) -> Result<proto::Expression, EmitError> {
 /// Emit a literal value
 fn emit_literal(lit: &Literal) -> Result<proto::Expression, EmitError> {
     let literal_type = match lit {
-        Literal::Null(type_name) => {
-            LiteralType::Null(type_to_substrait(type_name))
-        }
+        Literal::Null(type_name) => LiteralType::Null(type_to_substrait(type_name)),
         Literal::Bool(b) => LiteralType::Boolean(*b),
         Literal::Int(i) => LiteralType::I64(*i),
         Literal::Float(f) => LiteralType::Fp64(*f),
@@ -791,7 +830,11 @@ fn emit_literal(lit: &Literal) -> Result<proto::Expression, EmitError> {
 }
 
 /// Emit a binary expression with column indices (for join conditions)
-fn emit_binary_expr_with_indices(left_idx: u32, op: BinaryOperator, right_idx: u32) -> proto::Expression {
+fn emit_binary_expr_with_indices(
+    left_idx: u32,
+    op: BinaryOperator,
+    right_idx: u32,
+) -> proto::Expression {
     let left_expr = emit_field_reference(left_idx).unwrap();
     let right_expr = emit_field_reference(right_idx).unwrap();
 
@@ -811,7 +854,7 @@ fn emit_binary_expr_with_indices(left_idx: u32, op: BinaryOperator, right_idx: u
                 ],
                 output_type: None,
                 ..Default::default()
-            }
+            },
         )),
     }
 }
@@ -854,7 +897,7 @@ fn emit_binary_expr(
                 ],
                 output_type: None,
                 ..Default::default()
-            }
+            },
         )),
     })
 }
@@ -885,7 +928,7 @@ fn emit_and(exprs: &[Expr], ctx: &SchemaContext) -> Result<proto::Expression, Em
                 arguments: args,
                 output_type: None,
                 ..Default::default()
-            }
+            },
         )),
     })
 }
@@ -916,7 +959,7 @@ fn emit_or(exprs: &[Expr], ctx: &SchemaContext) -> Result<proto::Expression, Emi
                 arguments: args,
                 output_type: None,
                 ..Default::default()
-            }
+            },
         )),
     })
 }
@@ -929,14 +972,12 @@ fn emit_is_null(inner: &Expr, ctx: &SchemaContext) -> Result<proto::Expression, 
         rex_type: Some(expression::RexType::ScalarFunction(
             proto::expression::ScalarFunction {
                 function_reference: FUNC_IS_NULL,
-                arguments: vec![
-                    proto::FunctionArgument {
-                        arg_type: Some(ArgType::Value(inner_expr)),
-                    },
-                ],
+                arguments: vec![proto::FunctionArgument {
+                    arg_type: Some(ArgType::Value(inner_expr)),
+                }],
                 output_type: None,
                 ..Default::default()
-            }
+            },
         )),
     })
 }
@@ -949,14 +990,12 @@ fn emit_is_not_null(inner: &Expr, ctx: &SchemaContext) -> Result<proto::Expressi
         rex_type: Some(expression::RexType::ScalarFunction(
             proto::expression::ScalarFunction {
                 function_reference: FUNC_IS_NOT_NULL,
-                arguments: vec![
-                    proto::FunctionArgument {
-                        arg_type: Some(ArgType::Value(inner_expr)),
-                    },
-                ],
+                arguments: vec![proto::FunctionArgument {
+                    arg_type: Some(ArgType::Value(inner_expr)),
+                }],
                 output_type: None,
                 ..Default::default()
-            }
+            },
         )),
     })
 }
@@ -979,7 +1018,7 @@ fn emit_coalesce(exprs: &[Expr], ctx: &SchemaContext) -> Result<proto::Expressio
                 arguments,
                 output_type: None,
                 ..Default::default()
-            }
+            },
         )),
     })
 }
@@ -1008,12 +1047,10 @@ fn emit_case(
     };
 
     Ok(proto::Expression {
-        rex_type: Some(expression::RexType::IfThen(Box::new(
-            expression::IfThen {
-                ifs,
-                r#else: else_expr,
-            }
-        ))),
+        rex_type: Some(expression::RexType::IfThen(Box::new(expression::IfThen {
+            ifs,
+            r#else: else_expr,
+        }))),
     })
 }
 
@@ -1041,7 +1078,7 @@ fn emit_arithmetic_expr(
                 ],
                 output_type: None,
                 ..Default::default()
-            }
+            },
         )),
     })
 }
@@ -1069,7 +1106,7 @@ fn emit_divide_expr(
                 ],
                 output_type: None,
                 ..Default::default()
-            }
+            },
         )),
     })
 }
@@ -1087,13 +1124,17 @@ fn emit_cast_to_f64(expr: proto::Expression) -> proto::Expression {
                 }),
                 input: Some(Box::new(expr)),
                 failure_behavior: 0,
-            }
+            },
         ))),
     }
 }
 
 /// Emit an IN expression
-fn emit_in(expr: &Expr, values: &[Expr], ctx: &SchemaContext) -> Result<proto::Expression, EmitError> {
+fn emit_in(
+    expr: &Expr,
+    values: &[Expr],
+    ctx: &SchemaContext,
+) -> Result<proto::Expression, EmitError> {
     let needle = emit_expr(expr, ctx)?;
     let haystack: Vec<proto::Expression> = values
         .iter()
@@ -1105,7 +1146,7 @@ fn emit_in(expr: &Expr, values: &[Expr], ctx: &SchemaContext) -> Result<proto::E
             proto::expression::SingularOrList {
                 value: Some(Box::new(needle)),
                 options: haystack,
-            }
+            },
         ))),
     })
 }
@@ -1113,11 +1154,11 @@ fn emit_in(expr: &Expr, values: &[Expr], ctx: &SchemaContext) -> Result<proto::E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic_model::Schema;
-    use crate::query::QueryRequest;
-    use crate::selector::select_datasets;
-    use crate::resolver::resolve_query;
     use crate::planner::plan_query;
+    use crate::query::QueryRequest;
+    use crate::resolver::resolve_query;
+    use crate::selector::select_datasets;
+    use crate::semantic_model::Schema;
 
     fn load_test_schema() -> Schema {
         Schema::from_file("test_data/steelwheels.yaml").unwrap()
@@ -1125,17 +1166,14 @@ mod tests {
 
     #[test]
     fn test_emit_simple_scan() {
-        let scan = PlanNode::Scan(
-            Scan::new("test.table")
-                .with_columns(
-                    vec!["col1".to_string(), "col2".to_string()],
-                    vec!["i32".to_string(), "string".to_string()],
-                )
-        );
+        let scan = PlanNode::Scan(Scan::new("test.table").with_columns(
+            vec!["col1".to_string(), "col2".to_string()],
+            vec!["i32".to_string(), "string".to_string()],
+        ));
         let plan = emit_plan(&scan, None).unwrap();
-        
+
         assert_eq!(plan.relations.len(), 1);
-        
+
         // Check that base_schema is populated
         if let Some(PlanRelType::Root(root)) = &plan.relations[0].rel_type {
             if let Some(rel) = &root.input {
@@ -1163,27 +1201,31 @@ mod tests {
         };
 
         let grain_sets = model.grain_sets();
-        let selected = select_datasets(&schema, model, &grain_sets, &["dates.year".to_string()], &["sales".to_string()])
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
+        let selected = select_datasets(
+            &schema,
+            model,
+            &grain_sets,
+            &["dates.year".to_string()],
+            &["sales".to_string()],
+        )
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
         let resolved = resolve_query(&schema, &request, &selected, &grain_sets).unwrap();
         let plan_node = plan_query(&resolved).unwrap();
-        
+
         let plan = emit_plan(&plan_node, None).unwrap();
         assert_eq!(plan.relations.len(), 1);
     }
 
     #[test]
     fn test_emit_filter() {
-        let scan = Scan::new("test.table")
-            .with_alias("t")
-            .with_columns(
-                vec!["id".to_string(), "name".to_string()],
-                vec!["i32".to_string(), "string".to_string()],
-            );
-        
+        let scan = Scan::new("test.table").with_alias("t").with_columns(
+            vec!["id".to_string(), "name".to_string()],
+            vec!["i32".to_string(), "string".to_string()],
+        );
+
         let filter = PlanNode::Filter(Filter {
             input: Box::new(PlanNode::Scan(scan)),
             predicate: Expr::BinaryOp {
@@ -1202,7 +1244,7 @@ mod tests {
         let mut ctx = SchemaContext::new();
         ctx.add_scan("fact", &["time_id".to_string(), "amount".to_string()]);
         ctx.add_scan("dates", &["time_id".to_string(), "year".to_string()]);
-        
+
         assert_eq!(ctx.find_column("fact", "time_id"), Some(0));
         assert_eq!(ctx.find_column("fact", "amount"), Some(1));
         assert_eq!(ctx.find_column("dates", "time_id"), Some(2));
@@ -1215,23 +1257,32 @@ mod tests {
     fn test_emit_plan_has_extensions() {
         let scan = PlanNode::Scan(
             Scan::new("test.table")
-                .with_columns(
-                    vec!["col1".to_string()],
-                    vec!["string".to_string()],
-                )
+                .with_columns(vec!["col1".to_string()], vec!["string".to_string()]),
         );
         let plan = emit_plan(&scan, None).unwrap();
-        
+
         // Check extension URIs are present
         assert_eq!(plan.extension_uris.len(), 4);
-        assert!(plan.extension_uris.iter().any(|u| u.uri.contains("aggregate")));
-        assert!(plan.extension_uris.iter().any(|u| u.uri.contains("comparison")));
-        assert!(plan.extension_uris.iter().any(|u| u.uri.contains("boolean")));
-        assert!(plan.extension_uris.iter().any(|u| u.uri.contains("arithmetic")));
-        
+        assert!(plan
+            .extension_uris
+            .iter()
+            .any(|u| u.uri.contains("aggregate")));
+        assert!(plan
+            .extension_uris
+            .iter()
+            .any(|u| u.uri.contains("comparison")));
+        assert!(plan
+            .extension_uris
+            .iter()
+            .any(|u| u.uri.contains("boolean")));
+        assert!(plan
+            .extension_uris
+            .iter()
+            .any(|u| u.uri.contains("arithmetic")));
+
         // Check function extensions are present
         assert!(!plan.extensions.is_empty());
-        
+
         // Check we have the aggregate functions declared
         let has_sum = plan.extensions.iter().any(|ext| {
             if let Some(MappingType::ExtensionFunction(f)) = &ext.mapping_type {
@@ -1246,32 +1297,25 @@ mod tests {
     #[test]
     fn test_emit_union() {
         use crate::plan::Union;
-        
+
         // Create two simple scans to union
-        let scan1 = Scan::new("table1")
-            .with_alias("t1")
-            .with_columns(
-                vec!["year".to_string(), "amount".to_string()],
-                vec!["i32".to_string(), "f64".to_string()],
-            );
-        
-        let scan2 = Scan::new("table2")
-            .with_alias("t2")
-            .with_columns(
-                vec!["year".to_string(), "amount".to_string()],
-                vec!["i32".to_string(), "f64".to_string()],
-            );
-        
+        let scan1 = Scan::new("table1").with_alias("t1").with_columns(
+            vec!["year".to_string(), "amount".to_string()],
+            vec!["i32".to_string(), "f64".to_string()],
+        );
+
+        let scan2 = Scan::new("table2").with_alias("t2").with_columns(
+            vec!["year".to_string(), "amount".to_string()],
+            vec!["i32".to_string(), "f64".to_string()],
+        );
+
         let union = PlanNode::Union(Union {
-            inputs: vec![
-                PlanNode::Scan(scan1),
-                PlanNode::Scan(scan2),
-            ],
+            inputs: vec![PlanNode::Scan(scan1), PlanNode::Scan(scan2)],
         });
 
         let plan = emit_plan(&union, None).unwrap();
         assert_eq!(plan.relations.len(), 1);
-        
+
         // Verify the plan contains a SetRel (wrapped in RelRoot)
         let plan_rel = &plan.relations[0];
         if let Some(PlanRelType::Root(root)) = &plan_rel.rel_type {
@@ -1293,13 +1337,10 @@ mod tests {
     #[test]
     fn test_emit_union_requires_two_inputs() {
         use crate::plan::Union;
-        
-        let scan1 = Scan::new("table1")
-            .with_columns(
-                vec!["col".to_string()],
-                vec!["i32".to_string()],
-            );
-        
+
+        let scan1 =
+            Scan::new("table1").with_columns(vec!["col".to_string()], vec!["i32".to_string()]);
+
         // Union with only one input should fail
         let union = PlanNode::Union(Union {
             inputs: vec![PlanNode::Scan(scan1)],
@@ -1311,18 +1352,16 @@ mod tests {
 
     #[test]
     fn test_emit_project_with_literals() {
-        use crate::plan::{Aggregate, AggregateExpr, Project, ProjectExpr, Literal};
+        use crate::plan::{Aggregate, AggregateExpr, Literal, Project, ProjectExpr};
         use crate::semantic_model::Aggregation;
-        
+
         // Build a plan: Scan -> Aggregate -> Project with a literal
         // Use alias "fact" so Column references match
-        let scan = Scan::new("test.fact")
-            .with_alias("fact")
-            .with_columns(
-                vec!["year_id".to_string(), "amount".to_string()],
-                vec!["i32".to_string(), "f64".to_string()],
-            );
-        
+        let scan = Scan::new("test.fact").with_alias("fact").with_columns(
+            vec!["year_id".to_string(), "amount".to_string()],
+            vec!["i32".to_string(), "f64".to_string()],
+        );
+
         let aggregate = PlanNode::Aggregate(Aggregate {
             input: Box::new(PlanNode::Scan(scan)),
             group_by: vec![Column::new("fact", "year_id")],
@@ -1332,7 +1371,7 @@ mod tests {
                 alias: "total".to_string(),
             }],
         });
-        
+
         // Project includes a literal (simulating meta attribute)
         let project = PlanNode::Project(Project {
             input: Box::new(aggregate),
@@ -1351,10 +1390,13 @@ mod tests {
                 },
             ],
         });
-        
+
         // This should succeed - literals don't need column lookups
         let result = emit_plan(&project, None);
-        assert!(result.is_ok(), "Emit with literal should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Emit with literal should succeed: {:?}",
+            result.err()
+        );
     }
 }
-

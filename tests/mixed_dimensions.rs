@@ -61,10 +61,7 @@ fn test_mixed_query() {
     // Query both denormalized (dates.year) and joined (customers.name)
     let request = QueryRequest {
         model: "orders".to_string(),
-        rows: Some(vec![
-            "dates.year".to_string(),
-            "customers.name".to_string(),
-        ]),
+        rows: Some(vec!["dates.year".to_string(), "customers.name".to_string()]),
         metrics: Some(vec!["order_total".to_string()]),
         ..Default::default()
     };

@@ -4,18 +4,22 @@
 //! where each branch aggregates its own grain set, then a re-aggregation
 //! combines the results.
 
-use std::collections::{HashMap, HashSet};
-use crate::semantic_model::{Aggregation, Dataset, GrainSet, Measure, MeasureExpr, Metric, Schema, SemanticModel};
-use crate::plan::{
-    Aggregate, AggregateExpr, Column, Expr, Join, JoinType,
-    Literal, PlanNode, Scan, Project, ProjectExpr, Sort, SortKey, SortDirection, Union,
-    LiteralValue as PlanLiteralValue,
-};
-use crate::selector::select_partial_for_grain_set;
 use super::error::PlanError;
-use super::util::{needs_join_for_dimension, ParsedDimensionAttr, get_virtual_attribute_value_with_dataset};
 use super::expr::convert_measure_expr;
 use super::table::build_grain_set_branch;
+use super::util::{
+    get_virtual_attribute_value_with_dataset, needs_join_for_dimension, ParsedDimensionAttr,
+};
+use crate::plan::{
+    Aggregate, AggregateExpr, Column, Expr, Join, JoinType, Literal,
+    LiteralValue as PlanLiteralValue, PlanNode, Project, ProjectExpr, Scan, Sort, SortDirection,
+    SortKey, Union,
+};
+use crate::selector::select_partial_for_grain_set;
+use crate::semantic_model::{
+    Aggregation, Dataset, GrainSet, Measure, MeasureExpr, Metric, Schema, SemanticModel,
+};
+use std::collections::{HashMap, HashSet};
 
 /// Glob match: * matches zero or more characters. Pattern is matched against the whole value.
 fn glob_match(pattern: &str, value: &str) -> bool {
@@ -119,9 +123,11 @@ pub fn plan_cross_grain_set_query<'a>(
         if parts.len() >= 3 {
             let path_segments = &parts[0..parts.len() - 2];
             if model.grain_sets_under_path(path_segments).is_empty() {
-                return Err(PlanError::InvalidQuery(
-                    format!("Container path '{}' not found in qualified dimension '{}'", path_segments.join("."), attr_path)
-                ));
+                return Err(PlanError::InvalidQuery(format!(
+                    "Container path '{}' not found in qualified dimension '{}'",
+                    path_segments.join("."),
+                    attr_path
+                )));
             }
         }
     }
@@ -134,32 +140,43 @@ pub fn plan_cross_grain_set_query<'a>(
         vec![]
     };
     if mappings.is_empty() {
-        return Err(PlanError::InvalidQuery(
-            format!("Metric '{}' is not a cross-grain-set metric", metric.name)
-        ));
+        return Err(PlanError::InvalidQuery(format!(
+            "Metric '{}' is not a cross-grain-set metric",
+            metric.name
+        )));
     }
 
     let mut branches: Vec<PlanNode> = Vec::new();
 
     for (gs_name, measure_name) in &mappings {
         let grain_set = resolve_grain_set_for_cross(model, gs_name)
-            .ok_or_else(|| PlanError::InvalidQuery(
-                format!("Grain set '{}' not found", gs_name)
-            ))?;
-        let measure = grain_set.get_measure(measure_name)
-            .ok_or_else(|| PlanError::InvalidQuery(
-                format!("Measure '{}' not found in grain set '{}'", measure_name, gs_name)
-            ))?;
+            .ok_or_else(|| PlanError::InvalidQuery(format!("Grain set '{}' not found", gs_name)))?;
+        let measure = grain_set.get_measure(measure_name).ok_or_else(|| {
+            PlanError::InvalidQuery(format!(
+                "Measure '{}' not found in grain set '{}'",
+                measure_name, gs_name
+            ))
+        })?;
 
-        let table = grain_set.datasets.iter()
+        let table = grain_set
+            .datasets
+            .iter()
             .find(|t| t.has_measure(measure_name));
 
         let branch = if let Some(t) = table {
             build_cross_grain_set_branch(
-                model, &grain_set, t, measure, dimension_attrs, &metric.name,
+                model,
+                &grain_set,
+                t,
+                measure,
+                dimension_attrs,
+                &metric.name,
             )?
         } else if let Some(partial) = select_partial_for_grain_set(
-            model, &grain_set, dimension_attrs, &[measure_name.clone()],
+            model,
+            &grain_set,
+            dimension_attrs,
+            &[measure_name.clone()],
         ) {
             build_cross_grain_set_branch_partial(
                 model,
@@ -177,7 +194,7 @@ pub fn plan_cross_grain_set_query<'a>(
 
     if branches.is_empty() {
         return Err(PlanError::InvalidQuery(
-            "No grain set could serve this cross-grain-set metric".to_string()
+            "No grain set could serve this cross-grain-set metric".to_string(),
         ));
     }
     if branches.len() == 1 {
@@ -186,16 +203,15 @@ pub fn plan_cross_grain_set_query<'a>(
 
     let union = PlanNode::Union(Union { inputs: branches });
 
-    let group_by: Vec<Column> = dimension_attrs.iter()
+    let group_by: Vec<Column> = dimension_attrs
+        .iter()
         .map(|attr| Column::unqualified(attr))
         .collect();
-    let aggregates = vec![
-        AggregateExpr {
-            func: Aggregation::Sum,
-            expr: Expr::Column(Column::unqualified(&metric.name)),
-            alias: metric.name.clone(),
-        }
-    ];
+    let aggregates = vec![AggregateExpr {
+        func: Aggregation::Sum,
+        expr: Expr::Column(Column::unqualified(&metric.name)),
+        alias: metric.name.clone(),
+    }];
 
     let plan = PlanNode::Aggregate(Aggregate {
         input: Box::new(union),
@@ -203,7 +219,8 @@ pub fn plan_cross_grain_set_query<'a>(
         aggregates,
     });
 
-    let sort_keys: Vec<SortKey> = dimension_attrs.iter()
+    let sort_keys: Vec<SortKey> = dimension_attrs
+        .iter()
         .map(|attr| SortKey {
             column: attr.clone(),
             direction: SortDirection::Ascending,
@@ -232,14 +249,17 @@ pub fn plan_multi_cross_grain_set_query<'a>(
         if parts.len() >= 3 {
             let path_segments = &parts[0..parts.len() - 2];
             if model.grain_sets_under_path(path_segments).is_empty() {
-                return Err(PlanError::InvalidQuery(
-                    format!("Container path '{}' not found in qualified dimension '{}'", path_segments.join("."), attr_path)
-                ));
+                return Err(PlanError::InvalidQuery(format!(
+                    "Container path '{}' not found in qualified dimension '{}'",
+                    path_segments.join("."),
+                    attr_path
+                )));
             }
         }
     }
 
-    let metric_gs_measures: Vec<(String, Vec<(String, String)>)> = metrics.iter()
+    let metric_gs_measures: Vec<(String, Vec<(String, String)>)> = metrics
+        .iter()
         .map(|metric| {
             let mappings: Vec<(String, String)> = if !metric.grain_set_measures().is_empty() {
                 metric.grain_set_measures()
@@ -254,9 +274,10 @@ pub fn plan_multi_cross_grain_set_query<'a>(
 
     for (metric_name, mappings) in &metric_gs_measures {
         if mappings.is_empty() {
-            return Err(PlanError::InvalidQuery(
-                format!("Metric '{}' is not a cross-grain-set metric", metric_name)
-            ));
+            return Err(PlanError::InvalidQuery(format!(
+                "Metric '{}' is not a cross-grain-set metric",
+                metric_name
+            )));
         }
     }
 
@@ -274,7 +295,8 @@ pub fn plan_cross_grain_set_union(
     dimension_attrs: &[String],
     metric_gs_measures: &[(String, Vec<(String, String)>)],
 ) -> Result<PlanNode, PlanError> {
-    let metric_names: Vec<&str> = metric_gs_measures.iter()
+    let metric_names: Vec<&str> = metric_gs_measures
+        .iter()
         .map(|(name, _)| name.as_str())
         .collect();
 
@@ -293,22 +315,25 @@ pub fn plan_cross_grain_set_union(
 
     for (gs_name, metric_measure_pairs) in &gs_to_metric_measures {
         let grain_set = resolve_grain_set_for_cross(model, gs_name)
-            .ok_or_else(|| PlanError::InvalidQuery(
-                format!("Grain set '{}' not found", gs_name)
-            ))?;
+            .ok_or_else(|| PlanError::InvalidQuery(format!("Grain set '{}' not found", gs_name)))?;
 
-        let measure_aliases: Vec<(String, String)> = metric_measure_pairs.iter()
+        let measure_aliases: Vec<(String, String)> = metric_measure_pairs
+            .iter()
             .map(|(metric, measure)| (metric.clone(), measure.clone()))
             .collect();
 
-        let _measure_names_for_check: Vec<&str> = measure_aliases.iter()
-            .map(|(_, m)| m.as_str())
-            .collect();
+        let _measure_names_for_check: Vec<&str> =
+            measure_aliases.iter().map(|(_, m)| m.as_str()).collect();
 
         let branch = build_grain_set_branch(model, &grain_set, dimension_attrs, &measure_aliases)?;
         let projected = project_branch_for_union(
-            model, &grain_set, None, branch,
-            dimension_attrs, &metric_names, metric_measure_pairs,
+            model,
+            &grain_set,
+            None,
+            branch,
+            dimension_attrs,
+            &metric_names,
+            metric_measure_pairs,
         )?;
         branches.push(projected);
     }
@@ -319,11 +344,13 @@ pub fn plan_cross_grain_set_union(
 
     let union = PlanNode::Union(Union { inputs: branches });
 
-    let group_by: Vec<Column> = dimension_attrs.iter()
+    let group_by: Vec<Column> = dimension_attrs
+        .iter()
         .map(|attr| Column::unqualified(attr))
         .collect();
 
-    let aggregates: Vec<AggregateExpr> = metric_names.iter()
+    let aggregates: Vec<AggregateExpr> = metric_names
+        .iter()
         .map(|name| AggregateExpr {
             func: Aggregation::Sum,
             expr: Expr::Column(Column::unqualified(*name)),
@@ -337,7 +364,8 @@ pub fn plan_cross_grain_set_union(
         aggregates,
     });
 
-    let sort_keys: Vec<SortKey> = dimension_attrs.iter()
+    let sort_keys: Vec<SortKey> = dimension_attrs
+        .iter()
         .map(|attr| SortKey {
             column: attr.clone(),
             direction: SortDirection::Ascending,
@@ -364,9 +392,7 @@ fn project_branch_for_union(
     all_metric_names: &[&str],
     gs_metrics: &[(String, String)],
 ) -> Result<PlanNode, PlanError> {
-    let gs_metric_set: HashSet<&str> = gs_metrics.iter()
-        .map(|(m, _)| m.as_str())
-        .collect();
+    let gs_metric_set: HashSet<&str> = gs_metrics.iter().map(|(m, _)| m.as_str()).collect();
 
     let mut projections = Vec::new();
 
@@ -378,8 +404,14 @@ fn project_branch_for_union(
             _ => continue,
         };
 
-        if model.get_dimension(dim_name).map(|d| d.is_virtual()).unwrap_or(false) {
-            let value = get_virtual_attribute_value_with_dataset(model, grain_set, dataset, dim_name, attr_name);
+        if model
+            .get_dimension(dim_name)
+            .map(|d| d.is_virtual())
+            .unwrap_or(false)
+        {
+            let value = get_virtual_attribute_value_with_dataset(
+                model, grain_set, dataset, dim_name, attr_name,
+            );
             let expr = match value {
                 PlanLiteralValue::String(s) => Expr::Literal(Literal::String(s)),
                 PlanLiteralValue::Int64(i) => Expr::Literal(Literal::Int(i)),
@@ -400,7 +432,8 @@ fn project_branch_for_union(
                     alias: attr_path.clone(),
                 });
             } else {
-                let data_type = model.get_dimension(dim_name)
+                let data_type = model
+                    .get_dimension(dim_name)
                     .and_then(|d| d.get_attribute(attr_name))
                     .map(|a| a.data_type.to_string())
                     .unwrap_or_else(|| "string".to_string());
@@ -445,21 +478,32 @@ fn build_cross_grain_set_branch(
     dimension_attrs: &[String],
     output_alias: &str,
 ) -> Result<PlanNode, PlanError> {
-    let parsed_attrs: Vec<(String, ParsedDimensionAttr)> = dimension_attrs.iter()
-        .map(|attr_path| (attr_path.clone(), ParsedDimensionAttr::parse(attr_path, model)))
+    let parsed_attrs: Vec<(String, ParsedDimensionAttr)> = dimension_attrs
+        .iter()
+        .map(|attr_path| {
+            (
+                attr_path.clone(),
+                ParsedDimensionAttr::parse(attr_path, model),
+            )
+        })
         .collect();
 
-    let physical_attrs: Vec<&(String, ParsedDimensionAttr)> = parsed_attrs.iter()
+    let physical_attrs: Vec<&(String, ParsedDimensionAttr)> = parsed_attrs
+        .iter()
         .filter(|(_, parsed)| {
             !parsed.is_virtual() && parsed.belongs_to_grain_set(model, &grain_set.name)
         })
         .collect();
 
     let mut unique_dim_attrs: Vec<(String, String)> = Vec::new();
-    let mut dim_attr_to_group_idx: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+    let mut dim_attr_to_group_idx: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::new();
 
     for (_, parsed) in &physical_attrs {
-        let key = (parsed.dim_name().to_string(), parsed.attr_name().to_string());
+        let key = (
+            parsed.dim_name().to_string(),
+            parsed.attr_name().to_string(),
+        );
         if !dim_attr_to_group_idx.contains_key(&key) {
             let idx = unique_dim_attrs.len();
             unique_dim_attrs.push(key.clone());
@@ -491,7 +535,7 @@ fn build_cross_grain_set_branch(
     let mut plan = PlanNode::Scan(
         Scan::new(&table.name)
             .with_alias(fact_alias)
-            .with_columns(columns, types)
+            .with_columns(columns, types),
     );
 
     for (dim_name, _) in &unique_dim_attrs {
@@ -503,18 +547,24 @@ fn build_cross_grain_set_branch(
                 if let Some(dimension) = model.get_dimension(dim_name) {
                     if needs_join_for_dimension(table, group_dim, dimension) {
                         let dim_alias = dimension.alias.as_deref().unwrap_or(&dimension.name);
-                        let dim_cols: Vec<String> = dimension.attributes.iter()
+                        let dim_cols: Vec<String> = dimension
+                            .attributes
+                            .iter()
                             .map(|a| a.column_name().to_string())
                             .collect();
-                        let dim_types: Vec<String> = dimension.attributes.iter()
+                        let dim_types: Vec<String> = dimension
+                            .attributes
+                            .iter()
                             .map(|a| a.data_type.to_string())
                             .collect();
-                        let dim_table = dimension.table.as_ref()
+                        let dim_table = dimension
+                            .table
+                            .as_ref()
                             .expect("Non-virtual dimension must have a table");
                         let dim_scan = PlanNode::Scan(
                             Scan::new(dim_table)
                                 .with_alias(dim_alias)
-                                .with_columns(dim_cols, dim_types)
+                                .with_columns(dim_cols, dim_types),
                         );
                         let left_key = Column::new(fact_alias, &join_spec.left_key);
                         let right_key = Column::new(
@@ -535,7 +585,8 @@ fn build_cross_grain_set_branch(
         }
     }
 
-    let group_by: Vec<Column> = unique_dim_attrs.iter()
+    let group_by: Vec<Column> = unique_dim_attrs
+        .iter()
         .filter_map(|(dim_name, attr_name)| {
             if let Some(group_dim) = grain_set.get_dimension(dim_name) {
                 if group_dim.is_degenerate() {
@@ -553,13 +604,11 @@ fn build_cross_grain_set_branch(
         })
         .collect();
 
-    let aggregates = vec![
-        AggregateExpr {
-            func: measure.aggregation,
-            expr: convert_measure_expr(&measure.expr),
-            alias: output_alias.to_string(),
-        }
-    ];
+    let aggregates = vec![AggregateExpr {
+        func: measure.aggregation,
+        expr: convert_measure_expr(&measure.expr),
+        alias: output_alias.to_string(),
+    }];
 
     plan = PlanNode::Aggregate(Aggregate {
         input: Box::new(plan),
@@ -573,7 +622,13 @@ fn build_cross_grain_set_branch(
         let expr = if parsed.is_virtual() {
             let dim_name = parsed.dim_name();
             let attr_name = parsed.attr_name();
-            let value = get_virtual_attribute_value_with_dataset(model, grain_set, Some(table), dim_name, attr_name);
+            let value = get_virtual_attribute_value_with_dataset(
+                model,
+                grain_set,
+                Some(table),
+                dim_name,
+                attr_name,
+            );
             match value {
                 PlanLiteralValue::String(s) => Expr::Literal(Literal::String(s)),
                 PlanLiteralValue::Int64(i) => Expr::Literal(Literal::Int(i)),
@@ -583,9 +638,14 @@ fn build_cross_grain_set_branch(
                 _ => Expr::Literal(Literal::Null("string".to_string())),
             }
         } else if parsed.belongs_to_grain_set(model, &grain_set.name) {
-            let key = (parsed.dim_name().to_string(), parsed.attr_name().to_string());
+            let key = (
+                parsed.dim_name().to_string(),
+                parsed.attr_name().to_string(),
+            );
             if let Some(&idx) = dim_attr_to_group_idx.get(&key) {
-                let col = group_by.get(idx).cloned()
+                let col = group_by
+                    .get(idx)
+                    .cloned()
                     .unwrap_or_else(|| Column::unqualified(attr_path));
                 Expr::Column(col)
             } else {
@@ -623,21 +683,32 @@ fn build_cross_grain_set_branch_partial(
     output_alias: &str,
     metric_data_type: String,
 ) -> Result<PlanNode, PlanError> {
-    let parsed_attrs: Vec<(String, ParsedDimensionAttr)> = dimension_attrs.iter()
-        .map(|attr_path| (attr_path.clone(), ParsedDimensionAttr::parse(attr_path, model)))
+    let parsed_attrs: Vec<(String, ParsedDimensionAttr)> = dimension_attrs
+        .iter()
+        .map(|attr_path| {
+            (
+                attr_path.clone(),
+                ParsedDimensionAttr::parse(attr_path, model),
+            )
+        })
         .collect();
 
-    let physical_attrs: Vec<&(String, ParsedDimensionAttr)> = parsed_attrs.iter()
+    let physical_attrs: Vec<&(String, ParsedDimensionAttr)> = parsed_attrs
+        .iter()
         .filter(|(_, parsed)| {
             !parsed.is_virtual() && parsed.belongs_to_grain_set(model, &grain_set.name)
         })
         .collect();
 
     let mut unique_dim_attrs: Vec<(String, String)> = Vec::new();
-    let mut dim_attr_to_group_idx: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+    let mut dim_attr_to_group_idx: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::new();
 
     for (_, parsed) in &physical_attrs {
-        let key = (parsed.dim_name().to_string(), parsed.attr_name().to_string());
+        let key = (
+            parsed.dim_name().to_string(),
+            parsed.attr_name().to_string(),
+        );
         if !dim_attr_to_group_idx.contains_key(&key) {
             let idx = unique_dim_attrs.len();
             unique_dim_attrs.push(key.clone());
@@ -664,7 +735,7 @@ fn build_cross_grain_set_branch_partial(
     let mut plan = PlanNode::Scan(
         Scan::new(&table.name)
             .with_alias(fact_alias)
-            .with_columns(columns, types)
+            .with_columns(columns, types),
     );
 
     for (dim_name, _) in &unique_dim_attrs {
@@ -676,18 +747,24 @@ fn build_cross_grain_set_branch_partial(
                 if let Some(dimension) = model.get_dimension(dim_name) {
                     if needs_join_for_dimension(table, group_dim, dimension) {
                         let dim_alias = dimension.alias.as_deref().unwrap_or(&dimension.name);
-                        let dim_cols: Vec<String> = dimension.attributes.iter()
+                        let dim_cols: Vec<String> = dimension
+                            .attributes
+                            .iter()
                             .map(|a| a.column_name().to_string())
                             .collect();
-                        let dim_types: Vec<String> = dimension.attributes.iter()
+                        let dim_types: Vec<String> = dimension
+                            .attributes
+                            .iter()
                             .map(|a| a.data_type.to_string())
                             .collect();
-                        let dim_table = dimension.table.as_ref()
+                        let dim_table = dimension
+                            .table
+                            .as_ref()
                             .expect("Non-virtual dimension must have a table");
                         let dim_scan = PlanNode::Scan(
                             Scan::new(dim_table)
                                 .with_alias(dim_alias)
-                                .with_columns(dim_cols, dim_types)
+                                .with_columns(dim_cols, dim_types),
                         );
                         let left_key = Column::new(fact_alias, &join_spec.left_key);
                         let right_key = Column::new(
@@ -708,7 +785,8 @@ fn build_cross_grain_set_branch_partial(
         }
     }
 
-    let group_by: Vec<Column> = unique_dim_attrs.iter()
+    let group_by: Vec<Column> = unique_dim_attrs
+        .iter()
         .filter_map(|(dim_name, attr_name)| {
             if let Some(group_dim) = grain_set.get_dimension(dim_name) {
                 if group_dim.is_degenerate() {
@@ -726,13 +804,11 @@ fn build_cross_grain_set_branch_partial(
         })
         .collect();
 
-    let aggregates = vec![
-        AggregateExpr {
-            func: Aggregation::Sum,
-            expr: Expr::Literal(Literal::Float(0.0)),
-            alias: output_alias.to_string(),
-        }
-    ];
+    let aggregates = vec![AggregateExpr {
+        func: Aggregation::Sum,
+        expr: Expr::Literal(Literal::Float(0.0)),
+        alias: output_alias.to_string(),
+    }];
 
     plan = PlanNode::Aggregate(Aggregate {
         input: Box::new(plan),
@@ -746,7 +822,13 @@ fn build_cross_grain_set_branch_partial(
         let expr = if parsed.is_virtual() {
             let dim_name = parsed.dim_name();
             let attr_name = parsed.attr_name();
-            let value = get_virtual_attribute_value_with_dataset(model, grain_set, Some(table), dim_name, attr_name);
+            let value = get_virtual_attribute_value_with_dataset(
+                model,
+                grain_set,
+                Some(table),
+                dim_name,
+                attr_name,
+            );
             match value {
                 PlanLiteralValue::String(s) => Expr::Literal(Literal::String(s)),
                 PlanLiteralValue::Int64(i) => Expr::Literal(Literal::Int(i)),
@@ -756,9 +838,14 @@ fn build_cross_grain_set_branch_partial(
                 _ => Expr::Literal(Literal::Null("string".to_string())),
             }
         } else if parsed.belongs_to_grain_set(model, &grain_set.name) {
-            let key = (parsed.dim_name().to_string(), parsed.attr_name().to_string());
+            let key = (
+                parsed.dim_name().to_string(),
+                parsed.attr_name().to_string(),
+            );
             if let Some(&idx) = dim_attr_to_group_idx.get(&key) {
-                let col = group_by.get(idx).cloned()
+                let col = group_by
+                    .get(idx)
+                    .cloned()
                     .unwrap_or_else(|| Column::unqualified(attr_path));
                 Expr::Column(col)
             } else {
@@ -801,9 +888,9 @@ mod tests {
 
     #[test]
     fn glob_match_star_prefix() {
-        assert!(glob_match("*.ads", "google_ads"));
-        assert!(glob_match("*.ads", "meta_ads"));
-        assert!(glob_match("*.ads", "ads"));
+        assert!(glob_match("*.ads", "google.ads"));
+        assert!(glob_match("*.ads", "meta.ads"));
+        assert!(!glob_match("*.ads", "ads"));
         assert!(glob_match("*", "anything"));
     }
 
@@ -816,8 +903,8 @@ mod tests {
 
     #[test]
     fn glob_match_middle_star() {
-        assert!(glob_match("*.facebookads.*", "facebookads.account_a"));
         assert!(glob_match("*.facebookads.*", "foo.facebookads.bar"));
+        assert!(!glob_match("*.facebookads.*", "facebookads.account_a"));
         assert!(!glob_match("*.facebookads.*", "adwords.campaign"));
     }
 }

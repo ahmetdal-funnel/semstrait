@@ -1,7 +1,7 @@
 //! Plan node types
 
-use std::fmt;
 use super::expr::{AggregateExpr, Column, Expr};
+use std::fmt;
 
 /// A node in the logical plan tree
 #[derive(Debug)]
@@ -73,7 +73,10 @@ impl Scan {
 
     /// Get the type of a column by index
     pub fn column_type(&self, index: usize) -> &str {
-        self.column_types.get(index).map(|s| s.as_str()).unwrap_or("string")
+        self.column_types
+            .get(index)
+            .map(|s| s.as_str())
+            .unwrap_or("string")
     }
 }
 
@@ -177,7 +180,7 @@ pub enum SortDirection {
 }
 
 /// Union multiple relations (UNION ALL)
-/// 
+///
 /// All inputs must have compatible schemas (same number and types of columns).
 /// Used for combining results from multiple table groups or partitioned tables.
 #[derive(Debug)]
@@ -187,7 +190,7 @@ pub struct Union {
 }
 
 /// Virtual table with literal values (like SQL VALUES clause)
-/// 
+///
 /// Used for metadata-only queries (e.g., querying only `_dataset` attributes)
 /// where no actual table scan is needed. Each row is a set of literal values.
 #[derive(Debug)]
@@ -242,8 +245,13 @@ impl PlanNode {
         match self {
             PlanNode::Scan(scan) => {
                 let name = scan.alias.as_deref().unwrap_or(&scan.table);
-                write!(f, "{}TableScan: {} projection=[{}]",
-                    pad, name, scan.columns.join(", "))
+                write!(
+                    f,
+                    "{}TableScan: {} projection=[{}]",
+                    pad,
+                    name,
+                    scan.columns.join(", ")
+                )
             }
             PlanNode::Join(join) => {
                 let jt = match join.join_type {
@@ -252,10 +260,14 @@ impl PlanNode {
                     JoinType::Right => "Right",
                     JoinType::Full => "Full",
                 };
-                writeln!(f, "{}{}Join: {} = {}",
-                    pad, jt,
+                writeln!(
+                    f,
+                    "{}{}Join: {} = {}",
+                    pad,
+                    jt,
                     join.left_key.qualified_name(),
-                    join.right_key.qualified_name())?;
+                    join.right_key.qualified_name()
+                )?;
                 join.left.fmt_indent(f, indent + 1)?;
                 writeln!(f)?;
                 join.right.fmt_indent(f, indent + 1)
@@ -271,16 +283,21 @@ impl PlanNode {
                 filter.input.fmt_indent(f, indent + 1)
             }
             PlanNode::Aggregate(agg) => {
-                let groups: Vec<_> = agg.group_by.iter()
-                    .map(|c| c.qualified_name()).collect();
-                let aggrs: Vec<_> = agg.aggregates.iter()
-                    .map(|a| a.to_string()).collect();
-                writeln!(f, "{}Aggregate: groupBy=[[{}]], aggr=[[{}]]",
-                    pad, groups.join(", "), aggrs.join(", "))?;
+                let groups: Vec<_> = agg.group_by.iter().map(|c| c.qualified_name()).collect();
+                let aggrs: Vec<_> = agg.aggregates.iter().map(|a| a.to_string()).collect();
+                writeln!(
+                    f,
+                    "{}Aggregate: groupBy=[[{}]], aggr=[[{}]]",
+                    pad,
+                    groups.join(", "),
+                    aggrs.join(", ")
+                )?;
                 agg.input.fmt_indent(f, indent + 1)
             }
             PlanNode::Project(proj) => {
-                let exprs: Vec<_> = proj.expressions.iter()
+                let exprs: Vec<_> = proj
+                    .expressions
+                    .iter()
                     .map(|pe| {
                         if pe.expr.to_string() == pe.alias {
                             pe.alias.clone()
@@ -293,7 +310,9 @@ impl PlanNode {
                 proj.input.fmt_indent(f, indent + 1)
             }
             PlanNode::Sort(sort) => {
-                let keys: Vec<_> = sort.sort_keys.iter()
+                let keys: Vec<_> = sort
+                    .sort_keys
+                    .iter()
                     .map(|k| {
                         let dir = match k.direction {
                             SortDirection::Ascending => "ASC",
@@ -308,14 +327,21 @@ impl PlanNode {
             PlanNode::Union(union) => {
                 writeln!(f, "{}Union", pad)?;
                 for (i, input) in union.inputs.iter().enumerate() {
-                    if i > 0 { writeln!(f)?; }
+                    if i > 0 {
+                        writeln!(f)?;
+                    }
                     input.fmt_indent(f, indent + 1)?;
                 }
                 Ok(())
             }
             PlanNode::VirtualTable(vt) => {
-                write!(f, "{}VirtualTable: [{}] ({} rows)",
-                    pad, vt.columns.join(", "), vt.rows.len())
+                write!(
+                    f,
+                    "{}VirtualTable: [{}] ({} rows)",
+                    pad,
+                    vt.columns.join(", "),
+                    vt.rows.len()
+                )
             }
         }
     }

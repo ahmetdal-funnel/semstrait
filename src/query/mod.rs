@@ -1,3 +1,3 @@
 pub mod request;
 
-pub use request::{QueryRequest, DataFilter};
+pub use request::{DataFilter, QueryRequest};

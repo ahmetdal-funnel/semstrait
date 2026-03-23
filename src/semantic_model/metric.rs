@@ -1,7 +1,7 @@
 //! Metric types - derived calculations from measures
 
-use serde::Deserialize;
 use super::types::DataType;
+use serde::Deserialize;
 
 /// A metric - calculation combining measures
 #[derive(Debug, Deserialize)]
@@ -118,9 +118,10 @@ impl Metric {
     /// to select different measures based on the active grain set.
     pub fn is_cross_grain_set(&self) -> bool {
         match &self.expr {
-            MetricExpr::Structured(MetricExprNode::Case(case_expr)) => {
-                case_expr.when.iter().any(|w| w.condition.references_grain_set())
-            }
+            MetricExpr::Structured(MetricExprNode::Case(case_expr)) => case_expr
+                .when
+                .iter()
+                .any(|w| w.condition.references_grain_set()),
             _ => false,
         }
     }
@@ -133,11 +134,16 @@ impl Metric {
     pub fn grain_set_measures(&self) -> Vec<(String, String)> {
         match &self.expr {
             MetricExpr::Structured(MetricExprNode::Case(case_expr)) => {
-                let has_match = case_expr.when.iter().any(|w| w.condition.grain_set_pattern().is_some());
+                let has_match = case_expr
+                    .when
+                    .iter()
+                    .any(|w| w.condition.grain_set_pattern().is_some());
                 if has_match {
                     return vec![];
                 }
-                case_expr.when.iter()
+                case_expr
+                    .when
+                    .iter()
                     .filter_map(|w| {
                         let grain_set = w.condition.grain_set_value()?;
                         let measure = w.then.measure_name()?;
@@ -152,20 +158,23 @@ impl Metric {
     /// CASE WHEN list for cross-grain-set metrics (for expansion in planner).
     pub fn case_when_branches(&self) -> Option<&[MetricCaseWhen]> {
         match &self.expr {
-            MetricExpr::Structured(MetricExprNode::Case(case_expr)) => Some(case_expr.when.as_slice()),
+            MetricExpr::Structured(MetricExprNode::Case(case_expr)) => {
+                Some(case_expr.when.as_slice())
+            }
             _ => None,
         }
     }
-
 }
 
 impl MetricCondition {
     /// Check if this condition references _dataset.path in CASE (cross-grain-set metric).
     pub fn references_grain_set(&self) -> bool {
         match self {
-            MetricCondition::Eq(args) | MetricCondition::Ne(args) | MetricCondition::Match(args) => {
-                args.iter().any(|arg| matches!(arg, MetricConditionArg::String(s) if s == "_dataset.path"))
-            }
+            MetricCondition::Eq(args)
+            | MetricCondition::Ne(args)
+            | MetricCondition::Match(args) => args
+                .iter()
+                .any(|arg| matches!(arg, MetricConditionArg::String(s) if s == "_dataset.path")),
         }
     }
 
@@ -174,7 +183,9 @@ impl MetricCondition {
     pub fn grain_set_value(&self) -> Option<String> {
         match self {
             MetricCondition::Eq(args) if args.len() == 2 => {
-                let has_path_ref = args.iter().any(|a| matches!(a, MetricConditionArg::String(s) if s == "_dataset.path"));
+                let has_path_ref = args
+                    .iter()
+                    .any(|a| matches!(a, MetricConditionArg::String(s) if s == "_dataset.path"));
                 if has_path_ref {
                     args.iter().find_map(|a| match a {
                         MetricConditionArg::String(s) if s != "_dataset.path" => Some(s.clone()),
@@ -192,7 +203,9 @@ impl MetricCondition {
     pub fn grain_set_pattern(&self) -> Option<String> {
         match self {
             MetricCondition::Match(args) if args.len() == 2 => {
-                let has_path_ref = args.iter().any(|a| matches!(a, MetricConditionArg::String(s) if s == "_dataset.path"));
+                let has_path_ref = args
+                    .iter()
+                    .any(|a| matches!(a, MetricConditionArg::String(s) if s == "_dataset.path"));
                 if has_path_ref {
                     args.iter().find_map(|a| match a {
                         MetricConditionArg::String(s) if s != "_dataset.path" => Some(s.clone()),

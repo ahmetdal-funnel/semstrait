@@ -11,11 +11,6 @@ mod select;
 
 pub use error::SelectError;
 pub use select::{
-    select_datasets,
-    select_datasets_for_join,
-    select_partial_for_grain_set,
-    SelectedDataset,
-    MultiDatasetSelection,
-    DatasetWithMeasures,
-    PartialSelection,
+    select_datasets, select_datasets_for_join, select_partial_for_grain_set, DatasetWithMeasures,
+    MultiDatasetSelection, PartialSelection, SelectedDataset,
 };

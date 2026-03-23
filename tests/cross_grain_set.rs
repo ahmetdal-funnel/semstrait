@@ -27,11 +27,15 @@ fn test_cross_grain_set_metric_detection() {
     assert_eq!(mappings.len(), 2, "Should have 2 grain set mappings");
 
     assert!(
-        mappings.iter().any(|(tg, m)| tg == "google_ads" && m == "ad_cost"),
+        mappings
+            .iter()
+            .any(|(tg, m)| tg == "google_ads" && m == "ad_cost"),
         "Should map google_ads → ad_cost"
     );
     assert!(
-        mappings.iter().any(|(tg, m)| tg == "meta_ads" && m == "media_spend"),
+        mappings
+            .iter()
+            .any(|(tg, m)| tg == "meta_ads" && m == "media_spend"),
         "Should map meta_ads → media_spend"
     );
 }
@@ -53,13 +57,8 @@ fn test_cross_grain_set_match_metric() {
         "match-based metric should have empty grain_set_measures (expansion in planner)"
     );
 
-    let plan_node = plan_cross_grain_set_query(
-        &schema,
-        model,
-        metric,
-        &["dates.year".to_string()],
-    )
-    .expect("Cross-grain-set planning with match should succeed");
+    let plan_node = plan_cross_grain_set_query(&schema, model, metric, &["dates.year".to_string()])
+        .expect("Cross-grain-set planning with match should succeed");
 
     let substrait = semstrait::emit_plan(&plan_node, None).expect("Emission should succeed");
     assert!(
@@ -75,13 +74,8 @@ fn test_cross_grain_set_union_plan() {
     let metric = model.get_metric("unified_cost").unwrap();
 
     // Plan a cross-grain-set query
-    let plan_node = plan_cross_grain_set_query(
-        &schema,
-        model,
-        metric,
-        &["dates.year".to_string()],
-    )
-    .expect("Cross-grain-set planning should succeed");
+    let plan_node = plan_cross_grain_set_query(&schema, model, metric, &["dates.year".to_string()])
+        .expect("Cross-grain-set planning should succeed");
 
     // Convert to Substrait to verify structure
     let substrait = semstrait::emit_plan(&plan_node, None).expect("Emission should succeed");
@@ -117,18 +111,36 @@ fn test_conformed_dimension_detection() {
     let model = schema.get_model("marketing").unwrap();
 
     // dates is at model level - all attributes are conformed
-    assert!(model.is_conformed("dates", "year"), "dates.year should be conformed (model-level)");
-    assert!(model.is_conformed("dates", "date"), "dates.date should be conformed (model-level)");
-    
+    assert!(
+        model.is_conformed("dates", "year"),
+        "dates.year should be conformed (model-level)"
+    );
+    assert!(
+        model.is_conformed("dates", "date"),
+        "dates.date should be conformed (model-level)"
+    );
+
     // _dataset is at model level (virtual) - all attributes are conformed
-    assert!(model.is_conformed("_dataset", "path"), "_dataset.path should be conformed (virtual)");
-    
+    assert!(
+        model.is_conformed("_dataset", "path"),
+        "_dataset.path should be conformed (virtual)"
+    );
+
     // campaign is NOT at model level (inline only) - NOT conformed
-    assert!(!model.is_conformed("campaign", "campaign_id"), "campaign.campaign_id should NOT be conformed (inline only)");
-    assert!(!model.is_conformed("campaign", "campaign_name"), "campaign.campaign_name should NOT be conformed (inline only)");
-    
+    assert!(
+        !model.is_conformed("campaign", "campaign_id"),
+        "campaign.campaign_id should NOT be conformed (inline only)"
+    );
+    assert!(
+        !model.is_conformed("campaign", "campaign_name"),
+        "campaign.campaign_name should NOT be conformed (inline only)"
+    );
+
     // Non-existent dimensions are not conformed
-    assert!(!model.is_conformed("other", "attr"), "non-existent dimension should NOT be conformed");
+    assert!(
+        !model.is_conformed("other", "attr"),
+        "non-existent dimension should NOT be conformed"
+    );
 }
 
 #[test]
@@ -138,22 +150,34 @@ fn test_conformed_query_detection() {
 
     // Query with only model-level dimensions
     let conformed_query = vec!["dates.year".to_string(), "_dataset.path".to_string()];
-    assert!(model.is_conformed_query(&conformed_query), "Query with dates.year and _dataset should be conformed");
-    
+    assert!(
+        model.is_conformed_query(&conformed_query),
+        "Query with dates.year and _dataset should be conformed"
+    );
+
     // Query with inline-only dimension (not at model level)
     let non_conformed_query = vec!["campaign.campaign_name".to_string()];
-    assert!(!model.is_conformed_query(&non_conformed_query), "Query with inline dimension should NOT be conformed");
-    
+    assert!(
+        !model.is_conformed_query(&non_conformed_query),
+        "Query with inline dimension should NOT be conformed"
+    );
+
     // Query with mix of model-level and inline dimensions
-    let mixed_query = vec!["dates.year".to_string(), "campaign.campaign_name".to_string()];
-    assert!(!model.is_conformed_query(&mixed_query), "Mixed query should NOT be conformed");
+    let mixed_query = vec![
+        "dates.year".to_string(),
+        "campaign.campaign_name".to_string(),
+    ];
+    assert!(
+        !model.is_conformed_query(&mixed_query),
+        "Mixed query should NOT be conformed"
+    );
 }
 
 #[test]
 fn test_conformed_dimension_union_plan() {
     use common::run_pipeline;
     use semstrait::QueryRequest;
-    
+
     let schema = load_fixture("cross_grain_set.yaml");
 
     // Query conformed dimension with a metric that exists in both grain sets
@@ -164,9 +188,8 @@ fn test_conformed_dimension_union_plan() {
         ..Default::default()
     };
 
-    let plan = run_pipeline(&schema, &request)
-        .expect("Conformed dimension query should succeed");
-    
+    let plan = run_pipeline(&schema, &request).expect("Conformed dimension query should succeed");
+
     // Should produce a UNION plan (querying across both grain sets)
     assert!(
         has_union(&plan),
@@ -178,23 +201,20 @@ fn test_conformed_dimension_union_plan() {
 fn test_conformed_dimension_with_table_metadata() {
     use common::run_pipeline;
     use semstrait::QueryRequest;
-    
+
     let schema = load_fixture("cross_grain_set.yaml");
 
     // Query conformed dimension + _dataset.path + metric
     let request = QueryRequest {
         model: "marketing".to_string(),
-        rows: Some(vec![
-            "dates.year".to_string(),
-            "_dataset.path".to_string(),
-        ]),
+        rows: Some(vec!["dates.year".to_string(), "_dataset.path".to_string()]),
         metrics: Some(vec!["clicks".to_string()]),
         ..Default::default()
     };
 
     let plan = run_pipeline(&schema, &request)
         .expect("Conformed dimension + _dataset query should succeed");
-    
+
     // Should produce a UNION plan
     assert!(
         has_union(&plan),
@@ -206,23 +226,21 @@ fn test_conformed_dimension_with_table_metadata() {
 fn test_virtual_dimension_implicitly_conformed() {
     use common::run_pipeline;
     use semstrait::QueryRequest;
-    
+
     let schema = load_fixture("cross_grain_set.yaml");
 
     // Query ONLY _dataset.path (virtual dimension) + metric
     // Virtual dimensions should be implicitly conformed
     let request = QueryRequest {
         model: "marketing".to_string(),
-        rows: Some(vec![
-            "_dataset.path".to_string(),
-        ]),
+        rows: Some(vec!["_dataset.path".to_string()]),
         metrics: Some(vec!["clicks".to_string()]),
         ..Default::default()
     };
 
     let plan = run_pipeline(&schema, &request)
         .expect("Virtual dimension only query should succeed (implicitly conformed)");
-    
+
     // Should produce a UNION plan (querying across both grain sets)
     assert!(
         has_union(&plan),
@@ -234,22 +252,20 @@ fn test_virtual_dimension_implicitly_conformed() {
 fn test_virtual_only_query_no_table_scan() {
     use common::run_pipeline;
     use semstrait::QueryRequest;
-    
+
     let schema = load_fixture("cross_grain_set.yaml");
 
     // Query ONLY _dataset.path (virtual dimension) with NO metrics
     let request = QueryRequest {
         model: "marketing".to_string(),
-        rows: Some(vec![
-            "_dataset.path".to_string(),
-        ]),
+        rows: Some(vec!["_dataset.path".to_string()]),
         metrics: None,
         ..Default::default()
     };
 
     let plan = run_pipeline(&schema, &request)
         .expect("Virtual-only query should succeed without table scans");
-    
+
     // Should NOT produce a UNION - should be a VirtualTable
     assert!(
         !has_union(&plan),
@@ -264,15 +280,13 @@ fn test_virtual_only_query_no_table_scan() {
 #[test]
 fn test_qualified_dimension_parsing() {
     use semstrait::QueryRequest;
-    
+
     let schema = load_fixture("cross_grain_set.yaml");
-    
+
     // Query with grain-set-qualified dimension
     let request = QueryRequest {
         model: "marketing".to_string(),
-        rows: Some(vec![
-            "google_ads.dates.year".to_string(),
-        ]),
+        rows: Some(vec!["google_ads.dates.year".to_string()]),
         metrics: Some(vec!["unified_cost".to_string()]),
         ..Default::default()
     };
@@ -288,9 +302,9 @@ fn test_qualified_dimension_parsing() {
 #[test]
 fn test_qualified_dimension_cross_grain_set_metric() {
     use semstrait::QueryRequest;
-    
+
     let schema = load_fixture("cross_grain_set.yaml");
-    
+
     // Query with grain-set-qualified dimensions from BOTH grain sets
     let request = QueryRequest {
         model: "marketing".to_string(),
@@ -308,9 +322,9 @@ fn test_qualified_dimension_cross_grain_set_metric() {
         "Query with qualified dimensions from both grain sets should succeed: {:?}",
         result.err()
     );
-    
+
     let plan = result.unwrap();
-    
+
     // Should produce a UNION plan
     assert!(
         has_union(&plan),
@@ -321,9 +335,9 @@ fn test_qualified_dimension_cross_grain_set_metric() {
 #[test]
 fn test_qualified_with_virtual_dimension() {
     use semstrait::QueryRequest;
-    
+
     let schema = load_fixture("cross_grain_set.yaml");
-    
+
     // Query with grain-set-qualified dimension + virtual _dataset dimension
     let request = QueryRequest {
         model: "marketing".to_string(),
@@ -341,7 +355,7 @@ fn test_qualified_with_virtual_dimension() {
         "Query with qualified + virtual dimensions should succeed: {:?}",
         result.err()
     );
-    
+
     let plan = result.unwrap();
     assert!(
         has_union(&plan),
@@ -352,15 +366,13 @@ fn test_qualified_with_virtual_dimension() {
 #[test]
 fn test_invalid_grain_set_qualifier_fails() {
     use semstrait::QueryRequest;
-    
+
     let schema = load_fixture("cross_grain_set.yaml");
-    
+
     // Query with non-existent grain set qualifier should fail
     let request = QueryRequest {
         model: "marketing".to_string(),
-        rows: Some(vec![
-            "nonexistent_tg.dates.year".to_string(),
-        ]),
+        rows: Some(vec!["nonexistent_tg.dates.year".to_string()]),
         metrics: Some(vec!["unified_cost".to_string()]),
         ..Default::default()
     };
@@ -417,8 +429,14 @@ fn test_multiple_cross_grain_set_metrics_detection() {
     let cost_metric = model.get_metric("fun-cost").unwrap();
     let impressions_metric = model.get_metric("fun-impressions").unwrap();
 
-    assert!(cost_metric.is_cross_grain_set(), "fun-cost should be cross-grain-set");
-    assert!(impressions_metric.is_cross_grain_set(), "fun-impressions should be cross-grain-set");
+    assert!(
+        cost_metric.is_cross_grain_set(),
+        "fun-cost should be cross-grain-set"
+    );
+    assert!(
+        impressions_metric.is_cross_grain_set(),
+        "fun-impressions should be cross-grain-set"
+    );
 }
 
 #[test]
@@ -440,19 +458,26 @@ fn test_multiple_cross_grain_set_metrics_planning() {
     };
 
     let plan = plan_semantic_query(&schema, model, &request);
-    assert!(plan.is_ok(), "Multiple cross-grain-set metrics should be supported: {:?}", plan.err());
+    assert!(
+        plan.is_ok(),
+        "Multiple cross-grain-set metrics should be supported: {:?}",
+        plan.err()
+    );
 
     let plan_node = plan.unwrap();
     let substrait = semstrait::emit_plan(&plan_node, None).expect("Emission should succeed");
-    
-    assert!(has_union(&substrait), "Multiple cross-grain-set metrics should produce UNION plan");
+
+    assert!(
+        has_union(&substrait),
+        "Multiple cross-grain-set metrics should produce UNION plan"
+    );
 }
 
 #[test]
 fn test_multiple_cross_grain_set_metrics_union_structure() {
+    use semstrait::plan::PlanNode;
     use semstrait::planner::plan_semantic_query;
     use semstrait::query::QueryRequest;
-    use semstrait::plan::PlanNode;
 
     let schema = parser::parse_file("test_data/marketing.yaml").unwrap();
     let model = schema.get_model("-ObDoDFVQGxxCGa5vw_Z").unwrap();
@@ -470,27 +495,33 @@ fn test_multiple_cross_grain_set_metrics_union_structure() {
 
     // The plan should be: Sort(Aggregate(Union([branch1, branch2])))
     match plan {
-        PlanNode::Sort(sort) => {
-            match *sort.input {
-                PlanNode::Aggregate(agg) => {
-                    assert_eq!(agg.aggregates.len(), 2, "Should have 2 aggregates (one per metric)");
-                    
-                    let aliases: Vec<&str> = agg.aggregates.iter()
-                        .map(|a| a.alias.as_str())
-                        .collect();
-                    assert!(aliases.contains(&"fun-cost"), "Should have fun-cost aggregate");
-                    assert!(aliases.contains(&"fun-impressions"), "Should have fun-impressions aggregate");
-                    
-                    match *agg.input {
-                        PlanNode::Union(union) => {
-                            assert_eq!(union.inputs.len(), 2, "Union should have 2 branches");
-                        }
-                        _ => panic!("Expected Union as input to Aggregate"),
+        PlanNode::Sort(sort) => match *sort.input {
+            PlanNode::Aggregate(agg) => {
+                assert_eq!(
+                    agg.aggregates.len(),
+                    2,
+                    "Should have 2 aggregates (one per metric)"
+                );
+
+                let aliases: Vec<&str> = agg.aggregates.iter().map(|a| a.alias.as_str()).collect();
+                assert!(
+                    aliases.contains(&"fun-cost"),
+                    "Should have fun-cost aggregate"
+                );
+                assert!(
+                    aliases.contains(&"fun-impressions"),
+                    "Should have fun-impressions aggregate"
+                );
+
+                match *agg.input {
+                    PlanNode::Union(union) => {
+                        assert_eq!(union.inputs.len(), 2, "Union should have 2 branches");
                     }
+                    _ => panic!("Expected Union as input to Aggregate"),
                 }
-                _ => panic!("Expected Aggregate inside Sort"),
             }
-        }
+            _ => panic!("Expected Aggregate inside Sort"),
+        },
         _ => panic!("Expected Sort at top level"),
     }
 }
@@ -513,5 +544,9 @@ fn test_single_cross_grain_set_metric_still_works() {
     };
 
     let plan = plan_semantic_query(&schema, model, &request);
-    assert!(plan.is_ok(), "Single cross-grain-set metric should work: {:?}", plan.err());
+    assert!(
+        plan.is_ok(),
+        "Single cross-grain-set metric should work: {:?}",
+        plan.err()
+    );
 }

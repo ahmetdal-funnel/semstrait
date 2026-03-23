@@ -2,13 +2,12 @@
 //!
 //! Transforms a PlanNode tree into an ANSI SQL string.
 
+use super::error::EmitError;
 use crate::plan::{
-    PlanNode, Scan, Join, JoinType, CrossJoin, Filter, Aggregate, Project, Sort,
-    SortDirection, Union, VirtualTable, LiteralValue,
-    Expr, Column, Literal, AggregateExpr,
+    Aggregate, AggregateExpr, Column, CrossJoin, Expr, Filter, Join, JoinType, Literal,
+    LiteralValue, PlanNode, Project, Scan, Sort, SortDirection, Union, VirtualTable,
 };
 use crate::semantic_model::Aggregation;
-use super::error::EmitError;
 
 /// Emit a pretty-printed SQL string from a PlanNode.
 ///
@@ -22,7 +21,11 @@ pub fn emit_sql(node: &PlanNode, output_names: Option<Vec<String>>) -> Result<St
             .enumerate()
             .map(|(i, name)| format!("col{} AS \"{}\"", i, name))
             .collect();
-        Ok(format!("SELECT {}\nFROM (\n{}\n)", aliases.join(", "), inner))
+        Ok(format!(
+            "SELECT {}\nFROM (\n{}\n)",
+            aliases.join(", "),
+            inner
+        ))
     } else {
         let inner = emit_node(node, 0)?;
         Ok(inner)
@@ -65,11 +68,15 @@ fn emit_scan(scan: &Scan, indent: usize) -> Result<String, EmitError> {
 
     let alias = scan.alias.as_deref().unwrap_or(&scan.table);
     if alias != scan.table {
-        Ok(format!("{p}SELECT {cols}\n{p}FROM {table} AS {alias}",
-            table = scan.table))
+        Ok(format!(
+            "{p}SELECT {cols}\n{p}FROM {table} AS {alias}",
+            table = scan.table
+        ))
     } else {
-        Ok(format!("{p}SELECT {cols}\n{p}FROM {table}",
-            table = scan.table))
+        Ok(format!(
+            "{p}SELECT {cols}\n{p}FROM {table}",
+            table = scan.table
+        ))
     }
 }
 
@@ -116,7 +123,8 @@ fn emit_aggregate(agg: &Aggregate, indent: usize) -> Result<String, EmitError> {
 
     let group_cols: Vec<String> = agg.group_by.iter().map(|c| emit_column(c)).collect();
 
-    let agg_exprs: Vec<String> = agg.aggregates
+    let agg_exprs: Vec<String> = agg
+        .aggregates
         .iter()
         .map(|a| emit_aggregate_expr(a))
         .collect::<Result<Vec<_>, _>>()?;
@@ -142,7 +150,8 @@ fn emit_project(proj: &Project, indent: usize) -> Result<String, EmitError> {
     let p = pad(indent);
     let input = emit_node(&proj.input, indent + 1)?;
 
-    let items: Vec<String> = proj.expressions
+    let items: Vec<String> = proj
+        .expressions
         .iter()
         .map(|pe| {
             let expr_sql = emit_expr(&pe.expr)?;
@@ -160,7 +169,8 @@ fn emit_sort(sort: &Sort, indent: usize) -> Result<String, EmitError> {
     let p = pad(indent);
     let input = emit_node(&sort.input, indent + 1)?;
 
-    let keys: Vec<String> = sort.sort_keys
+    let keys: Vec<String> = sort
+        .sort_keys
         .iter()
         .map(|k| {
             let dir = match k.direction {
@@ -184,7 +194,8 @@ fn emit_union(union: &Union, indent: usize) -> Result<String, EmitError> {
         ));
     }
 
-    let parts: Vec<String> = union.inputs
+    let parts: Vec<String> = union
+        .inputs
         .iter()
         .map(|n| emit_node(n, indent))
         .collect::<Result<Vec<_>, _>>()?;
@@ -197,14 +208,16 @@ fn emit_virtual_table(vt: &VirtualTable, indent: usize) -> Result<String, EmitEr
     let p = pad(indent);
 
     if vt.rows.is_empty() {
-        let nulls: Vec<String> = vt.columns
+        let nulls: Vec<String> = vt
+            .columns
             .iter()
             .map(|c| format!("NULL AS \"{}\"", c))
             .collect();
         return Ok(format!("{p}SELECT {} WHERE 1=0", nulls.join(", ")));
     }
 
-    let row_selects: Vec<String> = vt.rows
+    let row_selects: Vec<String> = vt
+        .rows
         .iter()
         .map(|row| {
             let items: Vec<String> = row
@@ -236,19 +249,28 @@ fn emit_expr(expr: &Expr) -> Result<String, EmitError> {
             if exprs.is_empty() {
                 return Ok("TRUE".to_string());
             }
-            let parts: Vec<String> = exprs.iter().map(|e| emit_expr(e)).collect::<Result<Vec<_>, _>>()?;
+            let parts: Vec<String> = exprs
+                .iter()
+                .map(|e| emit_expr(e))
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(format!("({})", parts.join(" AND ")))
         }
         Expr::Or(exprs) => {
             if exprs.is_empty() {
                 return Ok("FALSE".to_string());
             }
-            let parts: Vec<String> = exprs.iter().map(|e| emit_expr(e)).collect::<Result<Vec<_>, _>>()?;
+            let parts: Vec<String> = exprs
+                .iter()
+                .map(|e| emit_expr(e))
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(format!("({})", parts.join(" OR ")))
         }
         Expr::In { expr, values } => {
             let needle = emit_expr(expr)?;
-            let vals: Vec<String> = values.iter().map(|v| emit_expr(v)).collect::<Result<Vec<_>, _>>()?;
+            let vals: Vec<String> = values
+                .iter()
+                .map(|v| emit_expr(v))
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(format!("{} IN ({})", needle, vals.join(", ")))
         }
         Expr::Sql(s) => Ok(s.clone()),
@@ -262,10 +284,17 @@ fn emit_expr(expr: &Expr) -> Result<String, EmitError> {
         )),
         Expr::IsNull(inner) => Ok(format!("{} IS NULL", emit_expr(inner)?)),
         Expr::IsNotNull(inner) => Ok(format!("{} IS NOT NULL", emit_expr(inner)?)),
-        Expr::Case { when_then, else_result } => {
+        Expr::Case {
+            when_then,
+            else_result,
+        } => {
             let mut sql = String::from("CASE");
             for (cond, then) in when_then {
-                sql.push_str(&format!(" WHEN {} THEN {}", emit_expr(cond)?, emit_expr(then)?));
+                sql.push_str(&format!(
+                    " WHEN {} THEN {}",
+                    emit_expr(cond)?,
+                    emit_expr(then)?
+                ));
             }
             if let Some(el) = else_result {
                 sql.push_str(&format!(" ELSE {}", emit_expr(el)?));
@@ -274,7 +303,10 @@ fn emit_expr(expr: &Expr) -> Result<String, EmitError> {
             Ok(sql)
         }
         Expr::Coalesce(exprs) => {
-            let parts: Vec<String> = exprs.iter().map(|e| emit_expr(e)).collect::<Result<Vec<_>, _>>()?;
+            let parts: Vec<String> = exprs
+                .iter()
+                .map(|e| emit_expr(e))
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(format!("COALESCE({})", parts.join(", ")))
         }
     }
@@ -291,7 +323,13 @@ fn emit_column(col: &Column) -> String {
 fn emit_literal(lit: &Literal) -> String {
     match lit {
         Literal::Null(type_name) => format!("CAST(NULL AS {})", sql_type_name(type_name)),
-        Literal::Bool(b) => if *b { "TRUE".to_string() } else { "FALSE".to_string() },
+        Literal::Bool(b) => {
+            if *b {
+                "TRUE".to_string()
+            } else {
+                "FALSE".to_string()
+            }
+        }
         Literal::Int(i) => i.to_string(),
         Literal::Float(f) => format!("{}", f),
         Literal::String(s) => format!("'{}'", s.replace('\'', "''")),
@@ -304,7 +342,13 @@ fn literal_value_to_sql(val: &LiteralValue) -> String {
         LiteralValue::Int32(i) => i.to_string(),
         LiteralValue::Int64(i) => i.to_string(),
         LiteralValue::Float64(f) => format!("{}", f),
-        LiteralValue::Bool(b) => if *b { "TRUE".to_string() } else { "FALSE".to_string() },
+        LiteralValue::Bool(b) => {
+            if *b {
+                "TRUE".to_string()
+            } else {
+                "FALSE".to_string()
+            }
+        }
         LiteralValue::Null => "NULL".to_string(),
     }
 }
@@ -344,11 +388,11 @@ fn emit_aggregate_expr(agg: &AggregateExpr) -> Result<String, EmitError> {
 mod tests {
     use super::*;
     use crate::plan::{BinaryOperator, ProjectExpr, SortKey};
-    use crate::semantic_model::Schema;
-    use crate::query::QueryRequest;
-    use crate::selector::select_datasets;
-    use crate::resolver::resolve_query;
     use crate::planner::plan_query;
+    use crate::query::QueryRequest;
+    use crate::resolver::resolve_query;
+    use crate::selector::select_datasets;
+    use crate::semantic_model::Schema;
 
     fn load_test_schema() -> Schema {
         Schema::from_file("test_data/steelwheels.yaml").unwrap()
@@ -358,27 +402,20 @@ mod tests {
 
     #[test]
     fn test_sql_scan() {
-        let scan = PlanNode::Scan(
-            Scan::new("public.orders")
-                .with_columns(
-                    vec!["id".into(), "amount".into()],
-                    vec!["i32".into(), "f64".into()],
-                ),
-        );
+        let scan = PlanNode::Scan(Scan::new("public.orders").with_columns(
+            vec!["id".into(), "amount".into()],
+            vec!["i32".into(), "f64".into()],
+        ));
         let sql = emit_sql(&scan, None).unwrap();
         assert_eq!(sql, "SELECT id, amount\nFROM public.orders");
     }
 
     #[test]
     fn test_sql_scan_with_alias() {
-        let scan = PlanNode::Scan(
-            Scan::new("public.orders")
-                .with_alias("o")
-                .with_columns(
-                    vec!["id".into(), "amount".into()],
-                    vec!["i32".into(), "f64".into()],
-                ),
-        );
+        let scan = PlanNode::Scan(Scan::new("public.orders").with_alias("o").with_columns(
+            vec!["id".into(), "amount".into()],
+            vec!["i32".into(), "f64".into()],
+        ));
         let sql = emit_sql(&scan, None).unwrap();
         assert_eq!(sql, "SELECT id, amount\nFROM public.orders AS o");
     }
@@ -387,9 +424,10 @@ mod tests {
 
     #[test]
     fn test_sql_filter() {
-        let scan = Scan::new("t")
-            .with_alias("t")
-            .with_columns(vec!["id".into(), "name".into()], vec!["i32".into(), "string".into()]);
+        let scan = Scan::new("t").with_alias("t").with_columns(
+            vec!["id".into(), "name".into()],
+            vec!["i32".into(), "string".into()],
+        );
 
         let filter = PlanNode::Filter(Filter {
             input: Box::new(PlanNode::Scan(scan)),
@@ -408,12 +446,10 @@ mod tests {
 
     #[test]
     fn test_sql_aggregate() {
-        let scan = Scan::new("fact")
-            .with_alias("fact")
-            .with_columns(
-                vec!["year".into(), "amount".into()],
-                vec!["i32".into(), "f64".into()],
-            );
+        let scan = Scan::new("fact").with_alias("fact").with_columns(
+            vec!["year".into(), "amount".into()],
+            vec!["i32".into(), "f64".into()],
+        );
 
         let agg = PlanNode::Aggregate(Aggregate {
             input: Box::new(PlanNode::Scan(scan)),
@@ -434,9 +470,10 @@ mod tests {
 
     #[test]
     fn test_sql_project() {
-        let scan = Scan::new("t")
-            .with_alias("t")
-            .with_columns(vec!["a".into(), "b".into()], vec!["i32".into(), "i32".into()]);
+        let scan = Scan::new("t").with_alias("t").with_columns(
+            vec!["a".into(), "b".into()],
+            vec!["i32".into(), "i32".into()],
+        );
 
         let proj = PlanNode::Project(Project {
             input: Box::new(PlanNode::Scan(scan)),
@@ -460,8 +497,10 @@ mod tests {
 
     #[test]
     fn test_sql_sort() {
-        let scan = Scan::new("t")
-            .with_columns(vec!["year".into(), "amount".into()], vec!["i32".into(), "f64".into()]);
+        let scan = Scan::new("t").with_columns(
+            vec!["year".into(), "amount".into()],
+            vec!["i32".into(), "f64".into()],
+        );
 
         let sort = PlanNode::Sort(Sort {
             input: Box::new(PlanNode::Scan(scan)),
@@ -478,14 +517,12 @@ mod tests {
 
     #[test]
     fn test_sql_union() {
-        let s1 = PlanNode::Scan(
-            Scan::new("a").with_columns(vec!["x".into()], vec!["i32".into()]),
-        );
-        let s2 = PlanNode::Scan(
-            Scan::new("b").with_columns(vec!["x".into()], vec!["i32".into()]),
-        );
+        let s1 = PlanNode::Scan(Scan::new("a").with_columns(vec!["x".into()], vec!["i32".into()]));
+        let s2 = PlanNode::Scan(Scan::new("b").with_columns(vec!["x".into()], vec!["i32".into()]));
 
-        let u = PlanNode::Union(Union { inputs: vec![s1, s2] });
+        let u = PlanNode::Union(Union {
+            inputs: vec![s1, s2],
+        });
         let sql = emit_sql(&u, None).unwrap();
         assert!(sql.contains("UNION ALL"));
     }
@@ -519,17 +556,17 @@ mod tests {
     #[test]
     fn test_sql_case_expr() {
         let expr = Expr::Case {
-            when_then: vec![
-                (
-                    Expr::BinaryOp {
-                        left: Box::new(Expr::Column(Column::new("t", "x"))),
-                        op: BinaryOperator::Gt,
-                        right: Box::new(Expr::Literal(Literal::Int(0))),
-                    },
-                    Expr::Literal(Literal::String("positive".into())),
-                ),
-            ],
-            else_result: Some(Box::new(Expr::Literal(Literal::String("non-positive".into())))),
+            when_then: vec![(
+                Expr::BinaryOp {
+                    left: Box::new(Expr::Column(Column::new("t", "x"))),
+                    op: BinaryOperator::Gt,
+                    right: Box::new(Expr::Literal(Literal::Int(0))),
+                },
+                Expr::Literal(Literal::String("positive".into())),
+            )],
+            else_result: Some(Box::new(Expr::Literal(Literal::String(
+                "non-positive".into(),
+            )))),
         };
         let sql = emit_expr(&expr).unwrap();
         assert!(sql.starts_with("CASE WHEN"));
@@ -587,43 +624,59 @@ mod tests {
         };
 
         let grain_sets = model.grain_sets();
-        let selected = select_datasets(&schema, model, &grain_sets, &["dates.year".into()], &["sales".into()])
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
+        let selected = select_datasets(
+            &schema,
+            model,
+            &grain_sets,
+            &["dates.year".into()],
+            &["sales".into()],
+        )
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
         let resolved = resolve_query(&schema, &request, &selected, &grain_sets).unwrap();
         let plan_node = plan_query(&resolved).unwrap();
 
         let sql = emit_sql(&plan_node, None).unwrap();
         assert!(sql.contains("SELECT"), "SQL should contain SELECT: {}", sql);
         assert!(sql.contains("FROM"), "SQL should contain FROM: {}", sql);
-        assert!(sql.contains("GROUP BY"), "SQL should contain GROUP BY: {}", sql);
+        assert!(
+            sql.contains("GROUP BY"),
+            "SQL should contain GROUP BY: {}",
+            sql
+        );
         assert!(sql.contains("SUM"), "SQL should contain SUM: {}", sql);
         assert!(sql.contains("\n"), "SQL should be multi-line: {}", sql);
     }
 
     #[test]
     fn test_sql_with_output_names() {
-        let scan = PlanNode::Scan(
-            Scan::new("t")
-                .with_columns(vec!["a".into(), "b".into()], vec!["i32".into(), "i32".into()]),
-        );
+        let scan = PlanNode::Scan(Scan::new("t").with_columns(
+            vec!["a".into(), "b".into()],
+            vec!["i32".into(), "i32".into()],
+        ));
         let sql = emit_sql(&scan, Some(vec!["Alpha".into(), "Beta".into()])).unwrap();
         assert!(sql.contains("col0 AS \"Alpha\""));
         assert!(sql.contains("col1 AS \"Beta\""));
-        assert!(sql.contains("  SELECT a, b"), "Inner SELECT should be indented:\n{}", sql);
-        assert!(sql.contains("  FROM t"), "Inner FROM should be indented:\n{}", sql);
+        assert!(
+            sql.contains("  SELECT a, b"),
+            "Inner SELECT should be indented:\n{}",
+            sql
+        );
+        assert!(
+            sql.contains("  FROM t"),
+            "Inner FROM should be indented:\n{}",
+            sql
+        );
     }
 
     #[test]
     fn test_sql_indentation() {
-        let scan = Scan::new("fact")
-            .with_alias("fact")
-            .with_columns(
-                vec!["year".into(), "amount".into()],
-                vec!["i32".into(), "f64".into()],
-            );
+        let scan = Scan::new("fact").with_alias("fact").with_columns(
+            vec!["year".into(), "amount".into()],
+            vec!["i32".into(), "f64".into()],
+        );
 
         let agg = PlanNode::Aggregate(Aggregate {
             input: Box::new(PlanNode::Scan(scan)),
@@ -636,7 +689,15 @@ mod tests {
         });
         let sql = emit_sql(&agg, None).unwrap();
         // Inner scan should be indented
-        assert!(sql.contains("  SELECT year, amount"), "Inner SELECT should be indented:\n{}", sql);
-        assert!(sql.contains("  FROM fact"), "Inner FROM should be indented:\n{}", sql);
+        assert!(
+            sql.contains("  SELECT year, amount"),
+            "Inner SELECT should be indented:\n{}",
+            sql
+        );
+        assert!(
+            sql.contains("  FROM fact"),
+            "Inner FROM should be indented:\n{}",
+            sql
+        );
     }
 }

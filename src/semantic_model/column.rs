@@ -1,7 +1,7 @@
 //! Column definitions for fact tables
 
-use serde::Deserialize;
 use super::types::DataType;
+use serde::Deserialize;
 
 /// A column in the fact table with its data type
 #[derive(Debug, Deserialize, Clone)]

@@ -1,15 +1,17 @@
-use std::collections::HashSet;
-use crate::semantic_model::{Dataset, GrainSet, Metric, MetricExpr, MetricExprArg, MetricExprNode, Schema, SemanticModel};
-use crate::query::{DataFilter, QueryRequest};
-use crate::selector::SelectedDataset;
 use super::error::ResolveError;
 use super::types::{AttributeRef, ResolvedDimension, ResolvedFilter, ResolvedQuery};
+use crate::query::{DataFilter, QueryRequest};
+use crate::selector::SelectedDataset;
+use crate::semantic_model::{
+    Dataset, GrainSet, Metric, MetricExpr, MetricExprArg, MetricExprNode, Schema, SemanticModel,
+};
+use std::collections::HashSet;
 
 /// Resolve an analytics query request against a schema and selected dataset
-/// 
+///
 /// This turns string references (model name, metric names, "dimension.attribute" strings)
 /// into actual schema object references.
-/// 
+///
 /// # Arguments
 /// * `schema` - The schema containing dimension definitions
 /// * `request` - The query request with model name, metrics, dimensions, etc.
@@ -23,17 +25,19 @@ pub fn resolve_query<'a>(
 ) -> Result<ResolvedQuery<'a>, ResolveError> {
     let group = selected.group;
     let dataset = selected.dataset;
-    
+
     // 1. Resolve the model (for metrics which are model-level)
     let model = schema
         .get_model(&request.model)
         .ok_or_else(|| ResolveError::ModelNotFound(request.model.clone()))?;
 
     // 2. Resolve row attributes (e.g., ["dates.year", "markets.country"])
-    let row_attributes = resolve_attributes(model, group, dataset, request.rows.as_ref(), grain_sets)?;
+    let row_attributes =
+        resolve_attributes(model, group, dataset, request.rows.as_ref(), grain_sets)?;
 
     // 3. Resolve column attributes
-    let column_attributes = resolve_attributes(model, group, dataset, request.columns.as_ref(), grain_sets)?;
+    let column_attributes =
+        resolve_attributes(model, group, dataset, request.columns.as_ref(), grain_sets)?;
 
     // 4. Resolve metrics (from model - metrics are model-level)
     let metrics = resolve_metrics(model, request.metrics.as_ref())?;
@@ -78,7 +82,11 @@ fn resolve_filters<'a>(
             let attribute = resolve_attribute(model, group, dataset, &f.field, grain_sets)?;
             // Default operator: "in" for arrays, "eq" for single values
             let operator = f.operator.clone().unwrap_or_else(|| {
-                if f.value.is_array() { "in".to_string() } else { "eq".to_string() }
+                if f.value.is_array() {
+                    "in".to_string()
+                } else {
+                    "eq".to_string()
+                }
             });
             Ok(ResolvedFilter {
                 attribute,
@@ -146,7 +154,8 @@ fn resolve_path_qualified_attribute<'a>(
     let resolved = model.get_grain_set_by_path(path_segments).ok_or_else(|| {
         ResolveError::ContainerPathNotFound {
             path: path_segments.join("."),
-            reason: "path not found or does not point to a leaf container (one with datasets)".to_string(),
+            reason: "path not found or does not point to a leaf container (one with datasets)"
+                .to_string(),
         }
     })?;
 
@@ -155,14 +164,14 @@ fn resolve_path_qualified_attribute<'a>(
         .find(|g| g.name == resolved.name)
         .ok_or_else(|| ResolveError::ContainerPathNotFound {
             path: path_segments.join("."),
-            reason: format!("resolved grain set '{}' not in query context", resolved.name),
+            reason: format!(
+                "resolved grain set '{}' not in query context",
+                resolved.name
+            ),
         })?;
 
     let target_dataset = target_group.datasets.first().ok_or_else(|| {
-        ResolveError::InvalidQuery(format!(
-            "Grain set '{}' has no datasets",
-            target_group.name
-        ))
+        ResolveError::InvalidQuery(format!("Grain set '{}' has no datasets", target_group.name))
     })?;
 
     let path_qualifier = Some(path_segments.join("."));
@@ -199,7 +208,7 @@ fn resolve_attribute_in_group<'a>(
     let dataset_attrs = dataset
         .get_dimension_attributes(dim_name)
         .ok_or_else(|| ResolveError::DimensionNotFound(dim_name.to_string()))?;
-    
+
     if !dataset_attrs.iter().any(|a| a == attr_name) {
         return Err(ResolveError::AttributeNotFound {
             dimension: dim_name.to_string(),
@@ -209,12 +218,13 @@ fn resolve_attribute_in_group<'a>(
 
     // Check for degenerate dimension (inline attributes on GrainSetDimension)
     if group_dim.is_degenerate() {
-        let attribute = group_dim
-            .get_attribute(attr_name)
-            .ok_or_else(|| ResolveError::AttributeNotFound {
-                dimension: dim_name.to_string(),
-                attribute: attr_name.to_string(),
-            })?;
+        let attribute =
+            group_dim
+                .get_attribute(attr_name)
+                .ok_or_else(|| ResolveError::AttributeNotFound {
+                    dimension: dim_name.to_string(),
+                    attribute: attr_name.to_string(),
+                })?;
 
         return Ok(AttributeRef::Degenerate {
             group_dim,
@@ -229,12 +239,13 @@ fn resolve_attribute_in_group<'a>(
         .ok_or_else(|| ResolveError::DimensionNotFound(dim_name.to_string()))?;
 
     // Get the attribute from the dimension
-    let attribute = dimension.get_attribute(attr_name).ok_or_else(|| {
-        ResolveError::AttributeNotFound {
-            dimension: dim_name.to_string(),
-            attribute: attr_name.to_string(),
-        }
-    })?;
+    let attribute =
+        dimension
+            .get_attribute(attr_name)
+            .ok_or_else(|| ResolveError::AttributeNotFound {
+                dimension: dim_name.to_string(),
+                attribute: attr_name.to_string(),
+            })?;
 
     Ok(AttributeRef::Joined {
         group_dim,
@@ -245,11 +256,11 @@ fn resolve_attribute_in_group<'a>(
 }
 
 /// Resolve a virtual _dataset metadata attribute
-/// 
+///
 /// The attribute must be:
 /// 1. Declared in the model's `_dataset` dimension (if explicit _dataset dimension exists)
 /// 2. Declared as available on the dataset (in dataset.dimensions._dataset)
-/// 
+///
 /// Supported built-in attributes:
 /// - `_dataset.model` - Model name
 /// - `_dataset.namespace` - Model namespace
@@ -265,7 +276,7 @@ fn resolve_meta_attribute<'a>(
 ) -> Result<AttributeRef<'a>, ResolveError> {
     // 1. Check if _dataset dimension is declared in the model
     let table_dim = model.get_dimension("_dataset");
-    
+
     // 2. If declared, validate the attribute exists in the dimension definition
     if let Some(dim) = table_dim {
         if dim.get_attribute(attr_name).is_none() {
@@ -275,7 +286,7 @@ fn resolve_meta_attribute<'a>(
             });
         }
     }
-    
+
     // 3. Check if this dataset declares this _dataset attribute as available.
     //    For attributes not listed on the dataset, return a Meta with empty string
     //    so the planner can project NULL instead of failing the whole query.
@@ -286,14 +297,14 @@ fn resolve_meta_attribute<'a>(
     } else {
         true
     };
-    
+
     if !attr_declared {
         return Ok(AttributeRef::Meta {
             name: attr_name.to_string(),
             value: String::new(),
         });
     }
-    
+
     // 4. Resolve the actual value
     let value = resolve_meta_value(model, group, dataset, attr_name)?;
 
@@ -358,7 +369,8 @@ fn resolve_metrics<'a>(
     metric_names
         .iter()
         .map(|name| {
-            model.get_metric(name)
+            model
+                .get_metric(name)
                 .ok_or_else(|| ResolveError::MetricNotFound(name.clone()))
         })
         .collect()
@@ -371,12 +383,12 @@ fn collect_metric_measures<'a>(
     metrics: &[&'a Metric],
 ) -> Result<Vec<&'a crate::semantic_model::Measure>, ResolveError> {
     let mut measure_names: HashSet<&str> = HashSet::new();
-    
+
     // Extract measures required by metrics
     for metric in metrics {
         collect_metric_measure_deps(&metric.expr, &mut measure_names);
     }
-    
+
     // Resolve all measure names to Measure objects (from the dataset group)
     measure_names
         .into_iter()
@@ -385,7 +397,8 @@ fn collect_metric_measures<'a>(
             if !dataset.has_measure(name) {
                 return Err(ResolveError::MeasureNotFound(name.to_string()));
             }
-            group.get_measure(name)
+            group
+                .get_measure(name)
                 .ok_or_else(|| ResolveError::MeasureNotFound(name.to_string()))
         })
         .collect()
@@ -410,9 +423,9 @@ fn collect_node_measure_deps<'a>(node: &'a MetricExprNode, measures: &mut HashSe
             measures.insert(name);
         }
         MetricExprNode::Literal(_) => {}
-        MetricExprNode::Add(args) 
-        | MetricExprNode::Subtract(args) 
-        | MetricExprNode::Multiply(args) 
+        MetricExprNode::Add(args)
+        | MetricExprNode::Subtract(args)
+        | MetricExprNode::Multiply(args)
         | MetricExprNode::Divide(args) => {
             for arg in args {
                 collect_arg_measure_deps(arg, measures);
@@ -448,7 +461,10 @@ fn collect_arg_measure_deps<'a>(arg: &'a MetricExprArg, measures: &mut HashSet<&
 /// Collect all measure names referenced by the given metrics (including structured metrics).
 /// Used to build required_measures for selection and conformed union so that grain sets
 /// without every measure are correctly handled (tier 2/3).
-pub fn collect_required_measure_names(model: &SemanticModel, metric_names: &[String]) -> Vec<String> {
+pub fn collect_required_measure_names(
+    model: &SemanticModel,
+    metric_names: &[String],
+) -> Vec<String> {
     let mut names = HashSet::new();
     for name in metric_names {
         if let Some(metric) = model.get_metric(name) {
@@ -475,12 +491,15 @@ fn collect_dimensions<'a>(
             AttributeRef::Degenerate { group_dim, .. } => {
                 ResolvedDimension::Degenerate { group_dim }
             }
-            AttributeRef::Joined { group_dim, dimension, .. } => {
-                ResolvedDimension::Joined { group_dim, dimension }
-            }
-            AttributeRef::Meta { .. } => {
-                ResolvedDimension::Meta
-            }
+            AttributeRef::Joined {
+                group_dim,
+                dimension,
+                ..
+            } => ResolvedDimension::Joined {
+                group_dim,
+                dimension,
+            },
+            AttributeRef::Meta { .. } => ResolvedDimension::Meta,
         }
     }
 
@@ -513,12 +532,20 @@ mod tests {
     fn load_test_schema() -> Schema {
         Schema::from_file("test_data/steelwheels.yaml").unwrap()
     }
-    
+
     /// Helper to get the first selected dataset from the model. Caller must own grain_sets so that
     /// the returned SelectedDataset and resolve_query results can reference it.
-    fn get_first_selected<'a>(schema: &'a Schema, model_name: &str, grain_sets: &'a [GrainSet]) -> SelectedDataset<'a> {
+    fn get_first_selected<'a>(
+        schema: &'a Schema,
+        model_name: &str,
+        grain_sets: &'a [GrainSet],
+    ) -> SelectedDataset<'a> {
         let model = schema.get_model(model_name).unwrap();
-        select_datasets(schema, model, grain_sets, &[], &[]).unwrap().into_iter().next().unwrap()
+        select_datasets(schema, model, grain_sets, &[], &[])
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
     }
 
     #[test]
@@ -649,13 +676,13 @@ mod tests {
         // Metric should be resolved
         assert_eq!(resolved.metrics.len(), 1);
         assert_eq!(resolved.metrics[0].name, "avg_unit_price");
-        
+
         // Dependent measures (sales, quantity) should be auto-included
         assert_eq!(resolved.measures.len(), 2);
         let measure_names: Vec<&str> = resolved.measures.iter().map(|m| m.name.as_str()).collect();
         assert!(measure_names.contains(&"sales"));
         assert!(measure_names.contains(&"quantity"));
-        
+
         // Output should only include the metric, not the underlying measures
         let output_names = resolved.output_names();
         assert!(output_names.contains(&"dates.year".to_string()));
@@ -730,7 +757,7 @@ mod tests {
         assert!(resolved.row_attributes[0].is_degenerate());
         assert_eq!(resolved.row_attributes[0].dimension_name(), "flags");
         assert_eq!(resolved.row_attributes[0].attribute().name, "is_premium");
-        
+
         // The degenerate dimension should be in the dimensions list
         assert_eq!(resolved.dimensions.len(), 1);
         assert!(resolved.dimensions[0].is_degenerate());
@@ -745,10 +772,7 @@ mod tests {
         let request = QueryRequest {
             model: "steelwheels".to_string(),
             dimensions: None,
-            rows: Some(vec![
-                "dates.year".to_string(),
-                "flags.status".to_string(),
-            ]),
+            rows: Some(vec!["dates.year".to_string(), "flags.status".to_string()]),
             columns: None,
             metrics: Some(vec!["sales".to_string()]),
             filter: None,
@@ -758,15 +782,15 @@ mod tests {
 
         // Should have two row attributes
         assert_eq!(resolved.row_attributes.len(), 2);
-        
+
         // First is joined dimension
         assert!(!resolved.row_attributes[0].is_degenerate());
         assert_eq!(resolved.row_attributes[0].dimension_name(), "dates");
-        
+
         // Second is degenerate dimension
         assert!(resolved.row_attributes[1].is_degenerate());
         assert_eq!(resolved.row_attributes[1].dimension_name(), "flags");
-        
+
         // Should have 2 dimensions (dates and flags)
         assert_eq!(resolved.dimensions.len(), 2);
     }
@@ -780,10 +804,7 @@ mod tests {
         let request = QueryRequest {
             model: "steelwheels".to_string(),
             dimensions: None,
-            rows: Some(vec![
-                "dates.year".to_string(),
-                "_dataset.path".to_string(),
-            ]),
+            rows: Some(vec!["dates.year".to_string(), "_dataset.path".to_string()]),
             columns: None,
             metrics: Some(vec!["sales".to_string()]),
             filter: None,
@@ -793,17 +814,17 @@ mod tests {
 
         // Should have two row attributes
         assert_eq!(resolved.row_attributes.len(), 2);
-        
+
         // First is regular dimension
         assert_eq!(resolved.row_attributes[0].dimension_name(), "dates");
         assert!(!resolved.row_attributes[0].is_meta());
-        
+
         // Second is meta attribute (container path; single grain set => path = grain set name)
         assert_eq!(resolved.row_attributes[1].dimension_name(), "_dataset");
         assert!(resolved.row_attributes[1].is_meta());
         assert_eq!(resolved.row_attributes[1].attribute_name(), "path");
         assert_eq!(resolved.row_attributes[1].meta_value(), Some("orders"));
-        
+
         // Output names should include both
         let output_names = resolved.output_names();
         assert!(output_names.contains(&"dates.year".to_string()));
@@ -832,18 +853,24 @@ mod tests {
         let resolved = resolve_query(&schema, &request, &selected, &grain_sets).unwrap();
 
         assert_eq!(resolved.row_attributes.len(), 3);
-        
+
         // Model name
         assert!(resolved.row_attributes[0].is_meta());
         assert_eq!(resolved.row_attributes[0].meta_value(), Some("steelwheels"));
-        
+
         // Namespace
         assert!(resolved.row_attributes[1].is_meta());
-        assert_eq!(resolved.row_attributes[1].meta_value(), Some("a908ff91-c951-4d65-b054-d246d2e8cae1"));
-        
+        assert_eq!(
+            resolved.row_attributes[1].meta_value(),
+            Some("a908ff91-c951-4d65-b054-d246d2e8cae1")
+        );
+
         // UUID
         assert!(resolved.row_attributes[2].is_meta());
-        assert_eq!(resolved.row_attributes[2].meta_value(), Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890"));
+        assert_eq!(
+            resolved.row_attributes[2].meta_value(),
+            Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+        );
     }
 
     #[test]
@@ -867,16 +894,19 @@ mod tests {
         let resolved = resolve_query(&schema, &request, &selected, &grain_sets).unwrap();
 
         assert_eq!(resolved.row_attributes.len(), 2);
-        
+
         // sourceSystem property
         assert!(resolved.row_attributes[0].is_meta());
         assert_eq!(resolved.row_attributes[0].attribute_name(), "sourceSystem");
         assert_eq!(resolved.row_attributes[0].meta_value(), Some("pentaho"));
-        
+
         // dataOwner property
         assert!(resolved.row_attributes[1].is_meta());
         assert_eq!(resolved.row_attributes[1].attribute_name(), "dataOwner");
-        assert_eq!(resolved.row_attributes[1].meta_value(), Some("analytics-team"));
+        assert_eq!(
+            resolved.row_attributes[1].meta_value(),
+            Some("analytics-team")
+        );
     }
 
     #[test]
@@ -896,7 +926,9 @@ mod tests {
 
         let err = resolve_query(&schema, &request, &selected, &grain_sets).unwrap_err();
         // With explicit _dataset dimension, unknown attributes return AttributeNotFound
-        assert!(matches!(err, ResolveError::AttributeNotFound { dimension, .. } if dimension == "_dataset"));
+        assert!(
+            matches!(err, ResolveError::AttributeNotFound { dimension, .. } if dimension == "_dataset")
+        );
     }
 
     #[test]
@@ -908,10 +940,7 @@ mod tests {
         let request = QueryRequest {
             model: "steelwheels".to_string(),
             dimensions: None,
-            rows: Some(vec![
-                "dates.year".to_string(),
-                "_dataset.path".to_string(),
-            ]),
+            rows: Some(vec!["dates.year".to_string(), "_dataset.path".to_string()]),
             columns: None,
             metrics: Some(vec!["sales".to_string()]),
             filter: None,
@@ -921,10 +950,10 @@ mod tests {
 
         // Should have 2 dimensions: dates and _dataset (Meta)
         assert_eq!(resolved.dimensions.len(), 2);
-        
+
         // First dimension is regular
         assert!(!resolved.dimensions[0].is_meta());
-        
+
         // Second dimension is Meta
         assert!(resolved.dimensions[1].is_meta());
         assert_eq!(resolved.dimensions[1].name(), "_dataset");

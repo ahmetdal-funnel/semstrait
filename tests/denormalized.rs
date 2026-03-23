@@ -65,7 +65,7 @@ fn test_column_aliasing() {
     let request = QueryRequest {
         model: "events".to_string(),
         rows: Some(vec![
-            "dates.event_year".to_string(), // column: year
+            "dates.event_year".to_string(),  // column: year
             "dates.event_month".to_string(), // column: month
         ]),
         metrics: Some(vec!["total_value".to_string()]),

@@ -1,7 +1,7 @@
 //! Measure types
 
+use super::types::{Aggregation, DataType};
 use serde::Deserialize;
-use super::types::{DataType, Aggregation};
 
 /// Measure expression - either simple column name or structured expression
 #[derive(Debug, Clone, Deserialize)]

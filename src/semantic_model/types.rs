@@ -50,7 +50,9 @@ impl fmt::Display for DataType {
             DataType::String => write!(f, "string"),
             DataType::Date => write!(f, "date"),
             DataType::Timestamp => write!(f, "timestamp"),
-            DataType::Decimal { precision, scale } => write!(f, "decimal({}, {})", precision, scale),
+            DataType::Decimal { precision, scale } => {
+                write!(f, "decimal({}, {})", precision, scale)
+            }
         }
     }
 }
@@ -75,12 +77,12 @@ impl FromStr for DataType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let lower = s.to_lowercase();
-        
+
         // Check for decimal type first
         if lower.starts_with("decimal(") && lower.ends_with(')') {
             return parse_decimal(&lower);
         }
-        
+
         match lower.as_str() {
             "i8" => Ok(DataType::I8),
             "i16" => Ok(DataType::I16),
@@ -104,38 +106,38 @@ fn parse_decimal(s: &str) -> Result<DataType, ParseDataTypeError> {
     // Extract the part between parentheses: "decimal(31, 7)" -> "31, 7"
     let inner = &s[8..s.len() - 1];
     let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
-    
+
     if parts.len() != 2 {
         return Err(ParseDataTypeError {
             input: s.to_string(),
             message: "decimal requires precision and scale, e.g., decimal(31, 7)".to_string(),
         });
     }
-    
+
     let precision: u8 = parts[0].parse().map_err(|_| ParseDataTypeError {
         input: s.to_string(),
         message: "invalid precision".to_string(),
     })?;
-    
+
     let scale: u8 = parts[1].parse().map_err(|_| ParseDataTypeError {
         input: s.to_string(),
         message: "invalid scale".to_string(),
     })?;
-    
+
     if precision == 0 || precision > 38 {
         return Err(ParseDataTypeError {
             input: s.to_string(),
             message: "precision must be between 1 and 38".to_string(),
         });
     }
-    
+
     if scale > precision {
         return Err(ParseDataTypeError {
             input: s.to_string(),
             message: "scale cannot exceed precision".to_string(),
         });
     }
-    
+
     Ok(DataType::Decimal { precision, scale })
 }
 
@@ -208,7 +210,11 @@ pub struct ParseAggregationError {
 
 impl fmt::Display for ParseAggregationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Unknown aggregation '{}'. Valid options: sum, avg, count, count_distinct, min, max", self.input)
+        write!(
+            f,
+            "Unknown aggregation '{}'. Valid options: sum, avg, count, count_distinct, min, max",
+            self.input
+        )
     }
 }
 
@@ -222,10 +228,14 @@ impl FromStr for Aggregation {
             "sum" => Ok(Aggregation::Sum),
             "avg" | "average" => Ok(Aggregation::Avg),
             "count" => Ok(Aggregation::Count),
-            "count_distinct" | "countdistinct" | "distinct_count" | "distinctcount" => Ok(Aggregation::CountDistinct),
+            "count_distinct" | "countdistinct" | "distinct_count" | "distinctcount" => {
+                Ok(Aggregation::CountDistinct)
+            }
             "min" | "minimum" => Ok(Aggregation::Min),
             "max" | "maximum" => Ok(Aggregation::Max),
-            _ => Err(ParseAggregationError { input: s.to_string() }),
+            _ => Err(ParseAggregationError {
+                input: s.to_string(),
+            }),
         }
     }
 }
@@ -298,7 +308,10 @@ mod tests {
         assert_eq!("string".parse::<DataType>().unwrap(), DataType::String);
         assert_eq!("bool".parse::<DataType>().unwrap(), DataType::Bool);
         assert_eq!("date".parse::<DataType>().unwrap(), DataType::Date);
-        assert_eq!("timestamp".parse::<DataType>().unwrap(), DataType::Timestamp);
+        assert_eq!(
+            "timestamp".parse::<DataType>().unwrap(),
+            DataType::Timestamp
+        );
     }
 
     #[test]
@@ -319,11 +332,17 @@ mod tests {
     fn test_parse_decimal() {
         assert_eq!(
             "decimal(31, 7)".parse::<DataType>().unwrap(),
-            DataType::Decimal { precision: 31, scale: 7 }
+            DataType::Decimal {
+                precision: 31,
+                scale: 7
+            }
         );
         assert_eq!(
             "DECIMAL(10,2)".parse::<DataType>().unwrap(),
-            DataType::Decimal { precision: 10, scale: 2 }
+            DataType::Decimal {
+                precision: 10,
+                scale: 2
+            }
         );
     }
 
@@ -343,7 +362,14 @@ mod tests {
     #[test]
     fn test_display() {
         assert_eq!(DataType::I32.to_string(), "i32");
-        assert_eq!(DataType::Decimal { precision: 31, scale: 7 }.to_string(), "decimal(31, 7)");
+        assert_eq!(
+            DataType::Decimal {
+                precision: 31,
+                scale: 7
+            }
+            .to_string(),
+            "decimal(31, 7)"
+        );
     }
 
     #[test]
@@ -352,9 +378,12 @@ mod tests {
             DataType::I32,
             DataType::F64,
             DataType::String,
-            DataType::Decimal { precision: 18, scale: 2 },
+            DataType::Decimal {
+                precision: 18,
+                scale: 2,
+            },
         ];
-        
+
         for dt in types {
             let json = serde_json::to_string(&dt).unwrap();
             let parsed: DataType = serde_json::from_str(&json).unwrap();
@@ -373,8 +402,16 @@ mod tests {
         assert!(!DataType::F64.is_integer());
         assert!(DataType::F64.is_float());
 
-        assert!(DataType::Decimal { precision: 10, scale: 2 }.is_numeric());
-        assert!(!DataType::Decimal { precision: 10, scale: 2 }.is_integer());
+        assert!(DataType::Decimal {
+            precision: 10,
+            scale: 2
+        }
+        .is_numeric());
+        assert!(!DataType::Decimal {
+            precision: 10,
+            scale: 2
+        }
+        .is_integer());
 
         assert!(DataType::Date.is_temporal());
         assert!(DataType::Timestamp.is_temporal());
@@ -395,7 +432,10 @@ mod tests {
         assert_eq!("SUM".parse::<Aggregation>().unwrap(), Aggregation::Sum);
         assert_eq!("avg".parse::<Aggregation>().unwrap(), Aggregation::Avg);
         assert_eq!("count".parse::<Aggregation>().unwrap(), Aggregation::Count);
-        assert_eq!("count_distinct".parse::<Aggregation>().unwrap(), Aggregation::CountDistinct);
+        assert_eq!(
+            "count_distinct".parse::<Aggregation>().unwrap(),
+            Aggregation::CountDistinct
+        );
         assert_eq!("min".parse::<Aggregation>().unwrap(), Aggregation::Min);
         assert_eq!("max".parse::<Aggregation>().unwrap(), Aggregation::Max);
     }
@@ -403,8 +443,14 @@ mod tests {
     #[test]
     fn test_parse_aggregation_aliases() {
         assert_eq!("average".parse::<Aggregation>().unwrap(), Aggregation::Avg);
-        assert_eq!("countdistinct".parse::<Aggregation>().unwrap(), Aggregation::CountDistinct);
-        assert_eq!("distinct_count".parse::<Aggregation>().unwrap(), Aggregation::CountDistinct);
+        assert_eq!(
+            "countdistinct".parse::<Aggregation>().unwrap(),
+            Aggregation::CountDistinct
+        );
+        assert_eq!(
+            "distinct_count".parse::<Aggregation>().unwrap(),
+            Aggregation::CountDistinct
+        );
         assert_eq!("minimum".parse::<Aggregation>().unwrap(), Aggregation::Min);
         assert_eq!("maximum".parse::<Aggregation>().unwrap(), Aggregation::Max);
     }
@@ -431,7 +477,7 @@ mod tests {
             Aggregation::Min,
             Aggregation::Max,
         ];
-        
+
         for agg in aggs {
             let json = serde_json::to_string(&agg).unwrap();
             let parsed: Aggregation = serde_json::from_str(&json).unwrap();

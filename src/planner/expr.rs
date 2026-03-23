@@ -1,8 +1,11 @@
 //! Expression conversion: semantic model expressions -> plan expressions
 
-use crate::semantic_model::{MeasureExpr, ExprNode, ExprArg, LiteralValue, MetricExpr, MetricExprNode, MetricExprArg, CaseExpr, ConditionExpr};
 use crate::plan::{BinaryOperator, Column, Expr, Literal};
 use crate::resolver::ResolvedFilter;
+use crate::semantic_model::{
+    CaseExpr, ConditionExpr, ExprArg, ExprNode, LiteralValue, MeasureExpr, MetricExpr,
+    MetricExprArg, MetricExprNode,
+};
 
 /// Convert a MeasureExpr to a plan Expr
 pub fn convert_measure_expr(expr: &MeasureExpr) -> Expr {
@@ -37,7 +40,8 @@ fn convert_expr_node(node: &ExprNode) -> Expr {
 }
 
 fn convert_case_expr(case: &CaseExpr) -> Expr {
-    let when_then: Vec<(Expr, Expr)> = case.when
+    let when_then: Vec<(Expr, Expr)> = case
+        .when
         .iter()
         .map(|w| {
             let condition = convert_condition_expr(&w.condition);
@@ -46,38 +50,66 @@ fn convert_case_expr(case: &CaseExpr) -> Expr {
         })
         .collect();
 
-    let else_result = case.else_value
+    let else_result = case
+        .else_value
         .as_ref()
         .map(|e| Box::new(convert_expr_arg(e)));
 
-    Expr::Case { when_then, else_result }
+    Expr::Case {
+        when_then,
+        else_result,
+    }
 }
 
 fn convert_condition_expr(cond: &ConditionExpr) -> Expr {
     match cond {
         ConditionExpr::Eq(args) => {
             let (left, right) = binary_args(args);
-            Expr::BinaryOp { left: Box::new(left), op: BinaryOperator::Eq, right: Box::new(right) }
+            Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinaryOperator::Eq,
+                right: Box::new(right),
+            }
         }
         ConditionExpr::Ne(args) => {
             let (left, right) = binary_args(args);
-            Expr::BinaryOp { left: Box::new(left), op: BinaryOperator::NotEq, right: Box::new(right) }
+            Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinaryOperator::NotEq,
+                right: Box::new(right),
+            }
         }
         ConditionExpr::Gt(args) => {
             let (left, right) = binary_args(args);
-            Expr::BinaryOp { left: Box::new(left), op: BinaryOperator::Gt, right: Box::new(right) }
+            Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinaryOperator::Gt,
+                right: Box::new(right),
+            }
         }
         ConditionExpr::Gte(args) => {
             let (left, right) = binary_args(args);
-            Expr::BinaryOp { left: Box::new(left), op: BinaryOperator::GtEq, right: Box::new(right) }
+            Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinaryOperator::GtEq,
+                right: Box::new(right),
+            }
         }
         ConditionExpr::Lt(args) => {
             let (left, right) = binary_args(args);
-            Expr::BinaryOp { left: Box::new(left), op: BinaryOperator::Lt, right: Box::new(right) }
+            Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinaryOperator::Lt,
+                right: Box::new(right),
+            }
         }
         ConditionExpr::Lte(args) => {
             let (left, right) = binary_args(args);
-            Expr::BinaryOp { left: Box::new(left), op: BinaryOperator::LtEq, right: Box::new(right) }
+            Expr::BinaryOp {
+                left: Box::new(left),
+                op: BinaryOperator::LtEq,
+                right: Box::new(right),
+            }
         }
         ConditionExpr::And(conditions) => {
             let exprs: Vec<Expr> = conditions.iter().map(convert_condition_expr).collect();
@@ -87,12 +119,8 @@ fn convert_condition_expr(cond: &ConditionExpr) -> Expr {
             let exprs: Vec<Expr> = conditions.iter().map(convert_condition_expr).collect();
             Expr::Or(exprs)
         }
-        ConditionExpr::IsNull(col) => {
-            Expr::IsNull(Box::new(Expr::Sql(col.clone())))
-        }
-        ConditionExpr::IsNotNull(col) => {
-            Expr::IsNotNull(Box::new(Expr::Sql(col.clone())))
-        }
+        ConditionExpr::IsNull(col) => Expr::IsNull(Box::new(Expr::Sql(col.clone()))),
+        ConditionExpr::IsNotNull(col) => Expr::IsNotNull(Box::new(Expr::Sql(col.clone()))),
     }
 }
 
@@ -106,8 +134,14 @@ fn convert_expr_arg(arg: &ExprArg) -> Expr {
 }
 
 fn binary_args(args: &[ExprArg]) -> (Expr, Expr) {
-    let left = args.get(0).map(convert_expr_arg).unwrap_or(Expr::Literal(Literal::Null("f64".to_string())));
-    let right = args.get(1).map(convert_expr_arg).unwrap_or(Expr::Literal(Literal::Null("f64".to_string())));
+    let left = args
+        .get(0)
+        .map(convert_expr_arg)
+        .unwrap_or(Expr::Literal(Literal::Null("f64".to_string())));
+    let right = args
+        .get(1)
+        .map(convert_expr_arg)
+        .unwrap_or(Expr::Literal(Literal::Null("f64".to_string())));
     (left, right)
 }
 
@@ -123,18 +157,14 @@ fn convert_literal(lit: &LiteralValue) -> Literal {
 /// Convert a MetricExpr to a plan Expr (post-aggregation references)
 pub fn convert_metric_expr(expr: &MetricExpr) -> Expr {
     match expr {
-        MetricExpr::MeasureRef(name) => {
-            Expr::Column(Column::unqualified(name))
-        }
+        MetricExpr::MeasureRef(name) => Expr::Column(Column::unqualified(name)),
         MetricExpr::Structured(node) => convert_metric_node(node),
     }
 }
 
 fn convert_metric_node(node: &MetricExprNode) -> Expr {
     match node {
-        MetricExprNode::Measure(name) => {
-            Expr::Column(Column::unqualified(name))
-        }
+        MetricExprNode::Measure(name) => Expr::Column(Column::unqualified(name)),
         MetricExprNode::Literal(f) => Expr::Literal(Literal::Float(*f)),
         MetricExprNode::Add(args) => {
             let (left, right) = metric_binary_args(args);
@@ -160,19 +190,21 @@ fn convert_metric_node(node: &MetricExprNode) -> Expr {
 
 fn convert_metric_arg(arg: &MetricExprArg) -> Expr {
     match arg {
-        MetricExprArg::MeasureName(name) => {
-            Expr::Column(Column::unqualified(name))
-        }
-        MetricExprArg::LiteralNumber(f) => {
-            Expr::Literal(Literal::Float(*f))
-        }
+        MetricExprArg::MeasureName(name) => Expr::Column(Column::unqualified(name)),
+        MetricExprArg::LiteralNumber(f) => Expr::Literal(Literal::Float(*f)),
         MetricExprArg::Node(node) => convert_metric_node(node),
     }
 }
 
 fn metric_binary_args(args: &[MetricExprArg]) -> (Expr, Expr) {
-    let left = args.get(0).map(convert_metric_arg).unwrap_or(Expr::Literal(Literal::Null("f64".to_string())));
-    let right = args.get(1).map(convert_metric_arg).unwrap_or(Expr::Literal(Literal::Null("f64".to_string())));
+    let left = args
+        .get(0)
+        .map(convert_metric_arg)
+        .unwrap_or(Expr::Literal(Literal::Null("f64".to_string())));
+    let right = args
+        .get(1)
+        .map(convert_metric_arg)
+        .unwrap_or(Expr::Literal(Literal::Null("f64".to_string())));
     (left, right)
 }
 
@@ -182,7 +214,12 @@ pub fn build_filter_expr(filter: &ResolvedFilter<'_>, fact_alias: &str) -> Expr 
         crate::resolver::AttributeRef::Degenerate { attribute, .. } => {
             Expr::Column(Column::new(fact_alias, attribute.column_name()))
         }
-        crate::resolver::AttributeRef::Joined { group_dim, dimension, attribute, .. } => {
+        crate::resolver::AttributeRef::Joined {
+            group_dim,
+            dimension,
+            attribute,
+            ..
+        } => {
             if group_dim.join.is_some() {
                 let dim_alias = dimension.alias.as_deref().unwrap_or(&dimension.name);
                 Expr::Column(Column::new(dim_alias, attribute.column_name()))

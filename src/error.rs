@@ -11,9 +11,7 @@ pub enum ParseError {
         source: std::io::Error,
     },
     /// YAML deserialization error
-    Yaml {
-        source: serde_yaml::Error,
-    },
+    Yaml { source: serde_yaml::Error },
 }
 
 impl fmt::Display for ParseError {

@@ -1,7 +1,7 @@
 //! Expression types for the logical plan
 
-use std::fmt;
 use crate::semantic_model::Aggregation;
+use std::fmt;
 
 /// A column reference
 #[derive(Debug, Clone, PartialEq)]
@@ -33,7 +33,7 @@ impl Column {
         if self.table.is_empty() {
             self.name.clone()
         } else {
-        format!("{}.{}", self.table, self.name)
+            format!("{}.{}", self.table, self.name)
         }
     }
 }
@@ -52,10 +52,7 @@ pub enum Expr {
         right: Box<Expr>,
     },
     /// IN expression (column IN (values))
-    In {
-        expr: Box<Expr>,
-        values: Vec<Expr>,
-    },
+    In { expr: Box<Expr>, values: Vec<Expr> },
     /// AND of multiple expressions
     And(Vec<Expr>),
     /// OR of multiple expressions
@@ -145,8 +142,7 @@ impl fmt::Display for Expr {
         match self {
             Expr::Column(col) => write!(f, "{}", col.qualified_name()),
             Expr::Literal(lit) => write!(f, "{}", lit),
-            Expr::BinaryOp { left, op, right } =>
-                write!(f, "{} {} {}", left, op.as_str(), right),
+            Expr::BinaryOp { left, op, right } => write!(f, "{} {} {}", left, op.as_str(), right),
             Expr::In { expr, values } => {
                 let vals: Vec<_> = values.iter().map(|v| v.to_string()).collect();
                 write!(f, "{} IN ({})", expr, vals.join(", "))
@@ -166,7 +162,10 @@ impl fmt::Display for Expr {
             Expr::Divide(a, b) => write!(f, "({} / {})", a, b),
             Expr::IsNull(e) => write!(f, "{} IS NULL", e),
             Expr::IsNotNull(e) => write!(f, "{} IS NOT NULL", e),
-            Expr::Case { when_then, else_result } => {
+            Expr::Case {
+                when_then,
+                else_result,
+            } => {
                 write!(f, "CASE")?;
                 for (cond, result) in when_then {
                     write!(f, " WHEN {} THEN {}", cond, result)?;
@@ -189,4 +188,3 @@ impl fmt::Display for AggregateExpr {
         write!(f, "{}({}) AS {}", self.func, self.expr, self.alias)
     }
 }
-

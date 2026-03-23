@@ -14,16 +14,18 @@
 //! - `util` — shared helpers (column builders, dimension parsing, virtual values)
 //! - `error` — `PlanError` type
 
+mod cross;
+mod error;
+mod expr;
+mod join;
 mod plan;
 mod table;
-mod cross;
 mod union;
-mod join;
-mod expr;
 mod util;
-mod error;
 
+pub use cross::{
+    plan_cross_grain_set_query, plan_multi_cross_grain_set_query, CrossGrainSetBranch,
+};
+pub use error::PlanError;
 pub use plan::plan_semantic_query;
 pub use table::plan_query;
-pub use cross::{plan_cross_grain_set_query, plan_multi_cross_grain_set_query, CrossGrainSetBranch};
-pub use error::PlanError;

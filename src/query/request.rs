@@ -11,7 +11,7 @@ pub struct DataFilter {
 }
 
 /// Request body for analytics queries
-/// 
+///
 /// Queries are expressed in terms of dimensions (for grouping) and metrics (for values).
 /// Metrics are the public API - measures are internal implementation details.
 #[derive(Debug, Deserialize, Default)]

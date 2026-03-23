@@ -1,11 +1,11 @@
 //! Dimension and attribute types
 
-use serde::Deserialize;
-use super::types::DataType;
 use super::datasetgroup::Source;
+use super::types::DataType;
+use serde::Deserialize;
 
 /// A dimension definition with its attributes
-/// 
+///
 /// Can be either a regular dimension (with physical table) or a virtual dimension
 /// (like `_dataset`) that provides metadata as constant literals.
 #[derive(Debug, Deserialize)]
@@ -77,31 +77,33 @@ impl Dimension {
             None => None,
         }
     }
-    
+
     /// Get an attribute by name
     pub fn get_attribute(&self, name: &str) -> Option<&Attribute> {
         self.attributes.iter().find(|a| a.name == name)
     }
 
     /// Find the attribute that serves as the join key
-    /// 
+    ///
     /// The key attribute is the one whose column matches the given key column name.
     /// This is used to determine if a table needs a join - if the table's attribute
     /// list includes the key attribute, it needs to join to get other attributes.
     pub fn key_attribute(&self, key_column: &str) -> Option<&Attribute> {
-        self.attributes.iter().find(|a| a.column_name() == key_column)
+        self.attributes
+            .iter()
+            .find(|a| a.column_name() == key_column)
     }
 
     /// Get all attribute names
     pub fn attribute_names(&self) -> Vec<&str> {
         self.attributes.iter().map(|a| a.name.as_str()).collect()
     }
-    
+
     /// Check if this is a virtual dimension (no physical table)
     pub fn is_virtual(&self) -> bool {
         self.is_virtual
     }
-    
+
     /// Get the physical table name (None for virtual dimensions)
     pub fn table_name(&self) -> Option<&str> {
         self.table.as_deref()

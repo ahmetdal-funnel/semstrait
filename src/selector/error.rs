@@ -6,14 +6,9 @@ use std::fmt;
 #[derive(Debug)]
 pub enum SelectError {
     /// No dataset can serve the requested query
-    NoFeasibleDataset {
-        model: String,
-        reason: String,
-    },
+    NoFeasibleDataset { model: String, reason: String },
     /// Model has no datasets defined
-    NoDatasetsInModel {
-        model: String,
-    },
+    NoDatasetsInModel { model: String },
     /// Multiple grain sets can serve the query - ambiguous
     /// Use a cross-grain-set metric to disambiguate
     AmbiguousGrainSet {
@@ -26,7 +21,11 @@ impl fmt::Display for SelectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoFeasibleDataset { model, reason } => {
-                write!(f, "No dataset in model '{}' can serve the query: {}", model, reason)
+                write!(
+                    f,
+                    "No dataset in model '{}' can serve the query: {}",
+                    model, reason
+                )
             }
             Self::NoDatasetsInModel { model } => {
                 write!(f, "Model '{}' has no datasets defined", model)

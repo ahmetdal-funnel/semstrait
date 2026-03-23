@@ -3,20 +3,26 @@
 //! These types represent the parsed schema definition.
 
 mod column;
+mod datasetgroup;
 mod dimension;
 mod measure;
 mod metric;
 mod schema;
-mod datasetgroup;
 mod types;
 
 pub use column::Column;
-pub use dimension::{Dimension, Attribute, Join};
-pub use measure::{Measure, MeasureExpr, ExprNode, ExprArg, LiteralValue, CaseExpr, CaseWhen, ConditionExpr, MeasureFilter};
-pub use metric::{Metric, MetricExpr, MetricExprNode, MetricExprArg, MetricCaseExpr, MetricCaseWhen, MetricCondition, MetricConditionArg};
-pub use schema::{Schema, SemanticModel, DataFilter};
 pub use datasetgroup::{
-    Dataset, GrainSet, GrainSetDimension, GrainSetLeaf, RootContainer, Source, UnionGroup,
-    UnionMember, resolve_dimension_path_template, resolve_path_template,
+    resolve_dimension_path_template, resolve_path_template, Dataset, GrainSet, GrainSetDimension,
+    GrainSetLeaf, RootContainer, Source, UnionGroup, UnionMember,
 };
-pub use types::{DataType, Aggregation};
+pub use dimension::{Attribute, Dimension, Join};
+pub use measure::{
+    CaseExpr, CaseWhen, ConditionExpr, ExprArg, ExprNode, LiteralValue, Measure, MeasureExpr,
+    MeasureFilter,
+};
+pub use metric::{
+    Metric, MetricCaseExpr, MetricCaseWhen, MetricCondition, MetricConditionArg, MetricExpr,
+    MetricExprArg, MetricExprNode,
+};
+pub use schema::{DataFilter, Schema, SemanticModel};
+pub use types::{Aggregation, DataType};

@@ -6,7 +6,10 @@ pub enum ResolveError {
     ModelNotFound(String),
     DimensionNotFound(String),
     GrainSetNotFound(String),
-    AttributeNotFound { dimension: String, attribute: String },
+    AttributeNotFound {
+        dimension: String,
+        attribute: String,
+    },
     MeasureNotFound(String),
     MetricNotFound(String),
     InvalidAttributeFormat(String),
@@ -15,9 +18,15 @@ pub enum ResolveError {
     MetaAttributeNotFound(String),
     /// A virtual _dataset metadata attribute requires a value that isn't set
     /// (e.g., dataset.uuid when uuid is None)
-    MetaAttributeNotSet { attribute: String, reason: String },
+    MetaAttributeNotSet {
+        attribute: String,
+        reason: String,
+    },
     /// Container path is invalid (not found, or path points to a union group instead of a leaf)
-    ContainerPathNotFound { path: String, reason: String },
+    ContainerPathNotFound {
+        path: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for ResolveError {
@@ -26,8 +35,15 @@ impl fmt::Display for ResolveError {
             ResolveError::ModelNotFound(name) => write!(f, "Model '{}' not found", name),
             ResolveError::DimensionNotFound(name) => write!(f, "Dimension '{}' not found", name),
             ResolveError::GrainSetNotFound(name) => write!(f, "Grain set '{}' not found", name),
-            ResolveError::AttributeNotFound { dimension, attribute } => {
-                write!(f, "Attribute '{}' not found in dimension '{}'", attribute, dimension)
+            ResolveError::AttributeNotFound {
+                dimension,
+                attribute,
+            } => {
+                write!(
+                    f,
+                    "Attribute '{}' not found in dimension '{}'",
+                    attribute, dimension
+                )
             }
             ResolveError::MeasureNotFound(name) => write!(f, "Measure '{}' not found", name),
             ResolveError::MetricNotFound(name) => write!(f, "Metric '{}' not found", name),

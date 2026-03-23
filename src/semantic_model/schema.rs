@@ -1,12 +1,12 @@
 //! Root schema definition
 
-use serde::Deserialize;
-use std::path::Path;
+use super::datasetgroup::{Dataset, GrainSet, RootContainer};
 use super::dimension::Dimension;
 use super::measure::Measure;
 use super::metric::Metric;
-use super::datasetgroup::{Dataset, GrainSet, RootContainer};
 use crate::error::ParseError;
+use serde::Deserialize;
+use std::path::Path;
 
 /// The root semantic schema containing semantic models
 #[derive(Debug, Deserialize)]
@@ -15,7 +15,7 @@ pub struct Schema {
 }
 
 /// A semantic model - the queryable business entity
-/// 
+///
 /// Has a root container: either a single grain set or a union_set of grain sets.
 /// The selector picks the optimal dataset within a grain set based on query requirements.
 #[derive(Debug, Deserialize)]
@@ -59,7 +59,7 @@ impl Schema {
     }
 
     /// Get all unique dataset names referenced in the schema.
-    /// 
+    ///
     /// Returns fully qualified dataset names (e.g., "warehouse.orderfact")
     /// from both models (fact datasets) and dimensions.
     pub fn datasets(&self) -> Vec<String> {
@@ -71,7 +71,7 @@ impl Schema {
                     datasets.push(dataset.name.clone());
                 }
             }
-            
+
             // Dimension tables (non-virtual only)
             for dim in &model.dimensions {
                 if let Some(table) = &dim.table {
@@ -87,7 +87,7 @@ impl Schema {
     }
 
     /// Get all datasets across all models and grain sets
-    /// 
+    ///
     /// Returns owned Dataset structs with full source configuration.
     pub fn all_datasets(&self) -> Vec<Dataset> {
         self.semantic_models
@@ -110,12 +110,12 @@ impl SemanticModel {
     pub fn get_dimension(&self, name: &str) -> Option<&Dimension> {
         self.dimensions.iter().find(|d| d.name == name)
     }
-    
+
     /// Get a metric by name
     pub fn get_metric(&self, name: &str) -> Option<&Metric> {
         self.metrics.as_ref()?.iter().find(|m| m.name == name)
     }
-    
+
     /// Get a grain set by name (leaf container name)
     pub fn get_grain_set(&self, name: &str) -> Option<GrainSet> {
         self.grain_sets().into_iter().find(|g| g.name == name)
@@ -136,14 +136,16 @@ impl SemanticModel {
     /// True if the given grain set (by name) is at or under the given container path.
     /// Use when checking whether a qualified dimension path applies to a specific grain set.
     pub fn grain_set_under_path(&self, path: &[&str], grain_set_name: &str) -> bool {
-        self.grain_sets_under_path(path).iter().any(|gs| gs.name == grain_set_name)
+        self.grain_sets_under_path(path)
+            .iter()
+            .any(|gs| gs.name == grain_set_name)
     }
 
     /// Get the first grain set (convenience for single-grain-set models)
     pub fn first_grain_set(&self) -> Option<GrainSet> {
         self.grain_sets().into_iter().next()
     }
-    
+
     /// Get a dataset by physical dataset name (searches all grain sets)
     pub fn get_dataset(&self, dataset_name: &str) -> Option<Dataset> {
         self.grain_sets()
@@ -151,7 +153,7 @@ impl SemanticModel {
             .flat_map(|g| g.datasets.into_iter())
             .find(|t| t.name == dataset_name)
     }
-    
+
     /// Get a measure by name (searches all grain sets)
     pub fn get_measure(&self, name: &str) -> Option<Measure> {
         self.grain_sets()
@@ -159,12 +161,14 @@ impl SemanticModel {
             .flat_map(|g| g.measures.into_iter())
             .find(|m| m.name == name)
     }
-    
+
     /// Check if a measure exists in any grain set
     pub fn has_measure(&self, name: &str) -> bool {
-        self.grain_sets().iter().any(|g| g.get_measure(name).is_some())
+        self.grain_sets()
+            .iter()
+            .any(|g| g.get_measure(name).is_some())
     }
-    
+
     /// Get all unique measure names across all grain sets
     pub fn measure_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
@@ -176,7 +180,7 @@ impl SemanticModel {
         names.dedup();
         names
     }
-    
+
     /// Get all datasets across all grain sets
     pub fn all_datasets(&self) -> Vec<Dataset> {
         self.grain_sets()
@@ -184,15 +188,15 @@ impl SemanticModel {
             .flat_map(|g| g.datasets.into_iter())
             .collect()
     }
-    
+
     /// Check if a dimension is defined at model level (can be queried with 2-part path)
-    /// 
+    ///
     /// Model-level dimensions are queryable across all grain sets that reference them.
     /// The attr_name parameter is kept for API compatibility but not used in the check.
     pub fn is_conformed(&self, dim_name: &str, _attr_name: &str) -> bool {
         self.dimensions.iter().any(|d| d.name == dim_name)
     }
-    
+
     /// Check if all dimension attributes in a query can use the cross-grain-set UNION path
     ///
     /// Returns true if all dimensions are either:
@@ -202,7 +206,7 @@ impl SemanticModel {
         if dimension_attrs.is_empty() {
             return false;
         }
-        
+
         dimension_attrs.iter().all(|dim_attr| {
             let parts: Vec<&str> = dim_attr.split('.').collect();
             if parts.len() != 2 {

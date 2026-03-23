@@ -1,7 +1,7 @@
+mod error;
 mod resolve;
 mod types;
-mod error;
 
-pub use resolve::{resolve_query, collect_required_measure_names};
-pub use types::{ResolvedQuery, ResolvedDimension, AttributeRef, ResolvedFilter};
 pub use error::ResolveError;
+pub use resolve::{collect_required_measure_names, resolve_query};
+pub use types::{AttributeRef, ResolvedDimension, ResolvedFilter, ResolvedQuery};
