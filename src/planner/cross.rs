@@ -11,6 +11,7 @@ use crate::plan::{
     Literal, PlanNode, Scan, Project, ProjectExpr, Sort, SortKey, SortDirection, Union,
     LiteralValue as PlanLiteralValue,
 };
+use crate::selector::select_partial_for_grain_set;
 use super::error::PlanError;
 use super::util::{needs_join_for_dimension, ParsedDimensionAttr, get_virtual_attribute_value_with_dataset};
 use super::expr::convert_measure_expr;
@@ -151,16 +152,34 @@ pub fn plan_cross_grain_set_query<'a>(
             ))?;
 
         let table = grain_set.datasets.iter()
-            .find(|t| t.has_measure(measure_name))
-            .ok_or_else(|| PlanError::InvalidQuery(
-                format!("No table in grain set '{}' has measure '{}'", gs_name, measure_name)
-            ))?;
-        let branch = build_cross_grain_set_branch(
-            model, &grain_set, table, measure, dimension_attrs, &metric.name,
-        )?;
+            .find(|t| t.has_measure(measure_name));
+
+        let branch = if let Some(t) = table {
+            build_cross_grain_set_branch(
+                model, &grain_set, t, measure, dimension_attrs, &metric.name,
+            )?
+        } else if let Some(partial) = select_partial_for_grain_set(
+            model, &grain_set, dimension_attrs, &[measure_name.clone()],
+        ) {
+            build_cross_grain_set_branch_partial(
+                model,
+                &grain_set,
+                partial.dataset,
+                dimension_attrs,
+                &metric.name,
+                metric.data_type().to_string(),
+            )?
+        } else {
+            continue; // prune: zero match for this grain set
+        };
         branches.push(branch);
     }
 
+    if branches.is_empty() {
+        return Err(PlanError::InvalidQuery(
+            "No grain set could serve this cross-grain-set metric".to_string()
+        ));
+    }
     if branches.len() == 1 {
         return Ok(branches.into_iter().next().unwrap());
     }
@@ -586,6 +605,179 @@ fn build_cross_grain_set_branch(
 
     projections.push(ProjectExpr {
         expr: Expr::Column(Column::unqualified(output_alias)),
+        alias: output_alias.to_string(),
+    });
+
+    Ok(PlanNode::Project(Project {
+        input: Box::new(plan),
+        expressions: projections,
+    }))
+}
+
+/// Build a cross-grain-set branch when no table has the required measure: dimensions only + NULL for the metric.
+fn build_cross_grain_set_branch_partial(
+    model: &SemanticModel,
+    grain_set: &GrainSet,
+    table: &Dataset,
+    dimension_attrs: &[String],
+    output_alias: &str,
+    metric_data_type: String,
+) -> Result<PlanNode, PlanError> {
+    let parsed_attrs: Vec<(String, ParsedDimensionAttr)> = dimension_attrs.iter()
+        .map(|attr_path| (attr_path.clone(), ParsedDimensionAttr::parse(attr_path, model)))
+        .collect();
+
+    let physical_attrs: Vec<&(String, ParsedDimensionAttr)> = parsed_attrs.iter()
+        .filter(|(_, parsed)| {
+            !parsed.is_virtual() && parsed.belongs_to_grain_set(model, &grain_set.name)
+        })
+        .collect();
+
+    let mut unique_dim_attrs: Vec<(String, String)> = Vec::new();
+    let mut dim_attr_to_group_idx: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+
+    for (_, parsed) in &physical_attrs {
+        let key = (parsed.dim_name().to_string(), parsed.attr_name().to_string());
+        if !dim_attr_to_group_idx.contains_key(&key) {
+            let idx = unique_dim_attrs.len();
+            unique_dim_attrs.push(key.clone());
+            dim_attr_to_group_idx.insert(key, idx);
+        }
+    }
+
+    let fact_alias: &str = &table.name;
+    let mut columns = Vec::new();
+    let mut types = Vec::new();
+    let mut joined_dimensions: HashSet<String> = HashSet::new();
+
+    for (dim_name, attr_name) in &unique_dim_attrs {
+        if let Some(group_dim) = grain_set.get_dimension(dim_name) {
+            if group_dim.is_degenerate() {
+                if let Some(attr) = group_dim.get_attribute(attr_name) {
+                    columns.push(attr.column_name().to_string());
+                    types.push(attr.data_type.to_string());
+                }
+            }
+        }
+    }
+
+    let mut plan = PlanNode::Scan(
+        Scan::new(&table.name)
+            .with_alias(fact_alias)
+            .with_columns(columns, types)
+    );
+
+    for (dim_name, _) in &unique_dim_attrs {
+        if joined_dimensions.contains(dim_name) {
+            continue;
+        }
+        if let Some(group_dim) = grain_set.get_dimension(dim_name) {
+            if let Some(join_spec) = &group_dim.join {
+                if let Some(dimension) = model.get_dimension(dim_name) {
+                    if needs_join_for_dimension(table, group_dim, dimension) {
+                        let dim_alias = dimension.alias.as_deref().unwrap_or(&dimension.name);
+                        let dim_cols: Vec<String> = dimension.attributes.iter()
+                            .map(|a| a.column_name().to_string())
+                            .collect();
+                        let dim_types: Vec<String> = dimension.attributes.iter()
+                            .map(|a| a.data_type.to_string())
+                            .collect();
+                        let dim_table = dimension.table.as_ref()
+                            .expect("Non-virtual dimension must have a table");
+                        let dim_scan = PlanNode::Scan(
+                            Scan::new(dim_table)
+                                .with_alias(dim_alias)
+                                .with_columns(dim_cols, dim_types)
+                        );
+                        let left_key = Column::new(fact_alias, &join_spec.left_key);
+                        let right_key = Column::new(
+                            join_spec.right_alias.as_deref().unwrap_or(dim_alias),
+                            &join_spec.right_key,
+                        );
+                        plan = PlanNode::Join(Join {
+                            left: Box::new(plan),
+                            right: Box::new(dim_scan),
+                            join_type: JoinType::Left,
+                            left_key,
+                            right_key,
+                        });
+                        joined_dimensions.insert(dim_name.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let group_by: Vec<Column> = unique_dim_attrs.iter()
+        .filter_map(|(dim_name, attr_name)| {
+            if let Some(group_dim) = grain_set.get_dimension(dim_name) {
+                if group_dim.is_degenerate() {
+                    if let Some(attr) = group_dim.get_attribute(attr_name) {
+                        return Some(Column::new(fact_alias, attr.column_name()));
+                    }
+                } else if let Some(dimension) = model.get_dimension(dim_name) {
+                    if let Some(attr) = dimension.get_attribute(attr_name) {
+                        let dim_alias = dimension.alias.as_deref().unwrap_or(&dimension.name);
+                        return Some(Column::new(dim_alias, attr.column_name()));
+                    }
+                }
+            }
+            None
+        })
+        .collect();
+
+    let aggregates = vec![
+        AggregateExpr {
+            func: Aggregation::Sum,
+            expr: Expr::Literal(Literal::Float(0.0)),
+            alias: output_alias.to_string(),
+        }
+    ];
+
+    plan = PlanNode::Aggregate(Aggregate {
+        input: Box::new(plan),
+        group_by: group_by.clone(),
+        aggregates,
+    });
+
+    let mut projections = Vec::new();
+
+    for (attr_path, parsed) in &parsed_attrs {
+        let expr = if parsed.is_virtual() {
+            let dim_name = parsed.dim_name();
+            let attr_name = parsed.attr_name();
+            let value = get_virtual_attribute_value_with_dataset(model, grain_set, Some(table), dim_name, attr_name);
+            match value {
+                PlanLiteralValue::String(s) => Expr::Literal(Literal::String(s)),
+                PlanLiteralValue::Int64(i) => Expr::Literal(Literal::Int(i)),
+                PlanLiteralValue::Float64(f) => Expr::Literal(Literal::Float(f)),
+                PlanLiteralValue::Bool(b) => Expr::Literal(Literal::Bool(b)),
+                PlanLiteralValue::Null => Expr::Literal(Literal::Null("string".to_string())),
+                _ => Expr::Literal(Literal::Null("string".to_string())),
+            }
+        } else if parsed.belongs_to_grain_set(model, &grain_set.name) {
+            let key = (parsed.dim_name().to_string(), parsed.attr_name().to_string());
+            if let Some(&idx) = dim_attr_to_group_idx.get(&key) {
+                let col = group_by.get(idx).cloned()
+                    .unwrap_or_else(|| Column::unqualified(attr_path));
+                Expr::Column(col)
+            } else {
+                let data_type = parsed.get_data_type(model);
+                Expr::Literal(Literal::Null(data_type))
+            }
+        } else {
+            let data_type = parsed.get_data_type(model);
+            Expr::Literal(Literal::Null(data_type))
+        };
+
+        projections.push(ProjectExpr {
+            expr,
+            alias: attr_path.clone(),
+        });
+    }
+
+    projections.push(ProjectExpr {
+        expr: Expr::Literal(Literal::Null(metric_data_type)),
         alias: output_alias.to_string(),
     });
 
