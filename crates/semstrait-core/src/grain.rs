@@ -18,6 +18,21 @@ pub enum Grain {
     Year,
 }
 
+impl Grain {
+    /// Returns the grain's relative coarseness (higher = coarser).
+    pub fn coarseness(self) -> u8 {
+        match self {
+            Self::Minute => 0,
+            Self::Hour => 1,
+            Self::Day => 2,
+            Self::Week => 3,
+            Self::Month => 4,
+            Self::Quarter => 5,
+            Self::Year => 6,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

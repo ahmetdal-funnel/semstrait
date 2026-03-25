@@ -15,7 +15,7 @@ use semstrait_ir::{
     PlanNode, ProjectNode, ScanNode, Schema,
 };
 use semstrait_manifest::{
-    CompiledKind, CompiledKindDataset, CompiledKindType, CompiledRelationship,
+    ColumnMappingValue, CompiledKind, CompiledKindDataset, CompiledKindType, CompiledRelationship,
     JoinType as ModelJoinType,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -166,9 +166,12 @@ fn build_scan(
     let mut scan_columns: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    // Add dimension columns this dataset covers.
+    // Add dimension columns this dataset covers (skip Literal — they're injected in projection).
     for dim_name in &request.dimensions {
         if let Some(mv) = mapping.get(dim_name) {
+            if matches!(mv, ColumnMappingValue::Literal(_)) {
+                continue;
+            }
             let phys = resolve_column_name(mv).to_string();
             if seen.insert(phys.clone()) {
                 scan_columns.push(phys);
@@ -344,6 +347,9 @@ fn build_join_plan(
         for ds_name in &joined_datasets {
             if let Some(ds) = kind.datasets.iter().find(|d| d.name == *ds_name) {
                 if let Some(mv) = ds.extras.column_mapping.get(field_name) {
+                    if matches!(mv, ColumnMappingValue::Literal(_)) {
+                        continue;
+                    }
                     return Some(resolve_column_name(mv).to_string());
                 }
             }
@@ -606,6 +612,11 @@ mod tests {
             relationships: vec![],
             model_name: "test_model".to_string(),
             model_description: None,
+            data_kinds: IndexMap::new(),
+            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
+            field_index: semstrait_manifest::FieldIndex::default(),
+            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            catalog_snapshot: None,
         }
     }
 
@@ -751,6 +762,11 @@ mod tests {
             relationships: vec![],
             model_name: "test".to_string(),
             model_description: None,
+            data_kinds: IndexMap::new(),
+            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
+            field_index: semstrait_manifest::FieldIndex::default(),
+            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            catalog_snapshot: None,
         };
         let ctx = PlannerContext {
             manifest: &manifest,
@@ -871,6 +887,11 @@ mod tests {
             relationships: vec![],
             model_name: "test".to_string(),
             model_description: None,
+            data_kinds: IndexMap::new(),
+            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
+            field_index: semstrait_manifest::FieldIndex::default(),
+            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            catalog_snapshot: None,
         };
 
         let ctx = PlannerContext {

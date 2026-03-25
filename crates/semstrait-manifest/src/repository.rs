@@ -141,6 +141,11 @@ mod tests {
             relationships: Vec::new(),
             model_name: name.to_string(),
             model_description: None,
+            data_kinds: IndexMap::new(),
+            relationship_graph: crate::acceleration::RelationshipGraph::default(),
+            field_index: crate::acceleration::FieldIndex::default(),
+            diagnostics: crate::acceleration::CompileDiagnostics::default(),
+            catalog_snapshot: None,
         }
     }
 

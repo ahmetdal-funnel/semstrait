@@ -7,11 +7,10 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 
 use semstrait_catalog::CatalogProvider;
-use semstrait_model::{parse, resolve_refs};
+use semstrait_model::parse;
+use semstrait_model::resolve_refs;
 
-use semstrait_catalog::TableRef;
-
-use crate::compiled::{CompiledManifest, SchemaColumn};
+use crate::compiled::CompiledManifest;
 use crate::error::CompileError;
 use crate::steps;
 
@@ -72,8 +71,18 @@ impl ManifestCompiler {
         // Step 2: Resolve refs
         let model = resolve_refs(model)?;
 
+        // Step 2.5: Build catalog from model config if no external catalog provided.
+        let catalog: Option<Arc<dyn CatalogProvider>> =
+            match (&self.catalog, &model.catalog) {
+                (Some(ext), _) => Some(ext.clone()),
+                (None, Some(cfg)) => {
+                    Some(crate::catalog_builder::build_from_config(cfg).await?)
+                }
+                (None, None) => None,
+            };
+
         // Step 3: Expand globs
-        let model = steps::expand_globs(model, self.catalog.as_deref()).await?;
+        let model = steps::expand_globs(model, catalog.as_deref()).await?;
 
         // Step 4: Validate structure
         steps::validate_structure(&model)?;
@@ -94,6 +103,9 @@ impl ManifestCompiler {
         // Step 5: Validate mappings
         steps::validate_mappings(&model)?;
 
+        // Step 5b: Validate grain compatibility (dataset grains vs kind-level grains)
+        steps::validate_grain_compatibility(&model)?;
+
         // Step 6: Build metric graph (cycle detection, depth check)
         let metric_depths = steps::build_metric_graph(&model)?;
 
@@ -112,11 +124,12 @@ impl ManifestCompiler {
             ..manifest
         };
 
-        // Step 9.5: Capture schema snapshots from catalog (when available).
-        if let Some(ref catalog) = self.catalog {
+        // Steps 10-13: Catalog resolution (best-effort).
+        // Resolves table metadata, validates column schemas, maps partition
+        // transforms to temporal grains, and assembles a CatalogSnapshot.
+        if let Some(ref cat) = catalog {
             let namespace = model_namespace.as_deref().unwrap_or("default");
-            self.capture_schema_snapshots(&mut manifest, catalog.as_ref(), namespace)
-                .await;
+            steps::resolve_catalog(&mut manifest, cat.as_ref(), namespace).await;
         }
 
         Ok(manifest)
@@ -163,40 +176,6 @@ impl ManifestCompiler {
         }
     }
 
-    /// Capture schema snapshots from the catalog for all datasets in the manifest.
-    /// Best-effort: failures are logged but don't fail compilation.
-    async fn capture_schema_snapshots(
-        &self,
-        manifest: &mut CompiledManifest,
-        catalog: &dyn CatalogProvider,
-        namespace: &str,
-    ) {
-        for (_, dataset) in manifest.datasets.iter_mut() {
-            let table_ref = TableRef::new(namespace, &dataset.name);
-            match catalog.get_schema(&table_ref).await {
-                Ok(columns) => {
-                    let snapshot: Vec<SchemaColumn> = columns
-                        .into_iter()
-                        .map(|c| SchemaColumn {
-                            name: c.name,
-                            data_type: format!("{:?}", c.data_type),
-                            nullable: c.nullable,
-                        })
-                        .collect();
-                    if !snapshot.is_empty() {
-                        dataset.compiled_schema = Some(snapshot);
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        "skipping schema snapshot for dataset '{}': {}",
-                        dataset.name,
-                        e
-                    );
-                }
-            }
-        }
-    }
 }
 
 impl Default for ManifestCompiler {

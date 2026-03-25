@@ -16,4 +16,8 @@ pub enum ModelError {
     /// Structural validation error
     #[error("Validation error: {0}")]
     Validation(String),
+
+    /// Environment variable resolution error
+    #[error("Environment variable error: {0}")]
+    EnvVar(String),
 }

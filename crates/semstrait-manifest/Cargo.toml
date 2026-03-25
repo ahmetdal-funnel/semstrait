@@ -12,11 +12,17 @@ semstrait-catalog = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 petgraph = { workspace = true }
+fixedbitset = { workspace = true }
 indexmap = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
+
+[features]
+default = []
+iceberg = ["semstrait-catalog/iceberg"]
+aws-secrets = ["semstrait-catalog/aws-secrets", "iceberg"]
 
 [dev-dependencies]
 tokio = { workspace = true }

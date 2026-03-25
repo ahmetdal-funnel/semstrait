@@ -1,96 +1,81 @@
-//! Shared plan-building utilities used by grainset, joinset, and unionset planners.
+//! CommonDataset fast path — direct Scan → Aggregate → Project for single-dataset entities.
+//!
+//! Bypasses the KindPlanner registry and complex routing. Uses pre-resolved
+//! `ResolvedColumnMapping.physical` for direct column mapping.
 
 use crate::error::PlannerError;
 use crate::expr_lower;
-use super::{extract_metadata_value, partition_dimensions, resolve_column_name, PlanFragment, PlannerContext};
+use super::grainset::collect_column_refs;
+use super::{PlanFragment, PlannerContext};
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::DataType;
 use semstrait_ir::{
-    AggNode, Aggregation, AggregateMeasure, Expr, Field, NodeMeta, PlanNode, ProjectNode,
+    AggNode, AggregateMeasure, Aggregation, Expr, Field, NodeMeta, PlanNode, ProjectNode,
     ScanNode, Schema, UnionNode,
 };
-use semstrait_manifest::{ColumnMappingValue, CompiledKind, CompiledKindDataset, LiteralValue};
+use semstrait_manifest::{CommonDataset, DimensionType, MetadataDimension, ResolvedSource};
 use std::collections::HashSet;
 
-use super::grainset::collect_column_refs;
-
-/// Build a Scan → Aggregate → Project plan for a single dataset.
+/// Build a plan for a CommonDataset entity (single-dataset, no routing).
 ///
-/// This is the common pattern shared by grainset (single-dataset path) and
-/// joinset (single-dataset degenerate case). It:
-/// 1. Maps requested dimensions to physical columns via column_mapping
-/// 2. Lowers measures using parsed Expr trees + filters
-/// 3. Optionally handles metrics (treated as SUM pass-through)
-/// 4. Builds Scan → Aggregate → Project nodes
-///
-/// Set `handle_metrics = true` for grainset (which supports metrics in the
-/// measures list) or `false` for joinset (which does not).
-pub(crate) fn build_dataset_plan(
-    kind: &CompiledKind,
+/// Uses `ResolvedColumnMapping.physical` for direct column resolution,
+/// handling metadata dimensions, literal dimensions, and temporal dimensions.
+pub(crate) fn build_common_dataset_plan(
+    dataset: &CommonDataset,
     request: &ResolvedQueryRequest,
-    dataset: &CompiledKindDataset,
     _ctx: &PlannerContext<'_>,
-    handle_metrics: bool,
 ) -> Result<PlanFragment, PlannerError> {
-    let mapping = &dataset.extras.column_mapping;
+    let mapping = &dataset.column_mapping;
 
-    // Collect all physical columns we need to scan (preserving insertion order).
     let mut scan_columns: Vec<String> = Vec::new();
     let mut scan_seen: HashSet<String> = HashSet::new();
 
-    // Partition dimensions into metadata (literal injection) and regular (column mapping).
-    let (metadata_dims, regular_dims) = partition_dimensions(&request.dimensions, kind);
+    // Partition dimensions into metadata and regular.
+    let (metadata_dims, regular_dims) = partition_common_dimensions(&request.dimensions, dataset);
 
     // Map regular dimensions to physical columns or literal values.
     let mut dim_physical: Vec<(String, String)> = Vec::new();
     let mut metadata_literals: Vec<(String, Expr)> = Vec::new();
+
     for dim_name in &regular_dims {
-        let mv = mapping.get(dim_name).ok_or_else(|| PlannerError::DimensionNotFound {
-            kind: kind.name.clone(),
-            dimension: dim_name.clone(),
-        })?;
-        match mv {
-            ColumnMappingValue::Literal(lit) => {
-                let expr = match lit {
-                    LiteralValue::String(s) => Expr::string(s.clone()),
-                };
-                metadata_literals.push((dim_name.clone(), expr));
+        if let Some(lit_val) = mapping.literals.get(dim_name) {
+            metadata_literals.push((dim_name.clone(), Expr::string(lit_val.clone())));
+        } else if let Some(phys) = mapping.physical.get(dim_name) {
+            dim_physical.push((dim_name.clone(), phys.clone()));
+            if scan_seen.insert(phys.clone()) {
+                scan_columns.push(phys.clone());
             }
-            _ => {
-                let phys = resolve_column_name(mv).to_string();
-                dim_physical.push((dim_name.clone(), phys.clone()));
-                if scan_seen.insert(phys.clone()) {
-                    scan_columns.push(phys);
-                }
-            }
+        } else {
+            return Err(PlannerError::DimensionNotFound {
+                kind: dataset.name.clone(),
+                dimension: dim_name.clone(),
+            });
         }
     }
 
     // Extract metadata dimension values as literals.
     for (dim_name, meta) in &metadata_dims {
-        let value = extract_metadata_value(meta, dataset).unwrap_or_default();
+        let value = extract_common_metadata(meta, &dataset.resolved_sources).unwrap_or_default();
         metadata_literals.push((dim_name.clone(), Expr::string(value)));
     }
 
     // Lower measures via the parsed Expr tree or declarative agg tag.
     let mut lowered_measures: Vec<(String, expr_lower::LoweredMeasure)> = Vec::new();
     for measure_name in &request.measures {
-        if let Some(measure) = kind.measures.get(measure_name) {
+        if let Some(measure) = dataset.measures.get(measure_name) {
             let lowered = if let Some(agg) = measure.agg {
-                // Declarative aggregation path: agg tag + horizontal expr.
-                expr_lower::lower_measure_declarative(
+                expr_lower::lower_measure_declarative_physical(
                     measure_name,
                     agg,
                     &measure.expr,
-                    mapping,
+                    &mapping.physical,
                     &measure.filters,
                 )?
             } else {
-                // Legacy path: aggregation embedded in expr.
-                expr_lower::lower_measure_with_filters(
+                expr_lower::lower_measure_with_filters_physical(
                     measure_name,
                     &measure.expr,
-                    mapping,
+                    &mapping.physical,
                     &measure.filters,
                 )?
             };
@@ -98,35 +83,35 @@ pub(crate) fn build_dataset_plan(
                 collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
             }
             lowered_measures.push((measure_name.clone(), lowered));
-        } else if handle_metrics && kind.metrics.contains_key(measure_name) {
-            // Metrics are derived — treat as a SUM pass-through column.
-            let physical = mapping
+        } else if dataset.metrics.contains_key(measure_name) {
+            // Metrics are derived — treat as a SUM pass-through.
+            let phys = mapping
+                .physical
                 .get(measure_name)
-                .map(resolve_column_name)
+                .map(|s| s.as_str())
                 .unwrap_or(measure_name.as_str());
-            let phys = physical.to_string();
             let lowered = expr_lower::LoweredMeasure {
                 aggregates: vec![AggregateMeasure {
                     function: Aggregation::Sum,
-                    expr: Expr::column(phys.clone()),
+                    expr: Expr::column(phys),
                     distinct: false,
                 }],
                 post_agg_expr: Expr::column(measure_name.clone()),
             };
-            if scan_seen.insert(phys.clone()) {
-                scan_columns.push(phys);
+            if scan_seen.insert(phys.to_string()) {
+                scan_columns.push(phys.to_string());
             }
             lowered_measures.push((measure_name.clone(), lowered));
         } else {
             return Err(PlannerError::MeasureNotFound {
-                kind: kind.name.clone(),
+                kind: dataset.name.clone(),
                 measure: measure_name.clone(),
             });
         }
     }
 
     // Build Scan node (multi-source aware).
-    let scan = build_scan_node(dataset, &scan_columns);
+    let scan = build_common_scan_node(dataset, &scan_columns);
 
     // Build Aggregate node.
     let group_by: Vec<Expr> = dim_physical
@@ -163,9 +148,7 @@ pub(crate) fn build_dataset_plan(
         aggregates,
     });
 
-    // Build Project node — maps physical names back to semantic names.
-    // Regular dimensions come from the aggregate output; metadata dimensions
-    // are injected as literal expressions.
+    // Build Project node.
     let mut project_exprs: Vec<Expr> = Vec::new();
     let mut project_fields: Vec<Field> = Vec::new();
 
@@ -200,35 +183,55 @@ pub(crate) fn build_dataset_plan(
     })
 }
 
-/// Infer the top-level re-aggregation function for a measure after UNION ALL.
-///
-/// For most measures this is SUM (re-summing partial sums/counts).
-/// MIN/MAX are preserved. COUNT_DISTINCT and AVG re-aggregated as SUM (lossy, v1).
-pub(crate) fn infer_aggregation(kind: &CompiledKind, measure_name: &str) -> Aggregation {
-    if let Some(measure) = kind.measures.get(measure_name) {
-        if let Some(agg) = measure.agg {
-            return match agg {
-                Aggregation::Min => Aggregation::Min,
-                Aggregation::Max => Aggregation::Max,
-                _ => Aggregation::Sum,
-            };
+/// Partition requested dimensions into (metadata, regular) for a CommonDataset.
+fn partition_common_dimensions(
+    request_dims: &[String],
+    dataset: &CommonDataset,
+) -> (Vec<(String, MetadataDimension)>, Vec<String>) {
+    let mut metadata = Vec::new();
+    let mut regular = Vec::new();
+
+    for dim_name in request_dims {
+        if let Some(dim) = dataset.dimensions.get(dim_name) {
+            if let DimensionType::Metadata(meta) = &dim.dim_type {
+                metadata.push((dim_name.clone(), meta.clone()));
+                continue;
+            }
         }
-        let upper = measure.expr_source.to_uppercase();
-        if upper.starts_with("MIN") {
-            return Aggregation::Min;
-        } else if upper.starts_with("MAX") {
-            return Aggregation::Max;
-        }
+        regular.push(dim_name.clone());
     }
-    Aggregation::Sum
+
+    (metadata, regular)
 }
 
-/// Build a scan node for a dataset, handling multi-source datasets.
-///
-/// If the dataset has multiple `resolved_sources`, builds a UNION ALL of
-/// individual ScanNodes. If only one source, builds a single ScanNode.
-pub(crate) fn build_scan_node(
-    dataset: &CompiledKindDataset,
+/// Extract metadata dimension value from resolved sources.
+fn extract_common_metadata(
+    meta: &MetadataDimension,
+    resolved_sources: &[ResolvedSource],
+) -> Option<String> {
+    let source = resolved_sources.first()?;
+    let path = &source.reference;
+
+    if let Some(ref path_ext) = meta.path {
+        let segments: Vec<&str> = path.split('/').collect();
+        return segments.get(path_ext.token).map(|s| s.to_string());
+    }
+
+    if let Some(ref part_ext) = meta.partition {
+        let kv_segments: Vec<&str> = path.split('/').filter(|s| s.contains('=')).collect();
+        if part_ext.level == 0 || part_ext.level > kv_segments.len() {
+            return None;
+        }
+        let segment = kv_segments[part_ext.level - 1];
+        return segment.split_once('=').map(|(_, v)| v.to_string());
+    }
+
+    None
+}
+
+/// Build a scan node for a CommonDataset (handles multi-source).
+fn build_common_scan_node(
+    dataset: &CommonDataset,
     scan_columns: &[String],
 ) -> PlanNode {
     let scan_schema = Schema::new(
@@ -239,16 +242,19 @@ pub(crate) fn build_scan_node(
     );
 
     if dataset.resolved_sources.len() <= 1 {
-        let table_name = dataset.resolved_sources.first()
+        let table_name = dataset
+            .resolved_sources
+            .first()
             .map(|s| s.reference.as_str())
-            .unwrap_or(&dataset.name);
+            .unwrap_or(&dataset.dataset_ref);
         PlanNode::Scan(ScanNode {
             meta: NodeMeta::new(scan_schema),
             table_name: table_name.to_string(),
             projection: scan_columns.to_vec(),
         })
     } else {
-        let inputs: Vec<PlanNode> = dataset.resolved_sources
+        let inputs: Vec<PlanNode> = dataset
+            .resolved_sources
             .iter()
             .map(|source| {
                 PlanNode::Scan(ScanNode {

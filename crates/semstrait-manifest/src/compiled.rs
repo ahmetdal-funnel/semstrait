@@ -30,10 +30,26 @@ pub struct CompiledManifest {
     pub source_hash: String,
     /// Compiled datasets, keyed by name.
     pub datasets: IndexMap<String, CompiledDataset>,
-    /// Compiled kinds, keyed by name.
+    /// Compiled kinds, keyed by name (v1 types — retained for backward compat).
     pub kinds: IndexMap<String, CompiledKind>,
+    /// Queryable semantic entities with acceleration structures (v2 types).
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub data_kinds: IndexMap<String, crate::acceleration::DataKind>,
     /// Top-level compiled relationships.
     pub relationships: Vec<CompiledRelationship>,
+    /// Global relationship graph for ad-hoc join resolution.
+    #[serde(default)]
+    pub relationship_graph: crate::acceleration::RelationshipGraph,
+    /// Global field index for ad-hoc join resolution.
+    #[serde(default)]
+    pub field_index: crate::acceleration::FieldIndex,
+    /// Compilation diagnostics (warnings, info).
+    #[serde(default)]
+    pub diagnostics: crate::acceleration::CompileDiagnostics,
+    /// Catalog metadata snapshot captured at compile time (steps 10-13).
+    /// Present when a CatalogProvider was available during compilation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_snapshot: Option<crate::catalog_snapshot::CatalogSnapshot>,
     /// Model name.
     pub model_name: String,
     /// Model description.
@@ -150,8 +166,9 @@ pub struct CompiledKindDataset {
     pub extras: KindDatasetExtras,
     /// Resolved physical source references from storage config.
     /// Multiple sources imply UNION ALL semantics.
+    /// Each source carries a `SourceType` discriminator (Path or Table).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub resolved_sources: Vec<String>,
+    pub resolved_sources: Vec<crate::acceleration::ResolvedSource>,
 }
 
 // ============================================================================
@@ -298,11 +315,21 @@ impl CompiledManifest {
         self.datasets.get(name)
     }
 
+    /// Resolve a data kind by name (v2 API).
+    ///
+    /// Checks `data_kinds` first. Returns `None` if not found.
+    /// Does NOT auto-wrap datasets (that is pre-computed during compilation).
+    pub fn resolve_data_kind(&self, name: &str) -> Option<&crate::acceleration::DataKind> {
+        self.data_kinds.get(name)
+    }
+
     /// Resolve a query entity by name: checks kinds first, then datasets.
     ///
     /// If the name matches a kind, returns `Kind(...)`.
     /// If the name matches a dataset, auto-wraps it as an implicit grainset kind.
     /// Returns `None` if neither exists.
+    ///
+    /// **Deprecated**: Use `resolve_data_kind` for new code.
     pub fn resolve_entity(&self, name: &str) -> Option<QueryableEntity<'_>> {
         // Kinds take precedence (name uniqueness is enforced at compile time).
         if let Some(kind) = self.kinds.get(name) {

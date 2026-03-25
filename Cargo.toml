@@ -19,6 +19,7 @@ polyglot-sql = { version = "0.1", default-features = false }
 
 # Graph analysis
 petgraph = "0.7"
+fixedbitset = { version = "0.5", features = ["serde"] }
 
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -26,6 +27,11 @@ async-trait = "0.1"
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# AWS (optional, behind aws-secrets feature)
+aws-config = { version = "1.8" }
+aws-credential-types = { version = "1.2" }
+aws-sdk-secretsmanager = { version = "1.103" }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
@@ -78,6 +84,7 @@ duckdb = ["semstrait-connectors/duckdb", "semstrait-api/duckdb"]
 polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot", "semstrait-api/polyglot"]
 iceberg = ["semstrait-api/iceberg"]
 unity = ["semstrait-api/unity"]
+aws-secrets = ["semstrait-api/aws-secrets"]
 trino = ["semstrait-connectors/trino", "semstrait-api/trino"]
 spark = ["semstrait-connectors/spark", "semstrait-api/spark"]
 

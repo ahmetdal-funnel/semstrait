@@ -7,14 +7,15 @@
 use crate::error::PlannerError;
 use crate::expr_lower;
 use super::grainset::collect_column_refs;
+use super::shared::infer_aggregation;
 use super::{extract_metadata_value, partition_dimensions, resolve_column_name, KindPlanner, PlanFragment, PlannerContext};
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::DataType;
 use semstrait_ir::{
-    AggNode, AggregateMeasure, Aggregation, Expr, Field, NodeMeta, PlanNode, ProjectNode,
+    AggNode, AggregateMeasure, Expr, Field, NodeMeta, PlanNode, ProjectNode,
     ScanNode, Schema, UnionNode,
 };
-use semstrait_manifest::{CompiledKind, CompiledKindDataset, CompiledKindType, UnionMode};
+use semstrait_manifest::{ColumnMappingValue, CompiledKind, CompiledKindDataset, CompiledKindType, LiteralValue, UnionMode};
 use std::collections::HashSet;
 
 /// Planner for Unionset kinds — UNION ALL across multiple datasets.
@@ -115,35 +116,6 @@ fn build_unified_schema(request: &ResolvedQueryRequest) -> Schema {
     Schema::new(fields)
 }
 
-/// Infer the top-level re-aggregation function for a measure.
-/// For most measures this is SUM (re-summing partial sums).
-fn infer_aggregation(kind: &CompiledKind, measure_name: &str) -> Aggregation {
-    if let Some(measure) = kind.measures.get(measure_name) {
-        // Declarative path: use the declared aggregation directly.
-        if let Some(agg) = measure.agg {
-            return match agg {
-                Aggregation::Min => Aggregation::Min,
-                Aggregation::Max => Aggregation::Max,
-                // Re-aggregating COUNT_DISTINCT as SUM is lossy but v1 semantics.
-                // Re-aggregating AVG as SUM is approximate, v1 semantics.
-                _ => Aggregation::Sum,
-            };
-        }
-        // Legacy path: infer from expr_source string.
-        let upper = measure.expr_source.to_uppercase();
-        if upper.starts_with("COUNT_DISTINCT") || upper.contains("COUNT(DISTINCT") {
-            return Aggregation::Sum;
-        } else if upper.starts_with("MIN") {
-            return Aggregation::Min;
-        } else if upper.starts_with("MAX") {
-            return Aggregation::Max;
-        } else if upper.starts_with("AVG") {
-            return Aggregation::Sum;
-        }
-    }
-    Aggregation::Sum
-}
-
 /// Build a single UNION branch for one dataset.
 ///
 /// Produces: Scan -> Aggregate -> Project
@@ -177,10 +149,20 @@ fn build_union_branch(
             let value = extract_metadata_value(meta, dataset).unwrap_or_default();
             dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(Expr::string(value))));
         } else if let Some(mv) = mapping.get(dim_name) {
-            let phys = resolve_column_name(mv).to_string();
-            dim_sources.push((dim_name.clone(), DimSource::Physical(phys.clone())));
-            if scan_seen.insert(phys.clone()) {
-                scan_columns.push(phys);
+            match mv {
+                ColumnMappingValue::Literal(lit) => {
+                    let expr = match lit {
+                        LiteralValue::String(s) => Expr::string(s.clone()),
+                    };
+                    dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(expr)));
+                }
+                _ => {
+                    let phys = resolve_column_name(mv).to_string();
+                    dim_sources.push((dim_name.clone(), DimSource::Physical(phys.clone())));
+                    if scan_seen.insert(phys.clone()) {
+                        scan_columns.push(phys);
+                    }
+                }
             }
         } else {
             dim_sources.push((dim_name.clone(), DimSource::NullFill));
@@ -424,6 +406,11 @@ mod tests {
             relationships: vec![],
             model_name: "test_model".to_string(),
             model_description: None,
+            data_kinds: IndexMap::new(),
+            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
+            field_index: semstrait_manifest::FieldIndex::default(),
+            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            catalog_snapshot: None,
         }
     }
 
@@ -578,6 +565,11 @@ mod tests {
             relationships: vec![],
             model_name: "test".to_string(),
             model_description: None,
+            data_kinds: IndexMap::new(),
+            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
+            field_index: semstrait_manifest::FieldIndex::default(),
+            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            catalog_snapshot: None,
         };
 
         let ctx = PlannerContext {
@@ -633,6 +625,11 @@ mod tests {
             relationships: vec![],
             model_name: "test".to_string(),
             model_description: None,
+            data_kinds: IndexMap::new(),
+            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
+            field_index: semstrait_manifest::FieldIndex::default(),
+            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            catalog_snapshot: None,
         };
         let ctx = PlannerContext {
             manifest: &manifest,

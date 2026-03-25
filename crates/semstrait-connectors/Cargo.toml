@@ -19,7 +19,9 @@ arrow = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
+tracing = { workspace = true }
 uuid = { workspace = true, optional = true }
+semstrait-manifest = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -27,7 +29,7 @@ tokio = { workspace = true }
 [features]
 default = []
 duckdb = ["duckdb-engine", "arrow", "tokio", "semstrait-adapter/duckdb"]
-datafusion = ["datafusion-engine", "tokio", "semstrait-adapter/datafusion"]
+datafusion = ["datafusion-engine", "tokio", "semstrait-adapter/datafusion", "semstrait-manifest"]
 trino = ["reqwest", "serde", "tokio", "semstrait-adapter/trino"]
 spark = ["uuid", "semstrait-adapter/spark"]
 polyglot = ["semstrait-adapter/polyglot"]

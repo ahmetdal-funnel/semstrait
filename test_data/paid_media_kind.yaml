@@ -1,5 +1,5 @@
 # Category 1: Paid Media Campaign Performance — E2E Kind Definition (v3)
-# Unionset: 4 datasets (Google Ads, Bing Ads, Facebook/Meta, TikTok)
+# Grainset: 4 datasets (Google Ads, Bing Ads, Facebook/Meta, TikTok)
 #
 # API-verified semantic unification (sources: Google Ads API v20, Microsoft
 # Advertising Reporting API v13, Meta Marketing API, TikTok Marketing API v1.3):
@@ -25,6 +25,20 @@
 
 semantic_model:
   name: alpinestars_paid_media
+
+  # ─── Catalog connection ────────────────────────────────────────────────────
+  catalog:
+    type: iceberg_rest
+    url: https://polaris.odp.test.funnel.io/api/catalog
+    warehouse: fs1henp3k8p1hqo
+    auth:
+      method: polaris
+      secret_arn: arn:aws:secretsmanager:eu-west-1:457099346868:secret:funnel/dev/polaris-credentials-DB5OAj
+      region: eu-west-1
+      scope: "PRINCIPAL_ROLE:ALL"
+      aws_access_key_id: ""
+      aws_secret_access_key: ""
+      aws_session_token: ""
 
   # ─── Shared dimensions ───────────────────────────────────────────────────
   dimensions:
@@ -130,13 +144,21 @@ semantic_model:
   # ═══════════════════════════════════════════════════════════════════════════
   # Kind: Paid Media Campaign Performance
   # ═══════════════════════════════════════════════════════════════════════════
-  unionsets:
+  grainsets:
     - name: paid_media_campaign_performance
       description: "Cross-platform paid media performance unified across Google Ads, Bing Ads, Facebook/Meta, and TikTok"
       ai_context: "Use for cross-channel paid media analysis. Filter by platform or campaign_category (search/social). Hierarchy: campaign > adgroup > ad. Facebook 'adset' = TikTok 'adgroup'."
 
       keys:
-        primary: [campaign_id, account_id, adgroup_id, ad_id, conversion_tracker_id, ad_video_id]
+        primary:
+          [
+            campaign_id,
+            account_id,
+            adgroup_id,
+            ad_id,
+            conversion_tracker_id,
+            ad_video_id,
+          ]
 
       dimensions:
         # ── 1. Metadata & classification ─────────────────────────────────

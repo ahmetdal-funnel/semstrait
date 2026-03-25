@@ -6,11 +6,12 @@
 //! Compatible with Polaris (Snowflake), Gravitino (Apache), Tabular, and other
 //! Iceberg REST catalog servers.
 
-use crate::{CatalogColumn, CatalogError, CatalogProvider, TableRef};
+use crate::{CatalogColumn, CatalogError, CatalogPartitionField, CatalogProvider, TableMetadataResponse, TableRef};
 use async_trait::async_trait;
 use reqwest::Client;
 use semstrait_core::{DataType, GlobPattern};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -50,6 +51,8 @@ pub struct IcebergRestCatalog {
     prefix: Option<String>,
     client: Client,
     auth: AuthConfig,
+    /// Custom HTTP headers injected into every request (e.g., Polaris-Realm).
+    custom_headers: HashMap<String, String>,
     /// Cached OAuth2 access token with optional expiry instant.
     #[allow(clippy::type_complexity)]
     token_cache: Arc<RwLock<Option<(String, Option<Instant>)>>>,
@@ -64,6 +67,7 @@ impl IcebergRestCatalog {
             prefix: None,
             client: Client::new(),
             auth: AuthConfig::None,
+            custom_headers: HashMap::new(),
             token_cache: Arc::new(RwLock::new(None)),
         }
     }
@@ -100,6 +104,16 @@ impl IcebergRestCatalog {
             client_secret: client_secret.into(),
             scope,
         };
+        self
+    }
+
+    /// Add a custom HTTP header to all requests (e.g., `Polaris-Realm`).
+    pub fn with_custom_header(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.custom_headers.insert(key.into(), value.into());
         self
     }
 
@@ -149,10 +163,11 @@ impl IcebergRestCatalog {
                     params.push(("scope", s.as_str()));
                 }
 
-                let resp = self
-                    .client
-                    .post(token_url)
-                    .form(&params)
+                let mut token_req = self.client.post(token_url).form(&params);
+                for (k, v) in &self.custom_headers {
+                    token_req = token_req.header(k.as_str(), v.as_str());
+                }
+                let resp = token_req
                     .send()
                     .await
                     .map_err(|e| CatalogError::ConnectionError(e.to_string()))?;
@@ -189,6 +204,9 @@ impl IcebergRestCatalog {
         }
         if let Some(wh) = &self.warehouse {
             req = req.query(&[("warehouse", wh.as_str())]);
+        }
+        for (k, v) in &self.custom_headers {
+            req = req.header(k.as_str(), v.as_str());
         }
 
         let resp = req
@@ -303,6 +321,75 @@ impl CatalogProvider for IcebergRestCatalog {
             Err(e) => Err(e),
         }
     }
+
+    async fn load_table_metadata(
+        &self,
+        table: &TableRef,
+    ) -> Result<Option<TableMetadataResponse>, CatalogError> {
+        let resp = self.load_table(&table.namespace, &table.name).await?;
+        let meta = &resp.metadata;
+
+        // Find current schema.
+        let schema = meta
+            .schemas
+            .iter()
+            .find(|s| s.schema_id == meta.current_schema_id)
+            .ok_or_else(|| {
+                CatalogError::Internal(format!(
+                    "no current schema found for {}",
+                    table.fully_qualified()
+                ))
+            })?;
+
+        // Build field_id → column_name map for partition spec resolution.
+        let field_id_map: HashMap<i32, &str> = schema
+            .fields
+            .iter()
+            .filter_map(|f| f.id.map(|id| (id, f.name.as_str())))
+            .collect();
+
+        // Convert schema fields to CatalogColumn.
+        let columns: Vec<CatalogColumn> = schema
+            .fields
+            .iter()
+            .map(|f| {
+                let data_type = iceberg_type_to_datatype(&f.r#type);
+                CatalogColumn::new(f.name.clone(), data_type, !f.required)
+            })
+            .collect();
+
+        // Resolve partition spec: use default_spec_id or first spec.
+        let partition_fields = if let Some(spec) = meta
+            .partition_specs
+            .iter()
+            .find(|s| Some(s.spec_id) == meta.default_spec_id)
+            .or(meta.partition_specs.first())
+        {
+            spec.fields
+                .iter()
+                .filter_map(|pf| {
+                    let source_column = field_id_map.get(&pf.source_id)?;
+                    Some(CatalogPartitionField {
+                        source_column: source_column.to_string(),
+                        transform: pf.transform.clone(),
+                        name: pf.name.clone(),
+                        field_id: pf.field_id,
+                    })
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        Ok(Some(TableMetadataResponse {
+            columns,
+            partition_fields,
+            snapshot_id: meta.current_snapshot_id,
+            format_version: meta.format_version,
+            location: meta.location.clone(),
+            properties: meta.properties.clone().unwrap_or_default(),
+        }))
+    }
 }
 
 // ============================================================================
@@ -339,6 +426,24 @@ struct TableMetadata {
     current_schema_id: i32,
     #[serde(default)]
     schemas: Vec<IcebergSchema>,
+    /// Current snapshot ID from the Iceberg table.
+    #[serde(default)]
+    current_snapshot_id: Option<i64>,
+    /// Partition specs (Iceberg v1/v2).
+    #[serde(default)]
+    partition_specs: Vec<IcebergPartitionSpec>,
+    /// Default partition spec ID.
+    #[serde(default)]
+    default_spec_id: Option<i32>,
+    /// Iceberg format version (1 or 2).
+    #[serde(default)]
+    format_version: Option<u32>,
+    /// Physical table location (e.g., S3 URI).
+    #[serde(default)]
+    location: Option<String>,
+    /// Table properties from Iceberg metadata.
+    #[serde(default)]
+    properties: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,9 +455,28 @@ struct IcebergSchema {
 
 #[derive(Debug, Deserialize)]
 struct IcebergField {
+    /// Iceberg field ID (used for partition spec resolution).
+    #[serde(default)]
+    id: Option<i32>,
     name: String,
     r#type: serde_json::Value,
     required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct IcebergPartitionSpec {
+    spec_id: i32,
+    fields: Vec<IcebergPartitionField>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct IcebergPartitionField {
+    source_id: i32,
+    field_id: i32,
+    name: String,
+    transform: String,
 }
 
 // ============================================================================
@@ -490,5 +614,84 @@ mod tests {
         assert_eq!(resp.metadata.schemas.len(), 1);
         assert_eq!(resp.metadata.schemas[0].fields.len(), 3);
         assert_eq!(resp.metadata.schemas[0].fields[0].name, "id");
+    }
+
+    #[test]
+    fn test_parse_table_metadata_with_partitions() {
+        let json = serde_json::json!({
+            "metadata": {
+                "format-version": 2,
+                "current-schema-id": 0,
+                "schemas": [{
+                    "schema-id": 0,
+                    "fields": [
+                        {"id": 1, "name": "id", "type": "long", "required": true},
+                        {"id": 2, "name": "order_date", "type": "timestamp", "required": true},
+                        {"id": 3, "name": "amount", "type": "double", "required": false},
+                        {"id": 4, "name": "region", "type": "string", "required": false}
+                    ]
+                }],
+                "current-snapshot-id": 3497810964824022504_i64,
+                "default-spec-id": 0,
+                "partition-specs": [{
+                    "spec-id": 0,
+                    "fields": [
+                        {"source-id": 2, "field-id": 1000, "name": "order_date_day", "transform": "day"},
+                        {"source-id": 4, "field-id": 1001, "name": "region_identity", "transform": "identity"}
+                    ]
+                }],
+                "location": "s3://warehouse/db/orders",
+                "properties": {
+                    "write.format.default": "parquet",
+                    "write.parquet.compression-codec": "zstd"
+                }
+            }
+        });
+        let resp: LoadTableResponse = serde_json::from_value(json).unwrap();
+        let meta = &resp.metadata;
+        assert_eq!(meta.format_version, Some(2));
+        assert_eq!(meta.current_snapshot_id, Some(3497810964824022504));
+        assert_eq!(meta.location, Some("s3://warehouse/db/orders".to_string()));
+        assert_eq!(meta.default_spec_id, Some(0));
+
+        // Partition spec
+        assert_eq!(meta.partition_specs.len(), 1);
+        let spec = &meta.partition_specs[0];
+        assert_eq!(spec.spec_id, 0);
+        assert_eq!(spec.fields.len(), 2);
+        assert_eq!(spec.fields[0].source_id, 2);
+        assert_eq!(spec.fields[0].transform, "day");
+        assert_eq!(spec.fields[0].name, "order_date_day");
+        assert_eq!(spec.fields[1].transform, "identity");
+
+        // Properties
+        let props = meta.properties.as_ref().unwrap();
+        assert_eq!(props.get("write.format.default"), Some(&"parquet".to_string()));
+
+        // Field IDs on schema
+        assert_eq!(meta.schemas[0].fields[0].id, Some(1));
+        assert_eq!(meta.schemas[0].fields[1].id, Some(2));
+    }
+
+    #[test]
+    fn test_parse_table_metadata_without_partitions() {
+        // Minimal metadata — only schema, no partition specs or snapshot.
+        let json = serde_json::json!({
+            "metadata": {
+                "current-schema-id": 0,
+                "schemas": [{
+                    "schema-id": 0,
+                    "fields": [
+                        {"id": 1, "name": "id", "type": "long", "required": true}
+                    ]
+                }]
+            }
+        });
+        let resp: LoadTableResponse = serde_json::from_value(json).unwrap();
+        let meta = &resp.metadata;
+        assert_eq!(meta.current_snapshot_id, None);
+        assert_eq!(meta.partition_specs.len(), 0);
+        assert_eq!(meta.format_version, None);
+        assert_eq!(meta.location, None);
     }
 }

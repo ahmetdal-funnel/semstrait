@@ -37,6 +37,25 @@ Active constraints that guide new code. Historical crate-organization decisions 
 
 ---
 
+## 2b. V1 Scope
+
+Explicit definition of what v1 supports. All completed v2 model redesign changes (Phases 1-4, acceleration structures, ad-hoc join module) are part of v1 — they enhance the architecture without breaking the major version.
+
+| Area | V1 Support | Future |
+|------|------------|--------|
+| **Compute** | DataFusion (SQL + Substrait) | DuckDB, Trino, Spark, Snowflake |
+| **Catalog** | Iceberg REST (via Polaris) | Unity, Glue, Hive Metastore |
+| **Storage** | Local paths, S3 (via DataFusion) | GCS, ADLS, HDFS |
+| **Auth** | OAuth2, Bearer, Polaris (AWS Secrets) | — |
+| **IR** | SQL (primary), Substrait (DataFusion) | — |
+| **Optimizer** | Identity (no-op) | Predicate pushdown, projection pruning |
+| **Repository** | InMemoryRepository | FileSystemRepository |
+| **Ad-hoc joins** | Single-dataset resolution | Multi-dataset join synthesis |
+| **Catalog resolution** | Steps 10-13 (best-effort) | Strict mode, schema evolution tracking |
+| **RLS** | Out of scope | Separate system layer |
+
+---
+
 ## 3. Crate Workspace
 
 ```

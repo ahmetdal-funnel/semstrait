@@ -4,9 +4,53 @@ use crate::error::ModelError;
 use crate::types::*;
 use std::collections::HashMap;
 
+/// Substitute `${VAR}` patterns in a string with environment variable values.
+///
+/// Only `${IDENTIFIER}` syntax is supported (not bare `$VAR`).
+/// Returns an error if any referenced environment variable is not set.
+pub(crate) fn substitute_env_vars(input: &str) -> Result<String, ModelError> {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '$' && chars.peek() == Some(&'{') {
+            chars.next(); // consume '{'
+            let mut var_name = String::new();
+            loop {
+                match chars.next() {
+                    Some('}') => break,
+                    Some(c) => var_name.push(c),
+                    None => {
+                        return Err(ModelError::EnvVar(
+                            "unterminated ${...} expression".to_owned(),
+                        ));
+                    }
+                }
+            }
+            if var_name.is_empty() {
+                return Err(ModelError::EnvVar("empty variable name in ${}".to_owned()));
+            }
+            match std::env::var(&var_name) {
+                Ok(val) => result.push_str(&val),
+                Err(_) => {
+                    return Err(ModelError::EnvVar(format!(
+                        "environment variable '{}' is not set",
+                        var_name
+                    )));
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    Ok(result)
+}
+
 /// Parse a YAML string into a SemanticModel.
 ///
-/// This performs YAML deserialization only. Reference resolution is separate.
+/// Performs environment variable substitution (`${VAR}`) followed by YAML
+/// deserialization. Reference resolution is separate.
 ///
 /// # Example
 ///
@@ -15,6 +59,7 @@ use std::collections::HashMap;
 /// let model = semstrait_model::parse(&yaml)?;
 /// ```
 pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
+    let yaml = &substitute_env_vars(yaml)?;
     // Intermediate YAML-facing root with implicit kind types.
     #[derive(serde::Deserialize)]
     struct YamlRoot {
@@ -32,6 +77,8 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
         labels: Vec<String>,
         #[serde(default)]
         namespace: Option<String>,
+        #[serde(default)]
+        catalog: Option<CatalogConnectionConfig>,
         #[serde(default)]
         datasets: Vec<Dataset>,
         #[serde(default)]
@@ -65,6 +112,7 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
         ai_context: m.ai_context,
         labels: m.labels,
         namespace: m.namespace,
+        catalog: m.catalog,
         datasets: m.datasets,
         kinds,
         relationships: m.relationships,
@@ -592,6 +640,145 @@ semantic_model:
         assert_eq!(model.labels.len(), 2);
         assert_eq!(model.labels[0], "production");
         assert_eq!(model.labels[1], "finance");
+    }
+
+    #[test]
+    fn test_substitute_env_vars_basic() {
+        std::env::set_var("SEMSTRAIT_TEST_VAR", "hello");
+        let result = substitute_env_vars("value: ${SEMSTRAIT_TEST_VAR}").unwrap();
+        assert_eq!(result, "value: hello");
+        std::env::remove_var("SEMSTRAIT_TEST_VAR");
+    }
+
+    #[test]
+    fn test_substitute_env_vars_missing() {
+        std::env::remove_var("SEMSTRAIT_NONEXISTENT_VAR");
+        let result = substitute_env_vars("value: ${SEMSTRAIT_NONEXISTENT_VAR}");
+        assert!(result.is_err());
+        match result {
+            Err(ModelError::EnvVar(msg)) => {
+                assert!(msg.contains("SEMSTRAIT_NONEXISTENT_VAR"));
+            }
+            _ => panic!("expected EnvVar error"),
+        }
+    }
+
+    #[test]
+    fn test_substitute_env_vars_no_placeholders() {
+        let input = "plain: yaml\nno: vars";
+        let result = substitute_env_vars(input).unwrap();
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_substitute_env_vars_multiple() {
+        std::env::set_var("SEMSTRAIT_A", "one");
+        std::env::set_var("SEMSTRAIT_B", "two");
+        let result = substitute_env_vars("${SEMSTRAIT_A} and ${SEMSTRAIT_B}").unwrap();
+        assert_eq!(result, "one and two");
+        std::env::remove_var("SEMSTRAIT_A");
+        std::env::remove_var("SEMSTRAIT_B");
+    }
+
+    #[test]
+    fn test_substitute_env_vars_unterminated() {
+        let result = substitute_env_vars("value: ${UNTERMINATED");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_catalog_connection() {
+        let yaml = r#"
+semantic_model:
+  name: catalog_test
+  catalog:
+    type: iceberg_rest
+    url: https://polaris.example.com/api/catalog
+    warehouse: my_warehouse
+  datasets:
+    - name: orders
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+"#;
+        let model = parse(yaml).unwrap();
+        let catalog = model.catalog.as_ref().unwrap();
+        assert_eq!(catalog.catalog_type, "iceberg_rest");
+        assert_eq!(catalog.url, "https://polaris.example.com/api/catalog");
+        assert_eq!(catalog.warehouse.as_deref(), Some("my_warehouse"));
+        assert!(catalog.auth.is_none());
+    }
+
+    #[test]
+    fn test_parse_catalog_auth_bearer() {
+        std::env::set_var("SEMSTRAIT_TEST_TOKEN", "my_token");
+        let yaml = r#"
+semantic_model:
+  name: bearer_test
+  catalog:
+    type: iceberg_rest
+    url: https://polaris.example.com/api/catalog
+    auth:
+      method: bearer
+      token: ${SEMSTRAIT_TEST_TOKEN}
+  datasets:
+    - name: orders
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+"#;
+        let model = parse(yaml).unwrap();
+        let auth = model.catalog.unwrap().auth.unwrap();
+        match auth {
+            CatalogAuthConfig::Bearer { token } => {
+                assert_eq!(token, "my_token");
+            }
+            _ => panic!("expected bearer auth"),
+        }
+        std::env::remove_var("SEMSTRAIT_TEST_TOKEN");
+    }
+
+    #[test]
+    fn test_parse_catalog_auth_polaris() {
+        let yaml = r#"
+semantic_model:
+  name: polaris_test
+  catalog:
+    type: iceberg_rest
+    url: https://polaris.example.com/api/catalog
+    warehouse: wh
+    auth:
+      method: polaris
+      secret_arn: arn:aws:secretsmanager:eu-west-1:123:secret/polaris
+      region: eu-west-1
+      realm: POLARIS
+      scope: "PRINCIPAL_ROLE:ALL"
+  datasets:
+    - name: orders
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+"#;
+        let model = parse(yaml).unwrap();
+        let auth = model.catalog.unwrap().auth.unwrap();
+        match auth {
+            CatalogAuthConfig::Polaris {
+                secret_arn,
+                region,
+                realm,
+                scope,
+                ..
+            } => {
+                assert_eq!(secret_arn, "arn:aws:secretsmanager:eu-west-1:123:secret/polaris");
+                assert_eq!(region.as_deref(), Some("eu-west-1"));
+                assert_eq!(realm.as_deref(), Some("POLARIS"));
+                assert_eq!(scope.as_deref(), Some("PRINCIPAL_ROLE:ALL"));
+            }
+            _ => panic!("expected polaris auth"),
+        }
     }
 
     #[test]

@@ -60,6 +60,10 @@ pub enum CompileError {
     #[error("raw SQL rejected for '{entity}': {expr}")]
     RawSqlRejected { entity: String, expr: String },
 
+    /// Catalog configuration error (step 2.5)
+    #[error("catalog config error: {0}")]
+    CatalogConfig(String),
+
     /// IO error (reading files)
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -73,6 +77,7 @@ impl From<semstrait_model::ModelError> for CompileError {
             semstrait_model::ModelError::Validation(msg) => {
                 Self::StructureValidation(vec![msg])
             }
+            semstrait_model::ModelError::EnvVar(msg) => Self::Parse(msg),
         }
     }
 }

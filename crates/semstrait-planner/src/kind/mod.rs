@@ -5,6 +5,7 @@
 //! - [`UnionsetPlanner`]: UNION ALL across multiple datasets
 //! - [`JoinsetPlanner`]: BFS join chain across datasets
 
+pub(crate) mod common;
 pub mod grainset;
 pub mod joinset;
 pub(crate) mod shared;
@@ -17,7 +18,7 @@ use semstrait_core::EngineProfile;
 use semstrait_ir::{Expr, PlanNode, Schema};
 use semstrait_manifest::{
     ColumnMappingValue, CompiledKind, CompiledKindDataset, CompiledKindType, CompiledManifest,
-    DimensionType, MetadataDimension,
+    DimensionType, MetadataDimension, TemporalGrain,
 };
 
 pub use grainset::GrainsetPlanner;
@@ -96,10 +97,17 @@ impl Default for KindPlannerRegistry {
 }
 
 /// Resolve a `ColumnMappingValue` to its physical column name.
+///
+/// Literal and Anchored variants must be handled before calling this function
+/// (Literal is routed to metadata_literals; Anchored is flattened to Simple
+/// entries during compilation step 4.5).
 pub fn resolve_column_name(mapping_value: &ColumnMappingValue) -> &str {
     match mapping_value {
         ColumnMappingValue::Simple(s) => s.as_str(),
         ColumnMappingValue::WithGrain { column, .. } => column.as_str(),
+        ColumnMappingValue::Literal(_) | ColumnMappingValue::Anchored(_) => {
+            unreachable!("Literal/Anchored must be handled before resolve_column_name")
+        }
     }
 }
 
@@ -142,7 +150,7 @@ pub(crate) fn extract_metadata_value(
     meta: &MetadataDimension,
     dataset: &CompiledKindDataset,
 ) -> Option<String> {
-    let source = dataset.resolved_sources.first()?;
+    let source = &dataset.resolved_sources.first()?.reference;
 
     if let Some(ref path_ext) = meta.path {
         let segments: Vec<&str> = source.split('/').collect();
@@ -165,6 +173,56 @@ pub(crate) fn extract_metadata_value(
     None
 }
 
+/// Resolve the native temporal grain for a dataset's temporal dimension.
+///
+/// If the column mapping uses `WithGrain { grain: Some(g) }`, returns that grain.
+/// If grain is unspecified (None) or the mapping is Simple, returns the finest
+/// grain from the kind-level temporal dimension definition.
+pub(crate) fn resolve_native_grain(
+    dataset: &CompiledKindDataset,
+    dim_name: &str,
+    kind: &CompiledKind,
+) -> Option<TemporalGrain> {
+    // Check dataset-level explicit grain.
+    if let Some(ColumnMappingValue::WithGrain { grain: Some(g), .. }) =
+        dataset.extras.column_mapping.get(dim_name)
+    {
+        return Some(*g);
+    }
+
+    // Fall back to finest kind-level grain.
+    if let Some(dim) = kind.dimensions.get(dim_name) {
+        if let DimensionType::Temporal(ref td) = dim.dim_type {
+            return td.grains.iter().copied().min_by_key(|g| g.coarseness());
+        }
+    }
+    None
+}
+
+/// Find the temporal dimension name in a kind (first temporal dimension found).
+pub(crate) fn find_temporal_dimension(kind: &CompiledKind) -> Option<&str> {
+    kind.dimensions.iter().find_map(|(name, dim)| {
+        if matches!(dim.dim_type, DimensionType::Temporal(_)) {
+            Some(name.as_str())
+        } else {
+            None
+        }
+    })
+}
+
+/// Convert a core `Grain` to model `TemporalGrain`.
+pub(crate) fn grain_to_temporal(grain: semstrait_core::Grain) -> TemporalGrain {
+    match grain {
+        semstrait_core::Grain::Minute => TemporalGrain::Minute,
+        semstrait_core::Grain::Hour => TemporalGrain::Hour,
+        semstrait_core::Grain::Day => TemporalGrain::Day,
+        semstrait_core::Grain::Week => TemporalGrain::Week,
+        semstrait_core::Grain::Month => TemporalGrain::Month,
+        semstrait_core::Grain::Quarter => TemporalGrain::Quarter,
+        semstrait_core::Grain::Year => TemporalGrain::Year,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,7 +237,7 @@ mod tests {
                 storage: None,
                 catalog: None,
             },
-            resolved_sources: sources.into_iter().map(String::from).collect(),
+            resolved_sources: sources.into_iter().map(semstrait_manifest::ResolvedSource::path).collect(),
         }
     }
 

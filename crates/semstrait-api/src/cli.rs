@@ -35,21 +35,6 @@ pub enum Commands {
         /// Output path for the compiled manifest JSON.
         #[arg(short, long)]
         output: Option<PathBuf>,
-
-        /// Iceberg REST catalog URL for glob expansion.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_url: Option<String>,
-
-        /// Iceberg catalog warehouse name.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_warehouse: Option<String>,
-
-        /// Iceberg catalog Bearer token.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_token: Option<String>,
     },
 
     /// Show the query plan, SQL, and Substrait JSON for a query.
@@ -116,21 +101,6 @@ pub enum Commands {
         /// Register data files: name=path pairs (e.g., orders_data=data/orders.csv).
         #[arg(short, long, num_args = 1..)]
         register: Vec<String>,
-
-        /// Iceberg REST catalog URL for glob expansion.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_url: Option<String>,
-
-        /// Iceberg catalog warehouse name.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_warehouse: Option<String>,
-
-        /// Iceberg catalog Bearer token.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_token: Option<String>,
     },
 
     /// Execute a query against local data files via DuckDB.
@@ -159,21 +129,6 @@ pub enum Commands {
         /// Path to DuckDB database file (default: in-memory).
         #[arg(long)]
         db: Option<PathBuf>,
-
-        /// Iceberg REST catalog URL for glob expansion.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_url: Option<String>,
-
-        /// Iceberg catalog warehouse name.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_warehouse: Option<String>,
-
-        /// Iceberg catalog Bearer token.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_token: Option<String>,
     },
 
     /// Execute a query against a Trino cluster.
@@ -214,21 +169,6 @@ pub enum Commands {
         /// Trino Bearer token for authentication.
         #[arg(long)]
         trino_token: Option<String>,
-
-        /// Iceberg REST catalog URL for glob expansion.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_url: Option<String>,
-
-        /// Iceberg catalog warehouse name.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_warehouse: Option<String>,
-
-        /// Iceberg catalog Bearer token.
-        #[cfg(feature = "iceberg")]
-        #[arg(long)]
-        catalog_token: Option<String>,
     },
 
     /// Start the REST API server.
@@ -253,54 +193,15 @@ pub enum Commands {
     },
 }
 
-/// Build a ManifestCompiler, optionally wiring in an Iceberg catalog.
-#[cfg(feature = "iceberg")]
-fn build_compiler(
-    catalog_url: Option<String>,
-    catalog_warehouse: Option<String>,
-    catalog_token: Option<String>,
-) -> ManifestCompiler {
-    let mut compiler = ManifestCompiler::new();
-    if let Some(url) = catalog_url {
-        let mut catalog = semstrait_catalog::IcebergRestCatalog::new(url);
-        if let Some(wh) = catalog_warehouse {
-            catalog = catalog.with_warehouse(wh);
-        }
-        if let Some(token) = catalog_token {
-            catalog = catalog.with_bearer_token(token);
-        }
-        compiler = compiler.with_catalog(Arc::new(catalog));
-    }
-    compiler
-}
-
-#[cfg(not(feature = "iceberg"))]
-fn build_compiler() -> ManifestCompiler {
-    ManifestCompiler::new()
-}
-
-/// Compile a manifest from a YAML model file, optionally using an Iceberg catalog.
-#[cfg(feature = "iceberg")]
-async fn compile_from_file(
-    model: &PathBuf,
-    catalog_url: Option<String>,
-    catalog_warehouse: Option<String>,
-    catalog_token: Option<String>,
-) -> Result<semstrait_manifest::CompiledManifest, Box<dyn std::error::Error>> {
-    let yaml = tokio::fs::read_to_string(model).await?;
-    let compiler = build_compiler(catalog_url, catalog_warehouse, catalog_token);
-    Ok(compiler
-        .compile(CompileSource::Yaml(yaml))
-        .await
-        .map_err(|e| format!("compilation failed: {}", e))?)
-}
-
-#[cfg(not(feature = "iceberg"))]
+/// Compile a manifest from a YAML model file.
+///
+/// Catalog configuration is read from the `catalog:` section in the YAML model.
+/// No CLI flags needed — the compiler builds the catalog provider internally.
 async fn compile_from_file(
     model: &PathBuf,
 ) -> Result<semstrait_manifest::CompiledManifest, Box<dyn std::error::Error>> {
     let yaml = tokio::fs::read_to_string(model).await?;
-    let compiler = build_compiler();
+    let compiler = ManifestCompiler::new();
     Ok(compiler
         .compile(CompileSource::Yaml(yaml))
         .await
@@ -337,16 +238,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Compile {
             input,
             output,
-            #[cfg(feature = "iceberg")]
-            catalog_url,
-            #[cfg(feature = "iceberg")]
-            catalog_warehouse,
-            #[cfg(feature = "iceberg")]
-            catalog_token,
         } => {
-            #[cfg(feature = "iceberg")]
-            let manifest = compile_from_file(&input, catalog_url, catalog_warehouse, catalog_token).await?;
-            #[cfg(not(feature = "iceberg"))]
             let manifest = compile_from_file(&input).await?;
             let json = serde_json::to_string_pretty(&manifest)?;
             match output {
@@ -416,16 +308,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             select,
             filters,
             register,
-            #[cfg(feature = "iceberg")]
-            catalog_url,
-            #[cfg(feature = "iceberg")]
-            catalog_warehouse,
-            #[cfg(feature = "iceberg")]
-            catalog_token,
         } => {
-            #[cfg(feature = "iceberg")]
-            let compiled = compile_from_file(&model, catalog_url, catalog_warehouse, catalog_token).await?;
-            #[cfg(not(feature = "iceberg"))]
             let compiled = compile_from_file(&model).await?;
 
             let connector = semstrait_connectors::datafusion::DataFusionConnector::new();
@@ -451,16 +334,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             filters,
             register,
             db,
-            #[cfg(feature = "iceberg")]
-            catalog_url,
-            #[cfg(feature = "iceberg")]
-            catalog_warehouse,
-            #[cfg(feature = "iceberg")]
-            catalog_token,
         } => {
-            #[cfg(feature = "iceberg")]
-            let compiled = compile_from_file(&model, catalog_url, catalog_warehouse, catalog_token).await?;
-            #[cfg(not(feature = "iceberg"))]
             let compiled = compile_from_file(&model).await?;
 
             let connector = match db {
@@ -494,16 +368,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             trino_schema,
             trino_user,
             trino_token,
-            #[cfg(feature = "iceberg")]
-            catalog_url,
-            #[cfg(feature = "iceberg")]
-            catalog_warehouse,
-            #[cfg(feature = "iceberg")]
-            catalog_token,
         } => {
-            #[cfg(feature = "iceberg")]
-            let compiled = compile_from_file(&model, catalog_url, catalog_warehouse, catalog_token).await?;
-            #[cfg(not(feature = "iceberg"))]
             let compiled = compile_from_file(&model).await?;
 
             let mut connector =

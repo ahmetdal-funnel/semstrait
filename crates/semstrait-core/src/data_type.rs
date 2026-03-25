@@ -118,6 +118,7 @@ impl FromStr for DataType {
             "timestamp_us" | "timestamp_microsecond" => Ok(DataType::TimestampMicrosecond),
             "duration" => Ok(DataType::Duration),
             "binary" => Ok(DataType::Binary),
+            "decimal" => Ok(DataType::Decimal { precision: 18, scale: 2 }),
             _ => Err(format!("Unknown data type: {}", s)),
         }
     }

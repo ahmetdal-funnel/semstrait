@@ -15,8 +15,12 @@ tracing = { workspace = true }
 
 # Feature-gated deps
 reqwest = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
+aws-credential-types = { workspace = true, optional = true }
+aws-sdk-secretsmanager = { workspace = true, optional = true }
 
 [features]
 default = []
 iceberg = ["reqwest", "serde_json"]
 unity = ["reqwest", "serde_json"]
+aws-secrets = ["iceberg", "dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-secretsmanager"]

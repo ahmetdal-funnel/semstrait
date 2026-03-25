@@ -35,7 +35,7 @@ semantic_model:
         .await
         .expect("compilation should succeed");
 
-    assert_eq!(manifest.version, 1);
+    assert_eq!(manifest.version, 2);
     assert_eq!(manifest.model_name, "test_model");
     assert_eq!(
         manifest.model_description,
@@ -528,7 +528,7 @@ semantic_model:
     let loaded = repo.load().expect("load should succeed");
 
     assert_eq!(loaded.model_name, "repo_test");
-    assert_eq!(loaded.version, 1);
+    assert_eq!(loaded.version, 2);
     assert_eq!(loaded.datasets.len(), 1);
 }
 
@@ -968,11 +968,10 @@ semantic_model:
     assert_eq!(manifest.kinds["sales"].datasets.len(), 1);
     assert_eq!(manifest.kinds["sales"].datasets[0].name, "orders_daily");
 
-    // Table reference should be captured in resolved_sources.
-    assert_eq!(
-        manifest.kinds["sales"].datasets[0].resolved_sources,
-        vec!["schema_name.orders_daily"]
-    );
+    // Table reference should be captured in resolved_sources with Table type.
+    assert_eq!(manifest.kinds["sales"].datasets[0].resolved_sources.len(), 1);
+    assert_eq!(manifest.kinds["sales"].datasets[0].resolved_sources[0].reference, "schema_name.orders_daily");
+    assert_eq!(manifest.kinds["sales"].datasets[0].resolved_sources[0].source_type, semstrait_manifest::SourceType::Table);
 }
 
 #[tokio::test]
@@ -1248,8 +1247,8 @@ semantic_model:
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("mapping is incomplete"),
-        "expected incomplete mapping error, got: {}",
+        msg.contains("is not mapped by any dataset"),
+        "expected union coverage error, got: {}",
         msg
     );
     assert!(msg.contains("revenue"), "got: {}", msg);
@@ -1298,8 +1297,9 @@ semantic_model:
     let kind = &manifest.kinds["sales"];
     let ds = &kind.datasets[0];
     assert_eq!(ds.resolved_sources.len(), 2);
-    assert_eq!(ds.resolved_sources[0], "s3://bucket/orders_2024.parquet");
-    assert_eq!(ds.resolved_sources[1], "s3://bucket/orders_2025.parquet");
+    assert_eq!(ds.resolved_sources[0].reference, "s3://bucket/orders_2024.parquet");
+    assert_eq!(ds.resolved_sources[0].source_type, semstrait_manifest::SourceType::Path);
+    assert_eq!(ds.resolved_sources[1].reference, "s3://bucket/orders_2025.parquet");
 }
 
 #[tokio::test]
@@ -1341,8 +1341,8 @@ semantic_model:
     let kind = &manifest.kinds["sales"];
     let ds = &kind.datasets[0];
     assert_eq!(ds.resolved_sources.len(), 2);
-    assert_eq!(ds.resolved_sources[0], "s3://bucket/orders_main.parquet");
-    assert_eq!(ds.resolved_sources[1], "s3://bucket/orders_archive.parquet");
+    assert_eq!(ds.resolved_sources[0].reference, "s3://bucket/orders_main.parquet");
+    assert_eq!(ds.resolved_sources[1].reference, "s3://bucket/orders_archive.parquet");
 }
 
 #[tokio::test]
@@ -1425,7 +1425,9 @@ semantic_model:
 
     let kind = &manifest.kinds["sales"];
     let ds = &kind.datasets[0];
-    assert_eq!(ds.resolved_sources, vec!["warehouse.orders"]);
+    assert_eq!(ds.resolved_sources.len(), 1);
+    assert_eq!(ds.resolved_sources[0].reference, "warehouse.orders");
+    assert_eq!(ds.resolved_sources[0].source_type, semstrait_manifest::SourceType::Path);
 }
 
 // ============================================================================

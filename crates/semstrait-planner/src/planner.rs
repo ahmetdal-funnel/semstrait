@@ -21,7 +21,8 @@ use semstrait_manifest::{CompiledManifest, DimensionType};
 use crate::additivity_resolver::AdditivityResolver;
 use crate::constraint_evaluator::ConstraintEvaluator;
 use crate::error::PlannerError;
-use crate::kind::{extract_metadata_value, KindPlannerRegistry, PlannerContext};
+use crate::join::resolve_from_fields;
+use crate::kind::{extract_metadata_value, KindPlannerRegistry, PlanFragment, PlannerContext};
 use crate::optimizer::{Optimizer, OptimizerPass};
 use crate::request::{FilterOperator, FilterValue, ResolvedQueryRequest, SortDirection};
 
@@ -51,50 +52,8 @@ impl SemanticPlanner {
         // Step 1: Constraint evaluation (step 0 in CONTEXT.md).
         ConstraintEvaluator::check(request, manifest)?;
 
-        // Step 2: Look up the kind.
-        let kind = manifest
-            .get_kind(&request.entity_name)
-            .ok_or_else(|| PlannerError::KindNotFound(request.entity_name.clone()))?;
-
-        // Step 3: Apply domain filter — narrow datasets if domain_hint is present.
-        let kind = if let Some(ref domain_hint) = request.domain_hint {
-            let mut filtered_kind = kind.clone();
-            filtered_kind.datasets.retain(|_ds| {
-                // Keep datasets that belong to the requested domain.
-                // Kind-level domain is checked: if the kind's domain list
-                // doesn't include the hint, all datasets are excluded.
-                if let Some(ref kind_domains) = filtered_kind.domain {
-                    if !kind_domains.iter().any(|d| d == domain_hint) {
-                        return false;
-                    }
-                }
-                true
-            });
-
-            if filtered_kind.datasets.is_empty() {
-                return Err(PlannerError::NoCoveringDataset {
-                    kind: kind.name.clone(),
-                    reason: format!(
-                        "no datasets match domain hint '{}'",
-                        domain_hint
-                    ),
-                });
-            }
-            std::borrow::Cow::Owned(filtered_kind)
-        } else {
-            std::borrow::Cow::Borrowed(kind)
-        };
-
-        // Step 3b: Metadata dimension filter — prune datasets based on
-        // equality filters on metadata dimensions. If a user filter is
-        // `metadata_dim = 'value'` and a dataset's extracted value doesn't
-        // match, exclude that dataset from candidates.
-        let kind = prune_by_metadata_filters(kind, request)?;
-
-        // Step 4: Dispatch to kind-specific planner.
-        let kind_planner = self.planners.dispatch(&kind.kind_type)?;
-
-        // Step 5: Build planning context.
+        // Step 2: Resolve entity via v2 DataKind hierarchy (preferred),
+        // falling back to v1 CompiledKind for backward compatibility.
         let ctx = PlannerContext {
             manifest,
             profile: self.profile.as_ref(),
@@ -102,12 +61,13 @@ impl SemanticPlanner {
             session: &request.session_variables,
         };
 
-        // Step 6: Resolve plan fragment via kind planner.
-        let mut fragment = kind_planner.resolve(&kind, request, &ctx)?;
+        let (fragment, entity_measures, entity_filters) =
+            self.resolve_entity(request, manifest, &ctx)?;
 
         // Step 7: Additivity resolution for each measure.
+        let mut fragment = fragment;
         for measure_name in &request.measures {
-            if let Some(measure) = kind.measures.get(measure_name) {
+            if let Some(measure) = entity_measures.get(measure_name) {
                 fragment =
                     AdditivityResolver::resolve(fragment, measure, request, self.profile.as_ref())?;
             }
@@ -116,18 +76,8 @@ impl SemanticPlanner {
         // Step 8: Inject filters.
         let mut root = fragment.root;
 
-        // 8a: Inject dataset-level filters.
-        // (Dataset filters come from the dataset binding; skipped in v1 simplified flow.)
-
-        // 8b: Measure-level filters are applied as conditional aggregation inside
-        // the KindPlanner (GrainsetPlanner wraps aggregate expressions in
-        // CASE WHEN filter THEN expr ELSE NULL END). No extra FilterNode needed here.
-
-        // 8c: Metric-level filters follow the same conditional aggregation pattern
-        // as measure filters — applied during expression lowering in KindPlanner.
-
-        // 8d: Inject kind-level filters (applied to all queries against this kind).
-        root = inject_kind_filters(root, &kind)?;
+        // 8d: Inject entity-level filters (applied to all queries against this entity).
+        root = inject_entity_filters(root, &entity_filters)?;
 
         // 8e: Inject user filters from the request.
         root = inject_user_filters(root, request)?;
@@ -150,6 +100,202 @@ impl SemanticPlanner {
 
         // Step 12: Optimizer pass.
         self.optimizer.apply(plan)
+    }
+
+    /// Resolve the entity and build the plan fragment.
+    ///
+    /// Returns (fragment, measures_map, filters) where measures_map and filters
+    /// are borrowed from the entity for post-resolution processing.
+    ///
+    /// Uses v2 DataKind dispatch for CommonDataset (fast path).
+    /// Falls back to v1 CompiledKind dispatch for ComplexDataKind and legacy entities.
+    #[allow(clippy::type_complexity)]
+    fn resolve_entity<'a>(
+        &self,
+        request: &ResolvedQueryRequest,
+        manifest: &'a CompiledManifest,
+        ctx: &PlannerContext<'_>,
+    ) -> Result<
+        (
+            PlanFragment,
+            &'a indexmap::IndexMap<String, semstrait_manifest::CompiledMeasure>,
+            Vec<semstrait_manifest::CompiledFilter>,
+        ),
+        PlannerError,
+    > {
+        // Try v2 DataKind dispatch first.
+        if let Some(data_kind) = manifest.resolve_data_kind(&request.entity_name) {
+            match data_kind {
+                semstrait_manifest::DataKind::CommonDataset(cd) => {
+                    // V2 fast path: CommonDataset — direct Scan → Agg → Project.
+                    // Domain check for CommonDataset.
+                    if let Some(ref domain_hint) = request.domain_hint {
+                        if let Some(ref domains) = cd.domain {
+                            if !domains.iter().any(|d| d == domain_hint) {
+                                return Err(PlannerError::NoCoveringDataset {
+                                    kind: cd.name.clone(),
+                                    reason: format!(
+                                        "no datasets match domain hint '{}'",
+                                        domain_hint
+                                    ),
+                                });
+                            }
+                        }
+                    }
+
+                    let fragment =
+                        crate::kind::common::build_common_dataset_plan(cd, request, ctx)?;
+                    let filters = cd.filters.clone();
+                    return Ok((fragment, &cd.measures, filters));
+                }
+                semstrait_manifest::DataKind::ComplexDataKind(_ck) => {
+                    // ComplexDataKind: fall through to v1 CompiledKind dispatch.
+                    // The v1 planners work correctly and will be migrated incrementally.
+                }
+            }
+        }
+
+        // V1 fallback: CompiledKind dispatch.
+        let kind = manifest
+            .get_kind(&request.entity_name)
+            .ok_or_else(|| PlannerError::KindNotFound(request.entity_name.clone()))?;
+
+        // Domain filtering.
+        let kind = if let Some(ref domain_hint) = request.domain_hint {
+            let mut filtered_kind = kind.clone();
+            filtered_kind.datasets.retain(|_ds| {
+                if let Some(ref kind_domains) = filtered_kind.domain {
+                    if !kind_domains.iter().any(|d| d == domain_hint) {
+                        return false;
+                    }
+                }
+                true
+            });
+            if filtered_kind.datasets.is_empty() {
+                return Err(PlannerError::NoCoveringDataset {
+                    kind: kind.name.clone(),
+                    reason: format!("no datasets match domain hint '{}'", domain_hint),
+                });
+            }
+            std::borrow::Cow::Owned(filtered_kind)
+        } else {
+            std::borrow::Cow::Borrowed(kind)
+        };
+
+        // Metadata dimension filter.
+        let kind = prune_by_metadata_filters(kind, request)?;
+
+        // Literal dimension filter.
+        let kind = prune_by_literal_filters(kind, request)?;
+
+        // Dispatch to kind-specific planner.
+        let kind_planner = self.planners.dispatch(&kind.kind_type)?;
+        let fragment = kind_planner.resolve(&kind, request, ctx)?;
+
+        // We need to return references to the kind's measures and filters.
+        // Since we may have cloned (Cow::Owned), we return from the original manifest kind.
+        let original_kind = manifest.get_kind(&request.entity_name).unwrap();
+        let filters = original_kind.filters.clone();
+        Ok((fragment, &original_kind.measures, filters))
+    }
+
+    /// Plan an ad-hoc query where `FROM` is omitted.
+    ///
+    /// Uses `resolve_from_fields()` to infer the target entity from the requested
+    /// field names (dimensions + measures). If all fields resolve to a single dataset,
+    /// plans against that dataset. If multiple datasets are needed, returns the
+    /// resolved join path for future join plan construction.
+    ///
+    /// Currently supports single-dataset resolution only. Multi-dataset ad-hoc joins
+    /// will be supported in a future phase.
+    pub fn plan_ad_hoc(
+        &self,
+        request: &ResolvedQueryRequest,
+        manifest: &CompiledManifest,
+    ) -> Result<LogicalPlan, PlannerError> {
+        // Collect all requested field names.
+        let all_fields: Vec<String> = request
+            .dimensions
+            .iter()
+            .chain(request.measures.iter())
+            .cloned()
+            .collect();
+
+        // Resolve datasets and join path from field names.
+        let resolved = resolve_from_fields(&all_fields, manifest)?;
+
+        if resolved.datasets.len() == 1 {
+            // Single dataset — resolve via manifest's entity resolution
+            // (handles both kinds and auto-wrapped datasets).
+            let ds_name = &resolved.datasets[0];
+
+            // Verify the entity exists (kind or dataset).
+            let entity = manifest
+                .resolve_entity(ds_name)
+                .ok_or_else(|| PlannerError::KindNotFound(ds_name.clone()))?;
+
+            // Build a request targeting the resolved entity.
+            let mut ad_hoc_request = request.clone();
+            ad_hoc_request.entity_name = entity.as_kind().name.clone();
+
+            // For auto-wrapped datasets (ImplicitKind), we need to register
+            // the synthesized kind temporarily. Instead, plan directly using
+            // the resolved kind through the kind planner.
+            let ctx = PlannerContext {
+                manifest,
+                profile: self.profile.as_ref(),
+                catalog: self.catalog.as_deref(),
+                session: &request.session_variables,
+            };
+
+            let kind = entity.as_kind();
+            let kind_planner = self.planners.dispatch(&kind.kind_type)?;
+            let fragment = kind_planner.resolve(kind, &ad_hoc_request, &ctx)?;
+
+            // Additivity resolution.
+            let mut fragment = fragment;
+            for measure_name in &request.measures {
+                if let Some(measure) = kind.measures.get(measure_name) {
+                    fragment = AdditivityResolver::resolve(
+                        fragment,
+                        measure,
+                        request,
+                        self.profile.as_ref(),
+                    )?;
+                }
+            }
+
+            // Filter injection.
+            let mut root = fragment.root;
+            root = inject_entity_filters(root, &kind.filters)?;
+            root = inject_user_filters(root, request)?;
+
+            // ORDER BY + LIMIT.
+            root = apply_order_by(root, request)?;
+            root = apply_limit(root, request)?;
+
+            // Build LogicalPlan.
+            let output_names: Vec<String> = request
+                .dimensions
+                .iter()
+                .chain(request.measures.iter())
+                .cloned()
+                .collect();
+
+            let plan = LogicalPlan::new(root, output_names);
+            self.optimizer.apply(plan)
+        } else {
+            // Multi-dataset ad-hoc join — not yet implemented.
+            // The resolution found that fields span multiple datasets
+            // connected by join path: {:?}.
+            Err(PlannerError::Internal(format!(
+                "ad-hoc multi-dataset join not yet supported: fields span {} datasets ({}) \
+                 with join path {:?}",
+                resolved.datasets.len(),
+                resolved.datasets.join(", "),
+                resolved.join_path,
+            )))
+        }
     }
 }
 
@@ -260,19 +406,85 @@ fn prune_by_metadata_filters<'a>(
 }
 
 // ============================================================================
+// Literal dimension dataset pruning
+// ============================================================================
+
+/// Prune datasets based on user equality filters on literal column mapping values.
+///
+/// When a user filter references a field that has a `ColumnMappingValue::Literal`
+/// mapping in at least one dataset, we check each dataset's literal value against
+/// the filter. Datasets whose literal value doesn't match are excluded.
+/// Datasets that don't have a literal mapping for the field are conservatively kept.
+fn prune_by_literal_filters<'a>(
+    kind: std::borrow::Cow<'a, semstrait_manifest::CompiledKind>,
+    request: &ResolvedQueryRequest,
+) -> Result<std::borrow::Cow<'a, semstrait_manifest::CompiledKind>, PlannerError> {
+    use semstrait_manifest::{ColumnMappingValue, LiteralValue};
+
+    // Collect equality filters on fields that have a Literal mapping in at least one dataset.
+    let mut literal_filters: Vec<(String, String)> = Vec::new(); // (field_name, expected_value)
+
+    for filter in &request.filters {
+        if !matches!(filter.operator, FilterOperator::Eq) {
+            continue;
+        }
+        let field = &filter.field;
+
+        // Check if any dataset has a Literal mapping for this field.
+        let has_literal = kind.datasets.iter().any(|ds| {
+            matches!(
+                ds.extras.column_mapping.get(field),
+                Some(ColumnMappingValue::Literal(_))
+            )
+        });
+
+        if has_literal {
+            if let Some(FilterValue::String(ref val)) = filter.values.first() {
+                literal_filters.push((field.clone(), val.clone()));
+            }
+        }
+    }
+
+    if literal_filters.is_empty() {
+        return Ok(kind);
+    }
+
+    let mut filtered_kind = kind.into_owned();
+    filtered_kind.datasets.retain(|ds| {
+        literal_filters.iter().all(|(field, expected)| {
+            match ds.extras.column_mapping.get(field) {
+                Some(ColumnMappingValue::Literal(LiteralValue::String(ref actual))) => {
+                    actual == expected
+                }
+                _ => true, // No literal mapping for this field → keep (conservative)
+            }
+        })
+    });
+
+    if filtered_kind.datasets.is_empty() {
+        return Err(PlannerError::NoCoveringDataset {
+            kind: filtered_kind.name.clone(),
+            reason: "no datasets match literal dimension filters".to_string(),
+        });
+    }
+
+    Ok(std::borrow::Cow::Owned(filtered_kind))
+}
+
+// ============================================================================
 // Filter injection helpers
 // ============================================================================
 
-/// Inject kind-level filters as FilterNodes wrapping the plan root.
+/// Inject entity-level filters as FilterNodes wrapping the plan root.
 ///
-/// Kind filters apply to all queries against a kind, regardless of dataset or user request.
+/// Entity filters apply to all queries against an entity, regardless of dataset or user request.
 /// Expressions use semantic names (post-projection), so we lower with an empty mapping.
-fn inject_kind_filters(
+fn inject_entity_filters(
     mut root: PlanNode,
-    kind: &semstrait_manifest::CompiledKind,
+    filters: &[semstrait_manifest::CompiledFilter],
 ) -> Result<PlanNode, PlannerError> {
     let empty_mapping = std::collections::HashMap::new();
-    for filter in &kind.filters {
+    for filter in filters {
         let predicate = crate::expr_lower::lower_expr(&filter.expr, &empty_mapping)?;
 
         let schema = root.meta().output_schema.clone();
@@ -770,7 +982,7 @@ mod tests {
                     storage: None,
                     catalog: None,
                 },
-                resolved_sources: vec![source.to_string()],
+                resolved_sources: vec![semstrait_manifest::ResolvedSource::path(source)],
             }
         };
 
@@ -803,6 +1015,11 @@ mod tests {
             relationships: vec![],
             model_name: "test_meta_filter".to_string(),
             model_description: None,
+            data_kinds: IndexMap::new(),
+            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
+            field_index: semstrait_manifest::FieldIndex::default(),
+            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            catalog_snapshot: None,
         };
 
         // Query with a metadata filter: source = 'shopify'
@@ -847,5 +1064,163 @@ mod tests {
             }
             PlanNode::Union(n) => n.inputs.iter().flat_map(collect_scan_tables).collect(),
         }
+    }
+
+    // ================================================================
+    // V2 CommonDataset fast path tests
+    // ================================================================
+
+    #[test]
+    fn test_v2_plan_basic_common_dataset() {
+        let manifest = make_test_manifest_v2();
+        let request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan(&request, &manifest);
+
+        assert!(result.is_ok(), "v2 CommonDataset planning should succeed: {:?}", result.err());
+        let plan = result.unwrap();
+        assert_eq!(plan.output_names.len(), 3);
+        assert_eq!(plan.output_names, vec!["date", "region", "revenue"]);
+    }
+
+    #[test]
+    fn test_v2_plan_with_filters() {
+        let manifest = make_test_manifest_v2();
+        let mut request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
+        request.filters = vec![QueryFilter {
+            field: "region".to_string(),
+            operator: FilterOperator::Eq,
+            values: vec![FilterValue::String("US".to_string())],
+        }];
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan(&request, &manifest);
+
+        assert!(result.is_ok(), "v2 planning with filters should succeed");
+        let plan = result.unwrap();
+        assert!(contains_filter_node(&plan.root), "plan should contain a FilterNode");
+    }
+
+    #[test]
+    fn test_v2_plan_with_order_by_and_limit() {
+        let manifest = make_test_manifest_v2();
+        let mut request = make_test_request("orders", vec!["date"], vec!["revenue"]);
+        request.order_by = vec![OrderByClause {
+            field: "revenue".to_string(),
+            direction: SortDirection::Descending,
+        }];
+        request.limit = Some(100);
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan(&request, &manifest);
+
+        assert!(result.is_ok(), "v2 planning with order_by + limit should succeed");
+        let plan = result.unwrap();
+        assert!(contains_sort_node(&plan.root));
+        assert!(contains_fetch_node(&plan.root));
+    }
+
+    // ================================================================
+    // Ad-hoc resolution tests
+    // ================================================================
+
+    #[test]
+    fn test_ad_hoc_single_dataset_resolution() {
+        use semstrait_manifest::{FieldIndex, CompiledDataset, CompiledDimension, CompiledMeasure};
+        use std::collections::HashSet;
+
+        // Build a manifest with a dataset "orders" in manifest.datasets
+        // and a FieldIndex that maps fields to it.
+        let mut manifest = make_test_manifest();
+
+        // Add the dataset to manifest.datasets for ad-hoc resolution.
+        let mut dims = indexmap::IndexMap::new();
+        dims.insert("date".to_string(), CompiledDimension {
+            name: "date".to_string(),
+            description: None,
+            data_type: "string".to_string(),
+            dim_type: semstrait_manifest::DimensionType::Categorical(
+                semstrait_manifest::CategoricalDimension { enum_values: None },
+            ),
+        });
+        dims.insert("region".to_string(), CompiledDimension {
+            name: "region".to_string(),
+            description: None,
+            data_type: "string".to_string(),
+            dim_type: semstrait_manifest::DimensionType::Categorical(
+                semstrait_manifest::CategoricalDimension { enum_values: None },
+            ),
+        });
+
+        let mut measures = indexmap::IndexMap::new();
+        measures.insert("revenue".to_string(), CompiledMeasure {
+            name: "revenue".to_string(),
+            description: None,
+            data_type: "float64".to_string(),
+            agg: None,
+            expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
+            expr_source: "SUM(amount)".to_string(),
+            additivity: None,
+            constraints: None,
+            filters: vec![],
+        });
+
+        manifest.datasets.insert("orders_ds".to_string(), CompiledDataset {
+            name: "orders_ds".to_string(),
+            description: None,
+            domain: None,
+            keys: None,
+            dimensions: dims,
+            measures,
+            metrics: indexmap::IndexMap::new(),
+            compiled_schema: None,
+        });
+
+        // Build a FieldIndex pointing to orders_ds.
+        let mut providers = std::collections::HashMap::new();
+        providers.insert("date".to_string(), vec!["orders_ds".to_string()]);
+        providers.insert("region".to_string(), vec!["orders_ds".to_string()]);
+        providers.insert("revenue".to_string(), vec!["orders_ds".to_string()]);
+
+        manifest.field_index = FieldIndex {
+            providers,
+            all_dimensions: ["date", "region"].iter().map(|s| s.to_string()).collect::<HashSet<_>>(),
+            all_measures: ["revenue"].iter().map(|s| s.to_string()).collect::<HashSet<_>>(),
+            all_metrics: HashSet::new(),
+        };
+
+        // Request with empty entity_name — ad-hoc resolution should find orders_ds.
+        let request = make_test_request("", vec!["date", "region"], vec!["revenue"]);
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan_ad_hoc(&request, &manifest);
+
+        assert!(result.is_ok(), "ad-hoc single dataset should succeed: {:?}", result.err());
+        let plan = result.unwrap();
+        assert_eq!(plan.output_names, vec!["date", "region", "revenue"]);
+    }
+
+    #[test]
+    fn test_ad_hoc_unknown_field_error() {
+        let manifest = make_test_manifest();
+        let request = make_test_request("", vec!["nonexistent_field"], vec!["revenue"]);
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan_ad_hoc(&request, &manifest);
+
+        assert!(result.is_err(), "unknown field should fail");
+    }
+
+    #[test]
+    fn test_v2_plan_kind_not_found() {
+        let manifest = make_test_manifest_v2();
+        let request = make_test_request("nonexistent", vec!["date"], vec!["revenue"]);
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan(&request, &manifest);
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), PlannerError::KindNotFound(_)));
     }
 }

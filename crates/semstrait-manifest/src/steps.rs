@@ -444,6 +444,24 @@ pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
                         merged
                     }
                 };
+                // Flatten Anchored entries: insert anchor sub-names as Simple
+                // mappings so that resolve_name can resolve them during planning.
+                let mut anchor_expansions: Vec<(String, ColumnMappingValue)> = Vec::new();
+                for value in effective.values() {
+                    if let ColumnMappingValue::Anchored(anchors) = value {
+                        for (anchor_name, physical_col) in anchors {
+                            anchor_expansions.push((
+                                anchor_name.clone(),
+                                ColumnMappingValue::Simple(physical_col.clone()),
+                            ));
+                        }
+                    }
+                }
+                let mut effective = effective;
+                for (name, value) in anchor_expansions {
+                    effective.entry(name).or_insert(value);
+                }
+
                 ds.extras.column_mapping = ColumnMapping::Explicit(effective);
 
                 // Propagate temporal and catalog defaults (dataset value always wins).
@@ -486,9 +504,29 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
                     ds_display
                 );
 
+                // Collect anchor sub-names from all Anchored entries (these are
+                // synthetic keys added during flattening, not interface names).
+                let mut anchor_subnames: HashSet<String> = HashSet::new();
+                for value in ds.extras.column_mapping.values() {
+                    if let ColumnMappingValue::Anchored(anchors) = value {
+                        // Validate reserved names.
+                        for anchor_name in anchors.keys() {
+                            if anchor_name == "column" || anchor_name == "literal" {
+                                errors.push(format!(
+                                    "kind '{}', dataset '{}': anchor name '{}' is reserved \
+                                     and cannot be used in Anchored column_mapping",
+                                    kind.name, ds_display, anchor_name
+                                ));
+                            }
+                            anchor_subnames.insert(anchor_name.clone());
+                        }
+                    }
+                }
+
                 // Check that mapping keys reference existing interface names.
+                // Skip anchor sub-names — they're injected by flattening, not interface names.
                 for key in ds.extras.column_mapping.keys() {
-                    if !interface_names.contains(key) {
+                    if !interface_names.contains(key) && !anchor_subnames.contains(key) {
                         errors.push(format!(
                             "kind '{}', dataset '{}': column_mapping key '{}' \
                              does not match any dimension, measure, or metric in the interface",
@@ -497,16 +535,87 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
                     }
                 }
 
-                // Check completeness: every mappable interface name (dimensions + measures)
-                // must appear as a mapping key. Metrics are derived expressions and
-                // do not require column mappings.
-                let mappable_names: HashSet<String> = collect_mappable_names(kind).collect();
-                for iname in &mappable_names {
-                    if !ds.extras.column_mapping.keys().any(|k| k == iname) {
-                        errors.push(format!(
-                            "kind '{}', dataset '{}': mapping is incomplete — missing key '{}'",
-                            kind.name, ds_display, iname
-                        ));
+            }
+        }
+
+        // Union coverage: every mappable interface name must be mapped by at least
+        // one dataset. Partial per-dataset mappings are valid — the planner handles
+        // coverage at query time via grain groups and UNION ALL.
+        let mappable_names: HashSet<String> = collect_mappable_names(kind).collect();
+        let mut all_mapped: HashSet<String> = HashSet::new();
+        for ds_entry in &kind.datasets {
+            if let KindDatasetEntry::Inline(ds) = ds_entry {
+                for key in ds.extras.column_mapping.keys() {
+                    all_mapped.insert(key.clone());
+                }
+            }
+        }
+        for iname in &mappable_names {
+            if !all_mapped.contains(iname) {
+                errors.push(format!(
+                    "kind '{}': interface name '{}' is not mapped by any dataset",
+                    kind.name, iname
+                ));
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(CompileError::MappingValidation(errors))
+    }
+}
+
+// ============================================================================
+// Step 5b: Validate Grain Compatibility
+// ============================================================================
+
+/// Validate that dataset-level temporal grain specs are compatible with
+/// the kind-level temporal dimension definitions.
+///
+/// For each kind with temporal dimensions:
+/// - Each dataset's explicit grain (via `WithGrain { grain }`) must be present
+///   in the kind-level dimension's `grains` list.
+/// - If multiple temporal dimensions exist, each is validated independently.
+pub(crate) fn validate_grain_compatibility(model: &SemanticModel) -> Result<(), CompileError> {
+    let mut errors = Vec::new();
+
+    for kind in &model.kinds {
+        // Collect temporal dimensions: name -> allowed grains
+        let temporal_dims: Vec<(&str, &[TemporalGrain])> = kind
+            .dimensions
+            .iter()
+            .filter_map(|d| match d {
+                DimensionEntry::Inline(dim) => match &dim.dim_type {
+                    DimensionType::Temporal(td) => Some((dim.name.as_str(), td.grains.as_slice())),
+                    _ => None,
+                },
+                DimensionEntry::Ref(_) => None,
+            })
+            .collect();
+
+        if temporal_dims.is_empty() {
+            continue;
+        }
+
+        for ds_entry in &kind.datasets {
+            if let KindDatasetEntry::Inline(ds) = ds_entry {
+                let ds_display = dataset_display_name(&ds.name);
+
+                for (dim_name, allowed_grains) in &temporal_dims {
+                    if let Some(ColumnMappingValue::WithGrain {
+                        grain: Some(grain), ..
+                    }) = ds.extras.column_mapping.get(*dim_name)
+                    {
+                        if !allowed_grains.contains(grain) {
+                            errors.push(format!(
+                                "kind '{}', dataset '{}': temporal dimension '{}' \
+                                 has grain '{:?}' which is not in the kind's allowed \
+                                 grains {:?}",
+                                kind.name, ds_display, dim_name, grain, allowed_grains
+                            ));
+                        }
                     }
                 }
             }
@@ -741,16 +850,155 @@ pub(crate) fn emit(
         });
     }
 
+    // Build v2 DataKind hierarchy from compiled kinds.
+    let mut data_kinds = IndexMap::new();
+    for (name, kind) in &kinds {
+        let data_kind = crate::acceleration::data_kind_from_compiled_kind(kind);
+        data_kinds.insert(name.clone(), data_kind);
+    }
+
+    // Build global field index from datasets and data_kinds.
+    let field_index = build_field_index(&datasets, &data_kinds);
+
+    // Build global relationship graph with shortest paths.
+    let relationship_graph = build_relationship_graph(&datasets, &relationships);
+
     Ok(CompiledManifest {
-        version: 1,
+        version: 2,
         compiled_at: chrono::DateTime::default(), // overwritten by compiler.compile()
         source_hash,
         datasets,
         kinds,
+        data_kinds,
         relationships,
+        relationship_graph,
+        field_index,
+        diagnostics: crate::acceleration::CompileDiagnostics::default(),
+        catalog_snapshot: None,
         model_name: model.name,
         model_description: model.description,
     })
+}
+
+// ============================================================================
+// Step 20-21: Global Graph Structures
+// ============================================================================
+
+/// Build global field index from compiled datasets and data kinds.
+fn build_field_index(
+    datasets: &IndexMap<String, CompiledDataset>,
+    data_kinds: &IndexMap<String, crate::acceleration::DataKind>,
+) -> crate::acceleration::FieldIndex {
+    let mut providers: HashMap<String, Vec<String>> = HashMap::new();
+    let mut all_dimensions: HashSet<String> = HashSet::new();
+    let mut all_measures: HashSet<String> = HashSet::new();
+    let mut all_metrics: HashSet<String> = HashSet::new();
+
+    // From datasets
+    for (ds_name, ds) in datasets {
+        for dim_name in ds.dimensions.keys() {
+            providers
+                .entry(dim_name.clone())
+                .or_default()
+                .push(ds_name.clone());
+            all_dimensions.insert(dim_name.clone());
+        }
+        for measure_name in ds.measures.keys() {
+            providers
+                .entry(measure_name.clone())
+                .or_default()
+                .push(ds_name.clone());
+            all_measures.insert(measure_name.clone());
+        }
+    }
+
+    // From data kinds (for metrics, which are kind-level)
+    for dk in data_kinds.values() {
+        use crate::acceleration::SemanticInterface;
+        for metric_name in dk.metrics().keys() {
+            all_metrics.insert(metric_name.clone());
+        }
+    }
+
+    crate::acceleration::FieldIndex {
+        providers,
+        all_dimensions,
+        all_measures,
+        all_metrics,
+    }
+}
+
+/// Build global relationship graph with pre-computed shortest paths.
+fn build_relationship_graph(
+    datasets: &IndexMap<String, CompiledDataset>,
+    relationships: &[CompiledRelationship],
+) -> crate::acceleration::RelationshipGraph {
+    use std::collections::VecDeque;
+
+    let dataset_index: HashMap<String, usize> = datasets
+        .keys()
+        .enumerate()
+        .map(|(i, name)| (name.clone(), i))
+        .collect();
+
+    let mut forward: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+    let mut reverse: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+
+    for (rel_idx, rel) in relationships.iter().enumerate() {
+        forward
+            .entry(rel.from.clone())
+            .or_default()
+            .push((rel.to.clone(), rel_idx));
+        reverse
+            .entry(rel.to.clone())
+            .or_default()
+            .push((rel.from.clone(), rel_idx));
+    }
+
+    // BFS from every dataset to compute shortest paths.
+    let mut rel_graph = crate::acceleration::RelationshipGraph {
+        forward,
+        reverse,
+        shortest_paths: HashMap::new(),
+        dataset_index,
+    };
+
+    let ds_names: Vec<String> = datasets.keys().cloned().collect();
+    for source_name in &ds_names {
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<(String, Vec<usize>)> = VecDeque::new();
+        visited.insert(source_name.clone());
+        queue.push_back((source_name.clone(), vec![]));
+
+        while let Some((current, path)) = queue.pop_front() {
+            // Follow forward edges
+            if let Some(edges) = rel_graph.forward.get(&current).cloned() {
+                for (neighbor, rel_idx) in &edges {
+                    if !visited.contains(neighbor) {
+                        visited.insert(neighbor.clone());
+                        let mut new_path = path.clone();
+                        new_path.push(*rel_idx);
+                        rel_graph.set_shortest_path(source_name, neighbor, new_path.clone());
+                        queue.push_back((neighbor.clone(), new_path));
+                    }
+                }
+            }
+            // Follow reverse edges (relationships are bidirectional for BFS)
+            if let Some(edges) = rel_graph.reverse.get(&current).cloned() {
+                for (neighbor, rel_idx) in &edges {
+                    if !visited.contains(neighbor) {
+                        visited.insert(neighbor.clone());
+                        let mut new_path = path.clone();
+                        new_path.push(*rel_idx);
+                        rel_graph.set_shortest_path(source_name, neighbor, new_path.clone());
+                        queue.push_back((neighbor.clone(), new_path));
+                    }
+                }
+            }
+        }
+    }
+
+    rel_graph
 }
 
 // ============================================================================
@@ -990,7 +1238,23 @@ fn compile_kind(
         .filter_map(|ds_entry| {
             if let KindDatasetEntry::Inline(ds) = ds_entry {
                 let resolved_sources = ds.extras.storage.as_ref()
-                    .map(|s| s.all_sources().all().map(|s| s.to_string()).collect())
+                    .map(|storage| {
+                        let sources = storage.all_sources();
+                        let mut result = Vec::new();
+                        for p in &sources.paths {
+                            result.push(crate::acceleration::ResolvedSource {
+                                reference: p.clone(),
+                                source_type: crate::acceleration::SourceType::Path,
+                            });
+                        }
+                        for t in &sources.tables {
+                            result.push(crate::acceleration::ResolvedSource {
+                                reference: t.clone(),
+                                source_type: crate::acceleration::SourceType::Table,
+                            });
+                        }
+                        result
+                    })
                     .unwrap_or_default();
                 Some(CompiledKindDataset {
                     name: dataset_display_name(&ds.name).to_string(),
@@ -1278,6 +1542,283 @@ fn extract_identifiers_from_expr(expr: &str) -> Vec<String> {
 }
 
 // ============================================================================
+// Steps 10-13: Catalog Resolution
+// ============================================================================
+
+/// Resolve catalog metadata and build a CatalogSnapshot.
+///
+/// Best-effort: failures produce warnings but don't fail compilation.
+/// When no catalog is available, this function is not called.
+///
+/// Steps:
+/// - 10: Resolve table references via `load_table_metadata()` or `get_schema()`
+/// - 11: Validate column schemas against physical metadata
+/// - 12: Map partition transforms → TemporalGrain
+/// - 13: Assemble CatalogSnapshot and attach to manifest
+pub(crate) async fn resolve_catalog(
+    manifest: &mut CompiledManifest,
+    catalog: &dyn CatalogProvider,
+    namespace: &str,
+) {
+    use crate::catalog_snapshot::*;
+    use crate::acceleration::SourceType;
+    use semstrait_catalog::TableRef;
+
+    let mut table_snapshots: HashMap<String, TableSnapshot> = HashMap::new();
+    let mut warnings: Vec<crate::acceleration::CompileWarning> = Vec::new();
+
+    // Collect unique table references from all kind datasets.
+    let mut table_sources: HashSet<String> = HashSet::new();
+    for kind in manifest.kinds.values() {
+        for ds in &kind.datasets {
+            for source in &ds.resolved_sources {
+                if source.source_type == SourceType::Table {
+                    table_sources.insert(source.reference.clone());
+                }
+            }
+        }
+    }
+
+    // Also check datasets (for implicit kind / ad-hoc queries).
+    // Dataset-level sources come from kind bindings, but we also scan
+    // datasets that have compiled_schema slots to populate.
+    let dataset_names: Vec<String> = manifest.datasets.keys().cloned().collect();
+
+    // Step 10: Resolve table references.
+    for table_fqn in &table_sources {
+        let table_ref = parse_table_ref(table_fqn, namespace);
+
+        // Try extended metadata first (Iceberg path).
+        match catalog.load_table_metadata(&table_ref).await {
+            Ok(Some(meta)) => {
+                // Step 11: Column schema validation.
+                // Check column_mapping keys against physical columns.
+                let physical_columns: HashSet<&str> =
+                    meta.columns.iter().map(|c| c.name.as_str()).collect();
+
+                for kind in manifest.kinds.values() {
+                    for ds in &kind.datasets {
+                        let has_table = ds.resolved_sources.iter().any(|s| {
+                            s.source_type == SourceType::Table && s.reference == *table_fqn
+                        });
+                        if !has_table {
+                            continue;
+                        }
+                        if let semstrait_model::ColumnMapping::Explicit(ref mapping) = ds.extras.column_mapping {
+                            for (_, col_val) in mapping {
+                                let col_name = match col_val {
+                                    semstrait_model::ColumnMappingValue::Simple(s) => s.as_str(),
+                                    semstrait_model::ColumnMappingValue::WithGrain { column, .. } => column.as_str(),
+                                    semstrait_model::ColumnMappingValue::Literal(_)
+                                    | semstrait_model::ColumnMappingValue::Anchored(_) => continue,
+                                };
+                                if !is_identifier(col_name) {
+                                    continue;
+                                }
+                                if !physical_columns.contains(col_name) {
+                                    warnings.push(crate::acceleration::CompileWarning {
+                                        code: "CAT_W001".to_string(),
+                                        message: format!(
+                                            "column '{}' not found in physical schema for '{}'",
+                                            col_name, table_fqn
+                                        ),
+                                        location: table_fqn.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Step 12: Map partition transforms → TemporalGrain.
+                let partition_spec: Vec<PartitionField> = meta
+                    .partition_fields
+                    .iter()
+                    .map(|pf| {
+                        let transform = PartitionTransform::parse(&pf.transform);
+                        let inferred_grain =
+                            transform.as_ref().and_then(|t| t.inferred_grain());
+                        PartitionField {
+                            source_column: pf.source_column.clone(),
+                            transform: transform.unwrap_or(PartitionTransform::Identity),
+                            name: pf.name.clone(),
+                            inferred_grain,
+                        }
+                    })
+                    .collect();
+
+                // Build resolved columns.
+                let columns: Vec<ResolvedColumn> = meta
+                    .columns
+                    .iter()
+                    .map(|c| ResolvedColumn {
+                        name: c.name.clone(),
+                        data_type: c.data_type.clone(),
+                        nullable: c.nullable,
+                        comment: c.comment.clone(),
+                        field_id: None, // Field IDs are in the catalog partition field
+                    })
+                    .collect();
+
+                let iceberg_meta = if meta.snapshot_id.is_some()
+                    || !partition_spec.is_empty()
+                    || meta.format_version.is_some()
+                {
+                    Some(IcebergMetadata {
+                        snapshot_id: meta.snapshot_id.unwrap_or(0),
+                        partition_spec,
+                        format_version: meta.format_version,
+                        location: meta.location.clone(),
+                        properties: meta.properties.clone(),
+                    })
+                } else {
+                    None
+                };
+
+                table_snapshots.insert(
+                    table_fqn.clone(),
+                    TableSnapshot {
+                        fqn: table_fqn.clone(),
+                        columns,
+                        iceberg: iceberg_meta,
+                    },
+                );
+
+                // Also populate dataset compiled_schema for drift detection.
+                populate_dataset_schema(manifest, &meta.columns, &dataset_names, namespace);
+            }
+            Ok(None) => {
+                // No extended metadata (e.g., NullCatalogProvider or non-Iceberg catalog).
+                // Fall back to basic schema.
+                match catalog.get_schema(&table_ref).await {
+                    Ok(columns) => {
+                        let resolved: Vec<ResolvedColumn> = columns
+                            .iter()
+                            .map(|c| ResolvedColumn {
+                                name: c.name.clone(),
+                                data_type: c.data_type.clone(),
+                                nullable: c.nullable,
+                                comment: c.comment.clone(),
+                                field_id: None,
+                            })
+                            .collect();
+
+                        table_snapshots.insert(
+                            table_fqn.clone(),
+                            TableSnapshot {
+                                fqn: table_fqn.clone(),
+                                columns: resolved,
+                                iceberg: None,
+                            },
+                        );
+
+                        populate_dataset_schema(manifest, &columns, &dataset_names, namespace);
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "skipping catalog resolution for table '{}': {}",
+                            table_fqn,
+                            e
+                        );
+                        warnings.push(crate::acceleration::CompileWarning {
+                            code: "CAT_W002".to_string(),
+                            message: format!(
+                                "could not resolve table '{}': {}",
+                                table_fqn, e
+                            ),
+                            location: table_fqn.clone(),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "skipping catalog resolution for table '{}': {}",
+                    table_fqn,
+                    e
+                );
+                warnings.push(crate::acceleration::CompileWarning {
+                    code: "CAT_W002".to_string(),
+                    message: format!("could not resolve table '{}': {}", table_fqn, e),
+                    location: table_fqn.clone(),
+                });
+            }
+        }
+    }
+
+    // Also capture schema for datasets referenced by name (non-table sources).
+    for ds_name in &dataset_names {
+        if manifest.datasets[ds_name].compiled_schema.is_some() {
+            continue; // Already populated above.
+        }
+        let table_ref = TableRef::new(namespace, ds_name.as_str());
+        if let Ok(columns) = catalog.get_schema(&table_ref).await {
+            populate_single_dataset_schema(manifest, &columns, ds_name);
+        }
+    }
+
+    // Step 13: Assemble CatalogSnapshot.
+    if !table_snapshots.is_empty() {
+        manifest.catalog_snapshot = Some(CatalogSnapshot {
+            tables: table_snapshots,
+            captured_at: chrono::Utc::now(),
+        });
+    }
+
+    // Merge warnings into diagnostics.
+    manifest.diagnostics.warnings.extend(warnings);
+}
+
+/// Parse a table FQN string into a TableRef.
+/// Handles "namespace.table" and "catalog.namespace.table" formats.
+fn parse_table_ref(fqn: &str, default_namespace: &str) -> semstrait_catalog::TableRef {
+    let parts: Vec<&str> = fqn.splitn(3, '.').collect();
+    match parts.len() {
+        3 => semstrait_catalog::TableRef::with_catalog(parts[0], parts[1], parts[2]),
+        2 => semstrait_catalog::TableRef::new(parts[0], parts[1]),
+        _ => semstrait_catalog::TableRef::new(default_namespace, fqn),
+    }
+}
+
+/// Populate `compiled_schema` on datasets whose name matches a catalog table.
+fn populate_dataset_schema(
+    manifest: &mut CompiledManifest,
+    columns: &[semstrait_catalog::CatalogColumn],
+    dataset_names: &[String],
+    namespace: &str,
+) {
+    for ds_name in dataset_names {
+        // Match dataset name against catalog table (namespace.name or just name).
+        let table_fqn = format!("{}.{}", namespace, ds_name);
+        if manifest.datasets.contains_key(ds_name) {
+            populate_single_dataset_schema(manifest, columns, ds_name);
+        } else if manifest.datasets.contains_key(&table_fqn) {
+            populate_single_dataset_schema(manifest, columns, &table_fqn);
+        }
+    }
+}
+
+fn populate_single_dataset_schema(
+    manifest: &mut CompiledManifest,
+    columns: &[semstrait_catalog::CatalogColumn],
+    ds_name: &str,
+) {
+    if let Some(dataset) = manifest.datasets.get_mut(ds_name) {
+        let snapshot: Vec<SchemaColumn> = columns
+            .iter()
+            .map(|c| SchemaColumn {
+                name: c.name.clone(),
+                data_type: format!("{:?}", c.data_type),
+                nullable: c.nullable,
+            })
+            .collect();
+        if !snapshot.is_empty() {
+            dataset.compiled_schema = Some(snapshot);
+        }
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1359,6 +1900,7 @@ mod tests {
             ai_context: None,
             labels: vec![],
             namespace: None,
+            catalog: None,
             datasets: vec![
                 Dataset {
                     name: "orders".to_string(),
@@ -1402,6 +1944,7 @@ mod tests {
             ai_context: None,
             labels: vec![],
             namespace: None,
+            catalog: None,
             datasets: vec![],
             kinds: vec![Kind {
                 name: "empty_kind".to_string(),

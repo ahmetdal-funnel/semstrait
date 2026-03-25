@@ -6,9 +6,10 @@
 use semstrait_core::expr::WhenClause;
 use semstrait_core::Expr;
 use semstrait_ir::{AggregateMeasure, Aggregation};
-use semstrait_manifest::{ColumnMappingValue, CompiledFilter};
+use semstrait_manifest::{ColumnMappingValue, CompiledFilter, LiteralValue};
 
 use crate::error::PlannerError;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 /// Result of lowering a measure expression: extracted aggregates plus a
@@ -31,12 +32,10 @@ pub fn lower_expr(
 ) -> Result<Expr, PlannerError> {
     expr.transform(&|e| match e {
         Expr::Column(col) => {
-            let physical = resolve_name(&col.name, column_mapping);
-            Ok(Some(Expr::column(physical)))
+            Ok(Some(resolve_name(&col.name, column_mapping)))
         }
         Expr::EntityRef(entity) => {
-            let physical = resolve_name(&entity.name, column_mapping);
-            Ok(Some(Expr::column(physical)))
+            Ok(Some(resolve_name(&entity.name, column_mapping)))
         }
         Expr::Guard(g) => Ok(Some(Expr::case(
             vec![WhenClause::new((*g.condition).clone(), (*g.expr).clone())],
@@ -168,15 +167,120 @@ fn wrap_with_filters(
     ))
 }
 
+// ─────────────────── v2: physical-mapping overloads ──────────────────
+//
+// These accept `&IndexMap<String, String>` (from `ResolvedColumnMapping.physical`)
+// instead of `&HashMap<String, ColumnMappingValue>`. They are used by the v2
+// CommonDataset fast path where all mapping resolution is pre-computed.
+
+/// Resolve an Expr using a pre-resolved physical mapping (v2 path).
+/// EntityRefs and Columns are resolved as column references through the mapping.
+/// Guard is expanded to Case.
+pub fn lower_expr_physical(
+    expr: &Expr,
+    physical: &IndexMap<String, String>,
+) -> Result<Expr, PlannerError> {
+    expr.transform(&|e| match e {
+        Expr::Column(col) => {
+            Ok(Some(resolve_name_physical(&col.name, physical)))
+        }
+        Expr::EntityRef(entity) => {
+            Ok(Some(resolve_name_physical(&entity.name, physical)))
+        }
+        Expr::Guard(g) => Ok(Some(Expr::case(
+            vec![WhenClause::new((*g.condition).clone(), (*g.expr).clone())],
+            Some(Expr::null()),
+        ))),
+        _ => Ok(None),
+    })
+}
+
+/// Lower a measure with a declarative aggregation tag (v2 physical mapping path).
+pub fn lower_measure_declarative_physical(
+    measure_name: &str,
+    agg: Aggregation,
+    expr: &Expr,
+    physical: &IndexMap<String, String>,
+    filters: &[CompiledFilter],
+) -> Result<LoweredMeasure, PlannerError> {
+    let lowered_expr = lower_expr_physical(expr, physical)?;
+    let agg_inner = wrap_with_filters_physical(lowered_expr, filters, physical)?;
+
+    let distinct = matches!(agg, Aggregation::CountDistinct);
+    let aggregates = vec![AggregateMeasure {
+        function: agg,
+        expr: agg_inner,
+        distinct,
+    }];
+
+    Ok(LoweredMeasure {
+        aggregates,
+        post_agg_expr: Expr::column(measure_name),
+    })
+}
+
+/// Lower a measure with filters (v2 physical mapping path).
+pub fn lower_measure_with_filters_physical(
+    measure_name: &str,
+    expr: &Expr,
+    physical: &IndexMap<String, String>,
+    filters: &[CompiledFilter],
+) -> Result<LoweredMeasure, PlannerError> {
+    // Convert physical to ColumnMappingValue for the existing extract_aggregates logic.
+    let as_cmv: HashMap<String, ColumnMappingValue> = physical
+        .iter()
+        .map(|(k, v)| (k.clone(), ColumnMappingValue::Simple(v.clone())))
+        .collect();
+    lower_measure_with_filters(measure_name, expr, &as_cmv, filters)
+}
+
+fn wrap_with_filters_physical(
+    expr: Expr,
+    filters: &[CompiledFilter],
+    physical: &IndexMap<String, String>,
+) -> Result<Expr, PlannerError> {
+    if filters.is_empty() {
+        return Ok(expr);
+    }
+    let mut combined: Option<Expr> = None;
+    for filter in filters {
+        let resolved = lower_expr_physical(&filter.expr, physical)?;
+        combined = Some(match combined {
+            None => resolved,
+            Some(prev) => Expr::and(prev, resolved),
+        });
+    }
+    let condition = combined.expect("filters is non-empty");
+    Ok(Expr::case(
+        vec![WhenClause::new(condition, expr)],
+        Some(Expr::null()),
+    ))
+}
+
+/// Resolve a semantic name via a pre-resolved physical mapping.
+fn resolve_name_physical(name: &str, physical: &IndexMap<String, String>) -> Expr {
+    match physical.get(name) {
+        Some(phys) => Expr::column(phys.clone()),
+        None => Expr::column(name),
+    }
+}
+
 // ────────────────────────── private helpers ──────────────────────────
 
-/// Resolve a semantic name to a physical name via column_mapping.
-/// If not found, pass through unchanged.
-fn resolve_name(name: &str, column_mapping: &HashMap<String, ColumnMappingValue>) -> String {
+/// Resolve a semantic name to a physical Expr via column_mapping.
+/// - Simple/WithGrain → column reference to physical name
+/// - Literal → string literal expression
+/// - Anchored → column reference (anchor sub-names already flattened to Simple)
+/// - Not found → column reference with original name
+fn resolve_name(name: &str, column_mapping: &HashMap<String, ColumnMappingValue>) -> Expr {
     match column_mapping.get(name) {
-        Some(ColumnMappingValue::Simple(s)) => s.clone(),
-        Some(ColumnMappingValue::WithGrain { column, .. }) => column.clone(),
-        None => name.to_string(),
+        Some(ColumnMappingValue::Simple(s)) => Expr::column(s.clone()),
+        Some(ColumnMappingValue::WithGrain { column, .. }) => Expr::column(column.clone()),
+        Some(ColumnMappingValue::Literal(lit)) => match lit {
+            LiteralValue::String(s) => Expr::string(s.clone()),
+        },
+        Some(ColumnMappingValue::Anchored(_)) => Expr::column(name),
+        None => Expr::column(name),
     }
 }
 

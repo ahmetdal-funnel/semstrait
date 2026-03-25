@@ -41,13 +41,16 @@ pub mod iceberg;
 #[cfg(feature = "unity")]
 pub mod unity;
 
+#[cfg(feature = "aws-secrets")]
+pub mod secrets;
+
 use async_trait::async_trait;
 use semstrait_core::GlobPattern;
 
 // Re-export key types for convenience.
 pub use error::CatalogError;
 pub use null_provider::NullCatalogProvider;
-pub use types::{CatalogColumn, TableRef};
+pub use types::{CatalogColumn, CatalogPartitionField, TableMetadataResponse, TableRef};
 
 #[cfg(feature = "iceberg")]
 pub use iceberg::IcebergRestCatalog;
@@ -74,4 +77,16 @@ pub trait CatalogProvider: Send + Sync {
 
     /// Checks if a table exists in the catalog.
     async fn table_exists(&self, table: &TableRef) -> Result<bool, CatalogError>;
+
+    /// Load extended table metadata including partitions, snapshots, and location.
+    ///
+    /// Returns `Ok(None)` if this catalog implementation does not support
+    /// extended metadata (default). Iceberg REST catalogs override this to
+    /// return partition specs, snapshot IDs, and table locations.
+    async fn load_table_metadata(
+        &self,
+        _table: &TableRef,
+    ) -> Result<Option<TableMetadataResponse>, CatalogError> {
+        Ok(None)
+    }
 }

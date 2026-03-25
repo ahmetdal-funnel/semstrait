@@ -119,7 +119,7 @@ pub fn make_test_manifest_with_constraints(
     kinds.insert("orders".to_string(), kind);
 
     CompiledManifest {
-        version: 1,
+        version: 2,
         compiled_at: chrono::Utc::now(),
         source_hash: "test".to_string(),
         datasets: IndexMap::new(),
@@ -127,7 +127,29 @@ pub fn make_test_manifest_with_constraints(
         relationships: vec![],
         model_name: "test_model".to_string(),
         model_description: None,
+        data_kinds: IndexMap::new(),
+        relationship_graph: semstrait_manifest::RelationshipGraph::default(),
+        field_index: semstrait_manifest::FieldIndex::default(),
+        diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+        catalog_snapshot: None,
     }
+}
+
+/// Create a test manifest with data_kinds populated (for v2 dispatch testing).
+///
+/// Unlike `make_test_manifest()`, this populates `data_kinds` from compiled kinds,
+/// enabling the v2 CommonDataset fast path.
+pub fn make_test_manifest_v2() -> CompiledManifest {
+    let mut manifest = make_test_manifest();
+    let mut data_kinds = IndexMap::new();
+    for (name, kind) in &manifest.kinds {
+        data_kinds.insert(
+            name.clone(),
+            semstrait_manifest::acceleration::data_kind_from_compiled_kind(kind),
+        );
+    }
+    manifest.data_kinds = data_kinds;
+    manifest
 }
 
 /// Create a test manifest with two partial-coverage datasets for horizontal join testing.
@@ -241,6 +263,11 @@ pub fn make_multi_dataset_manifest() -> CompiledManifest {
         relationships: vec![],
         model_name: "test_multi_model".to_string(),
         model_description: None,
+        data_kinds: IndexMap::new(),
+        relationship_graph: semstrait_manifest::RelationshipGraph::default(),
+        field_index: semstrait_manifest::FieldIndex::default(),
+        diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+        catalog_snapshot: None,
     }
 }
 

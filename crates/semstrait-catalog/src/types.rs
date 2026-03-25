@@ -1,6 +1,7 @@
 //! Core catalog types: table references and column metadata.
 
 use semstrait_core::DataType;
+use std::collections::HashMap;
 use std::fmt;
 
 /// A reference to a table in the catalog hierarchy.
@@ -119,6 +120,39 @@ impl CatalogColumn {
             comment: Some(comment.into()),
         }
     }
+}
+
+/// Extended table metadata response including partitions, snapshots, and location.
+///
+/// Returned by `CatalogProvider::load_table_metadata()`. Contains all metadata
+/// needed for catalog resolution steps 10-13.
+#[derive(Debug, Clone)]
+pub struct TableMetadataResponse {
+    /// Column schema.
+    pub columns: Vec<CatalogColumn>,
+    /// Partition spec fields (Iceberg-specific).
+    pub partition_fields: Vec<CatalogPartitionField>,
+    /// Current snapshot ID (Iceberg-specific).
+    pub snapshot_id: Option<i64>,
+    /// Table format version (e.g., Iceberg v1 or v2).
+    pub format_version: Option<u32>,
+    /// Physical table location (e.g., S3 URI).
+    pub location: Option<String>,
+    /// Table properties.
+    pub properties: HashMap<String, String>,
+}
+
+/// A partition field from an Iceberg partition spec.
+#[derive(Debug, Clone)]
+pub struct CatalogPartitionField {
+    /// Source column name (resolved from field ID).
+    pub source_column: String,
+    /// Partition transform string (e.g., "identity", "year", "month", "day", "hour", "bucket[N]").
+    pub transform: String,
+    /// Partition field name in the spec.
+    pub name: String,
+    /// Partition field ID.
+    pub field_id: i32,
 }
 
 #[cfg(test)]

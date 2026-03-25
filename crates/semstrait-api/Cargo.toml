@@ -44,8 +44,9 @@ grpc = ["dep:tonic", "dep:prost", "dep:tonic-prost", "dep:tonic-build", "dep:ton
 datafusion = ["semstrait-connectors/datafusion", "semstrait-adapter/datafusion"]
 duckdb = ["semstrait-connectors/duckdb", "semstrait-adapter/duckdb"]
 polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot", "semstrait-adapter/polyglot"]
-iceberg = ["semstrait-catalog/iceberg"]
+iceberg = ["semstrait-catalog/iceberg", "semstrait-manifest/iceberg"]
 unity = ["semstrait-catalog/unity"]
+aws-secrets = ["semstrait-catalog/aws-secrets", "semstrait-manifest/aws-secrets", "iceberg"]
 trino = ["semstrait-connectors/trino", "semstrait-adapter/trino"]
 spark = ["semstrait-connectors/spark", "semstrait-adapter/spark"]
 

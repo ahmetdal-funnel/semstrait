@@ -22,6 +22,7 @@ pub(crate) mod kind;
 pub(crate) mod expr_lower;
 pub(crate) mod additivity_resolver;
 pub(crate) mod optimizer;
+pub(crate) mod join;
 pub mod planner;
 
 #[cfg(test)]

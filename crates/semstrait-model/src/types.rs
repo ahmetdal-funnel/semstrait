@@ -76,6 +76,7 @@ impl FromStr for DataType {
             "string" | "text" | "varchar" => Ok(DataType::String),
             "date" => Ok(DataType::Date),
             "timestamp" | "datetime" => Ok(DataType::Timestamp),
+            "decimal" => Ok(DataType::Decimal { precision: 18, scale: 2 }),
             _ => Err(format!("unknown data type: '{}'", s)),
         }
     }
@@ -121,6 +122,10 @@ pub struct SemanticModel {
     /// Catalog namespace for glob expansion (defaults to "default").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
+
+    /// Catalog connection configuration for glob expansion and schema introspection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<CatalogConnectionConfig>,
 
     // Top-level datasets
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -619,16 +624,59 @@ impl<'de> Deserialize<'de> for ColumnMapping {
     }
 }
 
-/// Column mapping value: simple string or structured with grain override.
-#[derive(Debug, Clone, Serialize)]
+/// A literal value injected as a constant column.
+///
+/// String-only for now; extensible to integer/float/bool later.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
+pub enum LiteralValue {
+    String(String),
+}
+
+/// Column mapping value: simple string, structured with grain, literal constant,
+/// or anchored sub-name mapping for composed expressions.
+#[derive(Debug, Clone)]
 pub enum ColumnMappingValue {
+    /// Direct column name mapping: `cost: adwords_cost`
     Simple(String),
+    /// Column with temporal grain override: `{ column: created_at, grain: day }`
     WithGrain {
         column: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
         grain: Option<TemporalGrain>,
     },
+    /// Literal constant injection: `{ literal: "search" }`
+    Literal(LiteralValue),
+    /// Anchored sub-name mapping for composed expressions:
+    /// `total_cost: { order_sum: physical_order_amount, delivery_cost: physical_delivery_fee }`
+    Anchored(HashMap<String, String>),
+}
+
+impl Serialize for ColumnMappingValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeMap;
+        match self {
+            ColumnMappingValue::Simple(s) => serializer.serialize_str(s),
+            ColumnMappingValue::WithGrain { column, grain } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("column", column)?;
+                if let Some(g) = grain {
+                    map.serialize_entry("grain", g)?;
+                }
+                map.end()
+            }
+            ColumnMappingValue::Literal(lit) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                match lit {
+                    LiteralValue::String(s) => map.serialize_entry("literal", s)?,
+                }
+                map.end()
+            }
+            ColumnMappingValue::Anchored(anchors) => anchors.serialize(serializer),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for ColumnMappingValue {
@@ -643,19 +691,42 @@ impl<'de> Deserialize<'de> for ColumnMappingValue {
         }
 
         #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Simple(String),
-            WithGrain(WithGrainHelper),
+        struct LiteralHelper {
+            literal: String,
         }
 
-        match Raw::deserialize(deserializer)? {
-            Raw::Simple(s) => Ok(ColumnMappingValue::Simple(s)),
-            Raw::WithGrain(w) => Ok(ColumnMappingValue::WithGrain {
-                column: w.column,
-                grain: w.grain,
-            }),
+        // Deserialize into a generic value first, then try each variant.
+        let value = serde_yaml::Value::deserialize(deserializer)
+            .map_err(serde::de::Error::custom)?;
+
+        // String → Simple
+        if let Some(s) = value.as_str() {
+            return Ok(ColumnMappingValue::Simple(s.to_owned()));
         }
+
+        // Object → try WithGrain (has "column" key), then Literal (has "literal" key),
+        // then Anchored (catch-all object with string values).
+        if value.is_mapping() {
+            // Try WithGrain first (has required "column" key)
+            if let Ok(wg) = serde_yaml::from_value::<WithGrainHelper>(value.clone()) {
+                return Ok(ColumnMappingValue::WithGrain {
+                    column: wg.column,
+                    grain: wg.grain,
+                });
+            }
+            // Try Literal (has required "literal" key)
+            if let Ok(lit) = serde_yaml::from_value::<LiteralHelper>(value.clone()) {
+                return Ok(ColumnMappingValue::Literal(LiteralValue::String(lit.literal)));
+            }
+            // Anchored: catch-all object with string → string entries
+            if let Ok(map) = serde_yaml::from_value::<HashMap<String, String>>(value) {
+                return Ok(ColumnMappingValue::Anchored(map));
+            }
+        }
+
+        Err(serde::de::Error::custom(
+            "expected a string, { column: ... }, { literal: ... }, or { anchor: column, ... }",
+        ))
     }
 }
 
@@ -840,6 +911,20 @@ impl TemporalGrain {
             Self::Month => 4,
             Self::Quarter => 5,
             Self::Year => 6,
+        }
+    }
+}
+
+impl From<TemporalGrain> for semstrait_core::Grain {
+    fn from(tg: TemporalGrain) -> Self {
+        match tg {
+            TemporalGrain::Minute => Self::Minute,
+            TemporalGrain::Hour => Self::Hour,
+            TemporalGrain::Day => Self::Day,
+            TemporalGrain::Week => Self::Week,
+            TemporalGrain::Month => Self::Month,
+            TemporalGrain::Quarter => Self::Quarter,
+            TemporalGrain::Year => Self::Year,
         }
     }
 }
@@ -1183,6 +1268,78 @@ pub struct DatasetExtras {
 pub struct CatalogConfig {
     #[serde(rename = "type")]
     pub catalog_type: String,
+}
+
+/// Top-level catalog connection configuration.
+///
+/// Defines how to connect to a catalog server for glob expansion and schema
+/// introspection. Lives at `semantic_model.catalog` in YAML. Distinct from
+/// `CatalogConfig` which is a per-dataset type hint in `extras.catalog`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CatalogConnectionConfig {
+    /// Catalog provider type (e.g., "iceberg_rest", "unity").
+    #[serde(rename = "type")]
+    pub catalog_type: String,
+    /// Catalog base URL.
+    pub url: String,
+    /// Warehouse identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warehouse: Option<String>,
+    /// Catalog prefix (for multi-tenant catalogs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// Authentication configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<CatalogAuthConfig>,
+}
+
+/// Authentication method for catalog connections.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum CatalogAuthConfig {
+    /// No authentication.
+    None,
+    /// Static bearer token.
+    Bearer {
+        token: String,
+    },
+    /// OAuth2 client credentials flow.
+    Oauth2 {
+        token_url: String,
+        client_id: String,
+        client_secret: String,
+        #[serde(default)]
+        scope: Option<String>,
+    },
+    /// Polaris via AWS Secrets Manager.
+    ///
+    /// Fetches `client_id`/`client_secret` from AWS Secrets Manager,
+    /// then performs OAuth2 against the Polaris token endpoint.
+    Polaris {
+        /// AWS Secrets Manager ARN containing Polaris credentials.
+        secret_arn: String,
+        /// AWS region for Secrets Manager (e.g., "eu-west-1").
+        #[serde(default)]
+        region: Option<String>,
+        /// Polaris realm header value.
+        #[serde(default)]
+        realm: Option<String>,
+        /// OAuth2 scope (defaults to "PRINCIPAL_ROLE:ALL").
+        #[serde(default)]
+        scope: Option<String>,
+        /// AWS SSO profile name (from ~/.aws/config). Omit for default credential chain.
+        #[serde(default)]
+        aws_profile: Option<String>,
+        /// Explicit AWS access key ID (env var ref). Omit for default credential chain.
+        #[serde(default)]
+        aws_access_key_id: Option<String>,
+        /// Explicit AWS secret access key (env var ref). Omit for default credential chain.
+        #[serde(default)]
+        aws_secret_access_key: Option<String>,
+        /// AWS session token for temporary credentials (from STS). Optional.
+        #[serde(default)]
+        aws_session_token: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

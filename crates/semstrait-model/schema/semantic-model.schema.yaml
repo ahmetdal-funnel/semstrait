@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://json-schema.org/draft-07/schema#
 # =============================================================================
-# Semstrait Semantic Model — JSON Schema v1.4 (YAML encoding)
+# Semstrait Semantic Model — JSON Schema v1.6 (YAML encoding)
 # =============================================================================
 #
 # Canonical machine-validatable schema for semstrait YAML model files.
@@ -29,10 +29,21 @@
 #   - Changed: MeasureDef.expr is now optional when agg is specified
 #   - Added: AggregationType definition
 #   - Added: DimensionType.metadata variant with path.token and partition.level
+#
+# Changelog v1.5 vs v1.4:
+#   - Added: SemanticModel.catalog — top-level catalog connection configuration
+#   - Added: CatalogConnectionConfig definition (type, url, warehouse, prefix, auth)
+#   - Added: CatalogAuthConfig definition with tagged union (none, bearer, oauth2, polaris)
+#   - Supports env var substitution via ${VAR} in YAML values (resolved at parse time)
+#
+# Changelog v1.6 vs v1.5:
+#   - Added: ColumnMappingValue.Literal variant — { literal: "value" } for constant injection
+#   - Added: ColumnMappingValue.Anchored variant — { anchor: column, ... } for composed expressions
+#   - Added: LiteralValue definition (string-only for now, extensible)
 # =============================================================================
 
 $schema: https://json-schema.org/draft-07/schema#
-$id: https://semstrait.io/schemas/semantic-model/v1.4.yaml
+$id: https://semstrait.io/schemas/semantic-model/v1.6.yaml
 title: SemanticModel
 description: >
   Semstrait semantic model definition. Defines datasets, kinds (grainset,
@@ -80,6 +91,13 @@ definitions:
         description: Catalog namespace for glob dataset expansion (defaults to "default").
         x-since: v1.2
         x-examples: [default, production, staging]
+      catalog:
+        $ref: "#/definitions/CatalogConnectionConfig"
+        description: >
+          Top-level catalog connection configuration. Defines how to connect to
+          the catalog provider (e.g. Iceberg REST) including authentication.
+          Values may use ${ENV_VAR} syntax for secrets.
+        x-since: v1.5
       datasets:
         type: array
         items: { $ref: "#/definitions/Dataset" }
@@ -303,6 +321,21 @@ definitions:
             description: Physical column name.
           grain:
             $ref: "#/definitions/TemporalGrain"
+      - type: object
+        required: [literal]
+        additionalProperties: false
+        description: Literal constant value injection.
+        properties:
+          literal:
+            type: string
+            description: The literal string value to inject.
+      - type: object
+        additionalProperties:
+          type: string
+        description: >
+          Anchored sub-name mapping for composed expressions.
+          Keys are anchor names used in expr; values are physical column names.
+          Reserved anchor names: 'column', 'literal'.
 
   # ---------------------------------------------------------------------------
   # Dimensions
@@ -817,8 +850,140 @@ definitions:
     properties:
       type:
         type: string
-        description: Catalog provider type.
+        description: Catalog provider type (per-dataset type hint).
         x-examples: [iceberg, polaris, hive, glue]
+
+  CatalogConnectionConfig:
+    type: object
+    required: [type, url]
+    additionalProperties: false
+    x-category: binding
+    x-since: v1.5
+    description: >
+      Top-level catalog connection configuration. Defines how to connect to
+      the catalog provider for glob expansion and schema snapshots.
+      Values may use ${ENV_VAR} syntax for sensitive fields.
+    properties:
+      type:
+        type: string
+        minLength: 1
+        description: Catalog provider type.
+        x-examples: [iceberg_rest]
+      url:
+        type: string
+        minLength: 1
+        description: Catalog endpoint URL.
+        x-examples: [https://polaris.example.com/api/catalog]
+      warehouse:
+        type: string
+        description: Catalog warehouse identifier.
+        x-examples: [my_warehouse]
+      prefix:
+        type: string
+        description: Optional path prefix for multi-tenant catalogs.
+      auth:
+        $ref: "#/definitions/CatalogAuthConfig"
+
+  CatalogAuthConfig:
+    x-category: binding
+    x-since: v1.5
+    description: >
+      Authentication configuration for catalog connections. Tagged union
+      discriminated by the 'method' field.
+    oneOf:
+      - $ref: "#/definitions/CatalogAuthNone"
+      - $ref: "#/definitions/CatalogAuthBearer"
+      - $ref: "#/definitions/CatalogAuthOauth2"
+      - $ref: "#/definitions/CatalogAuthPolaris"
+
+  CatalogAuthNone:
+    type: object
+    required: [method]
+    additionalProperties: false
+    properties:
+      method:
+        type: string
+        enum: [none]
+
+  CatalogAuthBearer:
+    type: object
+    required: [method, token]
+    additionalProperties: false
+    properties:
+      method:
+        type: string
+        enum: [bearer]
+      token:
+        type: string
+        minLength: 1
+        description: Bearer token. Use ${ENV_VAR} for secrets.
+        x-examples: ["${CATALOG_TOKEN}"]
+
+  CatalogAuthOauth2:
+    type: object
+    required: [method, token_url, client_id, client_secret]
+    additionalProperties: false
+    properties:
+      method:
+        type: string
+        enum: [oauth2]
+      token_url:
+        type: string
+        minLength: 1
+        description: OAuth2 token endpoint URL.
+      client_id:
+        type: string
+        minLength: 1
+        description: OAuth2 client ID. Use ${ENV_VAR} for secrets.
+      client_secret:
+        type: string
+        minLength: 1
+        description: OAuth2 client secret. Use ${ENV_VAR} for secrets.
+      scope:
+        type: string
+        description: OAuth2 scope.
+        x-examples: ["PRINCIPAL_ROLE:ALL"]
+
+  CatalogAuthPolaris:
+    type: object
+    required: [method, secret_arn]
+    additionalProperties: false
+    description: >
+      Polaris authentication via AWS Secrets Manager. Fetches client_id/client_secret
+      from the secret, performs OAuth2 against the Polaris token endpoint.
+      Uses AWS default credential chain (SSO, IAM roles, env vars) unless
+      explicit aws_access_key_id/aws_secret_access_key are provided.
+    properties:
+      method:
+        type: string
+        enum: [polaris]
+      secret_arn:
+        type: string
+        minLength: 1
+        description: AWS Secrets Manager ARN containing Polaris credentials.
+        x-examples: ["arn:aws:secretsmanager:eu-west-1:123456:secret/polaris-creds"]
+      region:
+        type: string
+        description: AWS region for Secrets Manager.
+        x-examples: [eu-west-1, us-east-1]
+      realm:
+        type: string
+        description: Polaris realm (injected as Polaris-Realm header).
+        x-examples: [POLARIS]
+      scope:
+        type: string
+        description: OAuth2 scope for Polaris token request.
+        x-examples: ["PRINCIPAL_ROLE:ALL"]
+      aws_access_key_id:
+        type: string
+        description: >
+          Explicit AWS access key ID for Secrets Manager access.
+          If omitted, uses the default AWS credential chain. Use ${ENV_VAR}.
+      aws_secret_access_key:
+        type: string
+        description: >
+          Explicit AWS secret access key for Secrets Manager access.
+          If omitted, uses the default AWS credential chain. Use ${ENV_VAR}.
 
   TemporalConfig:
     type: object

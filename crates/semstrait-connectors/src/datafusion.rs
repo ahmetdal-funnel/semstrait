@@ -110,6 +110,77 @@ impl DataFusionConnector {
             .map_err(|e| ConnectorError::Execution(e.to_string()))
     }
 
+    /// Register all resolved sources from a compiled manifest.
+    ///
+    /// For each kind dataset's resolved sources:
+    /// - **Path** sources → `register_file()` (auto-detect CSV/Parquet by extension)
+    /// - **Table** sources → look up location from `catalog_snapshot`, register as Parquet
+    ///
+    /// Returns the list of successfully registered table names.
+    /// Failures are logged but not fatal.
+    pub async fn register_manifest_sources(
+        &self,
+        manifest: &semstrait_manifest::CompiledManifest,
+    ) -> Result<Vec<String>, ConnectorError> {
+        use semstrait_manifest::SourceType;
+
+        let mut registered = Vec::new();
+
+        for kind in manifest.kinds.values() {
+            for ds in &kind.datasets {
+                for source in &ds.resolved_sources {
+                    let table_name = &ds.name;
+                    match source.source_type {
+                        SourceType::Path => {
+                            match self.register_file(table_name, &source.reference).await {
+                                Ok(()) => registered.push(table_name.clone()),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "failed to register path source '{}' for dataset '{}': {}",
+                                        source.reference,
+                                        table_name,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        SourceType::Table => {
+                            // Look up table location from catalog snapshot.
+                            let location = manifest
+                                .catalog_snapshot
+                                .as_ref()
+                                .and_then(|snap| snap.tables.get(&source.reference))
+                                .and_then(|ts| ts.iceberg.as_ref())
+                                .and_then(|ice| ice.location.as_deref());
+
+                            if let Some(loc) = location {
+                                match self.register_parquet(table_name, loc).await {
+                                    Ok(()) => registered.push(table_name.clone()),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "failed to register table source '{}' at '{}' for dataset '{}': {}",
+                                            source.reference,
+                                            loc,
+                                            table_name,
+                                            e
+                                        );
+                                    }
+                                }
+                            } else {
+                                tracing::debug!(
+                                    "no location found for table source '{}' — skipping registration",
+                                    source.reference
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(registered)
+    }
+
     /// Register a file, auto-detecting format by extension (.csv or .parquet).
     pub async fn register_file(&self, table_name: &str, path: &str) -> Result<(), ConnectorError> {
         if path.ends_with(".parquet") || path.ends_with(".parq") {
