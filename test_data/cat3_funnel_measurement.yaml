@@ -1,0 +1,222 @@
+# Category 3: Funnel Measurement Performance — Standalone Dataset (v2)
+# Cross-channel attribution with 5 attribution models.
+#
+# Funnel.io proprietary attribution output — no public API to verify.
+# Column names use the connector prefix "funnel_measurement_performance-".
+#
+# Attribution models: algorithmic (a2), MTA, platform, last-click, first-click.
+# Each model produces both conversions and revenue columns.
+# Delta columns track period-over-period change.
+#
+# Note: This dataset uses "spend" (Funnel's own term), not "cost".
+# This is intentional — Funnel's spend is the aggregated cross-channel
+# expenditure, not a raw platform cost field.
+
+semantic_model:
+  name: alpinestars_funnel_measurement
+
+  dimensions:
+    - name: date
+      description: "Reporting date"
+      data_type: date
+      type:
+        temporal:
+          grains: [day, week, month, quarter, year]
+
+    - name: campaign_name
+      description: "Campaign name"
+      data_type: string
+      ai_context:
+        synonyms: [campaign, ad campaign]
+
+    - name: channel
+      description: "Marketing channel"
+      data_type: string
+      ai_context:
+        synonyms: [ad channel, media channel]
+
+  measures:
+    - name: spend
+      description: "Total cross-channel ad spend as reported by Funnel"
+      data_type: decimal
+      agg: sum
+      ai_context:
+        synonyms: [ad spend, funnel spend]
+
+    - name: clicks
+      description: "Total clicks"
+      data_type: decimal
+      agg: sum
+
+    - name: impressions
+      description: "Total impressions"
+      data_type: decimal
+      agg: sum
+
+  metrics:
+    - name: ctr
+      description: "Click-through rate"
+      data_type: decimal
+      expr: "clicks / impressions"
+
+    - name: cpc
+      description: "Cost per click (Funnel spend)"
+      data_type: decimal
+      expr: "spend / clicks"
+
+  datasets:
+    - name: funnel_measurement_performance
+      description: "Funnel multi-attribution measurement — cross-channel performance with algorithmic (a2), MTA, platform, last-click, and first-click attribution models"
+      ai_context: "Use for cross-channel attribution comparison. Shows spend, clicks, impressions, and conversions/revenue under five attribution models: algorithmic (a2), MTA, platform, last-click, first-click. Breakdowns by channel, campaign, country, brand, and conversion event."
+      extras:
+        storage:
+          path: "fs1henp3k8p1hqo/funnel_measurement_performance/28e60e7b-b089-48c3-90fe-4684aea3784d/"
+        column_mapping:
+          # time & geography
+          date: date
+          currency: currency
+          country: funnel_measurement_performance-country
+          # classification
+          channel: funnel_measurement_performance-channel
+          partition_id: funnel_measurement_performance-partition_id
+          brand: funnel_measurement_performance-brand
+          conversion_event: funnel_measurement_performance-conversion_event
+          report_name: funnel_measurement_performance-report_name
+          a2_source: funnel_measurement_performance-a2_source
+          campaign_name: funnel_measurement_performance-campaign
+          traffic_source: funnel_measurement_performance-traffic_source
+          # core performance
+          spend: funnel_measurement_performance-spend
+          clicks: funnel_measurement_performance-clicks
+          impressions: funnel_measurement_performance-impressions
+          # attribution — conversions (5 models)
+          a2_conversions: funnel_measurement_performance-a2_conversions
+          mta_conversions: funnel_measurement_performance-mta_conversions
+          platform_conversions: funnel_measurement_performance-platform_conversions
+          lastclick_conversions: funnel_measurement_performance-lastclick_conversions
+          firstclick_conversions: funnel_measurement_performance-firstclick_conversions
+          # attribution — revenue (5 models)
+          a2_revenue: funnel_measurement_performance-a2_revenue
+          mta_revenue: funnel_measurement_performance-mta_revenue
+          platform_revenue: funnel_measurement_performance-platform_revenue
+          lastclick_revenue: funnel_measurement_performance-lastclick_revenue
+          firstclick_revenue: funnel_measurement_performance-firstclick_revenue
+          # delta (period-over-period)
+          delta_spend: funnel_measurement_performance-delta_spend
+          delta_conversions: funnel_measurement_performance-delta_conversions
+          delta_revenue: funnel_measurement_performance-delta_revenue
+      dimensions:
+        - ref: date
+
+        - name: currency
+          description: "Currency of the reported monetary values"
+          data_type: string
+
+        - name: country
+          description: "Country dimension"
+          data_type: string
+
+        - ref: channel
+
+        - name: partition_id
+          description: "Funnel partition identifier"
+          data_type: string
+
+        - name: brand
+          description: "Brand dimension"
+          data_type: string
+
+        - name: conversion_event
+          description: "Type of conversion event being measured"
+          data_type: string
+
+        - name: report_name
+          description: "Name of the Funnel report"
+          data_type: string
+
+        - name: a2_source
+          description: "Algorithmic attribution source label"
+          data_type: string
+
+        - ref: campaign_name
+
+        - name: traffic_source
+          description: "Traffic source label"
+          data_type: string
+
+      measures:
+        - ref: spend
+        - ref: clicks
+        - ref: impressions
+
+        # ── Attribution conversions (5 models) ──
+        - name: a2_conversions
+          description: "Conversions under algorithmic (a2) attribution"
+          data_type: decimal
+          agg: sum
+
+        - name: mta_conversions
+          description: "Conversions under multi-touch attribution (MTA)"
+          data_type: decimal
+          agg: sum
+
+        - name: platform_conversions
+          description: "Conversions as reported by the ad platform"
+          data_type: decimal
+          agg: sum
+
+        - name: lastclick_conversions
+          description: "Conversions under last-click attribution"
+          data_type: decimal
+          agg: sum
+
+        - name: firstclick_conversions
+          description: "Conversions under first-click attribution"
+          data_type: decimal
+          agg: sum
+
+        # ── Attribution revenue (5 models) ──
+        - name: a2_revenue
+          description: "Revenue under algorithmic (a2) attribution"
+          data_type: decimal
+          agg: sum
+
+        - name: mta_revenue
+          description: "Revenue under multi-touch attribution"
+          data_type: decimal
+          agg: sum
+
+        - name: platform_revenue
+          description: "Revenue as reported by the ad platform"
+          data_type: decimal
+          agg: sum
+
+        - name: lastclick_revenue
+          description: "Revenue under last-click attribution"
+          data_type: decimal
+          agg: sum
+
+        - name: firstclick_revenue
+          description: "Revenue under first-click attribution"
+          data_type: decimal
+          agg: sum
+
+        # ── Delta (period-over-period) ──
+        - name: delta_spend
+          description: "Change in spend vs. prior period"
+          data_type: decimal
+          agg: sum
+
+        - name: delta_conversions
+          description: "Change in conversions vs. prior period"
+          data_type: decimal
+          agg: sum
+
+        - name: delta_revenue
+          description: "Change in revenue vs. prior period"
+          data_type: decimal
+          agg: sum
+
+      metrics:
+        - ref: ctr
+        - ref: cpc

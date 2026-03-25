@@ -25,8 +25,8 @@ let resolved = resolve_refs(model)?;
 | `SemanticModel` | Root model: name, description, namespace, kinds, datasets |
 | `Kind` | Semantic entity with dimensions, measures, metrics, constraints, datasets |
 | `KindTypeSpec` | `Grainset`, `Unionset { union_mode }`, `Joinset { associativity }` |
-| `Dimension` | Named dimension with `DimensionType` (temporal/categorical) |
-| `Measure` | Aggregation expression with optional constraints and additivity |
+| `Dimension` | Named dimension with `DimensionType` (temporal/categorical/metadata/binary/geo/bucketed) |
+| `Measure` | Aggregation expression with optional declarative `agg:`, constraints, additivity |
 | `Metric` | Derived expression computed from measures/other metrics |
 | `Dataset` | Physical data source binding with column mapping and storage |
 | `ColumnMapping` | `Auto` (identity) or `Explicit(HashMap)` per dataset |

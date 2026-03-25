@@ -8,10 +8,8 @@ semantic_model:
   name: constrained_example
   description: Revenue measure constrained to require a time dimension
 
-  kinds:
+  grainsets:
     - name: orders
-      type:
-        grainset:
 
       dimensions:
         - name: order_date

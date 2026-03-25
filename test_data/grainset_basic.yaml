@@ -2,10 +2,8 @@ semantic_model:
   name: grainset_basic
   description: "Grainset with two datasets at different temporal grains"
 
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date

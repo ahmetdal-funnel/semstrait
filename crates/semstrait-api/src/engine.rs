@@ -7,13 +7,11 @@ use crate::error::EngineError;
 use crate::parse::RequestParser;
 use crate::types::{ExplainResult, RawQueryRequest, ValidationResult};
 use semstrait_catalog::{CatalogProvider, TableRef};
-use semstrait_connectors::{ComputeConnector, ComputePayload, ComputeResultData};
-use semstrait_ir::{PlannerWarning, SubstraitSerializer};
+use semstrait_connectors::{ComputeConnector, ComputeResultData};
+use semstrait_ir::{PlanArtifact, PlannerWarning, SubstraitSerializer};
 use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler, SchemaColumn};
 use semstrait_planner::SemanticPlanner;
 use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
-#[cfg(feature = "polyglot")]
-use semstrait_sql::{PolyglotEmitter, TargetDialect};
 use std::sync::Arc;
 
 /// The central engine that orchestrates semantic query execution.
@@ -52,9 +50,9 @@ impl SemstraitEngine {
         manifest: CompiledManifest,
         connector: Arc<dyn ComputeConnector>,
     ) -> Self {
-        let profile = connector.consumer_profile().clone();
+        let profile = semstrait_adapter::profile_from_adapter(connector.adapter());
         let planner = SemanticPlanner::builder()
-            .with_profile(profile)
+            .with_profile(Arc::new(profile))
             .build();
 
         Self {
@@ -80,30 +78,17 @@ impl SemstraitEngine {
 
     /// Set a connector on an existing engine.
     pub fn set_connector(&mut self, connector: Arc<dyn ComputeConnector>) {
-        let profile = connector.consumer_profile().clone();
+        let profile = semstrait_adapter::profile_from_adapter(connector.adapter());
         self.planner = SemanticPlanner::builder()
-            .with_profile(profile)
+            .with_profile(Arc::new(profile))
             .build();
         self.connector = Some(connector);
     }
 
-    /// Emit SQL from a logical plan, using the connector's preferred dialect
-    /// when the `polyglot` feature is enabled.
-    fn emit_sql(&self, plan: &semstrait_ir::LogicalPlan) -> Result<String, EngineError> {
-        #[cfg(feature = "polyglot")]
-        {
-            let target = self
-                .connector
-                .as_ref()
-                .map(|c| c.preferred_dialect())
-                .unwrap_or(TargetDialect::Ansi);
-
-            if target != TargetDialect::Ansi {
-                let emitter = PolyglotEmitter::new(target);
-                return Ok(emitter.emit(plan)?);
-            }
-        }
-
+    /// Emit SQL from a logical plan using ANSI dialect.
+    ///
+    /// Used as the fallback when no connector/adapter is configured.
+    fn emit_ansi_sql(plan: &semstrait_ir::LogicalPlan) -> Result<String, EngineError> {
         let emitter = AnsiSqlEmitter::new(AnsiDialect);
         Ok(emitter.emit(plan)?)
     }
@@ -159,23 +144,34 @@ impl SemstraitEngine {
         // Plan.
         let plan = self.planner.plan(&request, manifest)?;
 
-        // Use the connector's preferred dialect when polyglot transpilation is available.
-        // Falls back to ANSI SQL when no connector is configured or polyglot is not enabled.
-        let sql = self.emit_sql(&plan)?;
+        // If we have a connector, use its adapter for SQL and Substrait.
+        // Otherwise fall back to ANSI SQL + direct Substrait serialization.
+        let (sql, substrait_json) = if let Some(connector) = &self.connector {
+            let adapter = connector.adapter();
+            let artifact = adapter.adapt(&plan)?;
+            let debug_sql = adapter.debug_sql(&plan)?;
 
-        // Emit Substrait JSON (best-effort: log warnings on failure).
-        let substrait_json = match SubstraitSerializer::to_substrait(&plan) {
-            Ok(proto_plan) => match serde_json::to_string_pretty(&proto_plan) {
-                Ok(json) => Some(json),
+            let substrait_json = artifact.to_json();
+            (Some(debug_sql), substrait_json)
+        } else {
+            // No connector — emit ANSI SQL and Substrait JSON directly.
+            let sql = Self::emit_ansi_sql(&plan)?;
+
+            let substrait_json = match SubstraitSerializer::to_substrait(&plan) {
+                Ok(proto_plan) => match serde_json::to_string_pretty(&proto_plan) {
+                    Ok(json) => Some(json),
+                    Err(e) => {
+                        tracing::warn!("Substrait JSON serialization failed: {}", e);
+                        None
+                    }
+                },
                 Err(e) => {
-                    tracing::warn!("Substrait JSON serialization failed: {}", e);
+                    tracing::warn!("Substrait plan conversion failed: {}", e);
                     None
                 }
-            },
-            Err(e) => {
-                tracing::warn!("Substrait plan conversion failed: {}", e);
-                None
-            }
+            };
+
+            (Some(sql), substrait_json)
         };
 
         // Build plan text summary.
@@ -186,7 +182,7 @@ impl SemstraitEngine {
         );
 
         Ok(ExplainResult {
-            sql: Some(sql),
+            sql,
             substrait_json,
             plan_text,
         })
@@ -202,16 +198,30 @@ impl SemstraitEngine {
             .as_ref()
             .ok_or_else(|| EngineError::NotConfigured("no connector configured".to_string()))?;
 
-        // Get SQL via explain.
-        let explain = self.explain(raw).await?;
-        let sql = explain
-            .sql
-            .ok_or_else(|| EngineError::Internal("explain produced no SQL".to_string()))?;
+        let manifest = self
+            .manifest
+            .as_ref()
+            .ok_or_else(|| EngineError::NotConfigured("no manifest loaded".to_string()))?;
 
-        // Adapt → Execute.
-        let payload = ComputePayload::Sql(sql);
-        let request = connector.adapt(payload)?;
-        let result = connector.execute(request).await?;
+        // Parse and plan.
+        let request = RequestParser::to_resolved(raw, manifest)?;
+        let plan = self.planner.plan(&request, manifest)?;
+
+        // Use the connector's adapter to produce the artifact.
+        // If the adapter's primary artifact is Substrait but the connector only
+        // handles SQL (pending native Substrait consumption), fall back to a SQL
+        // artifact via adapter.debug_sql().
+        let adapter = connector.adapter();
+        let artifact = adapter.adapt(&plan)?;
+        let artifact = if artifact.is_sql() {
+            artifact
+        } else {
+            let sql = adapter.debug_sql(&plan)?;
+            PlanArtifact::Sql(sql)
+        };
+
+        // Execute the artifact.
+        let result = connector.execute(&artifact).await?;
 
         // Convert result to JSON. Destructure to move fields instead of borrowing.
         let stats = result.stats;
@@ -466,10 +476,8 @@ mod tests {
         let yaml = r#"
 semantic_model:
   name: auto_test
-  kinds:
+  grainsets:
     - name: orders
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date

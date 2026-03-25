@@ -1,12 +1,10 @@
 //! Builder API for constructing a Semstrait instance.
 
 use semstrait_catalog::{CatalogProvider, NullCatalogProvider};
-use semstrait_connectors::{ComputeConnector, ComputePayload, ComputeResult};
+use semstrait_connectors::{ComputeConnector, ComputeResult};
 use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
 use semstrait_planner::SemanticPlanner;
 use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
-#[cfg(feature = "polyglot")]
-use semstrait_sql::{PolyglotEmitter, TargetDialect};
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -30,7 +28,7 @@ pub enum BuildError {
     Emit(#[from] semstrait_sql::EmitError),
 
     #[error("adapt error: {0}")]
-    Adapt(#[from] semstrait_connectors::AdaptError),
+    Adapt(#[from] semstrait_adapter::AdaptError),
 
     #[error("connector error: {0}")]
     Connector(#[from] semstrait_connectors::ConnectorError),
@@ -103,9 +101,9 @@ impl SemstraitBuilder {
 
         // Build planner with profile from connector if available
         let planner = if let Some(ref connector) = self.connector {
-            let profile = connector.consumer_profile().clone();
+            let profile = semstrait_adapter::profile_from_adapter(connector.adapter());
             SemanticPlanner::builder()
-                .with_profile(profile)
+                .with_profile(Arc::new(profile))
                 .build()
         } else {
             SemanticPlanner::builder().build()
@@ -151,28 +149,23 @@ impl SemstraitInstance {
     }
 
     /// Plan and emit SQL for a query request.
+    ///
+    /// If a connector is configured, uses its adapter to produce a debug SQL string.
+    /// Otherwise falls back to ANSI SQL emission.
     pub fn explain(
         &self,
         request: &semstrait_planner::request::ResolvedQueryRequest,
     ) -> Result<String, BuildError> {
         let plan = self.planner.plan(request, &self.manifest)?;
 
-        #[cfg(feature = "polyglot")]
-        {
-            let target = self
-                .connector
-                .as_ref()
-                .map(|c| c.preferred_dialect())
-                .unwrap_or(TargetDialect::Ansi);
-
-            if target != TargetDialect::Ansi {
-                let emitter = PolyglotEmitter::new(target);
-                return Ok(emitter.emit(&plan)?);
-            }
+        if let Some(connector) = &self.connector {
+            let adapter = connector.adapter();
+            let sql = adapter.debug_sql(&plan)?;
+            Ok(sql)
+        } else {
+            let emitter = AnsiSqlEmitter::new(AnsiDialect);
+            Ok(emitter.emit(&plan)?)
         }
-
-        let emitter = AnsiSqlEmitter::new(AnsiDialect);
-        Ok(emitter.emit(&plan)?)
     }
 
     /// Execute a query via the configured connector.
@@ -185,11 +178,22 @@ impl SemstraitInstance {
             .as_ref()
             .ok_or_else(|| BuildError::Query("no connector configured".to_string()))?;
 
-        let sql = self.explain(request)?;
+        let plan = self.planner.plan(request, &self.manifest)?;
 
-        let payload = ComputePayload::Sql(sql);
-        let compute_request = connector.adapt(payload)?;
-        Ok(connector.execute(compute_request).await?)
+        // Use the connector's adapter to produce the artifact.
+        // If the adapter's primary artifact is Substrait but the connector only
+        // handles SQL, fall back to SQL via adapter.debug_sql().
+        let adapter = connector.adapter();
+        let artifact = adapter.adapt(&plan)?;
+        let artifact = if artifact.is_sql() {
+            artifact
+        } else {
+            let sql = adapter.debug_sql(&plan)?;
+            semstrait_ir::PlanArtifact::Sql(sql)
+        };
+
+        // Execute the artifact.
+        Ok(connector.execute(&artifact).await?)
     }
 }
 

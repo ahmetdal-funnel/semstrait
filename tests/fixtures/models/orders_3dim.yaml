@@ -1,10 +1,8 @@
 semantic_model:
   name: e2e_test_model
   description: End-to-end test model
-  kinds:
+  grainsets:
     - name: orders
-      type:
-        grainset:
       dimensions:
         - name: date
           data_type: date

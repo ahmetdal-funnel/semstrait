@@ -15,7 +15,10 @@ CompileSource (YAML string, files, or directory)
   2. resolve_refs       expand ref: entries to inline definitions
   3. expand_globs       GlobPattern -> concrete datasets (requires catalog)
   4. validate_structure dataset uniqueness, kind nesting, joinset anchors
-  4.5 expand_auto       ColumnMapping::Auto -> identity mapping
+  4.5 expand_auto       ColumnMapping::Auto -> identity mapping (metadata dims excluded)
+  4.6 validate_temporal temporal properties must match across kind/dataset levels
+  4.7 validate_storage  paths/tables exclusivity, non-empty resolved sources
+  4.8 validate_metadata path requires storage paths, partition requires partition_def
   5. validate_mappings  column_mapping keys exist in kind interface
   6. build_metric_graph petgraph DiGraph, cycle detection, depth <= 3
   7. build_rel_graph    relationship graph, joinset anchor inference

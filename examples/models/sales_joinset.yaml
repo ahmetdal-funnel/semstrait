@@ -7,11 +7,9 @@ semantic_model:
   name: sales_joinset_example
   description: Sales entity joining orders with customer and product dimensions
 
-  kinds:
+  joinsets:
     - name: sales
-      type:
-        joinset:
-          associativity: left
+      associativity: left
 
       dimensions:
         - name: order_date

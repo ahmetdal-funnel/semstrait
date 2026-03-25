@@ -1,0 +1,287 @@
+# Category 8: Gorgias Customer Support — 5 Standalone Datasets (v2)
+#
+# API-verified against Gorgias REST API:
+#
+#   Ticket object fields: id, channel, opened_datetime, closed_datetime,
+#     status (only "open"/"closed"), subject, tags (array of objects),
+#     priority (critical/high/normal/low), language, via (superset of channel)
+#   assignee_user is NESTED object: { id, email, firstname, lastname, name }
+#   first_response_time, resolution_time = Reporting Stats API computed metrics,
+#     NOT native Ticket fields
+#   Summary/volume/CSAT fields = Reporting Stats API scopes, NOT Ticket REST API
+#   delta (period-over-period) = computed client-side, not native API field
+#   CSAT: SatisfactionSurvey object has score (1-5), distribution is computed
+#   Message: from_agent (boolean), sender/receiver are nested objects with email
+#   ticket_assignee_name, ticket_status, ticket_tags on messages = JOIN to parent Ticket
+#   satisfaction_survey_score on messages = JOIN via ticket_id to SatisfactionSurvey
+
+semantic_model:
+  name: alpinestars_gorgias
+
+  dimensions:
+    - name: date
+      description: "Reporting date"
+      data_type: date
+      type:
+        temporal:
+          grains: [day, week, month, quarter, year]
+
+    - name: channel
+      description: "Support channel (email, chat, phone, sms, facebook-messenger, instagram-direct-message, whatsapp, etc.)"
+      data_type: string
+      ai_context:
+        synonyms: [support channel, ticket channel]
+
+  datasets:
+    # ── 8a: Ticket Detail ──────────────────────────────────────────────────
+    - name: gorgias_ticket_detail
+      description: "Gorgias support ticket detail — one row per ticket with status, channel, timing, assignee, tags, and priority"
+      ai_context: "Use for Gorgias ticket analysis — volumes, resolution times, first response times, status, channel, assignee, priority, language, tags. Note: first_response_time and resolution_time are Reporting Stats API metrics, not native Ticket fields."
+      keys:
+        primary: [ticket_id]
+      extras:
+        storage:
+          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/29c47a4b-a6d4-41df-b54d-aa815a5edc2e/"
+        column_mapping:
+          date: date
+          ticket_id: custom_alpinestars_gorgias-ticket_id
+          assignee_name: custom_alpinestars_gorgias-ticket_assignee_name
+          assignee_user_id: custom_alpinestars_gorgias-ticket_assignee_user_id
+          channel: custom_alpinestars_gorgias-ticket_channel
+          opened_datetime: custom_alpinestars_gorgias-ticket_opened_datetime
+          closed_datetime: custom_alpinestars_gorgias-ticket_closed_datetime
+          status: custom_alpinestars_gorgias-ticket_status
+          subject: custom_alpinestars_gorgias-ticket_subject
+          tags: custom_alpinestars_gorgias-ticket_tags
+          priority: custom_alpinestars_gorgias-ticket_priority
+          language: custom_alpinestars_gorgias-ticket_language
+          via: custom_alpinestars_gorgias-ticket_via
+          first_response_time: custom_alpinestars_gorgias-ticket_first_response_time
+          resolution_time: custom_alpinestars_gorgias-ticket_resolution_time
+      dimensions:
+        - ref: date
+        - name: ticket_id
+          description: "Gorgias ticket identifier (Ticket.id)"
+          data_type: string
+        - name: assignee_name
+          description: "Name of the assigned agent (from nested assignee_user.name)"
+          data_type: string
+        - name: assignee_user_id
+          description: "User ID of the assigned agent (from nested assignee_user.id)"
+          data_type: string
+        - ref: channel
+        - name: opened_datetime
+          description: "When ticket was first opened by user (distinct from created_datetime)"
+          data_type: string
+        - name: closed_datetime
+          description: "When ticket was closed (null if still open)"
+          data_type: string
+        - name: status
+          description: "Current ticket status (Gorgias has only two states: 'open' or 'closed')"
+          data_type: string
+        - name: subject
+          description: "Ticket subject line (max 998 chars)"
+          data_type: string
+        - name: tags
+          description: "Tags applied to the ticket (array of tag objects flattened to string by connector)"
+          data_type: string
+        - name: priority
+          description: "Ticket priority level (critical/high/normal/low, default: normal)"
+          data_type: string
+        - name: language
+          description: "Ticket language (auto-detected from first messages if not set explicitly)"
+          data_type: string
+        - name: via
+          description: "How the first message was received — superset of channel values (includes rule, self_service, shopify, zendesk, helpdesk)"
+          data_type: string
+        - name: first_response_time
+          description: "Time to first response (Reporting Stats API computed metric, not native Ticket field)"
+          data_type: string
+        - name: resolution_time
+          description: "Time to resolution (Reporting Stats API computed metric, not native Ticket field)"
+          data_type: string
+
+    # ── 8b: Daily Support Summary ──────────────────────────────────────────
+    - name: gorgias_support_summary
+      description: "Gorgias daily support summary — aggregated ticket volumes, message counts from Reporting Stats API"
+      ai_context: "Use for daily Gorgias KPIs — new/closed/replied/one-touch tickets, messages sent/received. All fields are from the Reporting Stats API scopes, not the Ticket REST API."
+      extras:
+        storage:
+          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/b94f1727-b9c6-46b8-837e-4dad2fafbeb9/"
+        column_mapping:
+          date: date
+          total_new_tickets: custom_alpinestars_gorgias-total_new_tickets
+          total_closed_tickets: custom_alpinestars_gorgias-total_closed_tickets
+          total_replied_tickets: custom_alpinestars_gorgias-total_replied_tickets
+          total_one_touch_tickets: custom_alpinestars_gorgias-total_one_touch_tickets
+          total_messages_received: custom_alpinestars_gorgias-total_messages_received
+          total_messages_sent: custom_alpinestars_gorgias-total_messages_sent
+      dimensions:
+        - ref: date
+      measures:
+        - name: total_new_tickets
+          description: "Total new tickets opened (Reporting scope: tickets-created)"
+          data_type: decimal
+          agg: sum
+          ai_context:
+            synonyms: [new tickets, tickets created]
+        - name: total_closed_tickets
+          description: "Total tickets closed (Reporting scope: tickets-closed)"
+          data_type: decimal
+          agg: sum
+        - name: total_replied_tickets
+          description: "Total tickets with at least one agent reply (Reporting scope: tickets-replied)"
+          data_type: decimal
+          agg: sum
+        - name: total_one_touch_tickets
+          description: "Tickets resolved with a single agent response (Reporting scope: one-touch-tickets)"
+          data_type: decimal
+          agg: sum
+        - name: total_messages_received
+          description: "Total inbound messages from customers (Reporting scope: messages-received)"
+          data_type: decimal
+          agg: sum
+        - name: total_messages_sent
+          description: "Total outbound messages from agents (Reporting scope: messages-sent)"
+          data_type: decimal
+          agg: sum
+
+    # ── 8c: Ticket Volume by Channel ───────────────────────────────────────
+    - name: gorgias_ticket_volume_by_channel
+      description: "Gorgias ticket volume by support channel — daily totals and period-over-period delta"
+      ai_context: "Use for Gorgias channel volume analysis — tickets per channel per day. Delta is computed client-side (not native API field)."
+      extras:
+        storage:
+          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/9bd56460-3464-458b-954e-1114e06083e6/"
+        column_mapping:
+          date: date
+          channel: custom_alpinestars_gorgias-channel
+          total_tickets: custom_alpinestars_gorgias-total
+          delta: custom_alpinestars_gorgias-delta
+      dimensions:
+        - ref: date
+        - ref: channel
+      measures:
+        - name: total_tickets
+          description: "Total tickets for this channel (from tickets-created scope with channel dimension)"
+          data_type: decimal
+          agg: sum
+        - name: delta
+          description: "Change in ticket volume vs. prior period (computed client-side, not native API field)"
+          data_type: decimal
+          agg: sum
+
+    # ── 8d: CSAT Distribution ──────────────────────────────────────────────
+    - name: gorgias_csat_distribution
+      description: "Gorgias CSAT survey distribution — daily survey sends, response rates, and score distributions (1-5)"
+      ai_context: "Use for CSAT analysis — survey response rates and score distribution. Raw data is SatisfactionSurvey.score (1-5); distributions are computed aggregates from Reporting API."
+      extras:
+        storage:
+          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/5e0fa9e7-bc79-49e3-9e0c-6ca6f6c4cf23/"
+        column_mapping:
+          date: date
+          total_sent: custom_alpinestars_gorgias-total_sent
+          response_rate: custom_alpinestars_gorgias-response_rate
+          score_1_count: custom_alpinestars_gorgias-response_distribution_1
+          score_2_count: custom_alpinestars_gorgias-response_distribution_2
+          score_3_count: custom_alpinestars_gorgias-response_distribution_3
+          score_4_count: custom_alpinestars_gorgias-response_distribution_4
+          score_5_count: custom_alpinestars_gorgias-response_distribution_5
+      dimensions:
+        - ref: date
+      measures:
+        - name: total_sent
+          description: "Total CSAT surveys sent (SatisfactionSurvey with non-null sent_datetime)"
+          data_type: decimal
+          agg: sum
+        - name: response_rate
+          description: "Survey response rate — pre-computed, non-additive (ratio of scored to sent)"
+          data_type: decimal
+          agg: sum
+          additivity: non
+        - name: score_1_count
+          description: "Responses with score 1 (very dissatisfied)"
+          data_type: decimal
+          agg: sum
+        - name: score_2_count
+          description: "Responses with score 2"
+          data_type: decimal
+          agg: sum
+        - name: score_3_count
+          description: "Responses with score 3 (neutral)"
+          data_type: decimal
+          agg: sum
+        - name: score_4_count
+          description: "Responses with score 4"
+          data_type: decimal
+          agg: sum
+        - name: score_5_count
+          description: "Responses with score 5 (very satisfied)"
+          data_type: decimal
+          agg: sum
+
+    # ── 8e: Ticket + Message + CSAT Detail ─────────────────────────────────
+    - name: gorgias_ticket_message_csat_detail
+      description: "Gorgias message-level detail — one row per message with ticket context, CSAT score, and sender/receiver"
+      ai_context: "Use for deep Gorgias analysis at message level. Ticket-level fields (assignee, status, tags, priority) and CSAT score are JOINed from parent Ticket and SatisfactionSurvey."
+      keys:
+        primary: [message_id]
+        foreign:
+          - columns: [ticket_id]
+            reference: gorgias_ticket_detail
+            cardinality: many_to_one
+      extras:
+        storage:
+          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/c996cb8a-5260-457f-a7bd-ca2e12d8c8eb/"
+        column_mapping:
+          date: date
+          ticket_id: custom_alpinestars_gorgias-ticket_id
+          message_id: custom_alpinestars_gorgias-message_id
+          assignee_name: custom_alpinestars_gorgias-ticket_assignee_name
+          channel: custom_alpinestars_gorgias-ticket_channel
+          ticket_status: custom_alpinestars_gorgias-ticket_status
+          ticket_tags: custom_alpinestars_gorgias-ticket_tags
+          ticket_priority: custom_alpinestars_gorgias-ticket_priority
+          satisfaction_survey_score: custom_alpinestars_gorgias-satisfaction_survey_score
+          message_channel: custom_alpinestars_gorgias-message_channel
+          message_from_agent: custom_alpinestars_gorgias-message_from_agent
+          message_sender_email: custom_alpinestars_gorgias-message_sender_email
+          message_receiver_email: custom_alpinestars_gorgias-message_receiver_email
+      dimensions:
+        - ref: date
+        - name: ticket_id
+          description: "Gorgias ticket identifier (foreign key to gorgias_ticket_detail)"
+          data_type: string
+        - name: message_id
+          description: "Gorgias message identifier (Message.id — internal integer ID)"
+          data_type: string
+        - name: assignee_name
+          description: "Ticket assignee name (JOINed from parent Ticket.assignee_user.name)"
+          data_type: string
+        - ref: channel
+        - name: ticket_status
+          description: "Ticket status at time of export (JOINed from parent Ticket.status: open/closed)"
+          data_type: string
+        - name: ticket_tags
+          description: "Tags on the ticket (JOINed from parent Ticket.tags, flattened to string)"
+          data_type: string
+        - name: ticket_priority
+          description: "Ticket priority (JOINed from parent Ticket.priority: critical/high/normal/low)"
+          data_type: string
+        - name: satisfaction_survey_score
+          description: "CSAT survey score 1-5 (JOINed via ticket_id to SatisfactionSurvey.score)"
+          data_type: string
+          ai_context:
+            synonyms: [csat score, satisfaction score]
+        - name: message_channel
+          description: "Channel of this specific message (Message.channel — can differ from ticket channel)"
+          data_type: string
+        - name: message_from_agent
+          description: "Whether message was sent by an agent (Message.from_agent — boolean)"
+          data_type: string
+        - name: message_sender_email
+          description: "Sender email address (from nested Message.sender.email)"
+          data_type: string
+        - name: message_receiver_email
+          description: "Receiver email address (from nested Message.receiver.email, nullable)"
+          data_type: string

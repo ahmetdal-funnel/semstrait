@@ -634,14 +634,14 @@ semantic_model:
             #     grainset: planner skips this dataset for queries needing that field.
             #     unionset: planner substitutes NULL for this field.
             #     joinset:  planner skips joining this dataset if no needed fields.
-            default_column_mapping: # required - unless user defines the datasets column mappings in "kind.datasets[]"
+            column_mapping: # required - unless user defines the datasets column mappings in "kind.datasets[]"
               # Each key is a kind-level semantic name.
               # Each value is either a string (physical column) or:
               #   column: string    (physical column name)
               #   grain: string     (temporal grain — must be in kind dimension's grains list)
 
             # Temporal historization — same structure as dataset.extras.temporal.
-            default_temporal: # required - unless user defines the datasets temporal in "kind.datasets[]"
+            temporal: # required - unless user defines the datasets temporal in "kind.datasets[]"
               type:
                 timeseries:
                   occurred_at: string
@@ -660,7 +660,7 @@ semantic_model:
                   type_6:
                     valid_from: string
                     valid_to: string
-            default_partition_defs: # required - unless user defines the datasets partition definitions in "kind.datasets[]"
+            partition_defs: # required - unless user defines the datasets partition definitions in "kind.datasets[]"
               - type: # discriminated union
                   range:
                     column: string # partition column
@@ -670,7 +670,7 @@ semantic_model:
                     column: string # partition column
                     values: # array of partition values
                       - string
-            default_catalog: # required - unless user defines the datasets catalog in "kind.datasets[]"
+            catalog: # required - unless user defines the datasets catalog in "kind.datasets[]"
               type: string
 
       # -----------------------------------------------------------------------

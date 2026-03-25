@@ -15,12 +15,8 @@
 //!     .build()
 //!     .await?;
 //!
-//! let plan = sem.explain(QueryRequest {
-//!     kind: "sales".into(),
-//!     dimensions: vec!["region".into()],
-//!     measures: vec!["revenue".into()],
-//!     ..Default::default()
-//! }).await?;
+//! let sql = sem.explain(&request)?;
+//! println!("{}", sql);
 //! ```
 
 // Re-export core types
@@ -32,9 +28,13 @@ pub use semstrait_core::{
 pub use semstrait_ir::LogicalPlan;
 
 // Re-export connector traits
-pub use semstrait_connectors::{
-    ComputeAdapter, ComputeConnector, ComputeEmitter, ComputePayload, ComputeResult,
-};
+pub use semstrait_connectors::{ComputeConnector, ComputeResult, ComputeResultData};
+
+// Re-export adapter types
+pub use semstrait_adapter::{AdaptError, EngineAdapter};
+
+// Re-export plan artifact
+pub use semstrait_ir::PlanArtifact;
 
 // Re-export catalog traits
 pub use semstrait_catalog::{CatalogProvider, NullCatalogProvider, TableRef};

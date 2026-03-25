@@ -78,6 +78,15 @@ impl ManifestCompiler {
         // Step 4: Validate structure
         steps::validate_structure(&model)?;
 
+        // Step 4.6: Validate temporal equivalence (before expand_auto_mappings mutates temporal)
+        steps::validate_temporal_equivalence(&model)?;
+
+        // Step 4.7: Validate storage config (paths/tables exclusivity, non-empty sources)
+        steps::validate_storage(&model)?;
+
+        // Step 4.8: Validate metadata dimensions (path/partition preconditions)
+        steps::validate_metadata_dimensions(&model)?;
+
         // Step 4.5: Expand auto column mappings (before validation)
         let mut model = model;
         steps::expand_auto_mappings(&mut model);

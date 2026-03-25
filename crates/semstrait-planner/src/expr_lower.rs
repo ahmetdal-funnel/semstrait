@@ -61,6 +61,37 @@ pub(crate) fn lower_measure(
     lower_measure_with_filters(measure_name, expr, column_mapping, &[])
 }
 
+/// Lower a measure with a declarative aggregation tag.
+///
+/// The `agg` function is specified explicitly (from `CompiledMeasure.agg`),
+/// and the `expr` is a horizontal-only expression (no aggregation functions).
+/// This is the new declarative path: `agg: sum` + optional `expr: "amount + price"`.
+pub fn lower_measure_declarative(
+    measure_name: &str,
+    agg: Aggregation,
+    expr: &Expr,
+    column_mapping: &HashMap<String, ColumnMappingValue>,
+    filters: &[CompiledFilter],
+) -> Result<LoweredMeasure, PlannerError> {
+    // Lower the horizontal expression (resolves column mappings).
+    let lowered_expr = lower_expr(expr, column_mapping)?;
+
+    // Apply filters via conditional aggregation if present.
+    let agg_inner = wrap_with_filters(lowered_expr, filters, column_mapping)?;
+
+    let distinct = matches!(agg, Aggregation::CountDistinct);
+    let aggregates = vec![AggregateMeasure {
+        function: agg,
+        expr: agg_inner,
+        distinct,
+    }];
+
+    Ok(LoweredMeasure {
+        aggregates,
+        post_agg_expr: Expr::column(measure_name),
+    })
+}
+
 /// Like `lower_measure` but applies measure-level filters as conditional aggregation.
 pub fn lower_measure_with_filters(
     measure_name: &str,
@@ -458,6 +489,91 @@ mod tests {
                 assert_eq!(case.else_expr, Some(Box::new(Expr::null())));
             }
             other => panic!("Expected Case from Guard, got {:?}", other),
+        }
+    }
+
+    // ── Tests for declarative aggregation path ──────────────────────────
+
+    #[test]
+    fn test_lower_measure_declarative_simple() {
+        let mapping = test_mapping();
+        // Declarative: agg=Sum, expr=entity_ref("revenue") → resolves to "amount"
+        let expr = Expr::entity_ref("revenue");
+        let lowered =
+            lower_measure_declarative("total_revenue", Aggregation::Sum, &expr, &mapping, &[])
+                .unwrap();
+
+        assert_eq!(lowered.aggregates.len(), 1);
+        assert_eq!(lowered.aggregates[0].function, Aggregation::Sum);
+        assert_eq!(lowered.aggregates[0].expr, Expr::column("amount"));
+        assert!(!lowered.aggregates[0].distinct);
+        assert_eq!(lowered.post_agg_expr, Expr::column("total_revenue"));
+    }
+
+    #[test]
+    fn test_lower_measure_declarative_with_horizontal_expr() {
+        let mapping = test_mapping();
+        // Declarative: agg=Sum, expr=revenue + cost → SUM(amount + cost_usd)
+        let expr = Expr::add(Expr::entity_ref("revenue"), Expr::entity_ref("cost"));
+        let lowered =
+            lower_measure_declarative("total", Aggregation::Sum, &expr, &mapping, &[]).unwrap();
+
+        assert_eq!(lowered.aggregates.len(), 1);
+        assert_eq!(lowered.aggregates[0].function, Aggregation::Sum);
+        // Inner expr should be resolved: amount + cost_usd
+        assert_eq!(
+            lowered.aggregates[0].expr,
+            Expr::add(Expr::column("amount"), Expr::column("cost_usd"))
+        );
+    }
+
+    #[test]
+    fn test_lower_measure_declarative_count_distinct() {
+        let mapping = test_mapping();
+        let expr = Expr::entity_ref("order_count");
+        let lowered = lower_measure_declarative(
+            "unique_orders",
+            Aggregation::CountDistinct,
+            &expr,
+            &mapping,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(lowered.aggregates.len(), 1);
+        assert_eq!(lowered.aggregates[0].function, Aggregation::CountDistinct);
+        assert!(lowered.aggregates[0].distinct);
+        assert_eq!(lowered.aggregates[0].expr, Expr::column("order_id"));
+    }
+
+    #[test]
+    fn test_lower_measure_declarative_with_filters() {
+        let mapping = test_mapping();
+        let filter = CompiledFilter {
+            name: "us_only".to_string(),
+            expr: Expr::eq(Expr::column("region"), Expr::string("US")),
+            expr_source: "region = 'US'".to_string(),
+        };
+
+        let expr = Expr::entity_ref("revenue");
+        let lowered = lower_measure_declarative(
+            "us_revenue",
+            Aggregation::Sum,
+            &expr,
+            &mapping,
+            &[filter],
+        )
+        .unwrap();
+
+        assert_eq!(lowered.aggregates.len(), 1);
+        // Inner should be: CASE WHEN region_name = 'US' THEN amount ELSE NULL END
+        match &lowered.aggregates[0].expr {
+            Expr::Case(case) => {
+                assert_eq!(case.when_then.len(), 1);
+                assert_eq!(case.when_then[0].result, Expr::column("amount"));
+                assert_eq!(case.else_expr, Some(Box::new(Expr::null())));
+            }
+            other => panic!("Expected Case expression, got {:?}", other),
         }
     }
 }

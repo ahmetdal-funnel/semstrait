@@ -1,11 +1,6 @@
 //! Compute connector traits and feature-gated engine implementations.
 //!
-//! Defines the three-phase compute pipeline:
-//! 1. `ComputeEmitter` — LogicalPlan → ComputePayload
-//! 2. `ComputeAdapter` — ConsumerProfile + payload adaptation
-//! 3. `ComputeConnector` — async execution → ComputeResult
-//!
-//! Engine implementations (DuckDB, DataFusion, Trino, Spark) are feature-gated.
+//! Connectors receive `PlanArtifact` and execute against compute engines.
 
 mod traits;
 mod payload;
@@ -22,8 +17,7 @@ pub mod trino;
 #[cfg(feature = "spark")]
 pub mod spark;
 
-pub use traits::{ComputeEmitter, ComputeAdapter, ComputeConnector};
+pub use traits::ComputeConnector;
 pub use payload::{
-    ComputePayload, ComputeRequest, ComputeResult, ComputeResultData, PayloadKind,
-    ExecutionStats, EmitError, AdaptError, ConnectorError,
+    ComputeResult, ComputeResultData, ExecutionStats, ConnectorError,
 };

@@ -9,12 +9,11 @@ use reqwest::Client;
 use serde::Deserialize;
 
 use crate::payload::{
-    ComputePayload, ComputeRequest, ComputeResult, ComputeResultData,
-    ConnectorError, EmitError, ExecutionStats, PayloadKind,
+    ComputeResult, ComputeResultData, ConnectorError, ExecutionStats,
 };
-use crate::traits::{ComputeAdapter, ComputeConnector, ComputeEmitter};
-use semstrait_core::ConsumerProfile;
-use semstrait_sql::TargetDialect;
+use crate::traits::ComputeConnector;
+use semstrait_adapter::{EngineAdapter, TrinoAdapter};
+use semstrait_ir::PlanArtifact;
 
 /// Authentication configuration for Trino.
 #[derive(Debug, Clone)]
@@ -38,7 +37,7 @@ pub struct TrinoConnector {
     client: Client,
     auth: TrinoAuth,
     user: String,
-    profile: ConsumerProfile,
+    adapter: TrinoAdapter,
 }
 
 impl TrinoConnector {
@@ -57,7 +56,7 @@ impl TrinoConnector {
             client: Client::new(),
             auth: TrinoAuth::None,
             user: "semstrait".to_string(),
-            profile: ConsumerProfile::default(),
+            adapter: TrinoAdapter,
         }
     }
 
@@ -223,48 +222,22 @@ impl TrinoQueryResult {
     }
 }
 
-// ── ComputeEmitter ──────────────────────────────────────────────────────────
-
-impl ComputeEmitter for TrinoConnector {
-    fn emit_sql(&self, sql: &str) -> Result<ComputePayload, EmitError> {
-        Ok(ComputePayload::Sql(sql.to_string()))
-    }
-
-    fn emit_substrait(&self, _plan_bytes: &[u8]) -> Result<ComputePayload, EmitError> {
-        Err(EmitError::UnsupportedNode(
-            "Trino connector does not support Substrait payloads".to_string(),
-        ))
-    }
-
-    fn supported_payloads(&self) -> &[PayloadKind] {
-        &[PayloadKind::Sql]
-    }
-}
-
-// ── ComputeAdapter ──────────────────────────────────────────────────────────
-
-impl ComputeAdapter for TrinoConnector {
-    fn consumer_profile(&self) -> &ConsumerProfile {
-        &self.profile
-    }
-
-}
-
 // ── ComputeConnector ────────────────────────────────────────────────────────
 
 #[async_trait::async_trait]
 impl ComputeConnector for TrinoConnector {
-    async fn execute(&self, request: ComputeRequest) -> Result<ComputeResult, ConnectorError> {
-        let sql = match request.payload {
-            ComputePayload::Sql(sql) => sql,
-            _ => {
-                return Err(ConnectorError::Internal(
-                    "TrinoConnector only supports SQL payloads".to_string(),
-                ))
-            }
-        };
+    fn adapter(&self) -> &dyn EngineAdapter {
+        &self.adapter
+    }
 
-        let result = self.execute_statement(&sql).await?;
+    async fn execute(&self, artifact: &PlanArtifact) -> Result<ComputeResult, ConnectorError> {
+        let sql = artifact.as_sql().ok_or_else(|| {
+            ConnectorError::Execution(
+                "Trino connector currently requires SQL artifact".to_string(),
+            )
+        })?;
+
+        let result = self.execute_statement(sql).await?;
         let json_rows = result.to_json_rows();
         let row_count = json_rows.len() as u64;
 
@@ -287,10 +260,6 @@ impl ComputeConnector for TrinoConnector {
     fn name(&self) -> &str {
         "trino"
     }
-
-    fn preferred_dialect(&self) -> TargetDialect {
-        TargetDialect::Trino
-    }
 }
 
 #[cfg(test)]
@@ -312,44 +281,10 @@ mod tests {
     }
 
     #[test]
-    fn test_preferred_dialect() {
+    fn test_adapter_accessible() {
         let conn = TrinoConnector::new("http://trino:8080", "hive", "default");
-        assert_eq!(conn.preferred_dialect(), TargetDialect::Trino);
-    }
-
-    #[test]
-    fn test_supported_payloads() {
-        let conn = TrinoConnector::new("http://trino:8080", "hive", "default");
-        assert_eq!(conn.supported_payloads(), &[PayloadKind::Sql]);
-    }
-
-    #[test]
-    fn test_emit_sql() {
-        let conn = TrinoConnector::new("http://trino:8080", "hive", "default");
-        let payload = conn.emit_sql("SELECT 1").unwrap();
-        assert!(matches!(payload, ComputePayload::Sql(_)));
-    }
-
-    #[test]
-    fn test_emit_substrait_not_supported() {
-        let conn = TrinoConnector::new("http://trino:8080", "hive", "default");
-        assert!(conn.emit_substrait(&[]).is_err());
-    }
-
-    #[test]
-    fn test_adapt_sql() {
-        let conn = TrinoConnector::new("http://trino:8080", "hive", "default");
-        let payload = ComputePayload::Sql("SELECT 1".to_string());
-        let request = conn.adapt(payload);
-        assert!(request.is_ok());
-    }
-
-    #[test]
-    fn test_adapt_substrait_rejected() {
-        let conn = TrinoConnector::new("http://trino:8080", "hive", "default");
-        let payload = ComputePayload::SubstraitPlan(vec![]);
-        let request = conn.adapt(payload);
-        assert!(request.is_err());
+        let adapter = conn.adapter();
+        assert_eq!(adapter.name(), "trino");
     }
 
     #[test]

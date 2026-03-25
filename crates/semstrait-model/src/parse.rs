@@ -15,14 +15,63 @@ use std::collections::HashMap;
 /// let model = semstrait_model::parse(&yaml)?;
 /// ```
 pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
-    // Parse YAML with semantic_model as root
+    // Intermediate YAML-facing root with implicit kind types.
     #[derive(serde::Deserialize)]
-    struct Root {
-        semantic_model: SemanticModel,
+    struct YamlRoot {
+        semantic_model: YamlModel,
     }
 
-    let root: Root = serde_yaml::from_str(yaml)?;
-    Ok(root.semantic_model)
+    #[derive(serde::Deserialize)]
+    struct YamlModel {
+        name: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        ai_context: Option<String>,
+        #[serde(default)]
+        labels: Vec<String>,
+        #[serde(default)]
+        namespace: Option<String>,
+        #[serde(default)]
+        datasets: Vec<Dataset>,
+        #[serde(default)]
+        grainsets: Vec<YamlGrainset>,
+        #[serde(default)]
+        unionsets: Vec<YamlUnionset>,
+        #[serde(default)]
+        joinsets: Vec<YamlJoinset>,
+        #[serde(default)]
+        relationships: Vec<Relationship>,
+        #[serde(default)]
+        dimensions: Vec<Dimension>,
+        #[serde(default)]
+        measures: Vec<Measure>,
+        #[serde(default)]
+        metrics: Vec<Metric>,
+    }
+
+    let root: YamlRoot = serde_yaml::from_str(yaml)?;
+    let m = root.semantic_model;
+
+    // Merge grainsets/unionsets/joinsets into kinds.
+    let mut kinds: Vec<Kind> = Vec::new();
+    kinds.extend(m.grainsets.into_iter().map(Kind::from));
+    kinds.extend(m.unionsets.into_iter().map(Kind::from));
+    kinds.extend(m.joinsets.into_iter().map(Kind::from));
+
+    Ok(SemanticModel {
+        name: m.name,
+        description: m.description,
+        ai_context: m.ai_context,
+        labels: m.labels,
+        namespace: m.namespace,
+        datasets: m.datasets,
+        kinds,
+        relationships: m.relationships,
+        dimensions: m.dimensions,
+        measures: m.measures,
+        metrics: m.metrics,
+    })
 }
 
 /// Resolve all `ref:` entries in the model.
@@ -157,10 +206,8 @@ semantic_model:
         let yaml = r#"
 semantic_model:
   name: kind_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -321,10 +368,8 @@ semantic_model:
         let yaml = r#"
 semantic_model:
   name: mapping_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -368,10 +413,8 @@ semantic_model:
         let yaml = r#"
 semantic_model:
   name: mapping_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -419,10 +462,8 @@ semantic_model:
         let yaml = r#"
 semantic_model:
   name: glob_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -471,11 +512,10 @@ semantic_model:
           data_type: float64
           expr: "SUM(balance)"
           additivity:
-            type:
-              semi:
-                non_additive_dimensions:
-                  - account_date
-                resolution_strategy: latest
+            semi:
+              non_additive_dimensions:
+                - account_date
+              resolution_strategy: latest
 "#;
         let model = parse(yaml).unwrap();
         let dataset = &model.datasets[0];
@@ -483,8 +523,7 @@ semantic_model:
         match &dataset.measures[0] {
             MeasureEntry::Inline(m) => {
                 assert!(m.additivity.is_some());
-                let additivity = m.additivity.as_ref().unwrap();
-                match &additivity.additivity_type {
+                match m.additivity.as_ref().unwrap() {
                     AdditivityType::Semi(semi) => {
                         assert_eq!(semi.non_additive_dimensions.len(), 1);
                         assert_eq!(semi.resolution_strategy, ResolutionStrategy::Latest);
@@ -560,11 +599,9 @@ semantic_model:
         let yaml = r#"
 semantic_model:
   name: joinset_test
-  kinds:
+  joinsets:
     - name: order_details
-      type:
-        joinset:
-          associativity: left
+      associativity: left
       dimensions:
         - name: order_date
           data_type: date

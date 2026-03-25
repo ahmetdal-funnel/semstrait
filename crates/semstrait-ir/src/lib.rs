@@ -11,12 +11,14 @@
 //! Expressions use the unified `Expr` type from `semstrait-core`.
 
 pub mod annotation;
+pub mod artifact;
 pub mod error;
 pub mod plan;
 pub mod schema;
 pub mod substrait;
 
 pub use annotation::{AdditivityAnnotation, AggregateRole, FilterSource, SemAnnotation};
+pub use artifact::PlanArtifact;
 pub use error::{ConvertError, DeserializeError, SerializeError};
 pub use plan::{
     AggNode, AggregateMeasure, FetchNode, FilterNode, JoinNode, JoinType, LogicalPlan, NodeMeta,

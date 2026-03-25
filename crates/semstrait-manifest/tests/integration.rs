@@ -59,10 +59,8 @@ async fn test_compile_kind_with_datasets() {
     let yaml = r#"
 semantic_model:
   name: kind_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -108,10 +106,8 @@ async fn test_auto_column_mapping_expansion() {
     let yaml = r#"
 semantic_model:
   name: auto_test
-  kinds:
+  grainsets:
     - name: orders
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -225,10 +221,8 @@ async fn test_invalid_column_mapping_key() {
     let yaml = r#"
 semantic_model:
   name: test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -266,11 +260,9 @@ async fn test_joinset_without_relationships() {
     let yaml = r#"
 semantic_model:
   name: test
-  kinds:
+  joinsets:
     - name: order_details
-      type:
-        joinset:
-          associativity: left
+      associativity: left
       dimensions:
         - name: order_date
           data_type: date
@@ -338,10 +330,8 @@ async fn test_metric_no_cycle() {
     let yaml = r#"
 semantic_model:
   name: test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -575,10 +565,8 @@ async fn test_glob_requires_catalog() {
     let yaml = r#"
 semantic_model:
   name: glob_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -671,10 +659,8 @@ async fn test_compiled_kind_types() {
     let yaml = r#"
 semantic_model:
   name: kind_type_test
-  kinds:
+  grainsets:
     - name: grain_kind
-      type:
-        grainset:
       dimensions:
         - name: d
           data_type: date
@@ -694,9 +680,8 @@ semantic_model:
               m: amount
             storage:
               path: t1
+  unionsets:
     - name: union_kind
-      type:
-        unionset:
       dimensions:
         - name: d
           data_type: date
@@ -739,15 +724,13 @@ semantic_model:
 // ============================================================================
 
 #[tokio::test]
-async fn test_kind_extras_default_column_mapping_inherited() {
-    // A dataset with no column_mapping should inherit kind.extras.default_column_mapping.
+async fn test_kind_extras_column_mapping_inherited() {
+    // A dataset with no column_mapping should inherit kind.extras.column_mapping.
     let yaml = r#"
 semantic_model:
   name: kind_extras_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -760,7 +743,7 @@ semantic_model:
           data_type: float64
           expr: "SUM(amount)"
       extras:
-        default_column_mapping:
+        column_mapping:
           order_date: created_at
           revenue: amount_usd
       datasets:
@@ -798,10 +781,8 @@ async fn test_kind_extras_explicit_overrides_default() {
     let yaml = r#"
 semantic_model:
   name: kind_extras_override_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -814,7 +795,7 @@ semantic_model:
           data_type: float64
           expr: "SUM(amount)"
       extras:
-        default_column_mapping:
+        column_mapping:
           order_date: default_date_col
           revenue: default_revenue_col
       datasets:
@@ -849,15 +830,13 @@ semantic_model:
 }
 
 #[tokio::test]
-async fn test_kind_extras_default_temporal_propagated() {
-    // default_temporal from kind.extras should be propagated to datasets that do not set temporal.
+async fn test_kind_extras_temporal_propagated() {
+    // temporal from kind.extras should be propagated to datasets that do not set temporal.
     let yaml = r#"
 semantic_model:
   name: kind_extras_temporal_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -870,10 +849,10 @@ semantic_model:
           data_type: float64
           expr: "SUM(amount)"
       extras:
-        default_column_mapping:
+        column_mapping:
           order_date: created_at
           revenue: amount
-        default_temporal:
+        temporal:
           type:
             snapshot:
               snapshotted_at: snapshot_ts
@@ -893,7 +872,7 @@ semantic_model:
     let kind = &manifest.kinds["sales"];
     let ds = &kind.datasets[0];
 
-    // temporal should have been propagated from kind.extras.default_temporal.
+    // temporal should have been propagated from kind.extras.temporal.
     let temporal = ds.extras.temporal.as_ref().expect("temporal should be present");
     use semstrait_model::TemporalHistorization;
     match &temporal.temporal_type {
@@ -905,15 +884,59 @@ semantic_model:
 }
 
 #[tokio::test]
+async fn test_kind_extras_catalog_propagated() {
+    // catalog from kind.extras should be propagated to datasets that do not set catalog.
+    let yaml = r#"
+semantic_model:
+  name: kind_extras_catalog_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      extras:
+        column_mapping:
+          order_date: created_at
+          revenue: amount
+        catalog:
+          type: iceberg
+      datasets:
+        - name: orders_daily
+          extras:
+            storage:
+              path: warehouse.orders_daily
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("compilation with default catalog should succeed");
+
+    let kind = &manifest.kinds["sales"];
+    let ds = &kind.datasets[0];
+
+    // catalog should have been propagated from kind.extras.catalog.
+    let catalog = ds.extras.catalog.as_ref().expect("catalog should be present");
+    assert_eq!(catalog.catalog_type, "iceberg");
+}
+
+#[tokio::test]
 async fn test_storage_table_field() {
     // storage: { table: ... } should parse and compile without error.
     let yaml = r#"
 semantic_model:
   name: storage_table_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -944,19 +967,23 @@ semantic_model:
     // Compilation success is the primary assertion; verify the dataset is present.
     assert_eq!(manifest.kinds["sales"].datasets.len(), 1);
     assert_eq!(manifest.kinds["sales"].datasets[0].name, "orders_daily");
+
+    // Table reference should be captured in resolved_sources.
+    assert_eq!(
+        manifest.kinds["sales"].datasets[0].resolved_sources,
+        vec!["schema_name.orders_daily"]
+    );
 }
 
 #[tokio::test]
 async fn test_column_mapping_inherited_sentinel() {
     // The explicit string `column_mapping: inherited` should resolve identically
-    // to an absent column_mapping — both inherit from kind.extras.default_column_mapping.
+    // to an absent column_mapping — both inherit from kind.extras.column_mapping.
     let yaml = r#"
 semantic_model:
   name: inherited_sentinel_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date
@@ -969,7 +996,7 @@ semantic_model:
           data_type: float64
           expr: "SUM(amount)"
       extras:
-        default_column_mapping:
+        column_mapping:
           order_date: created_at
           revenue: amount
       datasets:
@@ -998,4 +1025,1266 @@ semantic_model:
         ColumnMappingValue::Simple(s) => assert_eq!(s, "amount"),
         _ => panic!("expected Simple mapping for revenue"),
     }
+}
+
+// ============================================================================
+// Dimension type defaults to categorical
+// ============================================================================
+
+#[tokio::test]
+async fn test_dimension_type_defaults_to_categorical() {
+    // When `type:` is omitted from a dimension, it should default to Categorical
+    // and compile successfully.
+    let yaml = r#"
+semantic_model:
+  name: default_dim_type_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: region
+          data_type: string
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders_daily
+          extras:
+            column_mapping:
+              order_date: created_at
+              region: region_name
+              revenue: amount_usd
+            storage:
+              path: warehouse.orders_daily
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("compilation with default dim type should succeed");
+
+    let kind = &manifest.kinds["sales"];
+
+    // order_date should be Temporal (explicitly set).
+    assert!(
+        matches!(
+            &kind.dimensions["order_date"].dim_type,
+            semstrait_manifest::DimensionType::Temporal(_)
+        ),
+        "order_date should be Temporal"
+    );
+
+    // region should be Categorical (defaulted).
+    assert!(
+        matches!(
+            &kind.dimensions["region"].dim_type,
+            semstrait_manifest::DimensionType::Categorical(c) if c.enum_values.is_none()
+        ),
+        "region should default to Categorical, got {:?}",
+        kind.dimensions["region"].dim_type
+    );
+}
+
+// ============================================================================
+// Temporal equivalence validation
+// ============================================================================
+
+#[tokio::test]
+async fn test_temporal_mismatch_error() {
+    // Kind has timeseries, dataset has snapshot → compile error.
+    let yaml = r#"
+semantic_model:
+  name: temporal_mismatch_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      extras:
+        column_mapping:
+          order_date: created_at
+          revenue: amount
+        temporal:
+          type:
+            timeseries:
+              occurred_at: event_ts
+      datasets:
+        - name: orders_daily
+          extras:
+            temporal:
+              type:
+                snapshot:
+                  snapshotted_at: snap_ts
+            storage:
+              path: warehouse.orders_daily
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("temporal type mismatch"),
+        "expected temporal mismatch error, got: {}",
+        msg
+    );
+    assert!(msg.contains("timeseries"), "got: {}", msg);
+    assert!(msg.contains("snapshot"), "got: {}", msg);
+}
+
+#[tokio::test]
+async fn test_temporal_equivalent_ok() {
+    // Kind has timeseries, dataset has timeseries with different column → OK.
+    let yaml = r#"
+semantic_model:
+  name: temporal_equivalent_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      extras:
+        column_mapping:
+          order_date: created_at
+          revenue: amount
+        temporal:
+          type:
+            timeseries:
+              occurred_at: event_ts
+      datasets:
+        - name: orders_daily
+          extras:
+            temporal:
+              type:
+                timeseries:
+                  occurred_at: different_ts_col
+            storage:
+              path: warehouse.orders_daily
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("same temporal variant with different columns should compile");
+
+    let kind = &manifest.kinds["sales"];
+    let ds = &kind.datasets[0];
+
+    // Dataset's own temporal should be preserved (not overwritten by kind default).
+    let temporal = ds.extras.temporal.as_ref().expect("temporal should be present");
+    use semstrait_model::TemporalHistorization;
+    match &temporal.temporal_type {
+        TemporalHistorization::Timeseries(ts) => {
+            assert_eq!(ts.occurred_at, "different_ts_col");
+        }
+        other => panic!("expected Timeseries, got {:?}", other),
+    }
+}
+
+// ============================================================================
+// Incomplete mapping detection
+// ============================================================================
+
+#[tokio::test]
+async fn test_incomplete_mapping_error() {
+    // Dataset mapping is missing the 'revenue' interface name → compile error.
+    let yaml = r#"
+semantic_model:
+  name: incomplete_mapping_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+            storage:
+              path: warehouse.orders
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("mapping is incomplete"),
+        "expected incomplete mapping error, got: {}",
+        msg
+    );
+    assert!(msg.contains("revenue"), "got: {}", msg);
+}
+
+// ============================================================================
+// Multi-path / multi-table storage
+// ============================================================================
+
+#[tokio::test]
+async fn test_storage_multiple_paths() {
+    let yaml = r#"
+semantic_model:
+  name: multi_path_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              paths:
+                - "s3://bucket/orders_2024.parquet"
+                - "s3://bucket/orders_2025.parquet"
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("multi-path storage should compile");
+
+    let kind = &manifest.kinds["sales"];
+    let ds = &kind.datasets[0];
+    assert_eq!(ds.resolved_sources.len(), 2);
+    assert_eq!(ds.resolved_sources[0], "s3://bucket/orders_2024.parquet");
+    assert_eq!(ds.resolved_sources[1], "s3://bucket/orders_2025.parquet");
+}
+
+#[tokio::test]
+async fn test_storage_path_and_paths_merged() {
+    let yaml = r#"
+semantic_model:
+  name: merged_path_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              path: "s3://bucket/orders_main.parquet"
+              paths:
+                - "s3://bucket/orders_archive.parquet"
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("path + paths should merge");
+
+    let kind = &manifest.kinds["sales"];
+    let ds = &kind.datasets[0];
+    assert_eq!(ds.resolved_sources.len(), 2);
+    assert_eq!(ds.resolved_sources[0], "s3://bucket/orders_main.parquet");
+    assert_eq!(ds.resolved_sources[1], "s3://bucket/orders_archive.parquet");
+}
+
+#[tokio::test]
+async fn test_storage_mixed_path_and_table_error() {
+    let yaml = r#"
+semantic_model:
+  name: mixed_storage_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              path: "s3://bucket/orders.parquet"
+              table: "catalog.schema.orders"
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("cannot mix paths and tables"),
+        "expected mixed storage error, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_storage_singular_path_resolved() {
+    // Existing singular path: should populate resolved_sources with one entry.
+    let yaml = r#"
+semantic_model:
+  name: singular_path_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              path: warehouse.orders
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("singular path should compile");
+
+    let kind = &manifest.kinds["sales"];
+    let ds = &kind.datasets[0];
+    assert_eq!(ds.resolved_sources, vec!["warehouse.orders"]);
+}
+
+// ============================================================================
+// Declarative aggregation (Phase 3)
+// ============================================================================
+
+#[tokio::test]
+async fn test_declarative_agg_simple_sum() {
+    // Measure with `agg: sum` and no expr — column resolved from mapping by name.
+    let yaml = r#"
+semantic_model:
+  name: declarative_agg_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("declarative agg: sum should compile");
+
+    let measure = &manifest.kinds["sales"].measures["revenue"];
+    assert!(measure.agg.is_some(), "compiled measure should have agg");
+    assert_eq!(
+        measure.agg.unwrap(),
+        semstrait_core::expr::Aggregation::Sum
+    );
+    // expr should be an entity ref to the measure name (resolved from mapping at plan time).
+    assert_eq!(measure.expr_source, "revenue");
+}
+
+#[tokio::test]
+async fn test_declarative_agg_with_horizontal_expr() {
+    // Measure with `agg: sum` and horizontal expr `amount + price`.
+    let yaml = r#"
+semantic_model:
+  name: declarative_agg_expr_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: total_value
+          data_type: float64
+          agg: sum
+          expr: "amount + price"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              total_value: amount
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("declarative agg with horizontal expr should compile");
+
+    let measure = &manifest.kinds["sales"].measures["total_value"];
+    assert_eq!(
+        measure.agg.unwrap(),
+        semstrait_core::expr::Aggregation::Sum
+    );
+    assert_eq!(measure.expr_source, "amount + price");
+}
+
+#[tokio::test]
+async fn test_declarative_agg_rejects_aggregation_in_expr() {
+    // When `agg` is specified, expr must NOT contain aggregation functions.
+    let yaml = r#"
+semantic_model:
+  name: agg_reject_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_err(), "should reject aggregation in expr when agg is set");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("must not contain aggregation"),
+        "error should mention aggregation rejection, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_declarative_agg_count_distinct() {
+    let yaml = r#"
+semantic_model:
+  name: count_distinct_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: unique_customers
+          data_type: int64
+          agg: count_distinct
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              unique_customers: customer_id
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("count_distinct should compile");
+
+    let measure = &manifest.kinds["sales"].measures["unique_customers"];
+    assert_eq!(
+        measure.agg.unwrap(),
+        semstrait_core::expr::Aggregation::CountDistinct
+    );
+}
+
+#[tokio::test]
+async fn test_legacy_expr_still_works() {
+    // Legacy format: no `agg`, expr contains aggregation.
+    let yaml = r#"
+semantic_model:
+  name: legacy_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("legacy expr should still compile");
+
+    let measure = &manifest.kinds["sales"].measures["revenue"];
+    assert!(measure.agg.is_none(), "legacy measure should have no declarative agg");
+    assert_eq!(measure.expr_source, "SUM(amount)");
+}
+
+#[tokio::test]
+async fn test_measure_requires_agg_or_expr() {
+    // Neither agg nor expr — should fail.
+    let yaml = r#"
+semantic_model:
+  name: missing_both_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_err(), "should fail when neither agg nor expr is specified");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("either 'agg' or 'expr' must be specified"),
+        "error should mention missing agg/expr, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_metric_with_declarative_agg() {
+    // Metric with `agg: avg` — two-stage aggregation.
+    let yaml = r#"
+semantic_model:
+  name: metric_agg_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      metrics:
+        - name: avg_daily_revenue
+          data_type: float64
+          agg: avg
+          expr: "revenue"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("metric with agg should compile");
+
+    let metric = &manifest.kinds["sales"].metrics["avg_daily_revenue"];
+    assert_eq!(
+        metric.agg.unwrap(),
+        semstrait_core::expr::Aggregation::Avg
+    );
+}
+
+#[tokio::test]
+async fn test_all_agg_types_compile() {
+    // Verify all 6 aggregation types parse and compile.
+    let agg_types = ["sum", "avg", "count", "count_distinct", "min", "max"];
+    for agg_type in &agg_types {
+        let yaml = format!(
+            r#"
+semantic_model:
+  name: all_agg_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: m1
+          data_type: float64
+          agg: {agg_type}
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              m1: col1
+"#,
+            agg_type = agg_type
+        );
+
+        let compiler = ManifestCompiler::new();
+        let result = compiler
+            .compile(CompileSource::Yaml(yaml))
+            .await;
+        assert!(
+            result.is_ok(),
+            "agg type '{}' should compile, got: {:?}",
+            agg_type,
+            result.err()
+        );
+        let manifest = result.unwrap();
+        assert!(
+            manifest.kinds["sales"].measures["m1"].agg.is_some(),
+            "agg type '{}' should produce compiled agg",
+            agg_type
+        );
+    }
+}
+
+// ============================================================================
+// Metadata dimension type (Phase 4)
+// ============================================================================
+
+#[tokio::test]
+async fn test_metadata_dimension_path_token() {
+    let yaml = r#"
+semantic_model:
+  name: metadata_path_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: source_partition
+          data_type: string
+          type:
+            metadata:
+              path:
+                token: 3
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              paths:
+                - "s3://bucket/year=2024/month=01/data.parquet"
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("metadata dimension with path.token should compile");
+
+    let dim = &manifest.kinds["sales"].dimensions["source_partition"];
+    match &dim.dim_type {
+        semstrait_model::DimensionType::Metadata(m) => {
+            assert!(m.path.is_some());
+            assert_eq!(m.path.as_ref().unwrap().token, 3);
+        }
+        other => panic!("Expected Metadata dimension type, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_metadata_dimension_partition_level() {
+    let yaml = r#"
+semantic_model:
+  name: metadata_partition_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: partition_year
+          data_type: string
+          type:
+            metadata:
+              partition:
+                level: 1
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              path: "s3://bucket/data.parquet"
+              partition_def:
+                type:
+                  range:
+                    column: year
+                    start: "2020"
+                    end: "2025"
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("metadata dimension with partition.level should compile");
+
+    let dim = &manifest.kinds["sales"].dimensions["partition_year"];
+    match &dim.dim_type {
+        semstrait_model::DimensionType::Metadata(m) => {
+            assert!(m.partition.is_some());
+            assert_eq!(m.partition.as_ref().unwrap().level, 1);
+        }
+        other => panic!("Expected Metadata dimension type, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_metadata_dimension_path_requires_storage_paths() {
+    // path.token without storage paths should fail.
+    let yaml = r#"
+semantic_model:
+  name: metadata_no_path_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: source_part
+          data_type: string
+          type:
+            metadata:
+              path:
+                token: 2
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_err(), "path.token without storage paths should fail");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("no storage paths"),
+        "error should mention missing storage paths, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_metadata_dimension_partition_requires_partition_def() {
+    // partition.level without partition_def should fail.
+    let yaml = r#"
+semantic_model:
+  name: metadata_no_partition_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: partition_year
+          data_type: string
+          type:
+            metadata:
+              partition:
+                level: 1
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              path: "s3://bucket/data.parquet"
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_err(), "partition.level without partition_def should fail");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("no partition definitions"),
+        "error should mention missing partition definitions, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_metadata_dimension_requires_path_or_partition() {
+    // Metadata dimension with neither path nor partition should fail.
+    let yaml = r#"
+semantic_model:
+  name: metadata_empty_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: empty_meta
+          data_type: string
+          type:
+            metadata: {}
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_err(), "empty metadata dimension should fail");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("either 'path' or 'partition'"),
+        "error should mention missing path/partition, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_partition_level_zero_rejected() {
+    let yaml = r#"
+semantic_model:
+  name: partition_zero_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: bad_partition
+          data_type: string
+          type:
+            metadata:
+              partition:
+                level: 0
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              path: "s3://bucket/data.parquet"
+              partition_def:
+                type:
+                  range:
+                    column: year
+                    start: "2020"
+                    end: "2025"
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_err(), "partition.level=0 should fail (1-indexed)");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("1-indexed"),
+        "error should mention 1-indexed, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_partition_level_exceeds_depth() {
+    let yaml = r#"
+semantic_model:
+  name: partition_depth_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: deep_partition
+          data_type: string
+          type:
+            metadata:
+              partition:
+                level: 5
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              path: "s3://bucket/data.parquet"
+              partition_def:
+                type:
+                  range:
+                    column: year
+                    start: "2020"
+                    end: "2025"
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(
+        result.is_err(),
+        "partition.level exceeding depth should fail"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("partition depth"),
+        "error should mention partition depth, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_metadata_dimension_with_auto_mapping() {
+    // Auto mapping should compile when metadata dimensions are present.
+    // Metadata dims should be excluded from auto-generated identity mapping.
+    let yaml = r#"
+semantic_model:
+  name: auto_mapping_metadata_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: region
+          data_type: string
+        - name: source_partition
+          data_type: string
+          type:
+            metadata:
+              path:
+                token: 3
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping: auto
+            storage:
+              paths:
+                - "s3://bucket/region=us/data.parquet"
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("auto mapping with metadata dimension should compile");
+
+    // The auto mapping should include region and revenue but NOT source_partition.
+    let ds = &manifest.kinds["sales"].datasets[0];
+    let mapping = ds.extras.column_mapping.as_map();
+    assert!(
+        mapping.contains_key("region"),
+        "auto mapping should include non-metadata dimension"
+    );
+    assert!(
+        mapping.contains_key("revenue"),
+        "auto mapping should include measure"
+    );
+    assert!(
+        !mapping.contains_key("source_partition"),
+        "auto mapping should NOT include metadata dimension"
+    );
+}
+
+#[tokio::test]
+async fn test_metadata_dimension_both_path_and_partition() {
+    let yaml = r#"
+semantic_model:
+  name: both_extraction_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: source_info
+          data_type: string
+          type:
+            metadata:
+              path:
+                token: 2
+              partition:
+                level: 1
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              path: "s3://bucket/data.parquet"
+              partition_def:
+                type:
+                  range:
+                    column: year
+                    start: "2020"
+                    end: "2025"
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("metadata dim with both path and partition should compile");
+
+    let dim = &manifest.kinds["sales"].dimensions["source_info"];
+    match &dim.dim_type {
+        semstrait_model::DimensionType::Metadata(m) => {
+            assert!(m.path.is_some(), "path extraction should be present");
+            assert!(m.partition.is_some(), "partition extraction should be present");
+            assert_eq!(m.path.as_ref().unwrap().token, 2);
+            assert_eq!(m.partition.as_ref().unwrap().level, 1);
+        }
+        other => panic!("Expected Metadata dimension type, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_declarative_agg_with_measure_filter() {
+    let yaml = r#"
+semantic_model:
+  name: agg_filter_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: region
+          data_type: string
+      measures:
+        - name: domestic_revenue
+          data_type: float64
+          agg: sum
+          expr: "amount"
+          filters:
+            - name: domestic_only
+              expr: "region = 'US'"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              region: region
+              domestic_revenue: amount
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("declarative agg with measure filter should compile");
+
+    let measure = &manifest.kinds["sales"].measures["domestic_revenue"];
+    assert_eq!(
+        measure.agg,
+        Some(semstrait_core::expr::Aggregation::Sum)
+    );
+    assert!(!measure.filters.is_empty(), "measure should have filters");
 }

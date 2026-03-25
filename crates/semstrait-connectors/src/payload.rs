@@ -1,45 +1,7 @@
-//! Compute payload types for the connector pipeline.
+//! Compute result types for the connector pipeline.
 
 use std::any::Any;
 use std::time::Duration;
-
-
-/// Kind of payload a connector can accept.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PayloadKind {
-    Sql,
-    SubstraitPlan,
-    NativePlan,
-}
-
-/// The output of `ComputeEmitter::emit()`.
-pub enum ComputePayload {
-    /// Dialect-specific SQL string.
-    Sql(String),
-    /// Serialized `substrait::proto::Plan` bytes.
-    SubstraitPlan(Vec<u8>),
-    /// Engine-specific plan object (e.g., DataFusion LogicalPlan).
-    NativePlan(Box<dyn Any + Send + Sync>),
-}
-
-impl std::fmt::Debug for ComputePayload {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Sql(sql) => f.debug_tuple("Sql").field(&sql.len()).finish(),
-            Self::SubstraitPlan(bytes) => {
-                f.debug_tuple("SubstraitPlan").field(&bytes.len()).finish()
-            }
-            Self::NativePlan(_) => f.debug_tuple("NativePlan").field(&"<opaque>").finish(),
-        }
-    }
-}
-
-/// The adapted request ready for execution.
-#[derive(Debug)]
-pub struct ComputeRequest {
-    pub payload: ComputePayload,
-    pub timeout: Option<Duration>,
-}
 
 /// The result of executing a compute request.
 #[derive(Debug)]
@@ -89,26 +51,6 @@ pub struct ExecutionStats {
     pub rows_returned: u64,
     pub execution_time: Option<Duration>,
     pub bytes_scanned: Option<u64>,
-}
-
-/// Error from `ComputeEmitter::emit()`.
-#[derive(Debug, thiserror::Error)]
-pub enum EmitError {
-    #[error("unsupported plan node: {0}")]
-    UnsupportedNode(String),
-    #[error("serialization error: {0}")]
-    Serialization(String),
-    #[error("internal error: {0}")]
-    Internal(String),
-}
-
-/// Error from `ComputeAdapter::adapt()`.
-#[derive(Debug, thiserror::Error)]
-pub enum AdaptError {
-    #[error("unsupported payload kind: {0:?}")]
-    UnsupportedPayload(PayloadKind),
-    #[error("adaptation error: {0}")]
-    Adaptation(String),
 }
 
 /// Error from `ComputeConnector::execute()`.

@@ -3403,6 +3403,7 @@ name = "semstrait"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "semstrait-adapter",
  "semstrait-api",
  "semstrait-catalog",
  "semstrait-connectors",
@@ -3416,6 +3417,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "semstrait-adapter"
+version = "0.1.0"
+dependencies = [
+ "semstrait-core",
+ "semstrait-ir",
+ "semstrait-sql",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "semstrait-api"
 version = "0.1.0"
 dependencies = [
@@ -3423,6 +3434,7 @@ dependencies = [
  "axum",
  "clap",
  "prost",
+ "semstrait-adapter",
  "semstrait-catalog",
  "semstrait-connectors",
  "semstrait-core",
@@ -3464,14 +3476,12 @@ dependencies = [
  "datafusion",
  "duckdb",
  "reqwest",
- "semstrait-core",
+ "semstrait-adapter",
  "semstrait-ir",
- "semstrait-sql",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -3504,8 +3514,10 @@ dependencies = [
 name = "semstrait-ir"
 version = "0.1.0"
 dependencies = [
+ "prost",
  "semstrait-core",
  "serde",
+ "serde_json",
  "substrait",
  "thiserror 2.0.18",
  "uuid",

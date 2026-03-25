@@ -15,11 +15,11 @@ use duckdb_engine::Connection;
 use tokio::sync::Mutex;
 
 use crate::payload::{
-    ComputePayload, ComputeRequest, ComputeResult, ComputeResultData,
-    ConnectorError, EmitError, ExecutionStats, PayloadKind,
+    ComputeResult, ComputeResultData, ConnectorError, ExecutionStats,
 };
-use crate::traits::{ComputeAdapter, ComputeConnector, ComputeEmitter};
-use semstrait_core::ConsumerProfile;
+use crate::traits::ComputeConnector;
+use semstrait_adapter::{DuckDbAdapter, EngineAdapter};
+use semstrait_ir::PlanArtifact;
 
 /// DuckDB-based compute connector.
 ///
@@ -28,7 +28,7 @@ use semstrait_core::ConsumerProfile;
 /// are dispatched via `spawn_blocking`.
 pub struct DuckDbConnector {
     conn: Arc<Mutex<Connection>>,
-    profile: ConsumerProfile,
+    adapter: DuckDbAdapter,
 }
 
 impl DuckDbConnector {
@@ -38,7 +38,7 @@ impl DuckDbConnector {
             .map_err(|e| ConnectorError::Connection(format!("failed to open DuckDB: {e}")))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            profile: ConsumerProfile::default(),
+            adapter: DuckDbAdapter,
         })
     }
 
@@ -48,7 +48,7 @@ impl DuckDbConnector {
             .map_err(|e| ConnectorError::Connection(format!("failed to open DuckDB at '{path}': {e}")))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            profile: ConsumerProfile::default(),
+            adapter: DuckDbAdapter,
         })
     }
 
@@ -157,42 +157,21 @@ fn build_register_sql(
     ))
 }
 
-impl ComputeEmitter for DuckDbConnector {
-    fn emit_sql(&self, sql: &str) -> Result<ComputePayload, EmitError> {
-        Ok(ComputePayload::Sql(sql.to_string()))
-    }
-
-    fn emit_substrait(&self, _plan_bytes: &[u8]) -> Result<ComputePayload, EmitError> {
-        Err(EmitError::UnsupportedNode(
-            "Substrait execution not supported for DuckDB; use SQL".to_string(),
-        ))
-    }
-
-    fn supported_payloads(&self) -> &[PayloadKind] {
-        &[PayloadKind::Sql]
-    }
-}
-
-impl ComputeAdapter for DuckDbConnector {
-    fn consumer_profile(&self) -> &ConsumerProfile {
-        &self.profile
-    }
-
-}
-
 #[async_trait::async_trait]
 impl ComputeConnector for DuckDbConnector {
-    async fn execute(&self, request: ComputeRequest) -> Result<ComputeResult, ConnectorError> {
-        let sql = match request.payload {
-            ComputePayload::Sql(sql) => sql,
-            _ => {
-                return Err(ConnectorError::Execution(
-                    "DuckDB connector only supports SQL payloads".to_string(),
-                ))
-            }
-        };
+    fn adapter(&self) -> &dyn EngineAdapter {
+        &self.adapter
+    }
+
+    async fn execute(&self, artifact: &PlanArtifact) -> Result<ComputeResult, ConnectorError> {
+        let sql = artifact.as_sql().ok_or_else(|| {
+            ConnectorError::Execution(
+                "DuckDB connector currently requires SQL artifact".to_string(),
+            )
+        })?;
 
         let conn = self.conn.clone();
+        let sql = sql.to_string();
         let start = Instant::now();
 
         let batches = tokio::task::spawn_blocking(move || {
@@ -245,10 +224,6 @@ impl ComputeConnector for DuckDbConnector {
 
     fn name(&self) -> &str {
         "duckdb"
-    }
-
-    fn preferred_dialect(&self) -> semstrait_sql::TargetDialect {
-        semstrait_sql::TargetDialect::DuckDb
     }
 }
 
@@ -312,11 +287,11 @@ mod tests {
     async fn test_execute_simple_query() {
         let connector = setup_with_orders().await;
 
-        let payload = connector
-            .emit_sql("SELECT region, SUM(amount) as total FROM orders GROUP BY region ORDER BY region")
-            .unwrap();
-        let request = connector.adapt(payload).unwrap();
-        let result = connector.execute(request).await.unwrap();
+        let artifact = PlanArtifact::Sql(
+            "SELECT region, SUM(amount) as total FROM orders GROUP BY region ORDER BY region"
+                .to_string(),
+        );
+        let result = connector.execute(&artifact).await.unwrap();
 
         assert!(result.complete);
         assert_eq!(result.stats.rows_returned, 2);
@@ -336,11 +311,10 @@ mod tests {
     async fn test_execute_with_filter() {
         let connector = setup_with_orders().await;
 
-        let payload = connector
-            .emit_sql("SELECT region, amount FROM orders WHERE region = 'US'")
-            .unwrap();
-        let request = connector.adapt(payload).unwrap();
-        let result = connector.execute(request).await.unwrap();
+        let artifact = PlanArtifact::Sql(
+            "SELECT region, amount FROM orders WHERE region = 'US'".to_string(),
+        );
+        let result = connector.execute(&artifact).await.unwrap();
 
         assert_eq!(result.stats.rows_returned, 2);
     }
@@ -353,9 +327,8 @@ mod tests {
             .await
             .unwrap();
 
-        let payload = connector.emit_sql("SELECT * FROM empty_table").unwrap();
-        let request = connector.adapt(payload).unwrap();
-        let result = connector.execute(request).await.unwrap();
+        let artifact = PlanArtifact::Sql("SELECT * FROM empty_table".to_string());
+        let result = connector.execute(&artifact).await.unwrap();
 
         assert!(result.complete);
         assert_eq!(result.stats.rows_returned, 0);
@@ -366,39 +339,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_substrait_not_supported() {
-        let connector = DuckDbConnector::new().unwrap();
-        let result = connector.emit_substrait(&[]);
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_supported_payloads() {
-        let connector = DuckDbConnector::new().unwrap();
-        assert_eq!(connector.supported_payloads(), &[PayloadKind::Sql]);
-    }
-
-    #[tokio::test]
     async fn test_name() {
         let connector = DuckDbConnector::new().unwrap();
         assert_eq!(connector.name(), "duckdb");
     }
 
     #[tokio::test]
-    async fn test_preferred_dialect() {
+    async fn test_adapter_accessible() {
         let connector = DuckDbConnector::new().unwrap();
-        assert_eq!(
-            connector.preferred_dialect(),
-            semstrait_sql::TargetDialect::DuckDb
-        );
+        let adapter = connector.adapter();
+        assert_eq!(adapter.name(), "duckdb");
     }
 
     #[tokio::test]
     async fn test_execution_error() {
         let connector = DuckDbConnector::new().unwrap();
-        let payload = connector.emit_sql("SELECT * FROM nonexistent_table").unwrap();
-        let request = connector.adapt(payload).unwrap();
-        let result = connector.execute(request).await;
+        let artifact = PlanArtifact::Sql("SELECT * FROM nonexistent_table".to_string());
+        let result = connector.execute(&artifact).await;
         assert!(result.is_err());
         match result {
             Err(ConnectorError::Execution(msg)) => {

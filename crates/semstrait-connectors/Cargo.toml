@@ -6,12 +6,10 @@ license = "Apache-2.0"
 description = "Compute connector traits and feature-gated engine implementations"
 
 [dependencies]
-semstrait-core = { workspace = true }
+semstrait-adapter = { workspace = true }
 semstrait-ir = { workspace = true }
-semstrait-sql = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde_json = { workspace = true }
 
 # Feature-gated engine deps
@@ -28,8 +26,8 @@ tokio = { workspace = true }
 
 [features]
 default = []
-duckdb = ["duckdb-engine", "arrow", "tokio"]
-datafusion = ["datafusion-engine", "tokio"]
-trino = ["reqwest", "serde", "tokio"]
-spark = ["uuid"]
-polyglot = ["semstrait-sql/polyglot"]
+duckdb = ["duckdb-engine", "arrow", "tokio", "semstrait-adapter/duckdb"]
+datafusion = ["datafusion-engine", "tokio", "semstrait-adapter/datafusion"]
+trino = ["reqwest", "serde", "tokio", "semstrait-adapter/trino"]
+spark = ["uuid", "semstrait-adapter/spark"]
+polyglot = ["semstrait-adapter/polyglot"]

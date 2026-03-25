@@ -1,0 +1,232 @@
+# Category 6: Impact Affiliate — Joinset (v2)
+# Conversion detail enriched by campaign/partner metadata.
+#
+# API-verified against Impact.com Brand REST API:
+#
+#   Actions API (conversion level): PascalCase field names
+#     Id (transaction_id), CampaignId, CampaignName, AdId (no AdName on Action),
+#     ActionTrackerId, ActionTrackerName, MediaPartnerId, MediaPartnerName,
+#     CustomerId, CustomerCountry, CustomerCity, CustomerRegion,
+#     ReferringType, ReferringDomain, PromoCode, Oid (order_id),
+#     Amount, Payout, IntendedPayout, DeltaPayout, ClientCost
+#   "Campaign" = "Program" in Impact.com terminology
+#   "actions" count = DERIVED aggregate (not a field on individual records)
+#   ad_name = NOT on Action object — requires separate Ads API join by AdId
+#
+#   Campaign metadata satellite:
+#     network, media, partner_type, relationship = NOT standard REST API fields.
+#     These likely come from Impact.com reporting UI/exports or account-specific
+#     custom configuration. Closest API equivalents:
+#       partner_type → Partner.PartnerType (e.g. "MARKETPLACE")
+#       media → Partner.PromotionalMethods[].Type (Content, Coupon, Loyalty)
+#       network, relationship → report/export-only fields
+
+semantic_model:
+  name: alpinestars_impact
+
+  dimensions:
+    - name: date
+      description: "Reporting date"
+      data_type: date
+      type:
+        temporal:
+          grains: [day, week, month, quarter, year]
+
+    - name: currency
+      description: "Currency of the reported monetary values (ISO 4217)"
+      data_type: string
+
+    - name: campaign_name
+      description: "Campaign/program name"
+      data_type: string
+      ai_context:
+        synonyms: [campaign, ad campaign]
+
+    - name: ad_name
+      description: "Ad creative name"
+      data_type: string
+
+  measures:
+    - name: affiliate_actions
+      description: "Total affiliate conversion actions (derived: COUNT of action records)"
+      data_type: decimal
+      agg: sum
+      ai_context:
+        synonyms: [affiliate conversions, impact conversions, impact actions]
+
+    - name: client_cost
+      description: "Total client cost paid to affiliate network (includes agency commission if configured)"
+      data_type: decimal
+      agg: sum
+      ai_context:
+        synonyms: [affiliate client cost, impact client cost]
+
+  joinsets:
+    - name: impact_enriched
+      description: "Impact affiliate conversions enriched with campaign-level metadata — one row per transaction with partner, type, and relationship context"
+      ai_context: "Use for Impact affiliate analysis that needs both transaction-level detail (customer country, promo code, order ID, payout) and campaign-level metadata (media partner, partner type, relationship). Joins conversion detail (anchor) to campaign performance (satellite) on campaign_id."
+      associativity: left
+      keys:
+        primary: [transaction_id]
+        foreign:
+          - columns: [campaign_id]
+            reference: impact_campaign_metadata
+            cardinality: many_to_one
+      dimensions:
+        - ref: date
+        - ref: currency
+
+        # campaign & ad
+        - name: campaign_id
+          description: "Impact campaign/program identifier (Actions API: CampaignId)"
+          data_type: string
+        - ref: campaign_name
+        - name: ad_id
+          description: "Ad identifier that drove the winning click (Actions API: AdId)"
+          data_type: string
+        - ref: ad_name
+
+        # transaction
+        - name: transaction_id
+          description: "Impact action identifier (Actions API: Id)"
+          data_type: string
+        - name: action_tracker_id
+          description: "Action tracker identifier — event type config (Actions API: ActionTrackerId)"
+          data_type: string
+        - name: action_tracker_name
+          description: "Action tracker display name (Actions API: ActionTrackerName)"
+          data_type: string
+
+        # partner
+        - name: media_partner_id
+          description: "Media partner identifier (Actions API: MediaPartnerId)"
+          data_type: string
+        - name: media_partner_name
+          description: "Media partner display name (Actions API: MediaPartnerName)"
+          data_type: string
+
+        # customer
+        - name: customer_id
+          description: "Brand's customer identifier (Actions API: CustomerId)"
+          data_type: string
+        - name: customer_country
+          description: "Customer country (Actions API: CustomerCountry)"
+          data_type: string
+        - name: customer_city
+          description: "Customer city (Actions API: CustomerCity)"
+          data_type: string
+        - name: customer_region
+          description: "Customer region/state (Actions API: CustomerRegion)"
+          data_type: string
+
+        # referral
+        - name: referring_type
+          description: "Type of winning referral — legacy enum (Actions API: ReferringType, e.g. CLICK_COOKIE)"
+          data_type: string
+        - name: referring_domain
+          description: "Domain where the winning click occurred (Actions API: ReferringDomain)"
+          data_type: string
+        - name: promo_code
+          description: "Promotional code applied to the conversion (Actions API: PromoCode)"
+          data_type: string
+        - name: order_id
+          description: "Brand's order identifier (Actions API: Oid)"
+          data_type: string
+
+        # campaign-level metadata (from satellite — report/export fields)
+        - name: network
+          description: "Affiliate network name (report/export field — not in standard REST API)"
+          data_type: string
+        - name: media
+          description: "Media partner promotional method (closest API: Partner.PromotionalMethods[].Type)"
+          data_type: string
+        - name: partner_type
+          description: "Partner type classification (Partners API: PartnerType, e.g. MARKETPLACE)"
+          data_type: string
+        - name: relationship
+          description: "Relationship type with the partner (report/export field — not in standard REST API)"
+          data_type: string
+
+      measures:
+        - ref: affiliate_actions
+
+        - name: amount
+          description: "Revenue amount associated with the action (Actions API: Amount)"
+          data_type: decimal
+          agg: sum
+          ai_context:
+            synonyms: [order value, transaction value]
+
+        - name: payout
+          description: "Commission to be paid to the partner (Actions API: Payout)"
+          data_type: decimal
+          agg: sum
+
+        - name: intended_payout
+          description: "Original payout calculated by contract terms before modifications (Actions API: IntendedPayout)"
+          data_type: decimal
+          agg: sum
+
+        - name: delta_payout
+          description: "Change in payout between current and previous action update (Actions API: DeltaPayout)"
+          data_type: decimal
+          agg: sum
+
+        - ref: client_cost
+
+      datasets:
+        # Anchor — transaction-level detail
+        - name: impact_conversion_detail
+          description: "Impact conversion detail (anchor — one row per action/transaction)"
+          extras:
+            storage:
+              path: "fs1henp3k8p1hqo/impact/8da22144-bc36-4656-927a-26ae430da6c4/"
+          column_mapping:
+            date: date
+            currency: currency
+            transaction_id: impact-id
+            campaign_id: impact-campaign_id
+            campaign_name: impact-campaign_name
+            ad_id: impact-ad_id
+            ad_name: impact-ad_name
+            action_tracker_id: impact-action_tracker_id
+            action_tracker_name: impact-action_tracker_name
+            media_partner_id: impact-media_partner_id
+            media_partner_name: impact-media_partner_name
+            customer_id: impact-customer_id
+            customer_country: impact-customer_country
+            customer_city: impact-customer_city
+            customer_region: impact-customer_region
+            referring_type: impact-referring_type
+            referring_domain: impact-referring_domain
+            promo_code: impact-promo_code
+            order_id: impact-oid
+            actions: impact-actions
+            amount: impact-amount
+            payout: impact-payout
+            intended_payout: impact-intended_payout
+            delta_payout: impact-delta_payout
+            client_cost: impact-client_cost
+
+        # Satellite — campaign metadata (media partner, type, relationship)
+        - name: impact_campaign_metadata
+          description: "Impact campaign performance (satellite — campaign-level metadata from report exports)"
+          extras:
+            storage:
+              path: "fs1henp3k8p1hqo/impact/68028aea-3a3b-48c8-b7b8-fc9846979a75/"
+          column_mapping:
+            campaign_id: impact-campaign_id
+            network: impact-network
+            media: impact-media
+            partner_type: impact-type
+            relationship: impact-relationship
+
+      relationships:
+        - name: conversion_to_campaign
+          from: impact_conversion_detail
+          to: impact_campaign_metadata
+          type: left
+          columns:
+            - from: impact-campaign_id
+              to: impact-campaign_id
+          cardinality: many_to_one

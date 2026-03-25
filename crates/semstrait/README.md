@@ -16,7 +16,7 @@ let sem = SemstraitBuilder::new()
     .build()
     .await?;
 
-let sql = sem.explain(&request).await?;
+let sql = sem.explain(&request)?;
 ```
 
 ---
@@ -28,12 +28,13 @@ let sql = sem.explain(&request).await?;
 pub use semstrait_core::{ConsumerProfile, DataType, Grain, Schema, SchemaColumn};
 
 // IR types
-pub use semstrait_ir::{LogicalPlan, PlanNode};
+pub use semstrait_ir::{LogicalPlan, PlanArtifact};
+
+// Adapter types
+pub use semstrait_adapter::{AdaptError, EngineAdapter};
 
 // Connector traits
-pub use semstrait_connectors::{
-    ComputeAdapter, ComputeConnector, ComputeEmitter, ComputePayload, ComputeResult,
-};
+pub use semstrait_connectors::{ComputeConnector, ComputeResult, ComputeResultData};
 
 // Catalog traits
 pub use semstrait_catalog::{CatalogProvider, NullCatalogProvider, TableRef};
@@ -66,9 +67,12 @@ pub use builder::{BuildError, SemstraitBuilder, SemstraitInstance};
 - `.with_manifest_yaml(yaml)` — inline YAML string
 - `.with_manifest_file(path)` — load from file
 - `.with_catalog(provider)` — set catalog provider
+- `.with_connector(connector)` — set compute connector for query execution
 - `.build().await` — compile and return instance
 
 `SemstraitInstance` provides:
 
 - `.manifest()` — access the compiled manifest
-- `.explain(&request)` — plan + emit SQL for a resolved query request
+- `.manifest_yaml()` — access the raw manifest YAML
+- `.explain(&request)` — plan + emit SQL (synchronous; uses connector adapter if set, ANSI fallback otherwise)
+- `.query(&request).await` — plan + execute via the configured connector

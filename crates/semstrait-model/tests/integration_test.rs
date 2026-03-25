@@ -154,7 +154,7 @@ fn test_parse_grainset_semi_additive_yaml() {
         for measure_entry in &kind.measures {
             if let semstrait_model::MeasureEntry::Inline(m) = measure_entry {
                 if let Some(additivity) = &m.additivity {
-                    if matches!(&additivity.additivity_type, semstrait_model::AdditivityType::Semi(_)) {
+                    if matches!(additivity, semstrait_model::AdditivityType::Semi(_)) {
                         found_semi = true;
                     }
                 }
@@ -220,4 +220,37 @@ fn test_parse_grainset_measure_filter_yaml() {
     }
 
     assert!(found_filtered, "Expected to find measure with filters");
+}
+
+#[test]
+fn test_dimension_type_defaults_to_categorical() {
+    // When `type:` is omitted from a dimension YAML, it should default to Categorical.
+    let yaml = r#"
+semantic_model:
+  name: default_dim_type_test
+  datasets:
+    - name: orders
+      dimensions:
+        - name: region
+          data_type: string
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+"#;
+
+    let model = semstrait_model::parse(yaml).unwrap();
+    let model = semstrait_model::resolve_refs(model).unwrap();
+
+    let dim = match &model.datasets[0].dimensions[0] {
+        semstrait_model::DimensionEntry::Inline(d) => d,
+        _ => panic!("expected inline dimension"),
+    };
+
+    assert_eq!(dim.name, "region");
+    assert!(
+        matches!(&dim.dim_type, semstrait_model::DimensionType::Categorical(c) if c.enum_values.is_none()),
+        "expected Categorical with no enum_values, got {:?}",
+        dim.dim_type
+    );
 }

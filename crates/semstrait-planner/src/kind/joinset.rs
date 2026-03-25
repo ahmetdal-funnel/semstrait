@@ -75,12 +75,13 @@ fn map_join_type(jt: &ModelJoinType) -> IrJoinType {
 }
 
 /// Find the anchor dataset — the one covering the most requested fields.
+/// Metadata dimensions are excluded — they don't need column mapping coverage.
 fn find_anchor_dataset<'a>(
     kind: &'a CompiledKind,
     request: &ResolvedQueryRequest,
 ) -> Result<&'a CompiledKindDataset, PlannerError> {
-    let needed: Vec<&str> = request
-        .dimensions
+    let (_, regular_dims) = super::partition_dimensions(&request.dimensions, kind);
+    let needed: Vec<&str> = regular_dims
         .iter()
         .chain(request.measures.iter())
         .map(|s| s.as_str())
@@ -179,12 +180,22 @@ fn build_scan(
     for measure_name in &request.measures {
         if let Some(measure) = kind.measures.get(measure_name) {
             if mapping.contains_key(measure_name) {
-                let lowered = expr_lower::lower_measure_with_filters(
-                    measure_name,
-                    &measure.expr,
-                    mapping,
-                    &measure.filters,
-                )?;
+                let lowered = if let Some(agg) = measure.agg {
+                    expr_lower::lower_measure_declarative(
+                        measure_name,
+                        agg,
+                        &measure.expr,
+                        mapping,
+                        &measure.filters,
+                    )?
+                } else {
+                    expr_lower::lower_measure_with_filters(
+                        measure_name,
+                        &measure.expr,
+                        mapping,
+                        &measure.filters,
+                    )?
+                };
                 for agg in &lowered.aggregates {
                     collect_column_refs(&agg.expr, &mut scan_columns, &mut seen);
                 }
@@ -365,12 +376,22 @@ fn build_join_plan(
                 });
 
             if let Some(mapping) = ds_mapping {
-                let lowered = expr_lower::lower_measure_with_filters(
-                    measure_name,
-                    &measure.expr,
-                    mapping,
-                    &measure.filters,
-                )?;
+                let lowered = if let Some(agg) = measure.agg {
+                    expr_lower::lower_measure_declarative(
+                        measure_name,
+                        agg,
+                        &measure.expr,
+                        mapping,
+                        &measure.filters,
+                    )?
+                } else {
+                    expr_lower::lower_measure_with_filters(
+                        measure_name,
+                        &measure.expr,
+                        mapping,
+                        &measure.filters,
+                    )?
+                };
                 lowered_measures.push((measure_name.clone(), lowered));
             } else {
                 return Err(PlannerError::MeasureNotFound {
@@ -488,6 +509,7 @@ mod tests {
                 name: "revenue".to_string(),
                 description: None,
                 data_type: "float64".to_string(),
+                agg: None,
                 expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
                 expr_source: "SUM(amount)".to_string(),
                 additivity: None,
@@ -519,6 +541,7 @@ mod tests {
                 storage: None,
                 catalog: None,
             },
+            resolved_sources: vec![],
         };
 
         // Dataset 2: customers — has customer_name.
@@ -540,6 +563,7 @@ mod tests {
                 storage: None,
                 catalog: None,
             },
+            resolved_sources: vec![],
         };
 
         let relationship = CompiledRelationship {
@@ -699,6 +723,7 @@ mod tests {
                         storage: None,
                         catalog: None,
                     },
+                    resolved_sources: vec![],
                 },
                 CompiledKindDataset {
                     name: "b".to_string(),
@@ -708,6 +733,7 @@ mod tests {
                         storage: None,
                         catalog: None,
                     },
+                    resolved_sources: vec![],
                 },
             ],
             relationships: vec![],
@@ -763,6 +789,7 @@ mod tests {
                 name: "revenue".to_string(),
                 description: None,
                 data_type: "float64".to_string(),
+                agg: None,
                 expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
                 expr_source: "SUM(amount)".to_string(),
                 additivity: None,
@@ -787,14 +814,17 @@ mod tests {
         let ds_orders = CompiledKindDataset {
             name: "orders".to_string(),
             extras: KindDatasetExtras { column_mapping: map_orders.into(), temporal: None, storage: None, catalog: None },
+            resolved_sources: vec![],
         };
         let ds_customers = CompiledKindDataset {
             name: "customers".to_string(),
             extras: KindDatasetExtras { column_mapping: map_customers.into(), temporal: None, storage: None, catalog: None },
+            resolved_sources: vec![],
         };
         let ds_regions = CompiledKindDataset {
             name: "regions".to_string(),
             extras: KindDatasetExtras { column_mapping: map_regions.into(), temporal: None, storage: None, catalog: None },
+            resolved_sources: vec![],
         };
 
         let rel1 = CompiledRelationship {

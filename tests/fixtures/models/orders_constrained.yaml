@@ -1,9 +1,7 @@
 semantic_model:
   name: constrained_test
-  kinds:
+  grainsets:
     - name: orders
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date

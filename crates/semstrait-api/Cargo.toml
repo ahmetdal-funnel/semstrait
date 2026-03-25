@@ -10,6 +10,7 @@ semstrait-core = { workspace = true }
 semstrait-planner = { workspace = true }
 semstrait-manifest = { workspace = true }
 semstrait-connectors = { workspace = true }
+semstrait-adapter = { workspace = true }
 semstrait-ir = { workspace = true }
 semstrait-sql = { workspace = true }
 semstrait-catalog = { workspace = true }
@@ -40,13 +41,13 @@ default = ["cli", "rest"]
 cli = ["dep:clap"]
 rest = ["dep:axum"]
 grpc = ["dep:tonic", "dep:prost", "dep:tonic-prost", "dep:tonic-build", "dep:tonic-prost-build"]
-datafusion = ["semstrait-connectors/datafusion"]
-duckdb = ["semstrait-connectors/duckdb"]
-polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot"]
+datafusion = ["semstrait-connectors/datafusion", "semstrait-adapter/datafusion"]
+duckdb = ["semstrait-connectors/duckdb", "semstrait-adapter/duckdb"]
+polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot", "semstrait-adapter/polyglot"]
 iceberg = ["semstrait-catalog/iceberg"]
 unity = ["semstrait-catalog/unity"]
-trino = ["semstrait-connectors/trino"]
-spark = ["semstrait-connectors/spark"]
+trino = ["semstrait-connectors/trino", "semstrait-adapter/trino"]
+spark = ["semstrait-connectors/spark", "semstrait-adapter/spark"]
 
 [[bin]]
 name = "semstrait"

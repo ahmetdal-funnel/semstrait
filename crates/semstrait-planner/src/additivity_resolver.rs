@@ -1,13 +1,13 @@
 //! AdditivityResolver — restructure plans for semi/non-additive measures.
 //!
-//! Strategy is selected from ConsumerProfile:
+//! Strategy is selected from EngineProfile:
 //! - WindowFunction: ROW_NUMBER OVER (PARTITION BY non_additive_dim) + filter
 //! - DoubleAggregate: sub-query with MAX/LATEST, then re-aggregate
 
 use crate::error::PlannerError;
 use crate::kind::PlanFragment;
 use crate::request::ResolvedQueryRequest;
-use semstrait_core::{ConsumerProfile, SemiAdditiveStrategy};
+use semstrait_core::{EngineProfile, SemiAdditiveStrategy};
 use semstrait_manifest::CompiledMeasure;
 use semstrait_manifest::AdditivityType;
 
@@ -23,17 +23,17 @@ impl AdditivityResolver {
         fragment: PlanFragment,
         measure: &CompiledMeasure,
         _request: &ResolvedQueryRequest,
-        profile: &ConsumerProfile,
+        profile: &dyn EngineProfile,
     ) -> Result<PlanFragment, PlannerError> {
         let additivity = match &measure.additivity {
             Some(a) => a,
             None => return Ok(fragment), // Fully additive, no restructuring needed.
         };
 
-        match &additivity.additivity_type {
+        match additivity {
             AdditivityType::Full => Ok(fragment),
             AdditivityType::Semi(_semi) => {
-                let strategy = profile.semi_additive_strategy();
+                let strategy = semstrait_core::semi_additive_strategy(profile);
                 match strategy {
                     SemiAdditiveStrategy::WindowFunction => {
                         // v1 stub: would wrap with window function node.

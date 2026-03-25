@@ -50,6 +50,7 @@ semstrait-ir = { path = "crates/semstrait-ir" }
 semstrait-planner = { path = "crates/semstrait-planner" }
 semstrait-sql = { path = "crates/semstrait-sql" }
 semstrait-connectors = { path = "crates/semstrait-connectors" }
+semstrait-adapter = { path = "crates/semstrait-adapter" }
 semstrait-api = { path = "crates/semstrait-api" }
 
 # Workspace-level integration tests package

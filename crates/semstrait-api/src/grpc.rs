@@ -51,6 +51,7 @@ fn proto_to_raw(req: QueryRequest) -> RawQueryRequest {
         limit: req.limit,
         order_by,
         session: req.session,
+        engine: req.engine,
     }
 }
 

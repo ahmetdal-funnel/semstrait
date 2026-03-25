@@ -8,13 +8,10 @@
 //! requires the `spark-connect-rs` crate or a custom proto client, which is
 //! deferred to a follow-up due to dependency alignment constraints.
 
-use crate::payload::{
-    ComputePayload, ComputeRequest, ComputeResult, ConnectorError, EmitError,
-    PayloadKind,
-};
-use crate::traits::{ComputeAdapter, ComputeConnector, ComputeEmitter};
-use semstrait_core::ConsumerProfile;
-use semstrait_sql::TargetDialect;
+use crate::payload::{ComputeResult, ConnectorError};
+use crate::traits::ComputeConnector;
+use semstrait_adapter::{EngineAdapter, SparkAdapter};
+use semstrait_ir::PlanArtifact;
 
 /// Spark Connect-based compute connector.
 ///
@@ -23,7 +20,7 @@ use semstrait_sql::TargetDialect;
 pub struct SparkConnector {
     endpoint: String,
     session_id: String,
-    profile: ConsumerProfile,
+    adapter: SparkAdapter,
 }
 
 impl SparkConnector {
@@ -34,7 +31,7 @@ impl SparkConnector {
         Self {
             endpoint: endpoint.into(),
             session_id: uuid::Uuid::new_v4().to_string(),
-            profile: ConsumerProfile::default(),
+            adapter: SparkAdapter,
         }
     }
 
@@ -50,46 +47,20 @@ impl SparkConnector {
     }
 }
 
-// ── ComputeEmitter ──────────────────────────────────────────────────────────
-
-impl ComputeEmitter for SparkConnector {
-    fn emit_sql(&self, sql: &str) -> Result<ComputePayload, EmitError> {
-        Ok(ComputePayload::Sql(sql.to_string()))
-    }
-
-    fn emit_substrait(&self, _plan_bytes: &[u8]) -> Result<ComputePayload, EmitError> {
-        Err(EmitError::UnsupportedNode(
-            "Spark connector does not support Substrait payloads".to_string(),
-        ))
-    }
-
-    fn supported_payloads(&self) -> &[PayloadKind] {
-        &[PayloadKind::Sql]
-    }
-}
-
-// ── ComputeAdapter ──────────────────────────────────────────────────────────
-
-impl ComputeAdapter for SparkConnector {
-    fn consumer_profile(&self) -> &ConsumerProfile {
-        &self.profile
-    }
-
-}
-
 // ── ComputeConnector ────────────────────────────────────────────────────────
 
 #[async_trait::async_trait]
 impl ComputeConnector for SparkConnector {
-    async fn execute(&self, request: ComputeRequest) -> Result<ComputeResult, ConnectorError> {
-        let _sql = match request.payload {
-            ComputePayload::Sql(sql) => sql,
-            _ => {
-                return Err(ConnectorError::Internal(
-                    "SparkConnector only supports SQL payloads".to_string(),
-                ))
-            }
-        };
+    fn adapter(&self) -> &dyn EngineAdapter {
+        &self.adapter
+    }
+
+    async fn execute(&self, artifact: &PlanArtifact) -> Result<ComputeResult, ConnectorError> {
+        let _sql = artifact.as_sql().ok_or_else(|| {
+            ConnectorError::Execution(
+                "Spark connector currently requires SQL artifact".to_string(),
+            )
+        })?;
 
         // TODO: Implement Spark Connect gRPC client.
         // This requires either:
@@ -113,10 +84,6 @@ impl ComputeConnector for SparkConnector {
     fn name(&self) -> &str {
         "spark"
     }
-
-    fn preferred_dialect(&self) -> TargetDialect {
-        TargetDialect::Spark
-    }
 }
 
 #[cfg(test)]
@@ -134,50 +101,17 @@ mod tests {
     }
 
     #[test]
-    fn test_preferred_dialect() {
+    fn test_adapter_accessible() {
         let conn = SparkConnector::new("sc://spark:15002");
-        assert_eq!(conn.preferred_dialect(), TargetDialect::Spark);
-    }
-
-    #[test]
-    fn test_supported_payloads() {
-        let conn = SparkConnector::new("sc://spark:15002");
-        assert_eq!(conn.supported_payloads(), &[PayloadKind::Sql]);
-    }
-
-    #[test]
-    fn test_emit_sql() {
-        let conn = SparkConnector::new("sc://spark:15002");
-        let payload = conn.emit_sql("SELECT 1").unwrap();
-        assert!(matches!(payload, ComputePayload::Sql(_)));
-    }
-
-    #[test]
-    fn test_emit_substrait_not_supported() {
-        let conn = SparkConnector::new("sc://spark:15002");
-        assert!(conn.emit_substrait(&[]).is_err());
-    }
-
-    #[test]
-    fn test_adapt_sql() {
-        let conn = SparkConnector::new("sc://spark:15002");
-        let payload = ComputePayload::Sql("SELECT 1".to_string());
-        assert!(conn.adapt(payload).is_ok());
-    }
-
-    #[test]
-    fn test_adapt_substrait_rejected() {
-        let conn = SparkConnector::new("sc://spark:15002");
-        let payload = ComputePayload::SubstraitPlan(vec![]);
-        assert!(conn.adapt(payload).is_err());
+        let adapter = conn.adapter();
+        assert_eq!(adapter.name(), "spark");
     }
 
     #[tokio::test]
     async fn test_execute_not_implemented() {
         let conn = SparkConnector::new("sc://spark:15002");
-        let payload = ComputePayload::Sql("SELECT 1".to_string());
-        let request = conn.adapt(payload).unwrap();
-        let result = conn.execute(request).await;
+        let artifact = PlanArtifact::Sql("SELECT 1".to_string());
+        let result = conn.execute(&artifact).await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConnectorError::NotImplemented(_)));
     }

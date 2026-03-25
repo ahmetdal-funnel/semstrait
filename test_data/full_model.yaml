@@ -24,9 +24,6 @@ semantic_model:
       description: "Total revenue"
       data_type: float64
       expr: "SUM(amount)"
-      additivity:
-        type:
-          full:
       constraints:
         dimensions:
           one_of:
@@ -134,10 +131,8 @@ semantic_model:
           path: warehouse.customers
 
   # Kinds
-  kinds:
+  grainsets:
     - name: sales_grainset
-      type:
-        grainset:
       domain: financial
       dimensions:
         - ref: order_date

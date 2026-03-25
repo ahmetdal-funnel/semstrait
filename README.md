@@ -1,12 +1,12 @@
 # semstrait
 
-A **manifest compiler + semantic query engine** written in Rust.
+A **manifest compiler + semantic plan generation library** written in Rust.
 
-semstrait resolves semantic models (defined in YAML) into engine-executable plans by:
+semstrait resolves semantic models (defined in YAML) into engine-executable artifacts by:
 1. Compiling YAML model files into a validated `CompiledManifest` artifact (offline)
 2. Planning `QueryRequest`s against that manifest into a `LogicalPlan` IR (online)
-3. Emitting the plan as dialect-specific SQL or Substrait bytes (online)
-4. Optionally executing against a compute engine (DataFusion, DuckDB, etc.)
+3. Adapting the plan into engine-specific artifacts — Substrait plans or dialect-specific SQL (online)
+4. Optionally executing against a compute engine (DataFusion, DuckDB, Trino, Spark)
 
 ---
 
@@ -25,15 +25,16 @@ The system is organized as a layered crate workspace. Each layer depends only on
 ```
 semstrait/                       Cargo workspace root
 ├── crates/
-│   ├── semstrait-core/          Foundation — shared primitives, zero internal deps
+│   ├── semstrait-core/          Foundation — shared primitives, EngineProfile trait
 │   ├── semstrait-model/         YAML model parsing and ref resolution
 │   │   └── schema/              Model JSON Schema definitions
 │   ├── semstrait-catalog/       CatalogProvider trait + Iceberg/Unity catalogs
-│   ├── semstrait-manifest/      ManifestCompiler pipeline (parse → validate → compile)
-│   ├── semstrait-ir/            PlanNode IR + Substrait bridge
+│   ├── semstrait-manifest/      ManifestCompiler pipeline (parse -> validate -> compile)
+│   ├── semstrait-ir/            PlanNode IR + PlanArtifact + Substrait bridge
 │   ├── semstrait-planner/       SemanticPlanner + KindPlanners + Optimizer
 │   ├── semstrait-sql/           SqlEmitter trait + dialect implementations
-│   ├── semstrait-connectors/    Compute traits + feature-gated engine impls
+│   ├── semstrait-adapter/       EngineAdapter trait + per-engine adapters
+│   ├── semstrait-connectors/    ComputeConnector trait + feature-gated engine impls
 │   ├── semstrait-api/           REST + CLI + gRPC transports (feature-gated)
 │   │   └── proto/               gRPC service proto definitions
 │   └── semstrait/               Facade — builder, public API, feature flags
@@ -50,19 +51,21 @@ semstrait/                       Cargo workspace root
 ### Dependency Graph
 
 ```
-semstrait-core                    (zero internal deps — foundation)
+semstrait-core                    (zero internal deps — foundation, EngineProfile trait)
     ├── semstrait-model           (YAML types, ref resolution)
     ├── semstrait-catalog         (CatalogProvider trait)
-    └── semstrait-ir              (PlanNode, Substrait bridge)
+    └── semstrait-ir              (PlanNode, PlanArtifact, Substrait bridge)
             │
 semstrait-manifest                (core + model + catalog)
             │
     ├── semstrait-planner         (core + ir + manifest)
     └── semstrait-sql             (core + ir)
             │
-semstrait-connectors              (core + ir + sql)
+semstrait-adapter                 (core + ir + sql — EngineAdapter implementations)
             │
-    ├── semstrait-api             (planner + manifest + connectors + sql)
+semstrait-connectors              (adapter + ir — optional execution layer)
+            │
+    ├── semstrait-api             (planner + manifest + adapter + connectors + sql)
     └── semstrait (facade)        (all crates, re-exports)
 ```
 
@@ -96,11 +99,12 @@ semantic_model:
       measures:
         - name: revenue
           data_type: float64
-          expr: "SUM(amount)"
+          agg: sum                    # declarative aggregation (v2.0)
+          # expr omitted — resolved from column_mapping
       metrics:
         - name: avg_order_value
           data_type: float64
-          expr: "revenue / COUNT(order_id)"
+          expr: "revenue / order_count"
       datasets:
         - name: orders_daily
           extras:
@@ -122,14 +126,25 @@ Kinds define how datasets relate to each other:
 | **Unionset** | UNION ALL with NULL-fill | Same schema across multiple sources |
 | **Joinset** | BFS join chain from anchor | Related datasets with different schemas |
 
+### Engine Adapters
+
+Adapters produce engine-appropriate artifacts from the logical plan:
+
+| Engine | Adapter Output | Execution |
+|--------|---------------|-----------|
+| **DataFusion** | `PlanArtifact::Substrait` | Native Substrait consumption via `datafusion-substrait` |
+| **DuckDB** | `PlanArtifact::Sql` (DuckDB dialect) | Embedded `duckdb` crate |
+| **Trino** | `PlanArtifact::Sql` (Trino dialect) | REST API |
+| **Spark** | `PlanArtifact::Sql` (Spark dialect) | Spark Connect |
+
 ### Additional Architecture Diagrams
 
 | Diagram | Description |
 |---------|-------------|
 | [D3 - Planner Evaluation Order](crates/semstrait-planner/docs/D3_planner_evaluation_order.svg) | Steps within SemanticPlanner.plan() — domain filter, constraints, kind dispatch, additivity, filter stacking, optimizer |
 | [D4 - PlanNode Substrait Map](crates/semstrait-ir/docs/D4_plannode_substrait_map.svg) | PlanNode variant to Substrait Rel correspondence |
-| [D5 - Kind Interface Binding](crates/semstrait-planner/docs/D5_kind_interface_binding.svg) | Three layers of Kind: interface → strategy (KindType) → binding → PlanFragment |
-| [D6 - Connector Architecture](crates/semstrait-connectors/docs/D6_connector_architecture.svg) | Compute emit/adapt/execute pipeline — DataFusion, DuckDB, Trino |
+| [D5 - Kind Interface Binding](crates/semstrait-planner/docs/D5_kind_interface_binding.svg) | Three layers of Kind: interface -> strategy (KindType) -> binding -> PlanFragment |
+| [D6 - Adapter/Connector Pipeline](crates/semstrait-connectors/docs/D6_connector_architecture.svg) | EngineAdapter adapt -> PlanArtifact -> optional ComputeConnector execution |
 
 ---
 
@@ -138,18 +153,20 @@ Kinds define how datasets relate to each other:
 ```
 QueryRequest + CompiledManifest
        │  ConstraintEvaluator    step 0: pre-resolution validity gate
-       ▼
- SemanticPlanner
+       v
+ SemanticPlanner (profile: Arc<dyn EngineProfile>)
        │  KindPlanner dispatch   Grainset | Unionset | Joinset
        │  AdditivityResolver     semi/non-additive measure handling
-       │  Filter injection       dataset → measure (conditional agg) → user
-       ▼
+       │  Filter injection       dataset -> measure (conditional agg) -> user
+       v
  LogicalPlan (PlanNode IR)
        │
-       ├─ SqlEmitter           → String  (AnsiSqlEmitter or PolyglotEmitter for 34+ dialects)
-       └─ SubstraitSerializer  → substrait::proto::Plan → Vec<u8>
-       ▼
- ComputeConnector (optional)  → ComputeResult (Arrow RecordBatches or JSON)
+ EngineAdapter.adapt()           selects output based on engine capabilities
+       │
+       ├─ PlanArtifact::Substrait  (DataFusion — native Substrait plan)
+       └─ PlanArtifact::Sql        (DuckDB / Trino / Spark — dialect SQL)
+       v
+ ComputeConnector (optional)  -> ComputeResult (Arrow RecordBatches or JSON)
 ```
 
 ---
@@ -205,10 +222,12 @@ let engine = SemstraitEngine::with_manifest_yaml(yaml).await?;
 let result = engine.explain(&RawQueryRequest {
     from: "orders".into(),
     select: vec!["region".into(), "revenue".into()],
+    engine: Some("datafusion".into()),  // engine selection
     ..Default::default()
 }).await?;
 
-println!("SQL: {}", result.sql.unwrap());
+// PlanArtifact-based result
+println!("{}", result.plan_text);
 ```
 
 ---
@@ -217,12 +236,17 @@ println!("SQL: {}", result.sql.unwrap());
 
 | Crate | Feature | Adds |
 |-------|---------|------|
-| `semstrait-connectors` | `datafusion` | DataFusion SQL execution connector |
-| `semstrait-connectors` | `duckdb` | DuckDB embedded connector (v1.3.2, Arrow 55) |
-| `semstrait-connectors` | `trino` | Trino connector (planned) |
+| `semstrait-adapter` | `datafusion` | DataFusion adapter (Substrait output) |
+| `semstrait-adapter` | `duckdb` | DuckDB adapter (DuckDB SQL output) |
+| `semstrait-adapter` | `trino` | Trino adapter (Trino SQL output) |
+| `semstrait-adapter` | `spark` | Spark adapter (Spark SQL output) |
+| `semstrait-connectors` | `datafusion` | DataFusion connector (Substrait execution via `datafusion-substrait`) |
+| `semstrait-connectors` | `duckdb` | DuckDB embedded connector (v1.3.x, Arrow 55) |
+| `semstrait-connectors` | `trino` | Trino connector (REST API) |
 | `semstrait-connectors` | `spark` | Spark Connect connector (planned) |
 | `semstrait-sql` | `polyglot` | PolyglotEmitter — 34+ SQL dialects via polyglot-sql |
 | `semstrait-catalog` | `iceberg` | Iceberg REST catalog client (OAuth2, Polaris) |
+| `semstrait-catalog` | `unity` | Databricks Unity catalog client |
 | `semstrait-api` | `cli` | CLI transport via clap |
 | `semstrait-api` | `rest` | REST transport via axum |
 | `semstrait-api` | `grpc` | gRPC transport via tonic |
@@ -235,7 +259,7 @@ println!("SQL: {}", result.sql.unwrap());
 # Build all crates
 cargo build --workspace
 
-# Run all tests (328 tests with all features)
+# Run all tests (400+ tests with all features)
 cargo test --workspace --features datafusion,duckdb,polyglot
 
 # Build CLI binary with all connectors
@@ -249,6 +273,10 @@ cargo test --workspace --features duckdb
 
 # Run with Iceberg catalog
 cargo test --workspace --features semstrait-catalog/iceberg
+
+# Specify engine at query time (CLI)
+semstrait explain --from orders --select date,revenue --engine datafusion
+semstrait explain --from orders --select date,revenue --engine duckdb
 ```
 
 ---

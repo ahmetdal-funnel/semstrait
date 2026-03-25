@@ -1,10 +1,8 @@
 semantic_model:
   name: e2e_test
   description: E2E pipeline test model
-  kinds:
+  grainsets:
     - name: orders
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date

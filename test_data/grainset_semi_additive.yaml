@@ -2,10 +2,8 @@ semantic_model:
   name: grainset_semi_additive
   description: "Grainset with semi-additive measure"
 
-  kinds:
+  grainsets:
     - name: account_balances
-      type:
-        grainset:
       dimensions:
         - name: account_date
           data_type: date
@@ -22,8 +20,7 @@ semantic_model:
           data_type: float64
           expr: "SUM(balance_amount)"
           additivity:
-            type:
-              semi:
+            semi:
                 non_additive_dimensions:
                   - account_date
                 resolution_strategy: latest

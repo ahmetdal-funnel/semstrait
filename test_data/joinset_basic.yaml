@@ -2,11 +2,9 @@ semantic_model:
   name: joinset_basic
   description: "Joinset with two datasets joined via relationship"
 
-  kinds:
+  joinsets:
     - name: order_details
-      type:
-        joinset:
-          associativity: left
+      associativity: left
       dimensions:
         - name: order_date
           data_type: date

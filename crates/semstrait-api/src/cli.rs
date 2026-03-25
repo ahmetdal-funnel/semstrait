@@ -535,10 +535,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(gport) = grpc_port {
                 let grpc_engine = shared.clone();
                 let grpc_addr = format!("{}:{}", host, gport);
+                let addr: std::net::SocketAddr = grpc_addr.parse()
+                    .map_err(|e| format!("invalid gRPC address '{}': {}", grpc_addr, e))?;
                 eprintln!("gRPC listening on {}", grpc_addr);
                 let grpc_svc = crate::grpc::SemstraitGrpcService::new(grpc_engine);
                 tokio::spawn(async move {
-                    let addr = grpc_addr.parse().expect("invalid gRPC address");
                     if let Err(e) = tonic::transport::Server::builder()
                         .add_service(grpc_svc.into_server())
                         .serve(addr)

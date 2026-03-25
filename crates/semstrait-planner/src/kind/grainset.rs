@@ -113,13 +113,14 @@ impl KindPlanner for GrainsetPlanner {
 }
 
 /// Find the first dataset whose column_mapping covers all requested
-/// dimensions and measures.
+/// dimensions and measures. Metadata dimensions are excluded from
+/// coverage checks — they are always "covered" via source metadata.
 fn find_covering_dataset<'a>(
     kind: &'a CompiledKind,
     request: &ResolvedQueryRequest,
 ) -> Result<&'a CompiledKindDataset, PlannerError> {
-    let needed: Vec<&str> = request
-        .dimensions
+    let (_, regular_dims) = super::partition_dimensions(&request.dimensions, kind);
+    let needed: Vec<&str> = regular_dims
         .iter()
         .chain(request.measures.iter())
         .map(|s| s.as_str())
@@ -171,7 +172,8 @@ fn find_covering_datasets<'a>(
     kind: &'a CompiledKind,
     request: &ResolvedQueryRequest,
 ) -> Result<Vec<DatasetAssignment<'a>>, PlannerError> {
-    let dim_names: Vec<&str> = request.dimensions.iter().map(|s| s.as_str()).collect();
+    let (_, regular_dims) = super::partition_dimensions(&request.dimensions, kind);
+    let dim_names: Vec<&str> = regular_dims.iter().map(|s| s.as_str()).collect();
     let measure_names: Vec<&str> = request.measures.iter().map(|s| s.as_str()).collect();
 
     // Filter datasets that cover ALL requested dimensions.
@@ -376,7 +378,12 @@ fn build_horizontal_join_plan(
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+    use indexmap::IndexMap;
     use semstrait_ir::Aggregation;
+    use semstrait_manifest::{
+        ColumnMappingValue, CompiledDimension, CompiledKind, CompiledKindDataset,
+        CompiledManifest, CompiledMeasure, DimensionType, KindDatasetExtras,
+    };
 
     /// Parse an aggregation function name from an expression source string.
     fn parse_aggregation(expr_source: &str) -> Aggregation {
@@ -549,6 +556,154 @@ mod tests {
                 }
             }
             _ => panic!("Expected Project node as root"),
+        }
+    }
+
+    #[test]
+    fn test_metadata_dimension_coverage() {
+        // A metadata dimension should be "covered" even though it's not in the column_mapping.
+        let manifest = make_metadata_manifest();
+        let kind = manifest.get_kind("orders").unwrap();
+        let request = make_test_request("orders", vec!["date", "source_info"], vec!["revenue"]);
+
+        let result = find_covering_dataset(kind, &request);
+        assert!(result.is_ok(), "metadata dim should not block coverage");
+    }
+
+    #[test]
+    fn test_metadata_dimension_plan_injects_literal() {
+        let manifest = make_metadata_manifest();
+        let kind = manifest.get_kind("orders").unwrap();
+        let request = make_test_request("orders", vec!["date", "source_info"], vec!["revenue"]);
+        let dataset = find_covering_dataset(kind, &request).unwrap();
+
+        let ctx = PlannerContext {
+            manifest: &manifest,
+            profile: &semstrait_core::ConsumerProfile::default(),
+            catalog: None,
+            session: &std::collections::HashMap::new(),
+        };
+
+        let result = super::super::shared::build_dataset_plan(kind, &request, dataset, &ctx, true);
+        assert!(result.is_ok(), "plan should succeed with metadata dim: {:?}", result.err());
+
+        let fragment = result.unwrap();
+        // Output schema should include both date and source_info.
+        let field_names: Vec<&str> = fragment
+            .output_schema
+            .fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(field_names, vec!["date", "source_info", "revenue"]);
+
+        // The project should inject a literal string for source_info.
+        match &fragment.root {
+            PlanNode::Project(proj) => {
+                // source_info is the 2nd expression (index 1).
+                assert!(
+                    matches!(&proj.expressions[1], Expr::Literal(_)),
+                    "expected literal for metadata dim, got {:?}",
+                    proj.expressions[1]
+                );
+            }
+            _ => panic!("expected Project as root"),
+        }
+    }
+
+    /// Create a test manifest with a metadata dimension.
+    fn make_metadata_manifest() -> CompiledManifest {
+        use semstrait_manifest::{MetadataDimension, PathExtraction};
+
+        let mut dimensions = IndexMap::new();
+        dimensions.insert(
+            "date".to_string(),
+            CompiledDimension {
+                name: "date".to_string(),
+                description: None,
+                data_type: "string".to_string(),
+                dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
+                    enum_values: None,
+                }),
+            },
+        );
+        dimensions.insert(
+            "source_info".to_string(),
+            CompiledDimension {
+                name: "source_info".to_string(),
+                description: None,
+                data_type: "string".to_string(),
+                dim_type: DimensionType::Metadata(MetadataDimension {
+                    path: Some(PathExtraction { token: 1 }),
+                    partition: None,
+                }),
+            },
+        );
+
+        let mut measures = IndexMap::new();
+        measures.insert(
+            "revenue".to_string(),
+            CompiledMeasure {
+                name: "revenue".to_string(),
+                description: None,
+                data_type: "float64".to_string(),
+                agg: None,
+                expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
+                expr_source: "SUM(amount)".to_string(),
+                additivity: None,
+                constraints: None,
+                filters: vec![],
+            },
+        );
+
+        let mut column_mapping = std::collections::HashMap::new();
+        column_mapping.insert(
+            "date".to_string(),
+            ColumnMappingValue::Simple("order_date".to_string()),
+        );
+        column_mapping.insert(
+            "revenue".to_string(),
+            ColumnMappingValue::Simple("amount".to_string()),
+        );
+        // Note: source_info is NOT in column_mapping — it's metadata.
+
+        let dataset = CompiledKindDataset {
+            name: "orders_daily".to_string(),
+            extras: KindDatasetExtras {
+                column_mapping: column_mapping.into(),
+                temporal: None,
+                storage: None,
+                catalog: None,
+            },
+            resolved_sources: vec!["bucket/shopify/data.parquet".to_string()],
+        };
+
+        let kind = CompiledKind {
+            name: "orders".to_string(),
+            description: None,
+            dimensions,
+            measures,
+            metrics: IndexMap::new(),
+            keys: None,
+            kind_type: CompiledKindType::Grainset,
+            datasets: vec![dataset],
+            relationships: vec![],
+            domain: None,
+            filters: vec![],
+        };
+
+        let mut kinds = IndexMap::new();
+        kinds.insert("orders".to_string(), kind);
+
+        CompiledManifest {
+            version: 1,
+            compiled_at: chrono::Utc::now(),
+            source_hash: "test_metadata".to_string(),
+            datasets: IndexMap::new(),
+            kinds,
+            relationships: vec![],
+            model_name: "test_metadata_model".to_string(),
+            model_description: None,
         }
     }
 }

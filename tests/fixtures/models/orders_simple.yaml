@@ -1,9 +1,7 @@
 semantic_model:
   name: simple_model
-  kinds:
+  grainsets:
     - name: orders
-      type:
-        grainset:
       dimensions:
         - name: date
           data_type: date

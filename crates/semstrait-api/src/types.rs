@@ -28,6 +28,10 @@ pub struct RawQueryRequest {
     pub order_by: Vec<RawOrderBy>,
     #[serde(default)]
     pub session: HashMap<String, String>,
+    /// Engine to use for plan generation (e.g., "datafusion", "duckdb").
+    /// If not set, uses the default engine from the connector.
+    #[serde(default)]
+    pub engine: Option<String>,
 }
 
 /// Convenience alias — same as RawQueryRequest for now.

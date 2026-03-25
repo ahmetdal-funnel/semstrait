@@ -10,6 +10,7 @@ semstrait-core = { workspace = true }
 semstrait-planner = { workspace = true }
 semstrait-manifest = { workspace = true }
 semstrait-connectors = { workspace = true }
+semstrait-adapter = { workspace = true }
 semstrait-catalog = { workspace = true }
 semstrait-ir = { workspace = true }
 semstrait-sql = { workspace = true }
@@ -19,11 +20,11 @@ async-trait = { workspace = true }
 
 [features]
 default = ["duckdb"]
-duckdb = ["semstrait-connectors/duckdb"]
-datafusion = ["semstrait-connectors/datafusion"]
-trino = ["semstrait-connectors/trino"]
-spark = ["semstrait-connectors/spark"]
-polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot"]
+duckdb = ["semstrait-connectors/duckdb", "semstrait-adapter/duckdb"]
+datafusion = ["semstrait-connectors/datafusion", "semstrait-adapter/datafusion"]
+trino = ["semstrait-connectors/trino", "semstrait-adapter/trino"]
+spark = ["semstrait-connectors/spark", "semstrait-adapter/spark"]
+polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot", "semstrait-adapter/polyglot"]
 catalog-iceberg = ["semstrait-catalog/iceberg"]
 api-rest = ["semstrait-api/rest"]
 api-cli = ["semstrait-api/cli"]

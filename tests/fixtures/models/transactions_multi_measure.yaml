@@ -1,9 +1,7 @@
 semantic_model:
   name: multi_measure_test
-  kinds:
+  grainsets:
     - name: transactions
-      type:
-        grainset:
       dimensions:
         - name: date
           data_type: date

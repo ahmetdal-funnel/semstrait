@@ -185,6 +185,208 @@ fn check_metric_uniqueness(entries: &[MetricEntry], container: &str, errors: &mu
 }
 
 // ============================================================================
+// Step 4.6: Validate Temporal Equivalence
+// ============================================================================
+
+/// Validate that when both a kind and a dataset define a temporal type,
+/// their temporal variant (timeseries/snapshot/scd) must match.
+///
+/// This must run BEFORE `expand_auto_mappings` because that step propagates
+/// kind-level temporal defaults, which would overwrite dataset values.
+pub(crate) fn validate_temporal_equivalence(
+    model: &SemanticModel,
+) -> Result<(), CompileError> {
+    for kind in &model.kinds {
+        let kind_temporal = kind
+            .extras
+            .as_ref()
+            .and_then(|e| e.temporal.as_ref());
+
+        let kind_temporal = match kind_temporal {
+            Some(t) => t,
+            None => continue, // No kind-level temporal; nothing to conflict with.
+        };
+
+        for ds_entry in &kind.datasets {
+            if let KindDatasetEntry::Inline(ds) = ds_entry {
+                if let Some(ds_temporal) = &ds.extras.temporal {
+                    let kind_variant = kind_temporal.temporal_type.variant_name();
+                    let ds_variant = ds_temporal.temporal_type.variant_name();
+                    if kind_variant != ds_variant {
+                        return Err(CompileError::TemporalMismatch {
+                            kind: kind.name.clone(),
+                            dataset: dataset_display_name(&ds.name).to_string(),
+                            kind_type: kind_variant.to_string(),
+                            dataset_type: ds_variant.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Step 4.7: Validate Storage Config
+// ============================================================================
+
+/// Validate storage config preconditions: paths/tables mutually exclusive,
+/// at least one source when storage is defined, no empty strings.
+pub(crate) fn validate_storage(model: &SemanticModel) -> Result<(), CompileError> {
+    let mut errors = Vec::new();
+
+    for kind in &model.kinds {
+        for ds_entry in &kind.datasets {
+            if let KindDatasetEntry::Inline(ds) = ds_entry {
+                if let Some(ref storage) = ds.extras.storage {
+                    let sources = storage.all_sources();
+                    let ds_display = dataset_display_name(&ds.name);
+
+                    if sources.is_mixed() {
+                        errors.push(format!(
+                            "kind '{}', dataset '{}': storage cannot mix paths and tables",
+                            kind.name, ds_display
+                        ));
+                    }
+                    if sources.is_empty() {
+                        errors.push(format!(
+                            "kind '{}', dataset '{}': storage must specify at least one path or table",
+                            kind.name, ds_display
+                        ));
+                    }
+                    for src in sources.all() {
+                        if src.trim().is_empty() {
+                            errors.push(format!(
+                                "kind '{}', dataset '{}': storage source must not be empty",
+                                kind.name, ds_display
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(CompileError::StructureValidation(errors))
+    }
+}
+
+// ============================================================================
+// Step 4.8: Validate Metadata Dimensions
+// ============================================================================
+
+/// Validate that metadata dimensions have the required preconditions:
+/// - `path.token` requires storage config with at least one path (file/object store).
+/// - `partition.level` requires partition_defs on the dataset (or kind) extras.
+/// - `partition.level` must not exceed the partition depth.
+pub(crate) fn validate_metadata_dimensions(model: &SemanticModel) -> Result<(), CompileError> {
+    let mut errors = Vec::new();
+
+    for kind in &model.kinds {
+        // Collect kind-level dimensions that are metadata type.
+        for dim in &kind.dimensions {
+            if let DimensionEntry::Inline(dim_def) = dim {
+                if let DimensionType::Metadata(ref meta) = dim_def.dim_type {
+                    // Check each dataset for metadata dimension preconditions.
+                    for ds_entry in &kind.datasets {
+                        if let KindDatasetEntry::Inline(ds) = ds_entry {
+                            let ds_display = dataset_display_name(&ds.name);
+                            validate_metadata_for_dataset(
+                                &kind.name,
+                                ds_display,
+                                &dim_def.name,
+                                meta,
+                                &ds.extras,
+                                &mut errors,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(CompileError::StructureValidation(errors))
+    }
+}
+
+fn validate_metadata_for_dataset(
+    kind_name: &str,
+    ds_display: &str,
+    dim_name: &str,
+    meta: &MetadataDimension,
+    extras: &KindDatasetExtras,
+    errors: &mut Vec<String>,
+) {
+    if let Some(ref path_ext) = meta.path {
+        // path.token requires storage with file paths.
+        let has_paths = extras.storage.as_ref().is_some_and(|s| {
+            let sources = s.all_sources();
+            !sources.paths.is_empty()
+        });
+        if !has_paths {
+            errors.push(format!(
+                "kind '{}', dataset '{}': metadata dimension '{}' uses path.token={} \
+                 but dataset has no storage paths configured",
+                kind_name, ds_display, dim_name, path_ext.token
+            ));
+        }
+    }
+
+    if let Some(ref part_ext) = meta.partition {
+        if part_ext.level == 0 {
+            errors.push(format!(
+                "kind '{}', dataset '{}': metadata dimension '{}' uses partition.level=0 \
+                 but level is 1-indexed (must be >= 1)",
+                kind_name, ds_display, dim_name
+            ));
+        }
+
+        // partition.level requires partition_def on the dataset's storage config.
+        // StorageConfig.partition_def is a single PartitionDef (depth=1).
+        let storage_partition = extras
+            .storage
+            .as_ref()
+            .and_then(|s| s.partition_def.as_ref())
+            .map(|_| 1usize) // single partition_def = depth 1
+            .unwrap_or(0);
+
+        let partition_depth = storage_partition;
+
+        if partition_depth == 0 {
+            errors.push(format!(
+                "kind '{}', dataset '{}': metadata dimension '{}' uses partition.level={} \
+                 but dataset has no partition definitions",
+                kind_name, ds_display, dim_name, part_ext.level
+            ));
+        } else if part_ext.level > partition_depth {
+            errors.push(format!(
+                "kind '{}', dataset '{}': metadata dimension '{}' uses partition.level={} \
+                 but partition depth is only {}",
+                kind_name, ds_display, dim_name, part_ext.level, partition_depth
+            ));
+        }
+    }
+
+    // At least one of path or partition must be specified.
+    if meta.path.is_none() && meta.partition.is_none() {
+        errors.push(format!(
+            "kind '{}', dataset '{}': metadata dimension '{}' must specify \
+             either 'path' or 'partition' extraction",
+            kind_name, ds_display, dim_name
+        ));
+    }
+}
+
+// ============================================================================
 // Step 4.5: Expand Auto Column Mappings
 // ============================================================================
 
@@ -193,18 +395,20 @@ fn check_metric_uniqueness(entries: &[MetricEntry], container: &str, errors: &mu
 ///
 /// Handles three cases for a dataset's `column_mapping`:
 ///   - `Auto`:      1:1 identity from all kind interface names.
-///   - `Inherited`: use `kind.extras.default_column_mapping`, falling back to identity.
+///   - `Inherited`: use `kind.extras.column_mapping`, falling back to identity.
 ///   - `Explicit`:  start from kind default (if any), then apply dataset overrides.
 ///
 /// After this step every dataset has `ColumnMapping::Explicit`. `temporal` and
 /// `catalog` defaults from `kind.extras` are also propagated (dataset value wins).
 pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
     for kind in &mut model.kinds {
-        let interface_names: Vec<String> = collect_interface_names(kind).collect();
+        // Use mappable names (excludes metadata dimensions and metrics)
+        // since those entities don't require physical column mapping.
+        let interface_names: Vec<String> = collect_mappable_names(kind).collect();
 
         // Resolve the kind-level default mapping once per kind.
         let kind_default: Option<HashMap<String, ColumnMappingValue>> =
-            kind.extras.as_ref().and_then(|e| e.default_column_mapping.as_ref()).map(|cm| {
+            kind.extras.as_ref().and_then(|e| e.column_mapping.as_ref()).map(|cm| {
                 match cm {
                     ColumnMapping::Auto | ColumnMapping::Inherited => interface_names
                         .iter()
@@ -245,10 +449,10 @@ pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
                 // Propagate temporal and catalog defaults (dataset value always wins).
                 if let Some(kind_extras) = &kind.extras {
                     if ds.extras.temporal.is_none() {
-                        ds.extras.temporal = kind_extras.default_temporal.clone();
+                        ds.extras.temporal = kind_extras.temporal.clone();
                     }
                     if ds.extras.catalog.is_none() {
-                        ds.extras.catalog = kind_extras.default_catalog.clone();
+                        ds.extras.catalog = kind_extras.catalog.clone();
                     }
                 }
             }
@@ -272,12 +476,36 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
         for ds_entry in &kind.datasets {
             if let KindDatasetEntry::Inline(ds) = ds_entry {
                 let ds_display = dataset_display_name(&ds.name);
+
+                // Safety: expand_auto_mappings (step 4.5) must run before this step
+                // to convert all Auto/Inherited mappings to Explicit.
+                debug_assert!(
+                    matches!(ds.extras.column_mapping, ColumnMapping::Explicit(_)),
+                    "validate_mappings must run after expand_auto_mappings; \
+                     found non-Explicit mapping for dataset '{}'",
+                    ds_display
+                );
+
+                // Check that mapping keys reference existing interface names.
                 for key in ds.extras.column_mapping.keys() {
                     if !interface_names.contains(key) {
                         errors.push(format!(
                             "kind '{}', dataset '{}': column_mapping key '{}' \
                              does not match any dimension, measure, or metric in the interface",
                             kind.name, ds_display, key
+                        ));
+                    }
+                }
+
+                // Check completeness: every mappable interface name (dimensions + measures)
+                // must appear as a mapping key. Metrics are derived expressions and
+                // do not require column mappings.
+                let mappable_names: HashSet<String> = collect_mappable_names(kind).collect();
+                for iname in &mappable_names {
+                    if !ds.extras.column_mapping.keys().any(|k| k == iname) {
+                        errors.push(format!(
+                            "kind '{}', dataset '{}': mapping is incomplete — missing key '{}'",
+                            kind.name, ds_display, iname
                         ));
                     }
                 }
@@ -515,7 +743,7 @@ pub(crate) fn emit(
 
     Ok(CompiledManifest {
         version: 1,
-        compiled_at: chrono::Utc::now(),
+        compiled_at: chrono::DateTime::default(), // overwritten by compiler.compile()
         source_hash,
         datasets,
         kinds,
@@ -528,6 +756,29 @@ pub(crate) fn emit(
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+/// Collect mappable names (dimensions + measures) from a kind.
+/// Metrics are derived and do not require column mappings.
+fn collect_mappable_names(kind: &Kind) -> impl Iterator<Item = String> + '_ {
+    kind.dimensions
+        .iter()
+        .filter_map(|d| match d {
+            DimensionEntry::Inline(dim) => {
+                // Metadata dimensions are extracted from source metadata,
+                // not physical columns — they don't need column mapping.
+                if matches!(dim.dim_type, DimensionType::Metadata(_)) {
+                    None
+                } else {
+                    Some(dim.name.clone())
+                }
+            }
+            DimensionEntry::Ref(r) => Some(r.ref_name.clone()),
+        })
+        .chain(kind.measures.iter().map(|m| match m {
+            MeasureEntry::Inline(mea) => mea.name.clone(),
+            MeasureEntry::Ref(r) => r.ref_name.clone(),
+        }))
+}
 
 /// Collect interface names (dimensions + measures + metrics) from a kind.
 fn collect_interface_names(kind: &Kind) -> impl Iterator<Item = String> + '_ {
@@ -565,28 +816,120 @@ fn compile_dimensions(entries: &[DimensionEntry]) -> IndexMap<String, CompiledDi
     dimensions
 }
 
+/// Map model-layer AggregationType to core Aggregation.
+fn map_aggregation_type(agg: &AggregationType) -> semstrait_core::Aggregation {
+    match agg {
+        AggregationType::Sum => semstrait_core::Aggregation::Sum,
+        AggregationType::Avg => semstrait_core::Aggregation::Avg,
+        AggregationType::Count => semstrait_core::Aggregation::Count,
+        AggregationType::CountDistinct => semstrait_core::Aggregation::CountDistinct,
+        AggregationType::Min => semstrait_core::Aggregation::Min,
+        AggregationType::Max => semstrait_core::Aggregation::Max,
+    }
+}
+
+/// Check if a parsed Expr contains any aggregation functions.
+/// Exhaustive match ensures new Expr variants are explicitly handled.
+fn contains_aggregation(expr: &Expr) -> bool {
+    match expr {
+        Expr::Aggregate(_) => true,
+        Expr::BinaryOp(bin) => {
+            contains_aggregation(&bin.left) || contains_aggregation(&bin.right)
+        }
+        Expr::Case(case) => {
+            case.when_then.iter().any(|wt| {
+                contains_aggregation(&wt.condition) || contains_aggregation(&wt.result)
+            }) || case.else_expr.as_ref().is_some_and(|e| contains_aggregation(e))
+        }
+        Expr::Guard(g) => {
+            contains_aggregation(&g.condition) || contains_aggregation(&g.expr)
+        }
+        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
+            contains_aggregation(&u.expr)
+        }
+        Expr::Coalesce(c) => c.exprs.iter().any(contains_aggregation),
+        Expr::NullIf(n) => {
+            contains_aggregation(&n.expr) || contains_aggregation(&n.null_expr)
+        }
+        Expr::DateTrunc(d) => contains_aggregation(&d.expr),
+        Expr::FunctionCall(f) => f.args.iter().any(contains_aggregation),
+        Expr::InList(il) => {
+            contains_aggregation(&il.expr) || il.list.iter().any(contains_aggregation)
+        }
+        Expr::Between(b) => {
+            contains_aggregation(&b.expr)
+                || contains_aggregation(&b.low)
+                || contains_aggregation(&b.high)
+        }
+        Expr::Like(l) => contains_aggregation(&l.expr),
+        // Leaf nodes: no children to recurse into.
+        Expr::Column(_) | Expr::Literal(_) | Expr::EntityRef(_) => false,
+    }
+}
+
 fn compile_measures(
     entries: &[MeasureEntry],
 ) -> Result<IndexMap<String, CompiledMeasure>, CompileError> {
     let mut measures = IndexMap::new();
+    let mut errors = Vec::new();
+
     for m in entries {
         if let MeasureEntry::Inline(mea) = m {
-            let expr = parse_expr(&mea.expr, &mea.name)?;
             let filters = compile_measure_filters(&mea.filters)?;
+
+            let (compiled_agg, compiled_expr, expr_source) = if let Some(ref agg) = mea.agg {
+                // Declarative path: agg tag present.
+                let core_agg = map_aggregation_type(agg);
+                let expr_source = mea.expr.as_deref().unwrap_or(&mea.name).to_string();
+
+                if let Some(ref expr_str) = mea.expr {
+                    // Parse horizontal expr, validate no aggregation.
+                    let parsed = parse_expr(expr_str, &mea.name)?;
+                    if contains_aggregation(&parsed) {
+                        errors.push(format!(
+                            "measure '{}': expr must not contain aggregation functions \
+                             when 'agg' is specified; use horizontal expressions only",
+                            mea.name
+                        ));
+                        continue;
+                    }
+                    (Some(core_agg), parsed, expr_source)
+                } else {
+                    // No expr — the column is resolved from mapping by name.
+                    (Some(core_agg), Expr::entity_ref(&mea.name), expr_source)
+                }
+            } else if let Some(ref expr_str) = mea.expr {
+                // Legacy path: no agg tag, expr contains aggregation.
+                let parsed = parse_expr(expr_str, &mea.name)?;
+                (None, parsed, expr_str.clone())
+            } else {
+                // Neither agg nor expr specified — error.
+                errors.push(format!(
+                    "measure '{}': either 'agg' or 'expr' must be specified",
+                    mea.name
+                ));
+                continue;
+            };
+
             measures.insert(
                 mea.name.clone(),
                 CompiledMeasure {
                     name: mea.name.clone(),
                     description: mea.description.clone(),
                     data_type: mea.data_type.to_string(),
-                    expr,
-                    expr_source: mea.expr.clone(),
+                    agg: compiled_agg,
+                    expr: compiled_expr,
+                    expr_source,
                     additivity: mea.additivity.clone(),
                     constraints: mea.constraints.clone(),
                     filters,
                 },
             );
         }
+    }
+
+    if !errors.is_empty() {
+        return Err(CompileError::ExprCompilation(errors));
     }
     Ok(measures)
 }
@@ -601,12 +944,14 @@ fn compile_metrics(
             let expr = parse_expr(&met.expr, &met.name)?;
             let depth = metric_depths.get(&met.name).copied().unwrap_or(0);
             let filters = compile_measure_filters(&met.filters)?;
+            let compiled_agg = met.agg.as_ref().map(map_aggregation_type);
             metrics.insert(
                 met.name.clone(),
                 CompiledMetric {
                     name: met.name.clone(),
                     description: met.description.clone(),
                     data_type: met.data_type.to_string(),
+                    agg: compiled_agg,
                     expr,
                     expr_source: met.expr.clone(),
                     additivity: met.additivity.clone(),
@@ -644,9 +989,13 @@ fn compile_kind(
         .iter()
         .filter_map(|ds_entry| {
             if let KindDatasetEntry::Inline(ds) = ds_entry {
+                let resolved_sources = ds.extras.storage.as_ref()
+                    .map(|s| s.all_sources().all().map(|s| s.to_string()).collect())
+                    .unwrap_or_default();
                 Some(CompiledKindDataset {
                     name: dataset_display_name(&ds.name).to_string(),
                     extras: ds.extras.clone(),
+                    resolved_sources,
                 })
             } else {
                 None

@@ -5,9 +5,10 @@
 
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
+use semstrait_core::expr::Aggregation;
 use semstrait_core::Expr;
 use semstrait_model::{
-    Additivity, AdditivityType, Cardinality, ColumnMapping, ColumnMappingValue, DimensionType,
+    AdditivityType, Cardinality, ColumnMapping, ColumnMappingValue, DimensionType,
     JoinAssociativity, JoinColumnPair, JoinType, Keys, KindDatasetExtras, KindTypeSpec,
     MeasureConstraints, MeasureFilter, TemporalGrain, UnionMode,
 };
@@ -114,7 +115,7 @@ pub enum CompiledKindType {
     Grainset,
     Unionset {
         #[serde(default)]
-        union_mode: UnionMode,
+        mode: UnionMode,
     },
     Joinset {
         associativity: JoinAssociativity,
@@ -126,7 +127,7 @@ impl From<&KindTypeSpec> for CompiledKindType {
         match spec {
             KindTypeSpec::Grainset => CompiledKindType::Grainset,
             KindTypeSpec::Unionset(config) => CompiledKindType::Unionset {
-                union_mode: config.union_mode,
+                mode: config.mode,
             },
             KindTypeSpec::Joinset(config) => CompiledKindType::Joinset {
                 associativity: config.associativity,
@@ -147,6 +148,10 @@ pub struct CompiledKindDataset {
     pub name: String,
     /// Column mapping extras.
     pub extras: KindDatasetExtras,
+    /// Resolved physical source references from storage config.
+    /// Multiple sources imply UNION ALL semantics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_sources: Vec<String>,
 }
 
 // ============================================================================
@@ -167,19 +172,26 @@ pub struct CompiledDimension {
 // CompiledMeasure
 // ============================================================================
 
-/// A compiled measure with parsed Expr.
+/// A compiled measure with parsed Expr and resolved aggregation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledMeasure {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub data_type: String,
-    /// Parsed DSL expression tree (never a raw string).
+    /// Declarative aggregation function. Present when the measure uses the
+    /// declarative `agg:` tag. When absent, aggregation is embedded in `expr`
+    /// (legacy format) and extracted during planning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agg: Option<Aggregation>,
+    /// Parsed DSL expression tree. When `agg` is present, this is a
+    /// horizontal-only expression (no aggregation functions). When `agg` is
+    /// absent (legacy), this contains the full expression with aggregation.
     pub expr: Expr,
     /// Original expression string for debugging.
     pub expr_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub additivity: Option<Additivity>,
+    pub additivity: Option<AdditivityType>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constraints: Option<MeasureConstraints>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -197,12 +209,17 @@ pub struct CompiledMetric {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub data_type: String,
+    /// Declarative aggregation for two-stage metric computation.
+    /// When present, the metric creates a two-stage plan (inner + outer
+    /// aggregation). When absent, the metric is a pure derived expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agg: Option<Aggregation>,
     /// Parsed DSL expression tree.
     pub expr: Expr,
     /// Original expression string.
     pub expr_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub additivity: Option<Additivity>,
+    pub additivity: Option<AdditivityType>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constraints: Option<MeasureConstraints>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -306,12 +323,12 @@ impl CompiledManifest {
 /// Synthesize a `CompiledKind` from a `CompiledDataset` by wrapping it
 /// as a single-dataset grainset with identity column mapping.
 fn dataset_to_implicit_kind(ds: &CompiledDataset) -> CompiledKind {
-    // Build identity column mapping from the dataset's interface names.
+    // Build identity column mapping from mappable names (dimensions + measures).
+    // Metrics are derived expressions — they don't map to physical columns.
     let interface_names: Vec<&String> = ds
         .dimensions
         .keys()
         .chain(ds.measures.keys())
-        .chain(ds.metrics.keys())
         .collect();
 
     let mapping: HashMap<String, ColumnMappingValue> = interface_names
@@ -335,6 +352,7 @@ fn dataset_to_implicit_kind(ds: &CompiledDataset) -> CompiledKind {
                 storage: None,
                 catalog: None,
             },
+            resolved_sources: vec![],
         }],
         relationships: vec![],
         domain: ds.domain.clone(),
@@ -356,7 +374,7 @@ impl CompiledKind {
     pub fn has_non_full_additivity(&self) -> bool {
         self.measures.values().any(|m| {
             m.additivity.as_ref().is_some_and(|a| {
-                !matches!(a.additivity_type, AdditivityType::Full)
+                !matches!(a, AdditivityType::Full)
             })
         })
     }

@@ -105,38 +105,185 @@ impl Serialize for DataType {
 // =============================================================================
 
 /// Root semantic model definition.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// Kinds are represented as three implicit-type arrays in YAML:
+/// `grainsets:`, `unionsets:`, `joinsets:`. After parsing, they are merged
+/// into `kinds: Vec<Kind>` for the rest of the pipeline.
+#[derive(Debug, Clone, Serialize)]
 pub struct SemanticModel {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_context: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    /// Catalog namespace for glob expansion (defaults to "default").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+
+    // Top-level datasets
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub datasets: Vec<Dataset>,
+
+    // Merged kinds (populated from grainsets/unionsets/joinsets during parse).
+    // Serialized as separate arrays.
+    #[serde(skip)]
+    pub kinds: Vec<Kind>,
+
+    // Top-level relationships between datasets and/or kinds
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relationships: Vec<Relationship>,
+
+    // Reusable definitions (referenced via `ref:` syntax)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dimensions: Vec<Dimension>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub measures: Vec<Measure>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub metrics: Vec<Metric>,
+}
+
+// =============================================================================
+// YAML-facing kind types (implicit type from array membership)
+// =============================================================================
+
+/// Grainset kind in YAML — type is implicit from being in `grainsets:` array.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct YamlGrainset {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub ai_context: Option<String>,
+    pub domain: Option<DomainSpec>,
     #[serde(default)]
-    pub labels: Vec<String>,
-    /// Catalog namespace for glob expansion (defaults to "default").
+    pub keys: Option<Keys>,
     #[serde(default)]
-    pub namespace: Option<String>,
+    pub dimensions: Vec<DimensionEntry>,
+    #[serde(default)]
+    pub measures: Vec<MeasureEntry>,
+    #[serde(default)]
+    pub metrics: Vec<MetricEntry>,
+    pub datasets: Vec<KindDatasetEntry>,
+    #[serde(default)]
+    pub relationships: Vec<KindRelationship>,
+    #[serde(default)]
+    pub filters: Vec<MeasureFilter>,
+    #[serde(default)]
+    pub extras: Option<KindExtras>,
+}
 
-    // Top-level datasets (can also live inside kinds)
+/// Unionset kind in YAML — type is implicit, `mode` inlined.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct YamlUnionset {
+    pub name: String,
     #[serde(default)]
-    pub datasets: Vec<Dataset>,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub mode: UnionMode,
+    #[serde(default)]
+    pub domain: Option<DomainSpec>,
+    #[serde(default)]
+    pub keys: Option<Keys>,
+    #[serde(default)]
+    pub dimensions: Vec<DimensionEntry>,
+    #[serde(default)]
+    pub measures: Vec<MeasureEntry>,
+    #[serde(default)]
+    pub metrics: Vec<MetricEntry>,
+    pub datasets: Vec<KindDatasetEntry>,
+    #[serde(default)]
+    pub relationships: Vec<KindRelationship>,
+    #[serde(default)]
+    pub filters: Vec<MeasureFilter>,
+    #[serde(default)]
+    pub extras: Option<KindExtras>,
+}
 
-    // Kinds: semantic abstractions (grainset / unionset / joinset)
+/// Joinset kind in YAML — type is implicit, `associativity` inlined.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct YamlJoinset {
+    pub name: String,
     #[serde(default)]
-    pub kinds: Vec<Kind>,
+    pub description: Option<String>,
+    #[serde(default = "default_join_associativity")]
+    pub associativity: JoinAssociativity,
+    #[serde(default)]
+    pub domain: Option<DomainSpec>,
+    #[serde(default)]
+    pub keys: Option<Keys>,
+    #[serde(default)]
+    pub dimensions: Vec<DimensionEntry>,
+    #[serde(default)]
+    pub measures: Vec<MeasureEntry>,
+    #[serde(default)]
+    pub metrics: Vec<MetricEntry>,
+    pub datasets: Vec<KindDatasetEntry>,
+    #[serde(default)]
+    pub relationships: Vec<KindRelationship>,
+    #[serde(default)]
+    pub filters: Vec<MeasureFilter>,
+    #[serde(default)]
+    pub extras: Option<KindExtras>,
+}
 
-    // Top-level relationships between datasets and/or kinds
-    #[serde(default)]
-    pub relationships: Vec<Relationship>,
+impl From<YamlGrainset> for Kind {
+    fn from(g: YamlGrainset) -> Self {
+        Kind {
+            name: g.name,
+            description: g.description,
+            kind_type: KindTypeSpec::Grainset,
+            domain: g.domain,
+            keys: g.keys,
+            dimensions: g.dimensions,
+            measures: g.measures,
+            metrics: g.metrics,
+            datasets: g.datasets,
+            relationships: g.relationships,
+            filters: g.filters,
+            extras: g.extras,
+        }
+    }
+}
 
-    // Reusable definitions (referenced via `ref:` syntax)
-    #[serde(default)]
-    pub dimensions: Vec<Dimension>,
-    #[serde(default)]
-    pub measures: Vec<Measure>,
-    #[serde(default)]
-    pub metrics: Vec<Metric>,
+impl From<YamlUnionset> for Kind {
+    fn from(u: YamlUnionset) -> Self {
+        Kind {
+            name: u.name,
+            description: u.description,
+            kind_type: KindTypeSpec::Unionset(UnionsetConfig { mode: u.mode }),
+            domain: u.domain,
+            keys: u.keys,
+            dimensions: u.dimensions,
+            measures: u.measures,
+            metrics: u.metrics,
+            datasets: u.datasets,
+            relationships: u.relationships,
+            filters: u.filters,
+            extras: u.extras,
+        }
+    }
+}
+
+impl From<YamlJoinset> for Kind {
+    fn from(j: YamlJoinset) -> Self {
+        Kind {
+            name: j.name,
+            description: j.description,
+            kind_type: KindTypeSpec::Joinset(JoinsetConfig {
+                associativity: j.associativity,
+            }),
+            domain: j.domain,
+            keys: j.keys,
+            dimensions: j.dimensions,
+            measures: j.measures,
+            metrics: j.metrics,
+            datasets: j.datasets,
+            relationships: j.relationships,
+            filters: j.filters,
+            extras: j.extras,
+        }
+    }
 }
 
 // =============================================================================
@@ -224,7 +371,7 @@ impl<'de> Deserialize<'de> for KindTypeSpec {
         match key.as_str() {
             "grainset" => Ok(KindTypeSpec::Grainset),
             "unionset" => {
-                // Support both bare `unionset: {}` and `unionset: { union_mode: "distinct" }`.
+                // Support both bare `unionset: {}` and `unionset: { mode: "unique" }`.
                 if value.is_null() || (value.is_mapping() && value.as_mapping().is_none_or(|m| m.is_empty())) {
                     Ok(KindTypeSpec::Unionset(UnionsetConfig::default()))
                 } else {
@@ -262,25 +409,25 @@ pub enum JoinAssociativity {
     Full,
 }
 
-/// UNION mode: ALL (default) or DISTINCT.
+/// UNION mode: ALL (default) or UNIQUE (distinct rows).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnionMode {
     #[default]
     All,
-    Distinct,
+    Unique,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UnionsetConfig {
     #[serde(default)]
-    pub union_mode: UnionMode,
+    pub mode: UnionMode,
 }
 
 impl Default for UnionsetConfig {
     fn default() -> Self {
         Self {
-            union_mode: UnionMode::All,
+            mode: UnionMode::All,
         }
     }
 }
@@ -352,13 +499,13 @@ pub struct KindDatasetExtras {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KindExtras {
     #[serde(default)]
-    pub default_column_mapping: Option<ColumnMapping>,
+    pub column_mapping: Option<ColumnMapping>,
     #[serde(default)]
-    pub default_temporal: Option<TemporalConfig>,
+    pub temporal: Option<TemporalConfig>,
     #[serde(default)]
-    pub default_catalog: Option<CatalogConfig>,
+    pub catalog: Option<CatalogConfig>,
     #[serde(default)]
-    pub default_partition_defs: Option<Vec<PartitionDef>>,
+    pub partition_defs: Option<Vec<PartitionDef>>,
 }
 
 /// Column mapping: either `auto`, `inherited`, or an explicit map.
@@ -367,7 +514,7 @@ pub enum ColumnMapping {
     /// Auto-map: all kind interface names are matched 1:1 to physical columns.
     /// Expanded to `Explicit` identity mapping during compilation (step 4.5).
     Auto,
-    /// Inherit from kind.extras.default_column_mapping. Resolved in step 4.5.
+    /// Inherit from kind.extras.column_mapping. Resolved in step 4.5.
     /// This is the default when `column_mapping:` is absent from a dataset's extras.
     Inherited,
     /// Explicit mapping of semantic name → physical column.
@@ -601,11 +748,13 @@ pub struct Dimension {
     pub data_type: DataType,
     #[serde(default)]
     pub ai_context: Option<AiContext>,
-    #[serde(rename = "type")]
+    #[serde(default, rename = "type")]
     pub dim_type: DimensionType,
 }
 
 /// Dimension type (temporal, categorical, binary, geo, bucketed).
+///
+/// Defaults to `Categorical` with no enum constraint when omitted from YAML.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DimensionType {
@@ -614,6 +763,13 @@ pub enum DimensionType {
     Binary(BinaryDimension),
     Geo(GeoDimension),
     Bucketed(BucketedDimension),
+    Metadata(MetadataDimension),
+}
+
+impl Default for DimensionType {
+    fn default() -> Self {
+        DimensionType::Categorical(CategoricalDimension { enum_values: None })
+    }
 }
 
 impl<'de> Deserialize<'de> for DimensionType {
@@ -645,9 +801,12 @@ impl<'de> Deserialize<'de> for DimensionType {
             "bucketed" => Ok(DimensionType::Bucketed(
                 serde_yaml::from_value(value).map_err(serde::de::Error::custom)?,
             )),
+            "metadata" => Ok(DimensionType::Metadata(
+                serde_yaml::from_value(value).map_err(serde::de::Error::custom)?,
+            )),
             other => Err(serde::de::Error::unknown_variant(
                 other,
-                &["temporal", "categorical", "binary", "geo", "bucketed"],
+                &["temporal", "categorical", "binary", "geo", "bucketed", "metadata"],
             )),
         }
     }
@@ -724,6 +883,42 @@ pub struct Bucket {
     pub end: f64,
 }
 
+/// Metadata dimension — extracts values from source metadata rather than
+/// physical columns. Supports path segment extraction and Hive-style
+/// partition value extraction.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MetadataDimension {
+    /// Extract a segment from the source path (file path or table path).
+    #[serde(default)]
+    pub path: Option<PathExtraction>,
+    /// Extract a value from Hive-style partitioning (key=value).
+    #[serde(default)]
+    pub partition: Option<PartitionExtraction>,
+}
+
+/// Path segment extraction: returns the raw segment at the given position.
+/// Tokenizer splits on `/`. Position is 0-indexed.
+///
+/// Example: path `s3://bucket/month=01/data.parquet` with `token: 2`
+/// returns `"month=01"` (raw, no key=value parsing).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PathExtraction {
+    /// 0-indexed position of the path segment to extract.
+    pub token: usize,
+}
+
+/// Partition value extraction: returns the VALUE from a Hive-style
+/// `key=value` partition at the specified level.
+/// Level is 1-indexed.
+///
+/// Example: partition path `year=2024/month=01` with `level: 1`
+/// returns `"2024"` (the value of the first partition key).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PartitionExtraction {
+    /// 1-indexed partition level.
+    pub level: usize,
+}
+
 // =============================================================================
 // AI Context
 // =============================================================================
@@ -753,6 +948,22 @@ pub enum MeasureEntry {
     Inline(Measure),
 }
 
+/// Declarative aggregation type for measures and metrics.
+///
+/// When specified on a measure, the `expr` field (if any) is treated as a
+/// horizontal-only transformation applied *before* aggregation.
+/// When specified on a metric, creates a two-stage aggregation plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregationType {
+    Sum,
+    Avg,
+    Count,
+    CountDistinct,
+    Min,
+    Max,
+}
+
 /// A measure definition.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Measure {
@@ -762,22 +973,33 @@ pub struct Measure {
     pub data_type: DataType,
     #[serde(default)]
     pub ai_context: Option<AiContext>,
-    /// DSL expression (parsed by the DSL module).
-    pub expr: String,
+    /// Declarative aggregation function.
+    ///
+    /// When present, `expr` is optional and horizontal-only (no aggregation
+    /// functions allowed). When absent, `expr` must contain the aggregation
+    /// (legacy format, e.g. `"SUM(amount)"`).
     #[serde(default)]
-    pub additivity: Option<Additivity>,
+    pub agg: Option<AggregationType>,
+    /// DSL expression. When `agg` is set, this is a horizontal transformation
+    /// applied before aggregation. When `agg` is absent, must contain an
+    /// aggregation function (legacy format).
+    #[serde(default)]
+    pub expr: Option<String>,
+    #[serde(default)]
+    pub additivity: Option<AdditivityType>,
     #[serde(default)]
     pub constraints: Option<MeasureConstraints>,
     #[serde(default)]
     pub filters: Vec<MeasureFilter>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Additivity {
-    #[serde(rename = "type")]
-    pub additivity_type: AdditivityType,
-}
-
+/// Additivity type for measures and metrics.
+///
+/// Defaults to `Full` when omitted from YAML (the field is `Option<AdditivityType>`).
+///
+/// YAML formats:
+///   - String shorthand: `additivity: non` or `additivity: full`
+///   - Object form for semi: `additivity: { semi: { non_additive_dimensions: [...] } }`
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdditivityType {
@@ -791,25 +1013,53 @@ impl<'de> Deserialize<'de> for AdditivityType {
     where
         D: serde::Deserializer<'de>,
     {
-        let map: HashMap<String, serde_yaml::Value> = Deserialize::deserialize(deserializer)?;
-        if map.len() != 1 {
-            return Err(serde::de::Error::custom(
-                "AdditivityType must have exactly one variant key",
-            ));
+        use serde::de;
+
+        struct AdditivityVisitor;
+
+        impl<'de> de::Visitor<'de> for AdditivityVisitor {
+            type Value = AdditivityType;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("\"full\", \"non\", or { semi: { non_additive_dimensions: [...] } }")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<AdditivityType, E> {
+                match v {
+                    "full" => Ok(AdditivityType::Full),
+                    "non" => Ok(AdditivityType::Non),
+                    other => Err(E::custom(format!(
+                        "expected \"full\" or \"non\", got \"{}\"",
+                        other
+                    ))),
+                }
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<AdditivityType, M::Error> {
+                let inner: HashMap<String, serde_yaml::Value> =
+                    Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                if inner.len() != 1 {
+                    return Err(de::Error::custom(
+                        "additivity object must have exactly one key: \"full\", \"semi\", or \"non\"",
+                    ));
+                }
+                let (key, value) = inner.into_iter().next()
+                    .ok_or_else(|| de::Error::custom("expected one variant key"))?;
+                match key.as_str() {
+                    "full" => Ok(AdditivityType::Full),
+                    "semi" => Ok(AdditivityType::Semi(
+                        serde_yaml::from_value(value).map_err(de::Error::custom)?,
+                    )),
+                    "non" => Ok(AdditivityType::Non),
+                    other => Err(de::Error::unknown_variant(
+                        other,
+                        &["full", "semi", "non"],
+                    )),
+                }
+            }
         }
-        let (key, value) = map.into_iter().next()
-            .ok_or_else(|| serde::de::Error::custom("expected one variant key"))?;
-        match key.as_str() {
-            "full" => Ok(AdditivityType::Full),
-            "semi" => Ok(AdditivityType::Semi(
-                serde_yaml::from_value(value).map_err(serde::de::Error::custom)?,
-            )),
-            "non" => Ok(AdditivityType::Non),
-            other => Err(serde::de::Error::unknown_variant(
-                other,
-                &["full", "semi", "non"],
-            )),
-        }
+
+        deserializer.deserialize_any(AdditivityVisitor)
     }
 }
 
@@ -887,10 +1137,18 @@ pub struct Metric {
     pub data_type: DataType,
     #[serde(default)]
     pub ai_context: Option<AiContext>,
+    /// Declarative aggregation for two-stage metric computation.
+    ///
+    /// When present, creates a two-stage plan: inner grain = all request
+    /// dimensions, outer grain = remaining dimensions after metric's agg
+    /// consumes inner groups. Constraint: metrics can only reference
+    /// existing semantic elements (measures, dims, keys).
+    #[serde(default)]
+    pub agg: Option<AggregationType>,
     /// DSL expression referencing measures or other metrics.
     pub expr: String,
     #[serde(default)]
-    pub additivity: Option<Additivity>,
+    pub additivity: Option<AdditivityType>,
     #[serde(default)]
     pub constraints: Option<MeasureConstraints>,
     #[serde(default)]
@@ -972,6 +1230,17 @@ impl<'de> Deserialize<'de> for TemporalHistorization {
     }
 }
 
+impl TemporalHistorization {
+    /// Returns the variant name as a string for error messages.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Self::Timeseries(_) => "timeseries",
+            Self::Snapshot(_) => "snapshot",
+            Self::Scd(_) => "scd",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TimeseriesConfig {
     pub occurred_at: String,
@@ -1041,16 +1310,73 @@ pub struct ScdVersionedColumns {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
-    /// File/object store path (e.g. "warehouse.orders_daily").
-    /// Mutually exclusive with `table`; exactly one must be set.
+    /// Single file/object store path (backward compat).
     #[serde(default)]
     pub path: Option<String>,
-    /// Catalog table reference (e.g. "schema_name.orders_monthly").
-    /// Mutually exclusive with `path`; exactly one must be set.
+    /// Single catalog table reference (backward compat).
     #[serde(default)]
     pub table: Option<String>,
+    /// Multiple file/object store paths (may contain globs like "*.parquet").
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Multiple catalog table references (may contain wildcards like "orders_*").
+    #[serde(default)]
+    pub tables: Vec<String>,
     #[serde(default)]
     pub partition_def: Option<PartitionDef>,
+}
+
+/// Resolved storage sources — unified view of paths and tables.
+#[derive(Debug, Clone)]
+pub struct StorageSources {
+    pub paths: Vec<String>,
+    pub tables: Vec<String>,
+}
+
+impl StorageSources {
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty() && self.tables.is_empty()
+    }
+
+    pub fn is_mixed(&self) -> bool {
+        !self.paths.is_empty() && !self.tables.is_empty()
+    }
+
+    /// Returns all sources as a flat list (paths first, then tables).
+    pub fn all(&self) -> impl Iterator<Item = &str> {
+        self.paths.iter().map(|s| s.as_str())
+            .chain(self.tables.iter().map(|s| s.as_str()))
+    }
+
+    /// Returns the primary source (first path or first table).
+    pub fn primary(&self) -> Option<&str> {
+        self.paths.first()
+            .or(self.tables.first())
+            .map(|s| s.as_str())
+    }
+}
+
+impl StorageConfig {
+    /// Returns all source references as a unified `StorageSources`.
+    /// Merges singular `path`/`table` into `paths`/`tables` respectively.
+    pub fn all_sources(&self) -> StorageSources {
+        let mut file_paths = self.paths.clone();
+        if let Some(ref p) = self.path {
+            if !file_paths.contains(p) {
+                file_paths.insert(0, p.clone());
+            }
+        }
+        let mut table_refs = self.tables.clone();
+        if let Some(ref t) = self.table {
+            if !table_refs.contains(t) {
+                table_refs.insert(0, t.clone());
+            }
+        }
+        StorageSources {
+            paths: file_paths,
+            tables: table_refs,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

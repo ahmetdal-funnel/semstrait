@@ -1,7 +1,7 @@
 //! DataFusion compute connector.
 //!
-//! Executes SQL queries via DataFusion's `SessionContext`, returning
-//! Arrow `RecordBatch`es wrapped in `ComputeResultData::Native`.
+//! Executes SQL queries via DataFusion's `SessionContext`, converting
+//! Arrow `RecordBatch`es to JSON rows in `ComputeResultData::Json`.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -10,11 +10,11 @@ use datafusion_engine::arrow::array::RecordBatch;
 use datafusion_engine::prelude::*;
 
 use crate::payload::{
-    ComputePayload, ComputeRequest, ComputeResult, ComputeResultData,
-    ConnectorError, EmitError, ExecutionStats, PayloadKind,
+    ComputeResult, ComputeResultData, ConnectorError, ExecutionStats,
 };
-use crate::traits::{ComputeAdapter, ComputeConnector, ComputeEmitter};
-use semstrait_core::ConsumerProfile;
+use crate::traits::ComputeConnector;
+use semstrait_adapter::{DataFusionAdapter, EngineAdapter};
+use semstrait_ir::PlanArtifact;
 
 /// Arrow RecordBatch results, extractable from `ComputeResultData::Native`.
 pub struct ArrowBatches(pub Vec<RecordBatch>);
@@ -53,7 +53,7 @@ impl ArrowBatches {
 /// Tables can be registered from Parquet, CSV, or in-memory data.
 pub struct DataFusionConnector {
     ctx: Arc<SessionContext>,
-    profile: ConsumerProfile,
+    adapter: DataFusionAdapter,
 }
 
 impl DataFusionConnector {
@@ -61,7 +61,7 @@ impl DataFusionConnector {
     pub fn new() -> Self {
         Self {
             ctx: Arc::new(SessionContext::new()),
-            profile: ConsumerProfile::default(),
+            adapter: DataFusionAdapter,
         }
     }
 
@@ -69,7 +69,7 @@ impl DataFusionConnector {
     pub fn with_context(ctx: SessionContext) -> Self {
         Self {
             ctx: Arc::new(ctx),
-            profile: ConsumerProfile::default(),
+            adapter: DataFusionAdapter,
         }
     }
 
@@ -131,42 +131,19 @@ impl Default for DataFusionConnector {
     }
 }
 
-impl ComputeEmitter for DataFusionConnector {
-    fn emit_sql(&self, sql: &str) -> Result<ComputePayload, EmitError> {
-        Ok(ComputePayload::Sql(sql.to_string()))
-    }
-
-    fn emit_substrait(&self, _plan_bytes: &[u8]) -> Result<ComputePayload, EmitError> {
-        // DataFusion can consume Substrait via datafusion-substrait, but for v1
-        // we only support SQL execution.
-        Err(EmitError::UnsupportedNode(
-            "Substrait execution not yet supported for DataFusion; use SQL".to_string(),
-        ))
-    }
-
-    fn supported_payloads(&self) -> &[PayloadKind] {
-        &[PayloadKind::Sql]
-    }
-}
-
-impl ComputeAdapter for DataFusionConnector {
-    fn consumer_profile(&self) -> &ConsumerProfile {
-        &self.profile
-    }
-
-}
-
 #[async_trait::async_trait]
 impl ComputeConnector for DataFusionConnector {
-    async fn execute(&self, request: ComputeRequest) -> Result<ComputeResult, ConnectorError> {
-        let sql = match &request.payload {
-            ComputePayload::Sql(sql) => sql.as_str(),
-            _ => {
-                return Err(ConnectorError::Execution(
-                    "DataFusion connector only supports SQL payloads".to_string(),
-                ))
-            }
-        };
+    fn adapter(&self) -> &dyn EngineAdapter {
+        &self.adapter
+    }
+
+    async fn execute(&self, artifact: &PlanArtifact) -> Result<ComputeResult, ConnectorError> {
+        let sql = artifact.as_sql().ok_or_else(|| {
+            ConnectorError::Execution(
+                "DataFusion connector requires SQL artifact; use adapter.debug_sql() \
+                 to produce a SQL fallback before calling execute()".to_string(),
+            )
+        })?;
 
         let start = Instant::now();
 
@@ -176,28 +153,15 @@ impl ComputeConnector for DataFusionConnector {
             .await
             .map_err(|e| ConnectorError::Execution(e.to_string()))?;
 
-        // Enforce timeout if specified in the request.
-        let batches = if let Some(timeout) = request.timeout {
-            tokio::time::timeout(timeout, df.collect())
-                .await
-                .map_err(|_| {
-                    ConnectorError::Execution(format!(
-                        "query timed out after {:?}",
-                        timeout
-                    ))
-                })?
-                .map_err(|e| ConnectorError::Execution(e.to_string()))?
-        } else {
-            df.collect()
-                .await
-                .map_err(|e| ConnectorError::Execution(e.to_string()))?
-        };
+        let batches = df
+            .collect()
+            .await
+            .map_err(|e| ConnectorError::Execution(e.to_string()))?;
 
         let elapsed = start.elapsed();
         let rows_returned: u64 = batches.iter().map(|b: &RecordBatch| b.num_rows() as u64).sum();
 
         // Convert Arrow batches to JSON rows for universal consumption.
-        // Callers needing raw Arrow can use execute_native() or downcast Native results.
         let arrow_batches = ArrowBatches(batches);
         let json_rows = arrow_batches.to_json_rows()?;
 
@@ -226,10 +190,6 @@ impl ComputeConnector for DataFusionConnector {
 
     fn name(&self) -> &str {
         "datafusion"
-    }
-
-    fn preferred_dialect(&self) -> semstrait_sql::TargetDialect {
-        semstrait_sql::TargetDialect::DataFusion
     }
 }
 
@@ -277,18 +237,19 @@ mod tests {
     #[tokio::test]
     async fn test_execute_simple_query() {
         let connector = setup_connector().await;
-        let payload = connector.emit_sql("SELECT region, SUM(amount) as total FROM orders GROUP BY region ORDER BY region").unwrap();
-        let request = connector.adapt(payload).unwrap();
-        let result = connector.execute(request).await.unwrap();
+        let artifact = PlanArtifact::Sql(
+            "SELECT region, SUM(amount) as total FROM orders GROUP BY region ORDER BY region"
+                .to_string(),
+        );
+        let result = connector.execute(&artifact).await.unwrap();
 
         assert!(result.complete);
         assert_eq!(result.stats.rows_returned, 2); // US, EU
 
-        // Results are now returned as JSON rows by default.
+        // Results are returned as JSON rows.
         match &result.data {
             ComputeResultData::Json(rows) => {
                 assert_eq!(rows.len(), 2, "should have 2 JSON rows");
-                // Each row should be an object with column keys.
                 assert!(rows[0].is_object(), "each row should be a JSON object");
                 assert!(rows[0].get("region").is_some(), "row should have 'region' key");
                 assert!(rows[0].get("total").is_some(), "row should have 'total' key");
@@ -300,31 +261,24 @@ mod tests {
     #[tokio::test]
     async fn test_execute_with_filter() {
         let connector = setup_connector().await;
-        let payload = connector
-            .emit_sql("SELECT region, amount FROM orders WHERE region = 'US'")
-            .unwrap();
-        let request = connector.adapt(payload).unwrap();
-        let result = connector.execute(request).await.unwrap();
+        let artifact = PlanArtifact::Sql(
+            "SELECT region, amount FROM orders WHERE region = 'US'".to_string(),
+        );
+        let result = connector.execute(&artifact).await.unwrap();
 
         assert_eq!(result.stats.rows_returned, 2); // Two US rows
-    }
-
-    #[tokio::test]
-    async fn test_substrait_not_supported() {
-        let connector = DataFusionConnector::new();
-        let result = connector.emit_substrait(&[]);
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_supported_payloads() {
-        let connector = DataFusionConnector::new();
-        assert_eq!(connector.supported_payloads(), &[PayloadKind::Sql]);
     }
 
     #[tokio::test]
     async fn test_name() {
         let connector = DataFusionConnector::new();
         assert_eq!(connector.name(), "datafusion");
+    }
+
+    #[tokio::test]
+    async fn test_adapter_accessible() {
+        let connector = DataFusionConnector::new();
+        let adapter = connector.adapter();
+        assert_eq!(adapter.name(), "datafusion");
     }
 }

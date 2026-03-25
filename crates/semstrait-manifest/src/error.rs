@@ -23,6 +23,15 @@ pub enum CompileError {
     #[error("structure validation errors: {}", .0.join("; "))]
     StructureValidation(Vec<String>),
 
+    /// Temporal type mismatch between kind extras and dataset extras (step 4.6)
+    #[error("kind '{kind}', dataset '{dataset}': temporal type mismatch — kind has '{kind_type}' but dataset has '{dataset_type}'")]
+    TemporalMismatch {
+        kind: String,
+        dataset: String,
+        kind_type: String,
+        dataset_type: String,
+    },
+
     /// Column mapping validation error (step 5)
     #[error("mapping validation errors: {}", .0.join("; "))]
     MappingValidation(Vec<String>),

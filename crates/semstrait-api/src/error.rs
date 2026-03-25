@@ -18,7 +18,7 @@ pub enum EngineError {
     Emit(#[from] semstrait_sql::EmitError),
 
     #[error("adapt error: {0}")]
-    Adapt(#[from] semstrait_connectors::AdaptError),
+    Adapt(#[from] semstrait_adapter::AdaptError),
 
     #[error("connector error: {0}")]
     Connector(#[from] semstrait_connectors::ConnectorError),

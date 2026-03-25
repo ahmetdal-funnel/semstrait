@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://json-schema.org/draft-07/schema#
 # =============================================================================
-# Semstrait Semantic Model — JSON Schema v1.2 (YAML encoding)
+# Semstrait Semantic Model — JSON Schema v1.4 (YAML encoding)
 # =============================================================================
 #
 # Canonical machine-validatable schema for semstrait YAML model files.
@@ -17,15 +17,22 @@
 #
 # Changelog v1.3 vs v1.2:
 #   - Added: KindExtras definition — kind-level default extras for all datasets
-#     (default_column_mapping, default_temporal, default_partition_defs, default_catalog)
+#     (column_mapping, temporal, partition_defs, catalog)
 #   - Added: Kind.extras property pointing to KindExtras
 #   - Changed: KindDatasetInline.extras.column_mapping is now optional;
-#     may be inherited from kind.extras.default_column_mapping
+#     may be inherited from kind.extras.column_mapping
 #   - Changed: StorageConfig now accepts table (catalog ref) as alternative to path (file/object store)
+#
+# Changelog v1.4 vs v1.3:
+#   - Added: MeasureDef.agg — declarative aggregation function (sum, avg, count, etc.)
+#   - Added: MetricDef.agg — optional two-stage aggregation for metrics
+#   - Changed: MeasureDef.expr is now optional when agg is specified
+#   - Added: AggregationType definition
+#   - Added: DimensionType.metadata variant with path.token and partition.level
 # =============================================================================
 
 $schema: https://json-schema.org/draft-07/schema#
-$id: https://semstrait.io/schemas/semantic-model/v1.2.yaml
+$id: https://semstrait.io/schemas/semantic-model/v1.4.yaml
 title: SemanticModel
 description: >
   Semstrait semantic model definition. Defines datasets, kinds (grainset,
@@ -42,7 +49,6 @@ properties:
 # Definitions
 # =============================================================================
 definitions:
-
   # ---------------------------------------------------------------------------
   # Root model
   # ---------------------------------------------------------------------------
@@ -248,9 +254,11 @@ definitions:
         type: string
         minLength: 1
         description: >
-          Dataset name. Can be a literal name or a glob pattern (e.g. "orders_*")
-          for multi-dataset resolution. Globs require a catalog provider.
-        x-examples: [orders_daily, "orders_*"]
+          Dataset name (semantic entity — always a concrete name).
+          Glob patterns belong at the storage level (StorageConfig.paths/tables),
+          not on dataset names. Legacy: "orders_*" glob on name is supported
+          for catalog-driven expansion but prefer explicit names.
+        x-examples: [orders_daily, orders_archive]
       description:
         type: string
       ai_context:
@@ -260,7 +268,7 @@ definitions:
         additionalProperties: false
         description: >
           Per-dataset extras. column_mapping is optional when a kind-level
-          default_column_mapping is defined in kind.extras.
+          column_mapping is defined in kind.extras.
         properties:
           column_mapping:
             $ref: "#/definitions/ColumnMapping"
@@ -306,7 +314,7 @@ definitions:
 
   DimensionDef:
     type: object
-    required: [name, data_type, type]
+    required: [name, data_type]
     additionalProperties: false
     x-category: interface
     x-since: v1.0
@@ -322,6 +330,8 @@ definitions:
         $ref: "#/definitions/AiContext"
       type:
         $ref: "#/definitions/DimensionType"
+        description: >
+          Dimension type. Defaults to categorical (no enum constraint) when omitted.
 
   DimensionType:
     type: object
@@ -329,7 +339,7 @@ definitions:
     minProperties: 1
     maxProperties: 1
     description: >
-      Discriminated union: exactly one of temporal, categorical, binary, geo, or bucketed.
+      Discriminated union: exactly one of temporal, categorical, binary, geo, bucketed, or metadata.
     properties:
       temporal:
         type: object
@@ -387,6 +397,44 @@ definitions:
                 name: { type: string }
                 start: { type: number }
                 end: { type: number }
+      metadata:
+        type: object
+        additionalProperties: false
+        x-since: v1.4
+        description: >
+          Metadata dimension — extracts values from source metadata rather than
+          physical columns. Must specify at least one of path or partition.
+        properties:
+          path:
+            type: object
+            required: [token]
+            additionalProperties: false
+            description: >
+              Extract a raw segment from the source path (file or table).
+              Tokenizer splits on '/'. Position is 0-indexed.
+            properties:
+              token:
+                type: integer
+                minimum: 0
+                description: 0-indexed path segment position.
+            x-examples:
+              - { token: 2 }
+              - { token: 5 }
+          partition:
+            type: object
+            required: [level]
+            additionalProperties: false
+            description: >
+              Extract the VALUE from a Hive-style key=value partition.
+              Level is 1-indexed.
+            properties:
+              level:
+                type: integer
+                minimum: 1
+                description: 1-indexed partition level.
+            x-examples:
+              - { level: 1 }
+              - { level: 2 }
 
   # ---------------------------------------------------------------------------
   # Measures
@@ -398,13 +446,16 @@ definitions:
 
   MeasureDef:
     type: object
-    required: [name, data_type, expr]
+    required: [name, data_type]
     additionalProperties: false
     x-category: interface
     x-since: v1.0
     description: >
-      A quantitative aggregation definition. The expr field must be a
-      DSL expression (e.g. "SUM(amount)"), not raw SQL.
+      A quantitative aggregation definition. Either 'agg' (declarative) or
+      'expr' (legacy with embedded aggregation) must be specified.
+      When 'agg' is set, 'expr' is optional and must be horizontal-only
+      (no aggregation functions). When 'agg' is absent, 'expr' is required
+      and must contain the aggregation function (e.g. "SUM(amount)").
     properties:
       name:
         type: string
@@ -416,18 +467,27 @@ definitions:
         $ref: "#/definitions/DataType"
       ai_context:
         $ref: "#/definitions/AiContext"
+      agg:
+        $ref: "#/definitions/AggregationType"
+        description: >
+          Declarative aggregation function. When specified, expr (if any)
+          is treated as a horizontal transformation applied before aggregation.
+          If no expr is provided, the column is resolved from column_mapping
+          by the measure's name.
+        x-since: v1.4
+        x-examples: [sum, avg, count, count_distinct, min, max]
       expr:
         type: string
         minLength: 1
         description: >
-          DSL expression. Supported aggregations: SUM, AVG, COUNT,
-          COUNT_DISTINCT (or COUNT(DISTINCT ...)), MIN, MAX.
-          Raw SQL strings (containing SELECT, FROM, WHERE) are rejected.
+          DSL expression. When 'agg' is specified, this is horizontal-only
+          (no aggregation functions allowed). When 'agg' is absent (legacy),
+          must contain the aggregation: SUM, AVG, COUNT, COUNT_DISTINCT,
+          MIN, MAX. Raw SQL strings are rejected.
         x-examples:
           - "SUM(amount)"
-          - "COUNT(DISTINCT user_id)"
-          - "AVG(price)"
-          - "SUM(CASE WHEN status = 'active' THEN amount ELSE 0 END)"
+          - "amount + price"
+          - "amount"
       additivity:
         $ref: "#/definitions/Additivity"
       constraints:
@@ -457,6 +517,7 @@ definitions:
     description: >
       A derived computation referencing measures or other metrics.
       Chaining depth limit: 3 levels in v1 (metric -> metric -> measure).
+      When 'agg' is specified, creates a two-stage aggregation plan.
     properties:
       name:
         type: string
@@ -468,6 +529,14 @@ definitions:
         $ref: "#/definitions/DataType"
       ai_context:
         $ref: "#/definitions/AiContext"
+      agg:
+        $ref: "#/definitions/AggregationType"
+        description: >
+          Optional two-stage aggregation. Inner grain = all request dimensions,
+          outer grain = remaining dimensions after this metric's agg consumes
+          inner groups. Metrics can only reference existing semantic elements
+          (measures, dimensions, keys).
+        x-since: v1.4
       expr:
         type: string
         minLength: 1
@@ -484,6 +553,18 @@ definitions:
       filters:
         type: array
         items: { $ref: "#/definitions/MeasureFilter" }
+
+  # ---------------------------------------------------------------------------
+  # Aggregation
+  # ---------------------------------------------------------------------------
+  AggregationType:
+    type: string
+    enum: [sum, avg, count, count_distinct, min, max]
+    x-category: interface
+    x-since: v1.4
+    description: >
+      Declarative aggregation function for measures and metrics.
+      Replaces embedding aggregation in expr strings.
 
   # ---------------------------------------------------------------------------
   # Filters
@@ -619,7 +700,9 @@ definitions:
     x-category: binding
     x-since: v1.0
     description: >
-      Top-level join path between datasets and/or kinds.
+      Join path between datasets and/or kinds. Structurally identical at all
+      scopes (top-level and kind-level). Scope determines namespace:
+      top-level = cross-entity joins, kind-level = intra-kind joins (joinset).
     properties:
       name:
         type: string
@@ -645,37 +728,10 @@ definitions:
       cardinality:
         $ref: "#/definitions/Cardinality"
 
+  # KindRelationship is structurally identical to Relationship.
+  # Scope determines semantics: top-level = cross-entity, kind-level = intra-kind.
   KindRelationship:
-    type: object
-    required: [name, from, to, type, columns, cardinality]
-    additionalProperties: false
-    x-category: binding
-    description: >
-      Kind-internal join path between datasets within the same kind.
-    properties:
-      name:
-        type: string
-        minLength: 1
-      from:
-        type: string
-        description: Source dataset name within this kind.
-      to:
-        type: string
-        description: Target dataset name within this kind.
-      type:
-        $ref: "#/definitions/JoinType"
-      columns:
-        type: array
-        minItems: 1
-        items:
-          type: object
-          required: [from, to]
-          additionalProperties: false
-          properties:
-            from: { type: string }
-            to: { type: string }
-      cardinality:
-        $ref: "#/definitions/Cardinality"
+    $ref: "#/definitions/Relationship"
 
   # ---------------------------------------------------------------------------
   # Keys
@@ -726,22 +782,26 @@ definitions:
     x-since: v1.3
     description: >
       Kind-level default extras applied to all datasets in this kind.
-      Per-dataset extras override these defaults.
+      Per-dataset extras override these defaults field by field.
+      Structurally equivalent to DatasetExtras — scope disambiguates semantics.
     properties:
-      default_column_mapping:
+      column_mapping:
         $ref: "#/definitions/ColumnMapping"
-      default_temporal:
+      temporal:
         $ref: "#/definitions/TemporalConfig"
-      default_partition_defs:
+      partition_defs:
         type: array
         items: { $ref: "#/definitions/PartitionDef" }
-      default_catalog:
+      catalog:
         $ref: "#/definitions/CatalogConfig"
 
   DatasetExtras:
     type: object
     additionalProperties: false
     x-category: binding
+    description: >
+      Standalone dataset extras. Structurally equivalent to KindExtras —
+      scope disambiguates semantics.
     properties:
       catalog:
         $ref: "#/definitions/CatalogConfig"
@@ -846,24 +906,32 @@ definitions:
     type: object
     additionalProperties: false
     description: >
-      Physical storage location. Exactly one of path or table must be specified.
-      Use path for file/object store references; use table for catalog table references.
-    oneOf:
-      - required: [path]
-        description: File or object store path.
-      - required: [table]
-        description: Catalog table reference.
+      Physical storage location. Supports singular (path/table) or plural (paths/tables)
+      references. Paths and tables are mutually exclusive — cannot mix file and catalog
+      sources in the same dataset. Multiple sources imply UNION ALL semantics.
     properties:
       path:
         type: string
         minLength: 1
-        description: Fully qualified file or object store path.
+        description: Single file or object store path (backward compat).
         x-examples: [warehouse.orders, lakehouse.marketing.events]
       table:
         type: string
         minLength: 1
-        description: Catalog table reference (e.g. schema_name.orders_monthly).
+        description: Single catalog table reference (backward compat).
         x-examples: [schema_name.orders_monthly, main.public.events]
+      paths:
+        type: array
+        items: { type: string, minLength: 1 }
+        description: Multiple file/object store paths. May contain glob patterns.
+        x-examples: [["s3://bucket/orders_*.parquet", "s3://bucket/archive/orders_*.parquet"]]
+        x-since: v1.3
+      tables:
+        type: array
+        items: { type: string, minLength: 1 }
+        description: Multiple catalog table references. May contain wildcards.
+        x-examples: [["catalog.schema.orders_*"]]
+        x-since: v1.3
       partition_def:
         $ref: "#/definitions/PartitionDef"
 
@@ -1003,7 +1071,20 @@ definitions:
     type: string
     description: >
       YAML-facing data type name. Parsed by semstrait-model into typed enum.
-    x-examples: [i8, i16, i32, i64, f32, f64, bool, string, date, timestamp, "decimal(18, 2)"]
+    x-examples:
+      [
+        i8,
+        i16,
+        i32,
+        i64,
+        f32,
+        f64,
+        bool,
+        string,
+        date,
+        timestamp,
+        "decimal(18, 2)",
+      ]
 
   Domain:
     description: >

@@ -7,10 +7,8 @@ semantic_model:
   name: events_unionset_example
   description: Unified event stream from multiple source systems
 
-  kinds:
+  unionsets:
     - name: events
-      type:
-        unionset:
 
       dimensions:
         - name: event_date

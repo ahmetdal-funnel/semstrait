@@ -2,10 +2,8 @@ semantic_model:
   name: grainset_bucketed
   description: "Grainset with a bucketed dimension"
 
-  kinds:
+  grainsets:
     - name: order_buckets
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date

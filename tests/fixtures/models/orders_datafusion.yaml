@@ -1,9 +1,7 @@
 semantic_model:
   name: datafusion_test_model
-  kinds:
+  grainsets:
     - name: orders
-      type:
-        grainset:
       dimensions:
         - name: region
           data_type: string

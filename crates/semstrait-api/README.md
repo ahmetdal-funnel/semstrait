@@ -8,7 +8,7 @@ All transports share the `SemstraitEngine` orchestrator and `RequestParser` for 
 
 ## SemstraitEngine
 
-The central orchestrator that coordinates manifest compilation, query planning, SQL emission, and connector execution:
+The central orchestrator that coordinates manifest compilation, query planning, adapter-based artifact generation, and connector execution:
 
 ```rust
 pub struct SemstraitEngine { .. }
@@ -31,6 +31,20 @@ impl SemstraitEngine {
 }
 ```
 
+### explain() flow
+
+1. Parse `RawQueryRequest` into `ResolvedQueryRequest`
+2. Plan via `SemanticPlanner::plan()`
+3. If a connector is configured, use `adapter.adapt()` for the Substrait artifact and `adapter.debug_sql()` for the SQL representation
+4. Otherwise, fall back to ANSI SQL emission and direct Substrait serialization
+
+### query() flow
+
+1. Parse and plan (same as explain)
+2. `adapter.adapt()` produces a `PlanArtifact`
+3. If the artifact is Substrait (not SQL), fall back to `adapter.debug_sql()` for a SQL artifact
+4. `connector.execute()` runs the artifact and returns JSON
+
 ---
 
 ## Unified Query API
@@ -39,13 +53,15 @@ All transports accept the same `RawQueryRequest`:
 
 ```rust
 pub struct RawQueryRequest {
-    pub from: String,           // entity (kind) to query
-    pub select: Vec<String>,    // semantic names -- auto-classified into dims/measures/metrics
-    pub filters: Vec<String>,   // named filters from the manifest
-    pub grain: Option<String>,  // temporal grain override
+    pub model: Option<String>,      // semantic model source (file path or inline YAML/JSON)
+    pub from: String,               // entity (kind or dataset) to query
+    pub select: Vec<String>,        // semantic names -- auto-classified into dims/measures/metrics
+    pub filters: Vec<String>,       // named filters from the manifest
+    pub grain: Option<String>,      // temporal grain override
     pub limit: Option<u64>,
     pub order_by: Vec<RawOrderBy>,
     pub session: HashMap<String, String>,
+    pub engine: Option<String>,     // engine for plan generation (e.g., "datafusion", "duckdb")
 }
 ```
 
@@ -80,6 +96,21 @@ gRPC service via `tonic`. Proto definition in `proto/service.proto`.
 
 ---
 
+## Error Handling
+
+`EngineError` wraps errors from each pipeline stage:
+
+- `Parse` -- from `ParseError` (request validation)
+- `Compile` -- from `semstrait-manifest`
+- `Plan` -- from `semstrait-planner`
+- `Emit` -- from `semstrait-sql`
+- `Adapt` -- from `semstrait-adapter::AdaptError`
+- `Connector` -- from `semstrait-connectors`
+- `NotConfigured` -- missing manifest or connector
+- `Internal` -- unexpected failures
+
+---
+
 ## Dependencies
 
 - `semstrait-core` -- shared primitives
@@ -87,7 +118,8 @@ gRPC service via `tonic`. Proto definition in `proto/service.proto`.
 - `semstrait-sql` -- `SqlEmitter`, `AnsiSqlEmitter`
 - `semstrait-planner` -- `SemanticPlanner`, `ResolvedQueryRequest`
 - `semstrait-manifest` -- `ManifestCompiler`, `CompiledManifest`
-- `semstrait-connectors` -- `ComputeConnector`, `ComputePayload`
+- `semstrait-adapter` -- `EngineAdapter`, `AdaptError`
+- `semstrait-connectors` -- `ComputeConnector`, `ComputeResult`
 - `semstrait-catalog` -- `CatalogProvider`
 - `clap` (optional, behind `cli`) -- argument parsing
 - `axum`, `tower` (optional, behind `rest`) -- HTTP server

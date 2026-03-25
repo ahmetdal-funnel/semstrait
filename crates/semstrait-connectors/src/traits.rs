@@ -1,88 +1,29 @@
-//! Core compute traits for the connector pipeline.
+//! Simplified compute connector trait.
 //!
-//! Three traits form the compute pipeline:
-//! - `ComputeEmitter` — converts LogicalPlan to a ComputePayload
-//! - `ComputeAdapter` — provides ConsumerProfile and adapts payloads
-//! - `ComputeConnector` — executes compute requests asynchronously
+//! Connectors receive a `PlanArtifact` and execute it against a compute engine.
+//! The adapter (which produces artifacts) is accessible via `adapter()`.
 
-use crate::payload::{
-    AdaptError, ComputePayload, ComputeRequest, ComputeResult, ConnectorError,
-    EmitError, PayloadKind,
-};
-use semstrait_core::ConsumerProfile;
-use semstrait_sql::TargetDialect;
-
-/// Converts a LogicalPlan into a compute-ready payload.
-///
-/// Each engine may support different payload kinds (SQL, Substrait, Native).
-/// The emitter selects the best payload format for the target engine.
-pub trait ComputeEmitter: Send + Sync {
-    /// Emit a compute payload from a logical plan.
-    ///
-    /// V1: This takes the plan as opaque bytes (Substrait) or SQL string.
-    /// V2: Will take `&LogicalPlan` from semstrait-ir.
-    fn emit_sql(&self, sql: &str) -> Result<ComputePayload, EmitError>;
-
-    /// Emit from Substrait bytes.
-    fn emit_substrait(&self, plan_bytes: &[u8]) -> Result<ComputePayload, EmitError>;
-
-    /// Which payload kinds this emitter supports.
-    fn supported_payloads(&self) -> &[PayloadKind];
-}
-
-/// Provides engine capabilities and adapts payloads for execution.
-///
-/// `ComputeAdapter` is a supertrait of `ComputeConnector`.
-/// It exposes the `ConsumerProfile` (read by the planner for strategy decisions)
-/// and converts payloads into executable requests.
-pub trait ComputeAdapter: Send + Sync {
-    /// The engine's capability profile.
-    ///
-    /// Used by `SemanticPlanner` to select strategies (e.g., window functions
-    /// vs double-aggregate for semi-additive measures).
-    fn consumer_profile(&self) -> &ConsumerProfile;
-
-    /// Adapt a payload into an executable request.
-    ///
-    /// Default: accepts SQL payloads, rejects Substrait and Native.
-    fn adapt(&self, payload: ComputePayload) -> Result<ComputeRequest, AdaptError> {
-        match payload {
-            ComputePayload::Sql(_) => Ok(ComputeRequest {
-                payload,
-                timeout: None,
-            }),
-            ComputePayload::SubstraitPlan(_) => {
-                Err(AdaptError::UnsupportedPayload(PayloadKind::SubstraitPlan))
-            }
-            ComputePayload::NativePlan(_) => {
-                Err(AdaptError::UnsupportedPayload(PayloadKind::NativePlan))
-            }
-        }
-    }
-}
+use crate::payload::{ComputeResult, ConnectorError};
+use semstrait_adapter::EngineAdapter;
+use semstrait_ir::PlanArtifact;
 
 /// The main async execution interface.
 ///
-/// Every engine implementation satisfies this trait.
-/// `ComputeConnector` extends `ComputeAdapter` — every connector can also
-/// report its capabilities and adapt payloads.
+/// Each connector:
+/// 1. Holds a reference to its `EngineAdapter` (for profile access)
+/// 2. Accepts a `PlanArtifact` for execution
+/// 3. Optionally executes against a compute engine
 #[async_trait::async_trait]
-pub trait ComputeConnector: ComputeAdapter + Send + Sync {
-    /// Execute a compute request and return results.
-    async fn execute(&self, request: ComputeRequest) -> Result<ComputeResult, ConnectorError>;
+pub trait ComputeConnector: Send + Sync {
+    /// The adapter that produces artifacts for this engine.
+    fn adapter(&self) -> &dyn EngineAdapter;
 
-    /// Check if the engine is reachable and healthy.
+    /// Execute a plan artifact against the compute engine.
+    async fn execute(&self, artifact: &PlanArtifact) -> Result<ComputeResult, ConnectorError>;
+
+    /// Health check — verify the engine is reachable.
     async fn health_check(&self) -> Result<(), ConnectorError>;
 
-    /// Human-readable name of this connector.
+    /// Human-readable connector name.
     fn name(&self) -> &str;
-
-    /// The SQL dialect preferred by this engine.
-    ///
-    /// Used by the engine to select the appropriate SQL emitter. When the
-    /// `polyglot` feature is enabled, `PolyglotEmitter` transpiles ANSI SQL
-    /// to this dialect. Defaults to `Ansi` (no transpilation).
-    fn preferred_dialect(&self) -> TargetDialect {
-        TargetDialect::Ansi
-    }
 }

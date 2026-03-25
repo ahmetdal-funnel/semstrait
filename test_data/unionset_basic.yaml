@@ -2,10 +2,8 @@ semantic_model:
   name: unionset_basic
   description: "Unionset combining two datasets with NULL-fill for missing columns"
 
-  kinds:
+  unionsets:
     - name: all_events
-      type:
-        unionset:
       dimensions:
         - name: event_date
           data_type: date

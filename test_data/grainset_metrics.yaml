@@ -2,10 +2,8 @@ semantic_model:
   name: grainset_metrics
   description: "Grainset with metrics"
 
-  kinds:
+  grainsets:
     - name: daily_orders
-      type:
-        grainset:
       dimensions:
         - name: order_date
           data_type: date

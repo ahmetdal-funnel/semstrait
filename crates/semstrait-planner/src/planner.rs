@@ -11,17 +11,17 @@
 use std::sync::Arc;
 
 use semstrait_catalog::CatalogProvider;
-use semstrait_core::ConsumerProfile;
+use semstrait_core::{ConsumerProfile, EngineProfile};
 use semstrait_ir::{
     BinaryOp, Expr, FetchNode, FilterNode, LogicalPlan, NodeMeta, PlanNode, SortKey,
     SortNode,
 };
-use semstrait_manifest::CompiledManifest;
+use semstrait_manifest::{CompiledManifest, DimensionType};
 
 use crate::additivity_resolver::AdditivityResolver;
 use crate::constraint_evaluator::ConstraintEvaluator;
 use crate::error::PlannerError;
-use crate::kind::{KindPlannerRegistry, PlannerContext};
+use crate::kind::{extract_metadata_value, KindPlannerRegistry, PlannerContext};
 use crate::optimizer::{Optimizer, OptimizerPass};
 use crate::request::{FilterOperator, FilterValue, ResolvedQueryRequest, SortDirection};
 
@@ -33,7 +33,7 @@ pub struct SemanticPlanner {
     catalog: Option<Arc<dyn CatalogProvider>>,
     optimizer: Optimizer,
     planners: KindPlannerRegistry,
-    profile: ConsumerProfile,
+    profile: Arc<dyn EngineProfile>,
 }
 
 impl SemanticPlanner {
@@ -85,13 +85,19 @@ impl SemanticPlanner {
             std::borrow::Cow::Borrowed(kind)
         };
 
+        // Step 3b: Metadata dimension filter — prune datasets based on
+        // equality filters on metadata dimensions. If a user filter is
+        // `metadata_dim = 'value'` and a dataset's extracted value doesn't
+        // match, exclude that dataset from candidates.
+        let kind = prune_by_metadata_filters(kind, request)?;
+
         // Step 4: Dispatch to kind-specific planner.
         let kind_planner = self.planners.dispatch(&kind.kind_type)?;
 
         // Step 5: Build planning context.
         let ctx = PlannerContext {
             manifest,
-            profile: &self.profile,
+            profile: self.profile.as_ref(),
             catalog: self.catalog.as_deref(),
             session: &request.session_variables,
         };
@@ -103,7 +109,7 @@ impl SemanticPlanner {
         for measure_name in &request.measures {
             if let Some(measure) = kind.measures.get(measure_name) {
                 fragment =
-                    AdditivityResolver::resolve(fragment, measure, request, &self.profile)?;
+                    AdditivityResolver::resolve(fragment, measure, request, self.profile.as_ref())?;
             }
         }
 
@@ -151,7 +157,7 @@ impl SemanticPlanner {
 pub struct SemanticPlannerBuilder {
     catalog: Option<Arc<dyn CatalogProvider>>,
     passes: Vec<Box<dyn OptimizerPass>>,
-    profile: ConsumerProfile,
+    profile: Arc<dyn EngineProfile>,
 }
 
 impl SemanticPlannerBuilder {
@@ -159,7 +165,7 @@ impl SemanticPlannerBuilder {
         Self {
             catalog: None,
             passes: Vec::new(),
-            profile: ConsumerProfile::default(),
+            profile: Arc::new(ConsumerProfile::default()),
         }
     }
 
@@ -176,7 +182,7 @@ impl SemanticPlannerBuilder {
     }
 
     /// Set the consumer profile (engine capabilities).
-    pub fn with_profile(mut self, profile: ConsumerProfile) -> Self {
+    pub fn with_profile(mut self, profile: Arc<dyn EngineProfile>) -> Self {
         self.profile = profile;
         self
     }
@@ -196,6 +202,61 @@ impl Default for SemanticPlannerBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ============================================================================
+// Metadata dimension dataset pruning
+// ============================================================================
+
+/// Prune datasets based on user equality filters on metadata dimensions.
+///
+/// When a user filter references a metadata dimension with `Eq` operator and a
+/// string value, we extract the metadata value for each dataset and exclude
+/// datasets whose value doesn't match. This is a pre-planning optimization
+/// similar to domain filtering.
+fn prune_by_metadata_filters<'a>(
+    kind: std::borrow::Cow<'a, semstrait_manifest::CompiledKind>,
+    request: &ResolvedQueryRequest,
+) -> Result<std::borrow::Cow<'a, semstrait_manifest::CompiledKind>, PlannerError> {
+    // Collect metadata equality filters: (expected_value, MetadataDimension).
+    // We clone the MetadataDimension to avoid borrowing from `kind`.
+    let mut metadata_filters: Vec<(String, semstrait_manifest::MetadataDimension)> = Vec::new();
+
+    for filter in &request.filters {
+        if !matches!(filter.operator, FilterOperator::Eq) {
+            continue;
+        }
+        if let Some(dim) = kind.dimensions.get(&filter.field) {
+            if let DimensionType::Metadata(ref meta) = dim.dim_type {
+                if let Some(FilterValue::String(ref val)) = filter.values.first() {
+                    metadata_filters.push((val.clone(), meta.clone()));
+                }
+            }
+        }
+    }
+
+    if metadata_filters.is_empty() {
+        return Ok(kind);
+    }
+
+    let mut filtered_kind = kind.into_owned();
+    filtered_kind.datasets.retain(|ds| {
+        metadata_filters.iter().all(|(expected, meta)| {
+            match extract_metadata_value(meta, ds) {
+                Some(ref actual) => actual == expected,
+                None => true, // Keep dataset if extraction fails (conservative)
+            }
+        })
+    });
+
+    if filtered_kind.datasets.is_empty() {
+        return Err(PlannerError::NoCoveringDataset {
+            kind: filtered_kind.name.clone(),
+            reason: "no datasets match metadata dimension filters".to_string(),
+        });
+    }
+
+    Ok(std::borrow::Cow::Owned(filtered_kind))
 }
 
 // ============================================================================
@@ -640,4 +701,151 @@ mod tests {
         assert!(!contains_filter_node(&plan.root), "no filter should be present without user/kind filters");
     }
 
+    #[test]
+    fn test_metadata_dimension_filter_prunes_datasets() {
+        use indexmap::IndexMap;
+        use semstrait_manifest::{
+            ColumnMappingValue, CompiledDimension, CompiledKind, CompiledKindDataset,
+            CompiledKindType, CompiledMeasure, DimensionType, KindDatasetExtras,
+            MetadataDimension, PathExtraction,
+        };
+
+        // Create a kind with 2 datasets, each with a different source path.
+        let mut dimensions = IndexMap::new();
+        dimensions.insert(
+            "date".to_string(),
+            CompiledDimension {
+                name: "date".to_string(),
+                description: None,
+                data_type: "string".to_string(),
+                dim_type: DimensionType::Categorical(
+                    semstrait_manifest::CategoricalDimension { enum_values: None },
+                ),
+            },
+        );
+        dimensions.insert(
+            "source".to_string(),
+            CompiledDimension {
+                name: "source".to_string(),
+                description: None,
+                data_type: "string".to_string(),
+                dim_type: DimensionType::Metadata(MetadataDimension {
+                    path: Some(PathExtraction { token: 1 }),
+                    partition: None,
+                }),
+            },
+        );
+
+        let mut measures = IndexMap::new();
+        measures.insert(
+            "revenue".to_string(),
+            CompiledMeasure {
+                name: "revenue".to_string(),
+                description: None,
+                data_type: "float64".to_string(),
+                agg: None,
+                expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
+                expr_source: "SUM(amount)".to_string(),
+                additivity: None,
+                constraints: None,
+                filters: vec![],
+            },
+        );
+
+        let make_ds = |name: &str, source: &str| -> CompiledKindDataset {
+            let mut mapping = std::collections::HashMap::new();
+            mapping.insert(
+                "date".to_string(),
+                ColumnMappingValue::Simple("order_date".to_string()),
+            );
+            mapping.insert(
+                "revenue".to_string(),
+                ColumnMappingValue::Simple("amount".to_string()),
+            );
+            CompiledKindDataset {
+                name: name.to_string(),
+                extras: KindDatasetExtras {
+                    column_mapping: mapping.into(),
+                    temporal: None,
+                    storage: None,
+                    catalog: None,
+                },
+                resolved_sources: vec![source.to_string()],
+            }
+        };
+
+        let kind = CompiledKind {
+            name: "multi_source".to_string(),
+            description: None,
+            dimensions,
+            measures,
+            metrics: IndexMap::new(),
+            keys: None,
+            kind_type: CompiledKindType::Grainset,
+            datasets: vec![
+                make_ds("shopify_data", "bucket/shopify/data.parquet"),
+                make_ds("ga4_data", "bucket/ga4/data.parquet"),
+            ],
+            relationships: vec![],
+            domain: None,
+            filters: vec![],
+        };
+
+        let mut kinds = IndexMap::new();
+        kinds.insert("multi_source".to_string(), kind);
+
+        let manifest = semstrait_manifest::CompiledManifest {
+            version: 1,
+            compiled_at: chrono::Utc::now(),
+            source_hash: "test_meta_filter".to_string(),
+            datasets: IndexMap::new(),
+            kinds,
+            relationships: vec![],
+            model_name: "test_meta_filter".to_string(),
+            model_description: None,
+        };
+
+        // Query with a metadata filter: source = 'shopify'
+        let mut request = make_test_request(
+            "multi_source",
+            vec!["date", "source"],
+            vec!["revenue"],
+        );
+        request.filters = vec![QueryFilter {
+            field: "source".to_string(),
+            operator: FilterOperator::Eq,
+            values: vec![FilterValue::String("shopify".to_string())],
+        }];
+
+        let planner = SemanticPlanner::builder().build();
+        let result = planner.plan(&request, &manifest);
+        assert!(result.is_ok(), "metadata filter should succeed: {:?}", result.err());
+
+        // The plan should only scan from the shopify dataset.
+        let plan = result.unwrap();
+        let scan_tables = collect_scan_tables(&plan.root);
+        assert_eq!(scan_tables.len(), 1);
+        assert!(
+            scan_tables[0].contains("shopify"),
+            "should scan shopify dataset, got: {:?}",
+            scan_tables
+        );
+    }
+
+    fn collect_scan_tables(node: &PlanNode) -> Vec<String> {
+        match node {
+            PlanNode::Scan(s) => vec![s.table_name.clone()],
+            PlanNode::Project(n) => collect_scan_tables(&n.input),
+            PlanNode::Aggregate(n) => collect_scan_tables(&n.input),
+            PlanNode::Filter(n) => collect_scan_tables(&n.input),
+            PlanNode::Sort(n) => collect_scan_tables(&n.input),
+            PlanNode::Fetch(n) => collect_scan_tables(&n.input),
+            PlanNode::Join(n) => {
+                let mut v = collect_scan_tables(&n.left);
+                v.extend(collect_scan_tables(&n.right));
+                v
+            }
+            PlanNode::Union(n) => n.inputs.iter().flat_map(collect_scan_tables).collect(),
+        }
+    }
 }

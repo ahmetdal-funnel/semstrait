@@ -33,6 +33,8 @@ message QueryRequest {
   optional uint64 limit = 7;
   repeated OrderBy order_by = 8;
   map<string, string> session = 9;
+  // Engine selection (e.g. "datafusion", "duckdb", "trino", "spark").
+  optional string engine = 10;
 }
 
 // Inline filter expression (stub — not implemented in v1).

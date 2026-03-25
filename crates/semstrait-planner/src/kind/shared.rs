@@ -2,7 +2,7 @@
 
 use crate::error::PlannerError;
 use crate::expr_lower;
-use super::{resolve_column_name, PlanFragment, PlannerContext};
+use super::{extract_metadata_value, partition_dimensions, resolve_column_name, PlanFragment, PlannerContext};
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::DataType;
 use semstrait_ir::{
@@ -16,10 +16,13 @@ use super::grainset::collect_column_refs;
 
 /// Resolve the physical table name for a dataset binding.
 ///
-/// In v1, always returns the dataset binding name. Future versions could
-/// look up a physical table name from the manifest.
+/// Uses the first resolved source from storage config, falling back to
+/// the dataset binding name. Multi-source UNION ALL will be built in a
+/// future phase.
 fn resolve_table_name(dataset_binding: &CompiledKindDataset) -> &str {
-    &dataset_binding.name
+    dataset_binding.resolved_sources.first()
+        .map(|s| s.as_str())
+        .unwrap_or(&dataset_binding.name)
 }
 
 /// Build a Scan → Aggregate → Project plan for a single dataset.
@@ -47,9 +50,12 @@ pub(crate) fn build_dataset_plan(
     let mut scan_columns: Vec<String> = Vec::new();
     let mut scan_seen: HashSet<String> = HashSet::new();
 
-    // Map dimensions to physical columns.
+    // Partition dimensions into metadata (literal injection) and regular (column mapping).
+    let (metadata_dims, regular_dims) = partition_dimensions(&request.dimensions, kind);
+
+    // Map regular dimensions to physical columns.
     let mut dim_physical: Vec<(String, String)> = Vec::new();
-    for dim_name in &request.dimensions {
+    for dim_name in &regular_dims {
         let physical = mapping
             .get(dim_name)
             .map(resolve_column_name)
@@ -64,16 +70,35 @@ pub(crate) fn build_dataset_plan(
         }
     }
 
-    // Lower measures via the parsed Expr tree.
+    // Extract metadata dimension values as literals.
+    let mut metadata_literals: Vec<(String, Expr)> = Vec::new();
+    for (dim_name, meta) in &metadata_dims {
+        let value = extract_metadata_value(meta, dataset).unwrap_or_default();
+        metadata_literals.push((dim_name.clone(), Expr::string(value)));
+    }
+
+    // Lower measures via the parsed Expr tree or declarative agg tag.
     let mut lowered_measures: Vec<(String, expr_lower::LoweredMeasure)> = Vec::new();
     for measure_name in &request.measures {
         if let Some(measure) = kind.measures.get(measure_name) {
-            let lowered = expr_lower::lower_measure_with_filters(
-                measure_name,
-                &measure.expr,
-                mapping,
-                &measure.filters,
-            )?;
+            let lowered = if let Some(agg) = measure.agg {
+                // Declarative aggregation path: agg tag + horizontal expr.
+                expr_lower::lower_measure_declarative(
+                    measure_name,
+                    agg,
+                    &measure.expr,
+                    mapping,
+                    &measure.filters,
+                )?
+            } else {
+                // Legacy path: aggregation embedded in expr.
+                expr_lower::lower_measure_with_filters(
+                    measure_name,
+                    &measure.expr,
+                    mapping,
+                    &measure.filters,
+                )?
+            };
             for agg in &lowered.aggregates {
                 collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
             }
@@ -154,25 +179,27 @@ pub(crate) fn build_dataset_plan(
     });
 
     // Build Project node — maps physical names back to semantic names.
-    let mut project_exprs: Vec<Expr> = request
-        .dimensions
-        .iter()
-        .map(|name| Expr::column(name.clone()))
-        .collect();
+    // Regular dimensions come from the aggregate output; metadata dimensions
+    // are injected as literal expressions.
+    let mut project_exprs: Vec<Expr> = Vec::new();
+    let mut project_fields: Vec<Field> = Vec::new();
+
+    for dim_name in &request.dimensions {
+        if let Some((_, lit_expr)) = metadata_literals.iter().find(|(n, _)| n == dim_name) {
+            project_exprs.push(lit_expr.clone());
+        } else {
+            project_exprs.push(Expr::column(dim_name.clone()));
+        }
+        project_fields.push(Field::new(dim_name.clone(), DataType::Utf8));
+    }
     for (_, lowered) in &lowered_measures {
         project_exprs.push(lowered.post_agg_expr.clone());
     }
-
-    let project_fields: Vec<Field> = request
-        .dimensions
-        .iter()
-        .map(|name| Field::new(name.clone(), DataType::Utf8))
-        .chain(
-            lowered_measures
-                .iter()
-                .map(|(name, _)| Field::new(name.clone(), DataType::Float64)),
-        )
-        .collect();
+    project_fields.extend(
+        lowered_measures
+            .iter()
+            .map(|(name, _)| Field::new(name.clone(), DataType::Float64)),
+    );
     let project_schema = Schema::new(project_fields);
 
     let project = PlanNode::Project(ProjectNode {

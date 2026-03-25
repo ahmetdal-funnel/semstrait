@@ -6,53 +6,60 @@ Compute connector traits and feature-gated engine implementations.
 
 ## Responsibility
 
-Defines the three-phase compute pipeline:
+Provides the `ComputeConnector` trait and concrete implementations for executing `PlanArtifact`s (SQL or Substrait) against compute engines. Each connector holds a reference to its `EngineAdapter` (from `semstrait-adapter`) for profile and dialect access.
 
-1. **`ComputeEmitter`** — `LogicalPlan` → `ComputePayload` (SQL or Substrait bytes)
-2. **`ComputeAdapter`** — adapts payload based on `ConsumerProfile` capabilities
-3. **`ComputeConnector`** — async execution → `ComputeResult`
-
-Does not own the compilation pipeline. Receives a `LogicalPlan` from the planner and routes execution to the appropriate engine.
+Does not own the compilation or planning pipeline. Receives a `PlanArtifact` from upstream and routes execution to the appropriate engine.
 
 ---
 
 ## Key Types
 
+### ComputeConnector (traits.rs)
+
 ```rust
 #[async_trait]
-pub trait ComputeEmitter: Send + Sync {
-    fn name(&self) -> &str;
-    fn supported_payloads(&self) -> Vec<PayloadKind>;
-    fn emit(&self, plan: &LogicalPlan) -> Result<ComputePayload, EmitError>;
-}
-
-#[async_trait]
-pub trait ComputeAdapter: Send + Sync {
-    fn adapt(&self, payload: ComputePayload, profile: &ConsumerProfile)
-        -> Result<ComputeRequest, AdaptError>;
-}
-
-#[async_trait]
 pub trait ComputeConnector: Send + Sync {
-    fn name(&self) -> &str;
+    /// The adapter that produces artifacts for this engine.
+    fn adapter(&self) -> &dyn EngineAdapter;
+
+    /// Execute a plan artifact against the compute engine.
+    async fn execute(&self, artifact: &PlanArtifact) -> Result<ComputeResult, ConnectorError>;
+
+    /// Health check -- verify the engine is reachable.
     async fn health_check(&self) -> Result<(), ConnectorError>;
-    async fn execute(&self, request: &ComputeRequest)
-        -> Result<ComputeResult, ConnectorError>;
+
+    /// Human-readable connector name.
+    fn name(&self) -> &str;
 }
 ```
 
-### ComputeResult
+### Result types (payload.rs)
 
 ```rust
 pub struct ComputeResult {
-    pub data: ComputeResultData,
+    pub complete: bool,
     pub stats: ExecutionStats,
+    pub data: ComputeResultData,
 }
 
 pub enum ComputeResultData {
     Empty,
     Json(Vec<serde_json::Value>),
-    Native(Box<dyn Any + Send + Sync>),  // downcasted via as_native::<T>()
+    Native(Box<dyn Any + Send + Sync>),  // downcastable via as_native::<T>()
+}
+
+pub struct ExecutionStats {
+    pub rows_returned: u64,
+    pub execution_time: Option<Duration>,
+    pub bytes_scanned: Option<u64>,
+}
+
+pub enum ConnectorError {
+    Connection(String),
+    Execution(String),
+    Timeout(Duration),
+    NotImplemented(String),
+    Internal(String),
 }
 ```
 
@@ -62,53 +69,83 @@ pub enum ComputeResultData {
 
 ### DataFusion (`feature = "datafusion"`)
 
-Full SQL execution via DataFusion's `SessionContext`. Implements all three traits.
+Full SQL execution via DataFusion's `SessionContext`. Converts Arrow `RecordBatch`es to JSON rows.
 
-- Accepts: `PayloadKind::Sql`
-- Returns: `ComputeResultData::Native` wrapping `ArrowBatches(Vec<RecordBatch>)`
-- Uses DataFusion's re-exported Arrow types (no separate arrow dependency)
+- Requires: `PlanArtifact::Sql`
+- Returns: `ComputeResultData::Json`
+- Supports registering CSV, Parquet, and in-memory tables
+- Also exposes `ArrowBatches` helper with `to_json_rows()` for custom use
 
 ```rust
-use semstrait_connectors::datafusion::{DataFusionConnector, ArrowBatches};
+use semstrait_connectors::datafusion::DataFusionConnector;
 
 let connector = DataFusionConnector::new();
-let result = connector.execute(&request).await?;
-let batches = result.data.as_native::<ArrowBatches>().unwrap();
+connector.register_csv("orders", "data/orders.csv").await?;
+let result = connector.execute(&artifact).await?;
 ```
 
-### DuckDB
+### DuckDB (`feature = "duckdb"`)
 
-Embedded DuckDB connector via `duckdb` crate v1.3.2 (Arrow 55, `bundled` feature). Uses `Arc<Mutex<Connection>>` + `spawn_blocking` for async safety. Supports CSV/Parquet file registration via `read_csv_auto()`/`read_parquet()`.
+Embedded DuckDB connector. Uses `Arc<Mutex<Connection>>` + `spawn_blocking` for async safety (`Connection` is `Send` but `!Sync`). Converts Arrow batches to JSON via the workspace `arrow` crate.
+
+- Requires: `PlanArtifact::Sql`
+- Returns: `ComputeResultData::Json`
+- Supports in-memory and file-backed databases
+- Supports registering CSV and Parquet files via `read_csv_auto()`/`read_parquet()`
 
 ```rust
 use semstrait_connectors::duckdb::DuckDbConnector;
 
 let connector = DuckDbConnector::new()?;
 connector.register_csv("orders", "data/orders.csv").await?;
-let result = connector.execute(request).await?;
+let result = connector.execute(&artifact).await?;
 ```
 
-### Trino, Spark (stubs)
+### Trino (`feature = "trino"`)
 
-Feature flags exist (`trino`, `spark`) but implementations are not yet wired. Connector traits are ready for implementation.
+REST API connector targeting Trino's `/v1/statement` endpoint. Submits SQL, polls `nextUri` for paginated results, and collects rows into JSON objects. Supports `None`, `Basic`, and `BearerToken` authentication.
+
+- Requires: `PlanArtifact::Sql`
+- Returns: `ComputeResultData::Json`
+
+```rust
+use semstrait_connectors::trino::TrinoConnector;
+
+let connector = TrinoConnector::new("http://trino:8080", "hive", "default")
+    .with_user("alice")
+    .with_bearer_token("token123");
+let result = connector.execute(&artifact).await?;
+```
+
+### Spark (`feature = "spark"`)
+
+Structural implementation targeting Spark Connect (gRPC, Spark 3.4+). The `ComputeConnector` trait is implemented but `execute()` and `health_check()` return `ConnectorError::NotImplemented` pending `spark-connect-rs` or custom proto integration.
+
+```rust
+use semstrait_connectors::spark::SparkConnector;
+
+let connector = SparkConnector::new("sc://spark:15002");
+// execute() currently returns NotImplemented
+```
 
 ---
 
-## Diagram: Connector Architecture
+## Feature Flags
 
-![Connector Architecture](docs/D6_connector_architecture.svg)
-
-The diagram shows the three-phase pipeline from `LogicalPlan` through emission, adaptation, and execution. The `ComputeEmitter` layer produces payloads (SQL strings, Substrait bytes, or native plans). The `ComputeAdapter` adapts payloads into engine-specific `ComputeRequest`s using `ConsumerProfile` capabilities. Each connector (DuckDB, DataFusion, Trino, Spark) implements the `ComputeConnector` trait for async execution, returning `ComputeResult` with JSON rows or Arrow batches.
-
-**Implementation note:** In the current engine hot path (`SemstraitEngine`), SQL emission uses `SqlEmitter` directly (not `ComputeEmitter`). The `SubstraitEmitter` and `NativeEmitter` paths shown in the diagram are defined in the trait but not yet wired in the engine.
+| Feature | Enables | Key Dependencies |
+|---|---|---|
+| `datafusion` | `DataFusionConnector` | `datafusion` v52, `tokio` |
+| `duckdb` | `DuckDbConnector` | `duckdb` >=1.3.0 <1.4.0 (bundled), `arrow` v55, `tokio` |
+| `trino` | `TrinoConnector` | `reqwest`, `serde`, `tokio` |
+| `spark` | `SparkConnector` | `uuid` |
+| `polyglot` | Polyglot SQL dialect support in adapter | (transitive via `semstrait-adapter`) |
 
 ---
 
 ## Dependencies
 
-- `semstrait-core` — `ConsumerProfile`, `DataType`
-- `semstrait-ir` — `LogicalPlan`, `PlanNode`
-- `semstrait-sql` — SQL emission for SQL-based connectors
-- `datafusion` v52 (optional, feature-gated)
-- `duckdb` v1.3.2 (optional, feature-gated, `bundled`)
-- `arrow` v55 (optional, for JSON serialization)
+- `semstrait-adapter` -- `EngineAdapter` trait and per-engine adapters
+- `semstrait-ir` -- `PlanArtifact` (SQL string or Substrait plan)
+- `async-trait` -- async trait support
+- `thiserror` -- `ConnectorError` derive
+- `serde_json` -- JSON result serialization

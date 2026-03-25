@@ -1,9 +1,7 @@
 semantic_model:
   name: constraint_test
-  kinds:
+  grainsets:
     - name: sales
-      type:
-        grainset:
       dimensions:
         - name: date
           data_type: date

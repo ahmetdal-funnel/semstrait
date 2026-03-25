@@ -1,9 +1,7 @@
 semantic_model:
   name: filter_test
-  kinds:
+  grainsets:
     - name: products
-      type:
-        grainset:
       dimensions:
         - name: category
           data_type: string

@@ -58,6 +58,7 @@ pub fn make_test_manifest_with_constraints(
             name: "revenue".to_string(),
             description: None,
             data_type: "float64".to_string(),
+            agg: None,
             expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
             expr_source: "SUM(amount)".to_string(),
             additivity: None,
@@ -97,6 +98,7 @@ pub fn make_test_manifest_with_constraints(
             storage: None,
             catalog: None,
         },
+        resolved_sources: vec![],
     };
 
     let kind = CompiledKind {
@@ -156,6 +158,7 @@ pub fn make_multi_dataset_manifest() -> CompiledManifest {
             name: "cost".to_string(),
             description: None,
             data_type: "float64".to_string(),
+            agg: None,
             expr: semstrait_core::Expr::entity_ref("SUM(cost_amount)"),
             expr_source: "SUM(cost_amount)".to_string(),
             additivity: None,
@@ -169,6 +172,7 @@ pub fn make_multi_dataset_manifest() -> CompiledManifest {
             name: "revenue".to_string(),
             description: None,
             data_type: "float64".to_string(),
+            agg: None,
             expr: semstrait_core::Expr::entity_ref("SUM(rev_amount)"),
             expr_source: "SUM(rev_amount)".to_string(),
             additivity: None,
@@ -191,6 +195,7 @@ pub fn make_multi_dataset_manifest() -> CompiledManifest {
             storage: None,
             catalog: None,
         },
+        resolved_sources: vec![],
     };
 
     // Dataset 2: covers date, region, revenue
@@ -207,6 +212,7 @@ pub fn make_multi_dataset_manifest() -> CompiledManifest {
             storage: None,
             catalog: None,
         },
+        resolved_sources: vec![],
     };
 
     let kind = CompiledKind {

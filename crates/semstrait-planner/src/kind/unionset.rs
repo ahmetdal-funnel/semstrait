@@ -7,7 +7,7 @@
 use crate::error::PlannerError;
 use crate::expr_lower;
 use super::grainset::collect_column_refs;
-use super::{resolve_column_name, KindPlanner, PlanFragment, PlannerContext};
+use super::{extract_metadata_value, partition_dimensions, resolve_column_name, KindPlanner, PlanFragment, PlannerContext};
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::DataType;
 use semstrait_ir::{
@@ -41,7 +41,7 @@ impl KindPlanner for UnionsetPlanner {
         // Extract union mode from the kind type.
         let distinct = matches!(
             kind.kind_type,
-            CompiledKindType::Unionset { union_mode: UnionMode::Distinct }
+            CompiledKindType::Unionset { mode: UnionMode::Unique }
         );
 
         // Build one branch per dataset.
@@ -119,15 +119,26 @@ fn build_unified_schema(request: &ResolvedQueryRequest) -> Schema {
 /// For most measures this is SUM (re-summing partial sums).
 fn infer_aggregation(kind: &CompiledKind, measure_name: &str) -> Aggregation {
     if let Some(measure) = kind.measures.get(measure_name) {
+        // Declarative path: use the declared aggregation directly.
+        if let Some(agg) = measure.agg {
+            return match agg {
+                Aggregation::Min => Aggregation::Min,
+                Aggregation::Max => Aggregation::Max,
+                // Re-aggregating COUNT_DISTINCT as SUM is lossy but v1 semantics.
+                // Re-aggregating AVG as SUM is approximate, v1 semantics.
+                _ => Aggregation::Sum,
+            };
+        }
+        // Legacy path: infer from expr_source string.
         let upper = measure.expr_source.to_uppercase();
         if upper.starts_with("COUNT_DISTINCT") || upper.contains("COUNT(DISTINCT") {
-            return Aggregation::Sum; // re-sum partial count_distincts is lossy but v1 semantics
+            return Aggregation::Sum;
         } else if upper.starts_with("MIN") {
             return Aggregation::Min;
         } else if upper.starts_with("MAX") {
             return Aggregation::Max;
         } else if upper.starts_with("AVG") {
-            return Aggregation::Sum; // re-aggregating AVG as SUM is approximate, v1 semantics
+            return Aggregation::Sum;
         }
     }
     Aggregation::Sum
@@ -145,21 +156,34 @@ fn build_union_branch(
 ) -> Result<PlanNode, PlannerError> {
     let mapping = &dataset.extras.column_mapping;
 
+    // Partition dimensions into metadata (literal injection) and regular.
+    let (metadata_dims, _) = partition_dimensions(&request.dimensions, kind);
+
     // Determine which requested fields this dataset covers.
     let mut scan_columns: Vec<String> = Vec::new();
     let mut scan_seen: HashSet<String> = HashSet::new();
 
-    // Map dimensions to physical columns (or mark as NULL-fill).
-    let mut dim_physical: Vec<(String, Option<String>)> = Vec::new(); // (semantic, physical?)
+    // Map dimensions to physical columns, metadata literals, or NULL-fill.
+    // DimSource tracks how each dimension is resolved in this branch.
+    enum DimSource {
+        Physical(String),
+        MetadataLiteral(Expr),
+        NullFill,
+    }
+
+    let mut dim_sources: Vec<(String, DimSource)> = Vec::new();
     for dim_name in &request.dimensions {
-        if let Some(mv) = mapping.get(dim_name) {
+        if let Some((_, meta)) = metadata_dims.iter().find(|(n, _)| n == dim_name) {
+            let value = extract_metadata_value(meta, dataset).unwrap_or_default();
+            dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(Expr::string(value))));
+        } else if let Some(mv) = mapping.get(dim_name) {
             let phys = resolve_column_name(mv).to_string();
-            dim_physical.push((dim_name.clone(), Some(phys.clone())));
+            dim_sources.push((dim_name.clone(), DimSource::Physical(phys.clone())));
             if scan_seen.insert(phys.clone()) {
                 scan_columns.push(phys);
             }
         } else {
-            dim_physical.push((dim_name.clone(), None));
+            dim_sources.push((dim_name.clone(), DimSource::NullFill));
         }
     }
 
@@ -168,12 +192,22 @@ fn build_union_branch(
     for measure_name in &request.measures {
         if let Some(measure) = kind.measures.get(measure_name) {
             if mapping.contains_key(measure_name) {
-                let lowered = expr_lower::lower_measure_with_filters(
-                    measure_name,
-                    &measure.expr,
-                    mapping,
-                    &measure.filters,
-                )?;
+                let lowered = if let Some(agg) = measure.agg {
+                    expr_lower::lower_measure_declarative(
+                        measure_name,
+                        agg,
+                        &measure.expr,
+                        mapping,
+                        &measure.filters,
+                    )?
+                } else {
+                    expr_lower::lower_measure_with_filters(
+                        measure_name,
+                        &measure.expr,
+                        mapping,
+                        &measure.filters,
+                    )?
+                };
                 for agg_measure in &lowered.aggregates {
                     collect_column_refs(
                         &agg_measure.expr,
@@ -210,11 +244,12 @@ fn build_union_branch(
         projection: scan_columns,
     });
 
-    // Build Aggregate node (only for covered measures).
-    let group_by: Vec<Expr> = dim_physical
+    // Build Aggregate node (only physical dimensions in group_by).
+    let group_by: Vec<Expr> = dim_sources
         .iter()
-        .filter_map(|(_, phys)| {
-            phys.as_ref().map(|p| Expr::column(p.clone()))
+        .filter_map(|(_, src)| match src {
+            DimSource::Physical(p) => Some(Expr::column(p.clone())),
+            _ => None,
         })
         .collect();
 
@@ -224,12 +259,12 @@ fn build_union_branch(
         .flat_map(|l| l.aggregates.clone())
         .collect();
 
-    // Aggregate schema: covered dimensions + aggregate outputs.
-    let mut agg_fields: Vec<Field> = dim_physical
+    // Aggregate schema: covered physical dimensions + aggregate outputs.
+    let mut agg_fields: Vec<Field> = dim_sources
         .iter()
-        .filter_map(|(semantic, phys)| {
-            phys.as_ref()
-                .map(|_| Field::new(semantic.clone(), DataType::Utf8))
+        .filter_map(|(semantic, src)| match src {
+            DimSource::Physical(_) => Some(Field::new(semantic.clone(), DataType::Utf8)),
+            _ => None,
         })
         .collect();
 
@@ -260,11 +295,11 @@ fn build_union_branch(
     let unified_schema = build_unified_schema(request);
 
     let mut project_exprs: Vec<Expr> = Vec::new();
-    for (semantic, phys) in &dim_physical {
-        if phys.is_some() {
-            project_exprs.push(Expr::column(semantic.clone()));
-        } else {
-            project_exprs.push(Expr::null());
+    for (semantic, src) in &dim_sources {
+        match src {
+            DimSource::Physical(_) => project_exprs.push(Expr::column(semantic.clone())),
+            DimSource::MetadataLiteral(lit) => project_exprs.push(lit.clone()),
+            DimSource::NullFill => project_exprs.push(Expr::null()),
         }
     }
     for (_, lowered) in &lowered_measures {
@@ -320,6 +355,7 @@ mod tests {
                 name: "revenue".to_string(),
                 description: None,
                 data_type: "float64".to_string(),
+                agg: None,
                 expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
                 expr_source: "SUM(amount)".to_string(),
                 additivity: None,
@@ -342,6 +378,7 @@ mod tests {
                 storage: None,
                 catalog: None,
             },
+            resolved_sources: vec![],
         };
 
         // Dataset 2: covers date + revenue (different physical names)
@@ -358,6 +395,7 @@ mod tests {
                 storage: None,
                 catalog: None,
             },
+            resolved_sources: vec![],
         };
 
         let kind = CompiledKind {
@@ -367,7 +405,7 @@ mod tests {
             measures,
             metrics: IndexMap::new(),
             keys: None,
-            kind_type: CompiledKindType::Unionset { union_mode: UnionMode::All },
+            kind_type: CompiledKindType::Unionset { mode: UnionMode::All },
             datasets: vec![ds1, ds2],
             relationships: vec![],
             domain: None,
@@ -489,6 +527,7 @@ mod tests {
                 name: "revenue".to_string(),
                 description: None,
                 data_type: "float64".to_string(),
+                agg: None,
                 expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
                 expr_source: "SUM(amount)".to_string(),
                 additivity: None,
@@ -510,6 +549,7 @@ mod tests {
                 storage: None,
                 catalog: None,
             },
+            resolved_sources: vec![],
         };
 
         let kind = CompiledKind {
@@ -519,7 +559,7 @@ mod tests {
             measures,
             metrics: IndexMap::new(),
             keys: None,
-            kind_type: CompiledKindType::Unionset { union_mode: UnionMode::All },
+            kind_type: CompiledKindType::Unionset { mode: UnionMode::All },
             datasets: vec![ds1],
             relationships: vec![],
             domain: None,
@@ -576,7 +616,7 @@ mod tests {
             measures: IndexMap::new(),
             metrics: IndexMap::new(),
             keys: None,
-            kind_type: CompiledKindType::Unionset { union_mode: UnionMode::All },
+            kind_type: CompiledKindType::Unionset { mode: UnionMode::All },
             datasets: vec![],
             relationships: vec![],
             domain: None,
@@ -614,7 +654,7 @@ mod tests {
     fn test_unionset_distinct_mode() {
         let manifest = make_unionset_manifest();
         let mut kind = manifest.get_kind("all_orders").unwrap().clone();
-        kind.kind_type = CompiledKindType::Unionset { union_mode: UnionMode::Distinct };
+        kind.kind_type = CompiledKindType::Unionset { mode: UnionMode::Unique };
 
         let request = make_test_request("all_orders", vec!["date", "region"], vec!["revenue"]);
         let ctx = PlannerContext {
