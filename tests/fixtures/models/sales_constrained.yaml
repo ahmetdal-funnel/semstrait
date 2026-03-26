@@ -29,4 +29,6 @@ semantic_model:
               region: region_name
               revenue: amount
             storage:
-              path: warehouse.sales
+              format: parquet
+              paths:
+                - warehouse.sales

@@ -39,4 +39,6 @@ semantic_model:
               revenue: amount
               order_count: order_id
             storage:
-              path: warehouse.orders_daily
+              format: parquet
+              paths:
+                - warehouse.orders_daily

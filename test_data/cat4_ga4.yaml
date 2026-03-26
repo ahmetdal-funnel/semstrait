@@ -47,7 +47,8 @@ semantic_model:
       ai_context: "Use for GA4 event-level analytics — key events (conversions), event values, purchase revenue by source, medium, campaign, channel grouping, and country. Note: source/medium/campaignName are event-scoped (key events only). isKeyEvent was formerly isConversionEvent. keyEvents was formerly conversions."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/googleanalytics/b3bb7862-2304-4948-8b79-0e841a93b44a/"
+          paths:
+            - "fs1henp3k8p1hqo/googleanalytics/b3bb7862-2304-4948-8b79-0e841a93b44a/"
         column_mapping:
           date: date
           currency: currency
@@ -121,7 +122,8 @@ semantic_model:
       ai_context: "Use for GA4 ecommerce funnel — sessions, new users, add-to-carts, checkouts, purchases, transaction IDs, and revenue. Supports first-touch (firstUser) and session-touch attribution dimensions. totalRevenue includes purchase + subscription + ad revenue."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/googleanalytics/d054ffc9-d2df-45a8-868c-e0f3e6a54d71/"
+          paths:
+            - "fs1henp3k8p1hqo/googleanalytics/d054ffc9-d2df-45a8-868c-e0f3e6a54d71/"
         column_mapping:
           date: date
           currency: currency

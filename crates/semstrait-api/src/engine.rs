@@ -494,7 +494,9 @@ semantic_model:
           extras:
             column_mapping: auto
             storage:
-              path: db.orders_fact
+              format: parquet
+              paths:
+                - db.orders_fact
 "#;
 
         let engine = SemstraitEngine::with_manifest_yaml(yaml)

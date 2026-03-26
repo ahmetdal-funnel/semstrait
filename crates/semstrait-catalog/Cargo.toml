@@ -18,9 +18,11 @@ reqwest = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
 aws-credential-types = { workspace = true, optional = true }
 aws-sdk-secretsmanager = { workspace = true, optional = true }
+glob = { version = "0.3", optional = true }
 
 [features]
 default = []
+local = ["glob"]
 iceberg = ["reqwest", "serde_json"]
 unity = ["reqwest", "serde_json"]
-aws-secrets = ["iceberg", "dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-secretsmanager"]
+aws = ["iceberg", "dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-secretsmanager"]

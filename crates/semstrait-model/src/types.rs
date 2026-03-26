@@ -3,6 +3,7 @@
 //! This module contains all the types that map to the YAML semantic model schema.
 //! All types support serde serialization/deserialization.
 
+use semstrait_core::DataFormat;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::fmt;
@@ -122,10 +123,6 @@ pub struct SemanticModel {
     /// Catalog namespace for glob expansion (defaults to "default").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
-
-    /// Catalog connection configuration for glob expansion and schema introspection.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub catalog: Option<CatalogConnectionConfig>,
 
     // Top-level datasets
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -496,7 +493,7 @@ pub struct KindDatasetExtras {
     #[serde(default)]
     pub storage: Option<StorageConfig>,
     #[serde(default)]
-    pub catalog: Option<CatalogConfig>,
+    pub catalog: Option<CatalogRef>,
 }
 
 /// Kind-level default extras applied to all datasets in this kind.
@@ -508,7 +505,7 @@ pub struct KindExtras {
     #[serde(default)]
     pub temporal: Option<TemporalConfig>,
     #[serde(default)]
-    pub catalog: Option<CatalogConfig>,
+    pub catalog: Option<CatalogRef>,
     #[serde(default)]
     pub partition_defs: Option<Vec<PartitionDef>>,
 }
@@ -1257,90 +1254,77 @@ pub struct DatasetFilter {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatasetExtras {
     #[serde(default)]
-    pub catalog: Option<CatalogConfig>,
+    pub catalog: Option<CatalogRef>,
     #[serde(default)]
     pub temporal: Option<TemporalConfig>,
     #[serde(default)]
     pub storage: Option<StorageConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CatalogConfig {
-    #[serde(rename = "type")]
-    pub catalog_type: String,
-}
-
-/// Top-level catalog connection configuration.
+/// Reference to a named catalog from `catalogs.yaml`.
 ///
-/// Defines how to connect to a catalog server for glob expansion and schema
-/// introspection. Lives at `semantic_model.catalog` in YAML. Distinct from
-/// `CatalogConfig` which is a per-dataset type hint in `extras.catalog`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CatalogConnectionConfig {
-    /// Catalog provider type (e.g., "iceberg_rest", "unity").
-    #[serde(rename = "type")]
-    pub catalog_type: String,
-    /// Catalog base URL.
-    pub url: String,
-    /// Warehouse identifier.
+/// Supports two YAML forms:
+/// - Shorthand: `catalog: polaris_prod` (alias only)
+/// - Struct: `catalog: { alias: polaris_prod, namespace: tiktok }`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CatalogRef {
+    /// Alias referencing a catalog entry from `catalogs.yaml`.
+    pub alias: String,
+    /// Override the namespace for this entity (optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub warehouse: Option<String>,
-    /// Catalog prefix (for multi-tenant catalogs).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prefix: Option<String>,
-    /// Authentication configuration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth: Option<CatalogAuthConfig>,
+    pub namespace: Option<String>,
 }
 
-/// Authentication method for catalog connections.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "method", rename_all = "snake_case")]
-pub enum CatalogAuthConfig {
-    /// No authentication.
-    None,
-    /// Static bearer token.
-    Bearer {
-        token: String,
-    },
-    /// OAuth2 client credentials flow.
-    Oauth2 {
-        token_url: String,
-        client_id: String,
-        client_secret: String,
-        #[serde(default)]
-        scope: Option<String>,
-    },
-    /// Polaris via AWS Secrets Manager.
-    ///
-    /// Fetches `client_id`/`client_secret` from AWS Secrets Manager,
-    /// then performs OAuth2 against the Polaris token endpoint.
-    Polaris {
-        /// AWS Secrets Manager ARN containing Polaris credentials.
-        secret_arn: String,
-        /// AWS region for Secrets Manager (e.g., "eu-west-1").
-        #[serde(default)]
-        region: Option<String>,
-        /// Polaris realm header value.
-        #[serde(default)]
-        realm: Option<String>,
-        /// OAuth2 scope (defaults to "PRINCIPAL_ROLE:ALL").
-        #[serde(default)]
-        scope: Option<String>,
-        /// AWS SSO profile name (from ~/.aws/config). Omit for default credential chain.
-        #[serde(default)]
-        aws_profile: Option<String>,
-        /// Explicit AWS access key ID (env var ref). Omit for default credential chain.
-        #[serde(default)]
-        aws_access_key_id: Option<String>,
-        /// Explicit AWS secret access key (env var ref). Omit for default credential chain.
-        #[serde(default)]
-        aws_secret_access_key: Option<String>,
-        /// AWS session token for temporary credentials (from STS). Optional.
-        #[serde(default)]
-        aws_session_token: Option<String>,
-    },
+impl<'de> Deserialize<'de> for CatalogRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct CatalogRefVisitor;
+
+        impl<'de> de::Visitor<'de> for CatalogRefVisitor {
+            type Value = CatalogRef;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a catalog alias string or a struct with `alias` and optional `namespace`")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<CatalogRef, E>
+            where
+                E: de::Error,
+            {
+                Ok(CatalogRef {
+                    alias: value.to_string(),
+                    namespace: None,
+                })
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<CatalogRef, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                #[derive(Deserialize)]
+                struct CatalogRefFields {
+                    alias: String,
+                    #[serde(default)]
+                    namespace: Option<String>,
+                }
+                let fields = CatalogRefFields::deserialize(
+                    de::value::MapAccessDeserializer::new(map),
+                )?;
+                Ok(CatalogRef {
+                    alias: fields.alias,
+                    namespace: fields.namespace,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(CatalogRefVisitor)
+    }
 }
+
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TemporalConfig {
@@ -1467,73 +1451,18 @@ pub struct ScdVersionedColumns {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
-    /// Single file/object store path (backward compat).
-    #[serde(default)]
-    pub path: Option<String>,
-    /// Single catalog table reference (backward compat).
-    #[serde(default)]
-    pub table: Option<String>,
-    /// Multiple file/object store paths (may contain globs like "*.parquet").
-    #[serde(default)]
+    /// Data format. Required for paths (parquet/csv/iceberg), omitted for tables (catalog knows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<DataFormat>,
+    /// File/object store paths (local://, s3://). May contain globs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
-    /// Multiple catalog table references (may contain wildcards like "orders_*").
-    #[serde(default)]
+    /// Catalog table references (namespace.table). May contain wildcards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tables: Vec<String>,
-    #[serde(default)]
+    /// Partition definition for metadata dimensions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition_def: Option<PartitionDef>,
-}
-
-/// Resolved storage sources — unified view of paths and tables.
-#[derive(Debug, Clone)]
-pub struct StorageSources {
-    pub paths: Vec<String>,
-    pub tables: Vec<String>,
-}
-
-impl StorageSources {
-    pub fn is_empty(&self) -> bool {
-        self.paths.is_empty() && self.tables.is_empty()
-    }
-
-    pub fn is_mixed(&self) -> bool {
-        !self.paths.is_empty() && !self.tables.is_empty()
-    }
-
-    /// Returns all sources as a flat list (paths first, then tables).
-    pub fn all(&self) -> impl Iterator<Item = &str> {
-        self.paths.iter().map(|s| s.as_str())
-            .chain(self.tables.iter().map(|s| s.as_str()))
-    }
-
-    /// Returns the primary source (first path or first table).
-    pub fn primary(&self) -> Option<&str> {
-        self.paths.first()
-            .or(self.tables.first())
-            .map(|s| s.as_str())
-    }
-}
-
-impl StorageConfig {
-    /// Returns all source references as a unified `StorageSources`.
-    /// Merges singular `path`/`table` into `paths`/`tables` respectively.
-    pub fn all_sources(&self) -> StorageSources {
-        let mut file_paths = self.paths.clone();
-        if let Some(ref p) = self.path {
-            if !file_paths.contains(p) {
-                file_paths.insert(0, p.clone());
-            }
-        }
-        let mut table_refs = self.tables.clone();
-        if let Some(ref t) = self.table {
-            if !table_refs.contains(t) {
-                table_refs.insert(0, t.clone());
-            }
-        }
-        StorageSources {
-            paths: file_paths,
-            tables: table_refs,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

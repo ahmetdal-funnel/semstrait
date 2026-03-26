@@ -2,210 +2,83 @@
 
 use crate::error::PlannerError;
 use crate::expr_lower;
-use super::{extract_metadata_value, partition_dimensions, resolve_column_name, PlanFragment, PlannerContext};
+use super::{extract_metadata_value_binding, partition_dimensions_iface, PlanFragment, PlannerContext};
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::DataType;
 use semstrait_ir::{
     AggNode, Aggregation, AggregateMeasure, Expr, Field, NodeMeta, PlanNode, ProjectNode,
     ScanNode, Schema, UnionNode,
 };
-use semstrait_manifest::{ColumnMappingValue, CompiledKind, CompiledKindDataset, LiteralValue};
+use semstrait_manifest::{DatasetBinding, DatasetKind, KindInterface};
 use std::collections::HashSet;
 
 use super::grainset::collect_column_refs;
 
-/// Build a Scan → Aggregate → Project plan for a single dataset.
-///
-/// This is the common pattern shared by grainset (single-dataset path) and
-/// joinset (single-dataset degenerate case). It:
-/// 1. Maps requested dimensions to physical columns via column_mapping
-/// 2. Lowers measures using parsed Expr trees + filters
-/// 3. Optionally handles metrics (treated as SUM pass-through)
-/// 4. Builds Scan → Aggregate → Project nodes
-///
-/// Set `handle_metrics = true` for grainset (which supports metrics in the
-/// measures list) or `false` for joinset (which does not).
-pub(crate) fn build_dataset_plan(
-    kind: &CompiledKind,
-    request: &ResolvedQueryRequest,
-    dataset: &CompiledKindDataset,
-    _ctx: &PlannerContext<'_>,
-    handle_metrics: bool,
-) -> Result<PlanFragment, PlannerError> {
-    let mapping = &dataset.extras.column_mapping;
-
-    // Collect all physical columns we need to scan (preserving insertion order).
-    let mut scan_columns: Vec<String> = Vec::new();
-    let mut scan_seen: HashSet<String> = HashSet::new();
-
-    // Partition dimensions into metadata (literal injection) and regular (column mapping).
-    let (metadata_dims, regular_dims) = partition_dimensions(&request.dimensions, kind);
-
-    // Map regular dimensions to physical columns or literal values.
-    let mut dim_physical: Vec<(String, String)> = Vec::new();
-    let mut metadata_literals: Vec<(String, Expr)> = Vec::new();
-    for dim_name in &regular_dims {
-        let mv = mapping.get(dim_name).ok_or_else(|| PlannerError::DimensionNotFound {
-            kind: kind.name.clone(),
-            dimension: dim_name.clone(),
-        })?;
-        match mv {
-            ColumnMappingValue::Literal(lit) => {
-                let expr = match lit {
-                    LiteralValue::String(s) => Expr::string(s.clone()),
-                };
-                metadata_literals.push((dim_name.clone(), expr));
-            }
-            _ => {
-                let phys = resolve_column_name(mv).to_string();
-                dim_physical.push((dim_name.clone(), phys.clone()));
-                if scan_seen.insert(phys.clone()) {
-                    scan_columns.push(phys);
-                }
-            }
+/// Resolve scan column type from a DatasetBinding's catalog schema.
+pub(crate) fn resolve_scan_type_binding(physical_col: &str, binding: &DatasetBinding) -> DataType {
+    if let Some(schema) = binding
+        .resolved_sources
+        .first()
+        .and_then(|s| s.schema.as_ref())
+    {
+        if let Some(col) = schema.iter().find(|c| c.name == physical_col) {
+            return col.data_type.clone();
         }
     }
-
-    // Extract metadata dimension values as literals.
-    for (dim_name, meta) in &metadata_dims {
-        let value = extract_metadata_value(meta, dataset).unwrap_or_default();
-        metadata_literals.push((dim_name.clone(), Expr::string(value)));
-    }
-
-    // Lower measures via the parsed Expr tree or declarative agg tag.
-    let mut lowered_measures: Vec<(String, expr_lower::LoweredMeasure)> = Vec::new();
-    for measure_name in &request.measures {
-        if let Some(measure) = kind.measures.get(measure_name) {
-            let lowered = if let Some(agg) = measure.agg {
-                // Declarative aggregation path: agg tag + horizontal expr.
-                expr_lower::lower_measure_declarative(
-                    measure_name,
-                    agg,
-                    &measure.expr,
-                    mapping,
-                    &measure.filters,
-                )?
-            } else {
-                // Legacy path: aggregation embedded in expr.
-                expr_lower::lower_measure_with_filters(
-                    measure_name,
-                    &measure.expr,
-                    mapping,
-                    &measure.filters,
-                )?
-            };
-            for agg in &lowered.aggregates {
-                collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
-            }
-            lowered_measures.push((measure_name.clone(), lowered));
-        } else if handle_metrics && kind.metrics.contains_key(measure_name) {
-            // Metrics are derived — treat as a SUM pass-through column.
-            let physical = mapping
-                .get(measure_name)
-                .map(resolve_column_name)
-                .unwrap_or(measure_name.as_str());
-            let phys = physical.to_string();
-            let lowered = expr_lower::LoweredMeasure {
-                aggregates: vec![AggregateMeasure {
-                    function: Aggregation::Sum,
-                    expr: Expr::column(phys.clone()),
-                    distinct: false,
-                }],
-                post_agg_expr: Expr::column(measure_name.clone()),
-            };
-            if scan_seen.insert(phys.clone()) {
-                scan_columns.push(phys);
-            }
-            lowered_measures.push((measure_name.clone(), lowered));
-        } else {
-            return Err(PlannerError::MeasureNotFound {
-                kind: kind.name.clone(),
-                measure: measure_name.clone(),
-            });
-        }
-    }
-
-    // Build Scan node (multi-source aware).
-    let scan = build_scan_node(dataset, &scan_columns);
-
-    // Build Aggregate node.
-    let group_by: Vec<Expr> = dim_physical
-        .iter()
-        .map(|(_, physical)| Expr::column(physical.clone()))
-        .collect();
-
-    let aggregates: Vec<AggregateMeasure> = lowered_measures
-        .iter()
-        .flat_map(|(_, lowered)| lowered.aggregates.clone())
-        .collect();
-
-    let mut agg_fields: Vec<Field> = dim_physical
-        .iter()
-        .map(|(semantic, _)| Field::new(semantic.clone(), DataType::Utf8))
-        .collect();
-    let mut agg_idx = 0;
-    for (semantic, lowered) in &lowered_measures {
-        for (j, _) in lowered.aggregates.iter().enumerate() {
-            if j == 0 {
-                agg_fields.push(Field::new(semantic.clone(), DataType::Float64));
-            } else {
-                agg_fields.push(Field::new(format!("__agg_{}", agg_idx), DataType::Float64));
-            }
-            agg_idx += 1;
-        }
-    }
-    let agg_schema = Schema::new(agg_fields);
-
-    let agg = PlanNode::Aggregate(AggNode {
-        meta: NodeMeta::new(agg_schema),
-        input: Box::new(scan),
-        group_by,
-        aggregates,
-    });
-
-    // Build Project node — maps physical names back to semantic names.
-    // Regular dimensions come from the aggregate output; metadata dimensions
-    // are injected as literal expressions.
-    let mut project_exprs: Vec<Expr> = Vec::new();
-    let mut project_fields: Vec<Field> = Vec::new();
-
-    for dim_name in &request.dimensions {
-        if let Some((_, lit_expr)) = metadata_literals.iter().find(|(n, _)| n == dim_name) {
-            project_exprs.push(lit_expr.clone());
-        } else {
-            project_exprs.push(Expr::column(dim_name.clone()));
-        }
-        project_fields.push(Field::new(dim_name.clone(), DataType::Utf8));
-    }
-    for (_, lowered) in &lowered_measures {
-        project_exprs.push(lowered.post_agg_expr.clone());
-    }
-    project_fields.extend(
-        lowered_measures
-            .iter()
-            .map(|(name, _)| Field::new(name.clone(), DataType::Float64)),
-    );
-    let project_schema = Schema::new(project_fields);
-
-    let project = PlanNode::Project(ProjectNode {
-        meta: NodeMeta::new(project_schema.clone()),
-        input: Box::new(agg),
-        expressions: project_exprs,
-    });
-
-    Ok(PlanFragment {
-        root: project,
-        output_schema: project_schema,
-        pending_filters: Vec::new(),
-    })
+    DataType::Utf8
 }
 
-/// Infer the top-level re-aggregation function for a measure after UNION ALL.
-///
-/// For most measures this is SUM (re-summing partial sums/counts).
-/// MIN/MAX are preserved. COUNT_DISTINCT and AVG re-aggregated as SUM (lossy, v1).
-pub(crate) fn infer_aggregation(kind: &CompiledKind, measure_name: &str) -> Aggregation {
-    if let Some(measure) = kind.measures.get(measure_name) {
+/// Build a scan node for a DatasetBinding (multi-source aware).
+pub(crate) fn build_scan_node_binding(
+    binding: &DatasetBinding,
+    scan_columns: &[String],
+) -> PlanNode {
+    let scan_schema = Schema::new(
+        scan_columns
+            .iter()
+            .map(|c| Field::new(c.clone(), resolve_scan_type_binding(c, binding)))
+            .collect(),
+    );
+
+    if binding.resolved_sources.len() <= 1 {
+        let first_source = binding.resolved_sources.first();
+        let table_name = first_source
+            .and_then(|s| s.table_fqn.as_deref())
+            .or_else(|| first_source.map(|s| s.reference.as_str()))
+            .unwrap_or(&binding.dataset_name);
+        PlanNode::Scan(ScanNode {
+            meta: NodeMeta::new(scan_schema),
+            table_name: table_name.to_string(),
+            location: first_source.and_then(|s| s.location.clone()),
+            format: first_source.and_then(|s| s.format),
+            projection: scan_columns.to_vec(),
+        })
+    } else {
+        let inputs: Vec<PlanNode> = binding.resolved_sources
+            .iter()
+            .map(|source| {
+                let table_name = source.table_fqn.as_deref()
+                    .unwrap_or(&source.reference);
+                PlanNode::Scan(ScanNode {
+                    meta: NodeMeta::new(scan_schema.clone()),
+                    table_name: table_name.to_string(),
+                    location: source.location.clone(),
+                    format: source.format,
+                    projection: scan_columns.to_vec(),
+                })
+            })
+            .collect();
+        PlanNode::Union(UnionNode {
+            meta: NodeMeta::new(scan_schema),
+            inputs,
+            distinct: false,
+        })
+    }
+}
+
+/// Infer re-aggregation function from a KindInterface measure.
+pub(crate) fn infer_aggregation_iface(iface: &KindInterface, measure_name: &str) -> Aggregation {
+    if let Some(measure) = iface.measures.get(measure_name) {
         if let Some(agg) = measure.agg {
             return match agg {
                 Aggregation::Min => Aggregation::Min,
@@ -223,45 +96,372 @@ pub(crate) fn infer_aggregation(kind: &CompiledKind, measure_name: &str) -> Aggr
     Aggregation::Sum
 }
 
-/// Build a scan node for a dataset, handling multi-source datasets.
+/// Build Scan → Aggregate → Project plan for a DatasetKind (single-dataset fast path).
 ///
-/// If the dataset has multiple `resolved_sources`, builds a UNION ALL of
-/// individual ScanNodes. If only one source, builds a single ScanNode.
-pub(crate) fn build_scan_node(
-    dataset: &CompiledKindDataset,
-    scan_columns: &[String],
-) -> PlanNode {
-    let scan_schema = Schema::new(
-        scan_columns
-            .iter()
-            .map(|c| Field::new(c.clone(), DataType::Utf8))
-            .collect(),
-    );
+/// Uses `KindInterface` for type resolution and `DatasetBinding` for column mapping.
+pub(crate) fn build_dataset_kind_plan(
+    dk: &DatasetKind,
+    request: &ResolvedQueryRequest,
+    _ctx: &PlannerContext<'_>,
+) -> Result<PlanFragment, PlannerError> {
+    let iface = &dk.interface;
+    let binding = &dk.binding;
+    let mapping = &binding.column_mapping;
 
-    if dataset.resolved_sources.len() <= 1 {
-        let table_name = dataset.resolved_sources.first()
-            .map(|s| s.reference.as_str())
-            .unwrap_or(&dataset.name);
-        PlanNode::Scan(ScanNode {
-            meta: NodeMeta::new(scan_schema),
-            table_name: table_name.to_string(),
-            projection: scan_columns.to_vec(),
-        })
-    } else {
-        let inputs: Vec<PlanNode> = dataset.resolved_sources
-            .iter()
-            .map(|source| {
-                PlanNode::Scan(ScanNode {
-                    meta: NodeMeta::new(scan_schema.clone()),
-                    table_name: source.reference.clone(),
-                    projection: scan_columns.to_vec(),
-                })
-            })
-            .collect();
-        PlanNode::Union(UnionNode {
-            meta: NodeMeta::new(scan_schema),
-            inputs,
-            distinct: false,
-        })
+    let mut scan_columns: Vec<String> = Vec::new();
+    let mut scan_seen: HashSet<String> = HashSet::new();
+
+    // Partition dimensions into metadata and regular.
+    let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
+
+    let mut dim_physical: Vec<(String, String)> = Vec::new();
+    let mut metadata_literals: Vec<(String, Expr)> = Vec::new();
+
+    for dim_name in &regular_dims {
+        if let Some(lit_val) = mapping.literals.get(dim_name) {
+            metadata_literals.push((dim_name.clone(), Expr::string(lit_val.clone())));
+        } else if let Some(phys) = mapping.physical.get(dim_name) {
+            dim_physical.push((dim_name.clone(), phys.clone()));
+            if scan_seen.insert(phys.clone()) {
+                scan_columns.push(phys.clone());
+            }
+        } else {
+            return Err(PlannerError::DimensionNotFound {
+                kind: iface.name.clone(),
+                dimension: dim_name.clone(),
+            });
+        }
     }
+
+    // Extract metadata dimension values as literals.
+    for (dim_name, meta) in &metadata_dims {
+        let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
+        metadata_literals.push((dim_name.clone(), Expr::string(value)));
+    }
+
+    // Lower measures via physical mapping.
+    let mut lowered_measures: Vec<(String, expr_lower::LoweredMeasure)> = Vec::new();
+    for measure_name in &request.measures {
+        if let Some(measure) = iface.measures.get(measure_name) {
+            let lowered = if let Some(agg) = measure.agg {
+                expr_lower::lower_measure_declarative_physical(
+                    measure_name,
+                    agg,
+                    &measure.expr,
+                    &mapping.physical,
+                    &measure.filters,
+                )?
+            } else {
+                expr_lower::lower_measure_with_filters_physical(
+                    measure_name,
+                    &measure.expr,
+                    &mapping.physical,
+                    &measure.filters,
+                )?
+            };
+            for agg in &lowered.aggregates {
+                collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
+            }
+            lowered_measures.push((measure_name.clone(), lowered));
+        } else if iface.metrics.contains_key(measure_name) {
+            let phys = mapping
+                .physical
+                .get(measure_name)
+                .map(|s| s.as_str())
+                .unwrap_or(measure_name.as_str());
+            let lowered = expr_lower::LoweredMeasure {
+                aggregates: vec![AggregateMeasure {
+                    function: Aggregation::Sum,
+                    expr: Expr::column(phys),
+                    distinct: false,
+                }],
+                post_agg_expr: Expr::column(measure_name.clone()),
+            };
+            if scan_seen.insert(phys.to_string()) {
+                scan_columns.push(phys.to_string());
+            }
+            lowered_measures.push((measure_name.clone(), lowered));
+        } else {
+            return Err(PlannerError::MeasureNotFound {
+                kind: iface.name.clone(),
+                measure: measure_name.clone(),
+            });
+        }
+    }
+
+    // Build Scan node.
+    let scan = build_scan_node_binding(binding, &scan_columns);
+
+    // Build Aggregate node.
+    let group_by: Vec<Expr> = dim_physical
+        .iter()
+        .map(|(_, physical)| Expr::column(physical.clone()))
+        .collect();
+
+    let aggregates: Vec<AggregateMeasure> = lowered_measures
+        .iter()
+        .flat_map(|(_, lowered)| lowered.aggregates.clone())
+        .collect();
+
+    let mut agg_fields: Vec<Field> = dim_physical
+        .iter()
+        .map(|(semantic, _)| Field::new(semantic.clone(), iface.resolve_dim_type(semantic)))
+        .collect();
+    let mut agg_idx = 0;
+    for (semantic, lowered) in &lowered_measures {
+        for (j, _) in lowered.aggregates.iter().enumerate() {
+            if j == 0 {
+                agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
+            } else {
+                agg_fields.push(Field::new(format!("__agg_{}", agg_idx), DataType::Float64));
+            }
+            agg_idx += 1;
+        }
+    }
+    let agg_schema = Schema::new(agg_fields);
+
+    let agg = PlanNode::Aggregate(AggNode {
+        meta: NodeMeta::new(agg_schema),
+        input: Box::new(scan),
+        group_by,
+        aggregates,
+    });
+
+    // Build Project node.
+    let mut project_exprs: Vec<Expr> = Vec::new();
+    let mut project_fields: Vec<Field> = Vec::new();
+
+    for dim_name in &request.dimensions {
+        if let Some((_, lit_expr)) = metadata_literals.iter().find(|(n, _)| n == dim_name) {
+            project_exprs.push(lit_expr.clone());
+        } else {
+            project_exprs.push(Expr::column(dim_name.clone()));
+        }
+        project_fields.push(Field::new(dim_name.clone(), iface.resolve_dim_type(dim_name)));
+    }
+    for (_, lowered) in &lowered_measures {
+        project_exprs.push(lowered.post_agg_expr.clone());
+    }
+    project_fields.extend(
+        lowered_measures
+            .iter()
+            .map(|(name, _)| Field::new(name.clone(), iface.resolve_measure_type(name))),
+    );
+    let project_schema = Schema::new(project_fields);
+
+    let project = PlanNode::Project(ProjectNode {
+        meta: NodeMeta::new(project_schema.clone()),
+        input: Box::new(agg),
+        expressions: project_exprs,
+    });
+
+    Ok(PlanFragment {
+        root: project,
+        output_schema: project_schema,
+        pending_filters: Vec::new(),
+    })
+}
+
+/// Build Scan → Aggregate → Project plan for a single DatasetBinding.
+///
+/// This is the per-binding plan builder used by ALL kind planners (grainset,
+/// unionset, joinset). It takes `&KindInterface` for type resolution and
+/// `&DatasetBinding` for column mapping, replacing the v1 `build_dataset_plan`.
+pub(crate) fn build_binding_plan(
+    iface: &KindInterface,
+    binding: &DatasetBinding,
+    request: &ResolvedQueryRequest,
+    _ctx: &PlannerContext<'_>,
+    handle_metrics: bool,
+) -> Result<PlanFragment, PlannerError> {
+    let mapping = &binding.column_mapping;
+
+    let mut scan_columns: Vec<String> = Vec::new();
+    let mut scan_seen: HashSet<String> = HashSet::new();
+
+    // Partition dimensions into metadata and regular.
+    let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
+
+    let mut dim_physical: Vec<(String, String)> = Vec::new();
+    let mut metadata_literals: Vec<(String, Expr)> = Vec::new();
+
+    for dim_name in &regular_dims {
+        if let Some(lit_val) = mapping.literals.get(dim_name) {
+            metadata_literals.push((dim_name.clone(), Expr::string(lit_val.clone())));
+        } else if let Some(phys) = mapping.physical.get(dim_name) {
+            dim_physical.push((dim_name.clone(), phys.clone()));
+            if scan_seen.insert(phys.clone()) {
+                scan_columns.push(phys.clone());
+            }
+        } else {
+            return Err(PlannerError::DimensionNotFound {
+                kind: iface.name.clone(),
+                dimension: dim_name.clone(),
+            });
+        }
+    }
+
+    // Extract metadata dimension values as literals.
+    for (dim_name, meta) in &metadata_dims {
+        let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
+        metadata_literals.push((dim_name.clone(), Expr::string(value)));
+    }
+
+    // Lower measures via physical mapping.
+    let mut lowered_measures: Vec<(String, expr_lower::LoweredMeasure)> = Vec::new();
+    for measure_name in &request.measures {
+        if let Some(measure) = iface.measures.get(measure_name) {
+            let lowered = if let Some(agg) = measure.agg {
+                expr_lower::lower_measure_declarative_physical(
+                    measure_name,
+                    agg,
+                    &measure.expr,
+                    &mapping.physical,
+                    &measure.filters,
+                )?
+            } else {
+                expr_lower::lower_measure_with_filters_physical(
+                    measure_name,
+                    &measure.expr,
+                    &mapping.physical,
+                    &measure.filters,
+                )?
+            };
+            for agg in &lowered.aggregates {
+                collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
+            }
+            lowered_measures.push((measure_name.clone(), lowered));
+        } else if handle_metrics {
+            if let Some(metric) = iface.metrics.get(measure_name) {
+                // Decompose metric into constituent measure aggregates.
+                let lowered = expr_lower::lower_metric_iface(
+                    measure_name,
+                    metric,
+                    iface,
+                    binding,
+                    5, // max decomposition depth
+                )?;
+                for agg in &lowered.aggregates {
+                    collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
+                }
+                lowered_measures.push((measure_name.clone(), lowered));
+            } else {
+                return Err(PlannerError::MeasureNotFound {
+                    kind: iface.name.clone(),
+                    measure: measure_name.clone(),
+                });
+            }
+        } else {
+            return Err(PlannerError::MeasureNotFound {
+                kind: iface.name.clone(),
+                measure: measure_name.clone(),
+            });
+        }
+    }
+
+    // Build Scan node.
+    let scan = build_scan_node_binding(binding, &scan_columns);
+
+    // Build Aggregate node.
+    let group_by: Vec<Expr> = dim_physical
+        .iter()
+        .map(|(_, physical)| Expr::column(physical.clone()))
+        .collect();
+
+    let aggregates: Vec<AggregateMeasure> = lowered_measures
+        .iter()
+        .flat_map(|(_, lowered)| lowered.aggregates.clone())
+        .collect();
+
+    let mut agg_fields: Vec<Field> = dim_physical
+        .iter()
+        .map(|(semantic, _)| Field::new(semantic.clone(), iface.resolve_dim_type(semantic)))
+        .collect();
+    let mut agg_idx = 0;
+    for (semantic, lowered) in &lowered_measures {
+        for (j, _) in lowered.aggregates.iter().enumerate() {
+            if j == 0 {
+                agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
+            } else {
+                agg_fields.push(Field::new(format!("__agg_{}", agg_idx), DataType::Float64));
+            }
+            agg_idx += 1;
+        }
+    }
+    let agg_schema = Schema::new(agg_fields);
+
+    let agg = PlanNode::Aggregate(AggNode {
+        meta: NodeMeta::new(agg_schema),
+        input: Box::new(scan),
+        group_by,
+        aggregates,
+    });
+
+    // Build Project node.
+    let mut project_exprs: Vec<Expr> = Vec::new();
+    let mut project_fields: Vec<Field> = Vec::new();
+
+    for dim_name in &request.dimensions {
+        if let Some((_, lit_expr)) = metadata_literals.iter().find(|(n, _)| n == dim_name) {
+            project_exprs.push(lit_expr.clone());
+        } else {
+            project_exprs.push(Expr::column(dim_name.clone()));
+        }
+        project_fields.push(Field::new(dim_name.clone(), iface.resolve_dim_type(dim_name)));
+    }
+    for (_, lowered) in &lowered_measures {
+        project_exprs.push(lowered.post_agg_expr.clone());
+    }
+    project_fields.extend(
+        lowered_measures
+            .iter()
+            .map(|(name, _)| Field::new(name.clone(), iface.resolve_measure_type(name))),
+    );
+    let project_schema = Schema::new(project_fields);
+
+    let project = PlanNode::Project(ProjectNode {
+        meta: NodeMeta::new(project_schema.clone()),
+        input: Box::new(agg),
+        expressions: project_exprs,
+    });
+
+    Ok(PlanFragment {
+        root: project,
+        output_schema: project_schema,
+        pending_filters: Vec::new(),
+    })
+}
+
+/// Validate that all UNION branches produce the same types.
+///
+/// Errors on type mismatch rather than falling back to a default type.
+/// This ensures type consistency is enforced at plan time.
+pub(crate) fn validate_union_types(branches: &[PlanNode]) -> Result<(), PlannerError> {
+    if branches.len() <= 1 {
+        return Ok(());
+    }
+    let expected = &branches[0].meta().output_schema.fields;
+    for (i, branch) in branches[1..].iter().enumerate() {
+        let actual = &branch.meta().output_schema.fields;
+        if actual.len() != expected.len() {
+            return Err(PlannerError::Internal(format!(
+                "UNION branch {}: field count mismatch ({} vs {})",
+                i + 1,
+                actual.len(),
+                expected.len()
+            )));
+        }
+        for (exp, act) in expected.iter().zip(actual.iter()) {
+            if exp.data_type != act.data_type {
+                return Err(PlannerError::Internal(format!(
+                    "UNION branch {}, column '{}': type mismatch ({:?} vs {:?})",
+                    i + 1,
+                    exp.name,
+                    exp.data_type,
+                    act.data_type
+                )));
+            }
+        }
+    }
+    Ok(())
 }

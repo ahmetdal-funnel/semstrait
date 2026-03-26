@@ -42,4 +42,5 @@ semantic_model:
               region: region_name
               revenue: amount
             storage:
-              path: warehouse.orders_daily
+              paths:
+                - warehouse.orders_daily

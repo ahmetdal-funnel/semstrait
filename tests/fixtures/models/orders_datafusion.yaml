@@ -18,4 +18,6 @@ semantic_model:
               region: region
               revenue: amount
             storage:
-              path: orders_data
+              format: parquet
+              paths:
+                - orders_data

@@ -188,6 +188,8 @@ impl SubstraitSerializer {
         Ok(PlanNode::Scan(ScanNode {
             meta,
             table_name,
+            location: None,
+            format: None,
             projection,
         }))
     }
@@ -894,6 +896,8 @@ mod tests {
         let scan = ScanNode {
             meta: NodeMeta::new(schema),
             table_name: "orders".to_string(),
+            location: None,
+            format: None,
             projection: vec!["id".to_string(), "amount".to_string()],
         };
 
@@ -915,6 +919,8 @@ mod tests {
         let scan = ScanNode {
             meta: NodeMeta::new(schema.clone()),
             table_name: "orders".to_string(),
+            location: None,
+            format: None,
             projection: vec!["amount".to_string()],
         };
 
@@ -943,6 +949,8 @@ mod tests {
         PlanNode::Scan(ScanNode {
             meta: NodeMeta::new(schema),
             table_name: table.to_string(),
+            location: None,
+            format: None,
             projection: vec!["id".to_string(), "amount".to_string()],
         })
     }

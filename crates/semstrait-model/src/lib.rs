@@ -26,7 +26,9 @@
 mod error;
 mod parse;
 mod types;
+pub mod catalogs;
 
 pub use error::ModelError;
 pub use parse::{parse, resolve_refs};
 pub use types::*;
+pub use catalogs::{CatalogsConfig, CatalogEntry, CatalogAuthMethod, SecretKeyMapping, parse_catalogs};

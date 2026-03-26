@@ -34,7 +34,8 @@ semantic_model:
               event_type: action
               event_count: click_id
             storage:
-              path: warehouse.click_events
+              paths:
+                - warehouse.click_events
         - name: purchase_events
           extras:
             column_mapping:
@@ -43,4 +44,5 @@ semantic_model:
               event_count: purchase_id
               revenue: amount
             storage:
-              path: warehouse.purchase_events
+              paths:
+                - warehouse.purchase_events

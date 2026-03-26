@@ -22,7 +22,7 @@ tracing = { workspace = true }
 [features]
 default = []
 iceberg = ["semstrait-catalog/iceberg"]
-aws-secrets = ["semstrait-catalog/aws-secrets", "iceberg"]
+aws = ["semstrait-catalog/aws", "iceberg"]
 
 [dev-dependencies]
 tokio = { workspace = true }

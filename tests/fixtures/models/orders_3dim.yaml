@@ -31,4 +31,6 @@ semantic_model:
               customer: customer_name
               revenue: amount
             storage:
-              path: public.orders_daily
+              format: parquet
+              paths:
+                - public.orders_daily

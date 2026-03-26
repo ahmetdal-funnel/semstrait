@@ -38,4 +38,5 @@ semantic_model:
               amount: amount
               order_count: order_id
             storage:
-              path: warehouse.orders
+              paths:
+                - warehouse.orders

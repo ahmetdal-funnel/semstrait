@@ -33,7 +33,16 @@
 
 pub mod error;
 pub mod null_provider;
+pub mod null_storage;
+pub mod registry;
+pub mod storage;
 pub mod types;
+
+#[cfg(feature = "local")]
+pub mod local_storage;
+
+#[cfg(feature = "aws")]
+pub mod s3_storage;
 
 #[cfg(feature = "iceberg")]
 pub mod iceberg;
@@ -41,7 +50,7 @@ pub mod iceberg;
 #[cfg(feature = "unity")]
 pub mod unity;
 
-#[cfg(feature = "aws-secrets")]
+#[cfg(feature = "aws")]
 pub mod secrets;
 
 use async_trait::async_trait;
@@ -50,7 +59,16 @@ use semstrait_core::GlobPattern;
 // Re-export key types for convenience.
 pub use error::CatalogError;
 pub use null_provider::NullCatalogProvider;
+pub use null_storage::NullStorageProvider;
+pub use registry::CatalogRegistry;
+pub use storage::StorageProvider;
 pub use types::{CatalogColumn, CatalogPartitionField, TableMetadataResponse, TableRef};
+
+#[cfg(feature = "local")]
+pub use local_storage::LocalStorageProvider;
+
+#[cfg(feature = "aws")]
+pub use s3_storage::S3StorageProvider;
 
 #[cfg(feature = "iceberg")]
 pub use iceberg::IcebergRestCatalog;

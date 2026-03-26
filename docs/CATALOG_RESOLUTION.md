@@ -1,6 +1,6 @@
 # Catalog Resolution — Design Document
 
-**Version:** 1.0 | **Scope:** DataFusion + Iceberg REST (via Polaris)
+**Version:** 2.0 | **Scope:** DataFusion + Iceberg REST (via Polaris)
 
 ---
 
@@ -25,29 +25,25 @@ Catalog resolution at compile time produces **authoritative physical bindings** 
 ```
 YAML Model
     |
-[1-8] Parse, validate, compile expressions
+[1] Parse, [2] Resolve refs
     |
     v
---- Catalog Resolution (best-effort, steps 10-13) ---
+--- Source Resolution (step 3, requires providers for wildcards) ---
     |
-[10] Resolve table references
-    |  CatalogProvider.load_table_metadata() per table source
-    |  Captures: columns, partition specs, snapshot ID, location
-    |
-[11] Validate column schemas
-    |  column_mapping keys checked against physical schema
-    |  Emit CompileWarning for mismatches (not errors)
-    |
-[12] Map partition transforms → TemporalGrain
-    |  Iceberg: year→Year, month→Month, day→Day, hour→Hour
-    |  Auto-infer native_grain when not declared in YAML
-    |
-[13] Pin catalog snapshot
-    |  Capture snapshot_id + metadata per table
-    |  Assemble CatalogSnapshot attached to manifest
+[3] resolve_sources
+    |  For storage.paths: expand globs via StorageProvider, read schema (best-effort)
+    |  For storage.tables: lookup CatalogRegistry → CatalogProvider
+    |    → list_tables() for wildcards, load_table_metadata() for metadata
+    |    → Captures: columns, partition specs, snapshot ID, location, format
+    |  Wildcard patterns without providers → CompileError
+    |  Builds CatalogSnapshot during resolution
+    |  Returns SourceResolutionResult consumed by emit()
     |
     v
-[14-21] Build acceleration structures, emit manifest
+[4-8] Validate, compile expressions
+    |
+    v
+[9] Emit CompiledManifest (with CatalogSnapshot + ResolvedSources)
 ```
 
 ### Graceful Degradation
@@ -86,6 +82,26 @@ pub trait CatalogProvider: Send + Sync {
 
 The default `Ok(None)` means existing catalog implementations (Unity, NullCatalog) work unchanged. Only `IcebergRestCatalog` overrides this in v1.
 
+### StorageProvider Trait
+
+```rust
+#[async_trait]
+pub trait StorageProvider: Send + Sync {
+    async fn expand_glob(&self, pattern: &str) -> Result<Vec<String>, CatalogError>;
+    async fn read_schema(&self, path: &str, format: DataFormat) -> Result<Option<Vec<CatalogColumn>>, CatalogError>;
+}
+```
+
+### CatalogRegistry
+
+Named catalog provider map built from `catalogs.yaml`. Supports multiple catalogs of the same provider type (e.g., `polaris_prod` and `polaris_dev`).
+
+```rust
+pub struct CatalogRegistry {
+    providers: HashMap<String, Arc<dyn CatalogProvider>>,
+}
+```
+
 ### TableMetadataResponse
 
 ```rust
@@ -95,6 +111,7 @@ pub struct TableMetadataResponse {
     pub snapshot_id: Option<i64>,
     pub format_version: Option<u32>,
     pub location: Option<String>,
+    pub format: Option<DataFormat>,
     pub properties: HashMap<String, String>,
 }
 
@@ -172,7 +189,7 @@ pub struct ResolvedColumn {
 }
 
 pub struct IcebergMetadata {
-    pub snapshot_id: i64,
+    pub snapshot_id: Option<i64>,
     pub partition_spec: Vec<PartitionField>,
     pub format_version: Option<u32>,
     pub location: Option<String>,
@@ -209,6 +226,10 @@ All types implement `Serialize + Deserialize` for JSON persistence.
 pub struct ResolvedSource {
     pub reference: String,
     pub source_type: SourceType,
+    pub location: Option<String>,
+    pub format: Option<DataFormat>,
+    pub catalog_alias: Option<String>,
+    pub schema: Option<Vec<ResolvedColumn>>,
 }
 
 pub enum SourceType {

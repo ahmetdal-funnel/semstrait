@@ -26,20 +26,6 @@
 semantic_model:
   name: alpinestars_paid_media
 
-  # ─── Catalog connection ────────────────────────────────────────────────────
-  catalog:
-    type: iceberg_rest
-    url: https://polaris.odp.test.funnel.io/api/catalog
-    warehouse: fs1henp3k8p1hqo
-    auth:
-      method: polaris
-      secret_arn: arn:aws:secretsmanager:eu-west-1:457099346868:secret:funnel/dev/polaris-credentials-DB5OAj
-      region: eu-west-1
-      scope: "PRINCIPAL_ROLE:ALL"
-      aws_access_key_id: ""
-      aws_secret_access_key: ""
-      aws_session_token: ""
-
   # ─── Shared dimensions ───────────────────────────────────────────────────
   dimensions:
     - name: date
@@ -144,7 +130,7 @@ semantic_model:
   # ═══════════════════════════════════════════════════════════════════════════
   # Kind: Paid Media Campaign Performance
   # ═══════════════════════════════════════════════════════════════════════════
-  grainsets:
+  unionsets:
     - name: paid_media_campaign_performance
       description: "Cross-platform paid media performance unified across Google Ads, Bing Ads, Facebook/Meta, and TikTok"
       ai_context: "Use for cross-channel paid media analysis. Filter by platform or campaign_category (search/social). Hierarchy: campaign > adgroup > ad. Facebook 'adset' = TikTok 'adgroup'."
@@ -163,20 +149,20 @@ semantic_model:
       dimensions:
         # ── 1. Metadata & classification ─────────────────────────────────
         - name: platform
-          description: "Ad platform identifier extracted from storage path"
+          description: "Ad platform identifier extracted from resolved S3 location path"
           data_type: string
           type:
             metadata:
               path:
-                token: 1
+                token: 5
 
         - name: funnel_account_id
-          description: "Funnel export account UUID extracted from storage path"
+          description: "Funnel export account UUID extracted from resolved S3 location path"
           data_type: string
           type:
             metadata:
               path:
-                token: 2
+                token: 6
 
         - name: campaign_category
           description: "High-level category: search (Google/Bing) or social (Facebook/TikTok)"
@@ -637,18 +623,15 @@ semantic_model:
       # ── Datasets ──────────────────────────────────────────────────────────
       datasets:
         # ── Google Ads ───────────────────────────────────────────────────
-        # 6 accounts, explicit paths (shared adwords/ prefix with keyword_clicks — cannot glob)
+        # 6 accounts under adwords namespace (shared prefix with keyword_clicks —
+        # glob selects all; filter specific tables if needed in production)
         - name: adwords_campaign_data
           description: "Google Ads campaign performance + conversion breakdown"
           extras:
+            catalog: polaris
             storage:
-              paths:
-                - "fs1henp3k8p1hqo/adwords/31952b77-699e-45ed-8982-5ef91d4bb613/"
-                - "fs1henp3k8p1hqo/adwords/71f37169-bfc8-449a-80be-e1ec82633fc3/"
-                - "fs1henp3k8p1hqo/adwords/e13fbc92-cb8b-499c-9011-b5e0ae72b5f4/"
-                - "fs1henp3k8p1hqo/adwords/e329a345-294b-4dff-81e3-8b1cf3a4f887/"
-                - "fs1henp3k8p1hqo/adwords/29ec81d6-caa9-4aa5-a737-f6a951f39496/"
-                - "fs1henp3k8p1hqo/adwords/317f0b1b-2c44-4e35-902e-3d3af8195aec/"
+              tables:
+                - "adwords.*"
             column_mapping:
               # metadata & classification
               campaign_category:
@@ -702,13 +685,14 @@ semantic_model:
               target_roas_numeric: "adwords-target_roas_campaign:funnel-numeric"
 
         # ── Bing Ads ─────────────────────────────────────────────────────
-        # 6 accounts, glob safe (all bing/ paths are campaign perf)
+        # 6 accounts, glob safe (all bing tables are campaign perf)
         - name: bing_campaign_data
           description: "Bing/Microsoft Ads campaign performance (CampaignPerformanceReport)"
           extras:
+            catalog: polaris
             storage:
-              paths:
-                - "fs1henp3k8p1hqo/bing/*/"
+              tables:
+                - "bing.*"
             column_mapping:
               # metadata & classification
               campaign_category:
@@ -767,9 +751,10 @@ semantic_model:
         - name: facebook_adset_data
           description: "Meta Ads adset-level Insights with action breakdowns"
           extras:
+            catalog: polaris
             storage:
-              paths:
-                - "fs1henp3k8p1hqo/facebookads/*/"
+              tables:
+                - "facebookads.*"
             column_mapping:
               # metadata & classification
               campaign_category:
@@ -821,9 +806,10 @@ semantic_model:
         - name: tiktok_ad_data
           description: "TikTok Ads performance with video engagement metrics"
           extras:
+            catalog: polaris
             storage:
-              paths:
-                - "fs1henp3k8p1hqo/tiktok/*/"
+              tables:
+                - "tiktok.*"
             column_mapping:
               # metadata & classification
               campaign_category:

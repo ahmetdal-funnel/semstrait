@@ -1071,32 +1071,25 @@ definitions:
     type: object
     additionalProperties: false
     description: >
-      Physical storage location. Supports singular (path/table) or plural (paths/tables)
-      references. Paths and tables are mutually exclusive — cannot mix file and catalog
-      sources in the same dataset. Multiple sources imply UNION ALL semantics.
+      Physical storage location. Paths and tables are mutually exclusive — cannot mix
+      file and catalog sources in the same dataset. Multiple sources imply UNION ALL semantics.
     properties:
-      path:
+      format:
         type: string
-        minLength: 1
-        description: Single file or object store path (backward compat).
-        x-examples: [warehouse.orders, lakehouse.marketing.events]
-      table:
-        type: string
-        minLength: 1
-        description: Single catalog table reference (backward compat).
-        x-examples: [schema_name.orders_monthly, main.public.events]
+        enum: [iceberg, parquet, csv]
+        description: >
+          Data format. Required for paths (parquet/csv/iceberg), omitted for tables
+          (catalog determines format).
       paths:
         type: array
         items: { type: string, minLength: 1 }
-        description: Multiple file/object store paths. May contain glob patterns.
-        x-examples: [["s3://bucket/orders_*.parquet", "s3://bucket/archive/orders_*.parquet"]]
-        x-since: v1.3
+        description: File/object store paths (local://, s3://). May contain glob patterns.
+        x-examples: [["s3://bucket/orders_*.parquet", "local://data/events.csv"]]
       tables:
         type: array
         items: { type: string, minLength: 1 }
-        description: Multiple catalog table references. May contain wildcards.
-        x-examples: [["catalog.schema.orders_*"]]
-        x-since: v1.3
+        description: Catalog table references (namespace.table). May contain wildcards.
+        x-examples: [["tiktok.campaign_data", "tiktok.adgroup_*"]]
       partition_def:
         $ref: "#/definitions/PartitionDef"
 

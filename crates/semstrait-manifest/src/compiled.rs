@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use semstrait_core::expr::Aggregation;
-use semstrait_core::Expr;
+use semstrait_core::{DataType, Expr};
 use semstrait_model::{
     AdditivityType, Cardinality, ColumnMapping, ColumnMappingValue, DimensionType,
     JoinAssociativity, JoinColumnPair, JoinType, Keys, KindDatasetExtras, KindTypeSpec,
@@ -181,7 +181,7 @@ pub struct CompiledDimension {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub data_type: String,
+    pub data_type: DataType,
     pub dim_type: DimensionType,
 }
 
@@ -195,7 +195,7 @@ pub struct CompiledMeasure {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub data_type: String,
+    pub data_type: DataType,
     /// Declarative aggregation function. Present when the measure uses the
     /// declarative `agg:` tag. When absent, aggregation is embedded in `expr`
     /// (legacy format) and extracted during planning.
@@ -225,7 +225,7 @@ pub struct CompiledMetric {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub data_type: String,
+    pub data_type: DataType,
     /// Declarative aggregation for two-stage metric computation.
     /// When present, the metric creates a two-stage plan (inner + outer
     /// aggregation). When absent, the metric is a pure derived expression.
@@ -315,12 +315,17 @@ impl CompiledManifest {
         self.datasets.get(name)
     }
 
-    /// Resolve a data kind by name (v2 API).
+    /// Resolve a queryable entity by name from the `data_kinds` map.
     ///
-    /// Checks `data_kinds` first. Returns `None` if not found.
+    /// This is the primary resolution method. Returns `None` if not found.
     /// Does NOT auto-wrap datasets (that is pre-computed during compilation).
-    pub fn resolve_data_kind(&self, name: &str) -> Option<&crate::acceleration::DataKind> {
+    pub fn resolve(&self, name: &str) -> Option<&crate::acceleration::DataKind> {
         self.data_kinds.get(name)
+    }
+
+    /// Resolve a data kind by name (v2 API). Alias for `resolve()`.
+    pub fn resolve_data_kind(&self, name: &str) -> Option<&crate::acceleration::DataKind> {
+        self.resolve(name)
     }
 
     /// Resolve a query entity by name: checks kinds first, then datasets.

@@ -56,7 +56,8 @@ semantic_model:
       ai_context: "Use for Klaviyo campaign send metrics — recipients, opens, clicks, unsubscribes per campaign. Rates are pre-computed fractions [0.0-1.0], non-additive across campaigns. send_channel values: email, sms, push-notification, whatsapp. Note: opens2/clicks2 in source data are legacy CSV export names for opens/clicks."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/klaviyo/7ed22788-866f-4f83-b1f0-6b5e35311f9d/"
+          paths:
+            - "fs1henp3k8p1hqo/klaviyo/7ed22788-866f-4f83-b1f0-6b5e35311f9d/"
         column_mapping:
           date: date
           campaign_id: klaviyo-campaign_id
@@ -169,7 +170,8 @@ semantic_model:
       ai_context: "Use for Klaviyo flow (automation) performance — delivered emails, opens, clicks, bounces, spam reports, and attributed conversions (placed orders, checkouts, product views). Rates are pre-computed fractions [0.0-1.0], non-additive. Event metrics (placed_order, checkout_started, etc.) are Klaviyo tracked events attributed to the flow, not reporting statistics."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/klaviyo/bd7df896-f98f-4fba-b4c2-53efd61c53c1/"
+          paths:
+            - "fs1henp3k8p1hqo/klaviyo/bd7df896-f98f-4fba-b4c2-53efd61c53c1/"
         column_mapping:
           date: date
           currency: currency

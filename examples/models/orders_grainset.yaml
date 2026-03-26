@@ -50,7 +50,8 @@ semantic_model:
               revenue: amount
               order_count: order_id
             storage:
-              path: warehouse.orders_daily
+              paths:
+                - warehouse.orders_daily
 
         - name: orders_monthly
           extras:
@@ -62,4 +63,5 @@ semantic_model:
               revenue: total_amount
               order_count: num_orders
             storage:
-              path: warehouse.orders_monthly
+              paths:
+                - warehouse.orders_monthly

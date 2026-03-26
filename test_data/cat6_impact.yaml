@@ -180,7 +180,8 @@ semantic_model:
           description: "Impact conversion detail (anchor — one row per action/transaction)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/impact/8da22144-bc36-4656-927a-26ae430da6c4/"
+              paths:
+                - "fs1henp3k8p1hqo/impact/8da22144-bc36-4656-927a-26ae430da6c4/"
           column_mapping:
             date: date
             currency: currency
@@ -213,7 +214,8 @@ semantic_model:
           description: "Impact campaign performance (satellite — campaign-level metadata from report exports)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/impact/68028aea-3a3b-48c8-b7b8-fc9846979a75/"
+              paths:
+                - "fs1henp3k8p1hqo/impact/68028aea-3a3b-48c8-b7b8-fc9846979a75/"
           column_mapping:
             campaign_id: impact-campaign_id
             network: impact-network

@@ -21,217 +21,316 @@ use crate::compiled::{
 use semstrait_model::Keys;
 
 // ============================================================================
-// DataKind Hierarchy
+// KindInterface — shared semantic fields (zero duplication across variants)
 // ============================================================================
 
-/// A queryable semantic entity -- replaces `CompiledKind`.
+/// The semantic interface of a queryable entity.
+/// Every DataKind variant embeds this struct via composition.
+/// Type resolution methods live here — one implementation, no duplication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind_class", rename_all = "snake_case")]
+pub struct KindInterface {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub dimensions: IndexMap<String, CompiledDimension>,
+    pub measures: IndexMap<String, CompiledMeasure>,
+    pub metrics: IndexMap<String, CompiledMetric>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<Keys>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<CompiledFilter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temporal_dim: Option<String>,
+}
+
+impl KindInterface {
+    /// Resolve dimension DataType by name. O(1) via IndexMap.
+    pub fn resolve_dim_type(&self, name: &str) -> semstrait_core::DataType {
+        self.dimensions
+            .get(name)
+            .map(|d| d.data_type.clone())
+            .unwrap_or(semstrait_core::DataType::Utf8)
+    }
+
+    /// Resolve measure or metric DataType by name. O(1) via IndexMap.
+    pub fn resolve_measure_type(&self, name: &str) -> semstrait_core::DataType {
+        self.measures
+            .get(name)
+            .map(|m| m.data_type.clone())
+            .or_else(|| self.metrics.get(name).map(|m| m.data_type.clone()))
+            .unwrap_or(semstrait_core::DataType::Float64)
+    }
+
+    /// Find the temporal dimension name (first temporal dimension found).
+    pub fn find_temporal_dimension(&self) -> Option<&str> {
+        self.dimensions.iter().find_map(|(name, dim)| {
+            if matches!(dim.dim_type, DimensionType::Temporal(_)) {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Returns true if this kind has any additivity type other than Full.
+    pub fn has_non_full_additivity(&self) -> bool {
+        self.measures.values().any(|m| {
+            m.additivity
+                .as_ref()
+                .is_some_and(|a| !matches!(a, semstrait_model::AdditivityType::Full))
+        })
+    }
+
+    /// Returns the grain entries for a specific temporal dimension, if present.
+    pub fn temporal_grains(&self, dim_name: &str) -> Option<Vec<TemporalGrain>> {
+        let dim = self.dimensions.get(dim_name)?;
+        match &dim.dim_type {
+            DimensionType::Temporal(t) => Some(t.grains.clone()),
+            _ => None,
+        }
+    }
+}
+
+// ============================================================================
+// DataKind — 4-variant enum (dataset, unionset, grainset, joinset)
+// ============================================================================
+
+/// A queryable semantic entity. Four variants map directly to the four
+/// kind types in the semantic model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind_type", rename_all = "snake_case")]
 pub enum DataKind {
     /// Single dataset, direct query. No dataset routing logic.
-    CommonDataset(Box<CommonDataset>),
-    /// Multi-dataset composition (grainset/unionset/joinset).
-    ComplexDataKind(Box<ComplexDataKind>),
+    Dataset(Box<DatasetKind>),
+    /// UNION ALL across multiple datasets.
+    Unionset(Box<UnionsetKind>),
+    /// Grain-based covering dataset selection.
+    Grainset(Box<GrainsetKind>),
+    /// Join-based composition via BFS join chain.
+    Joinset(Box<JoinsetKind>),
 }
 
 impl DataKind {
-    pub fn name(&self) -> &str {
+    /// Access the shared KindInterface regardless of variant.
+    pub fn interface(&self) -> &KindInterface {
         match self {
-            DataKind::CommonDataset(cd) => &cd.name,
-            DataKind::ComplexDataKind(ck) => &ck.name,
+            DataKind::Dataset(k) => &k.interface,
+            DataKind::Unionset(k) => &k.interface,
+            DataKind::Grainset(k) => &k.interface,
+            DataKind::Joinset(k) => &k.interface,
+        }
+    }
+
+    /// Convenience: entity name.
+    pub fn name(&self) -> &str {
+        &self.interface().name
+    }
+
+    /// Mutable access to the shared KindInterface (for tests / configuration).
+    pub fn interface_mut(&mut self) -> &mut KindInterface {
+        match self {
+            DataKind::Dataset(k) => &mut k.interface,
+            DataKind::Unionset(k) => &mut k.interface,
+            DataKind::Grainset(k) => &mut k.interface,
+            DataKind::Joinset(k) => &mut k.interface,
+        }
+    }
+
+    /// All dataset bindings across all variants.
+    pub fn bindings(&self) -> &[DatasetBinding] {
+        match self {
+            DataKind::Dataset(k) => std::slice::from_ref(&k.binding),
+            DataKind::Unionset(k) => &k.bindings,
+            DataKind::Grainset(k) => &k.bindings,
+            DataKind::Joinset(k) => &k.bindings,
         }
     }
 }
 
 /// Shared interface across all queryable entities.
+/// Returns references only — no cloning in the hot path.
 pub trait SemanticInterface {
-    fn dimensions(&self) -> &IndexMap<String, CompiledDimension>;
-    fn measures(&self) -> &IndexMap<String, CompiledMeasure>;
-    fn metrics(&self) -> &IndexMap<String, CompiledMetric>;
-    fn filters(&self) -> &[CompiledFilter];
-    fn keys(&self) -> Option<&Keys>;
-    fn domain(&self) -> Option<&[String]>;
-    fn temporal_dimension(&self) -> Option<&str>;
+    fn interface(&self) -> &KindInterface;
+
+    fn dimensions(&self) -> &IndexMap<String, CompiledDimension> {
+        &self.interface().dimensions
+    }
+    fn measures(&self) -> &IndexMap<String, CompiledMeasure> {
+        &self.interface().measures
+    }
+    fn metrics(&self) -> &IndexMap<String, CompiledMetric> {
+        &self.interface().metrics
+    }
+    fn filters(&self) -> &[CompiledFilter] {
+        &self.interface().filters
+    }
+    fn keys(&self) -> Option<&Keys> {
+        self.interface().keys.as_ref()
+    }
+    fn domain(&self) -> Option<&[String]> {
+        self.interface().domain.as_deref()
+    }
+    fn temporal_dimension(&self) -> Option<&str> {
+        self.interface().temporal_dim.as_deref()
+    }
 }
 
 impl SemanticInterface for DataKind {
-    fn dimensions(&self) -> &IndexMap<String, CompiledDimension> {
-        match self {
-            DataKind::CommonDataset(cd) => cd.dimensions(),
-            DataKind::ComplexDataKind(ck) => ck.dimensions(),
-        }
-    }
-    fn measures(&self) -> &IndexMap<String, CompiledMeasure> {
-        match self {
-            DataKind::CommonDataset(cd) => cd.measures(),
-            DataKind::ComplexDataKind(ck) => ck.measures(),
-        }
-    }
-    fn metrics(&self) -> &IndexMap<String, CompiledMetric> {
-        match self {
-            DataKind::CommonDataset(cd) => cd.metrics(),
-            DataKind::ComplexDataKind(ck) => ck.metrics(),
-        }
-    }
-    fn filters(&self) -> &[CompiledFilter] {
-        match self {
-            DataKind::CommonDataset(cd) => cd.filters(),
-            DataKind::ComplexDataKind(ck) => ck.filters(),
-        }
-    }
-    fn keys(&self) -> Option<&Keys> {
-        match self {
-            DataKind::CommonDataset(cd) => cd.keys(),
-            DataKind::ComplexDataKind(ck) => ck.keys(),
-        }
-    }
-    fn domain(&self) -> Option<&[String]> {
-        match self {
-            DataKind::CommonDataset(cd) => cd.domain(),
-            DataKind::ComplexDataKind(ck) => ck.domain(),
-        }
-    }
-    fn temporal_dimension(&self) -> Option<&str> {
-        match self {
-            DataKind::CommonDataset(cd) => cd.temporal_dimension(),
-            DataKind::ComplexDataKind(ck) => ck.temporal_dimension(),
-        }
+    fn interface(&self) -> &KindInterface {
+        self.interface()
     }
 }
 
+/// Shared behavior for multi-dataset kinds (unionset, grainset, joinset).
+pub trait MultiDatasetKind: SemanticInterface {
+    fn bindings(&self) -> &[DatasetBinding];
+    fn coverage_index(&self) -> &CoverageIndex;
+    fn dimension_index(&self) -> &DimensionIndex;
+    fn metric_order(&self) -> Option<&MetricOrder>;
+}
+
 // ============================================================================
-// CommonDataset -- Single-Dataset Fast Path
+// DatasetKind — Single-Dataset Fast Path
 // ============================================================================
 
-/// Single dataset, direct query. No routing, no union/join.
+/// Single dataset, direct Scan → Agg → Project. No routing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommonDataset {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-
-    // Semantic interface
-    pub dimensions: IndexMap<String, CompiledDimension>,
-    pub measures: IndexMap<String, CompiledMeasure>,
-    pub metrics: IndexMap<String, CompiledMetric>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keys: Option<Keys>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub filters: Vec<CompiledFilter>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub domain: Option<Vec<String>>,
-
-    // Physical binding (single dataset)
-    pub dataset_ref: String,
-    pub column_mapping: ResolvedColumnMapping,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub temporal_dim: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub resolved_sources: Vec<ResolvedSource>,
+pub struct DatasetKind {
+    #[serde(flatten)]
+    pub interface: KindInterface,
+    /// The single dataset binding for this entity.
+    pub binding: DatasetBinding,
 }
 
-impl SemanticInterface for CommonDataset {
-    fn dimensions(&self) -> &IndexMap<String, CompiledDimension> {
-        &self.dimensions
-    }
-    fn measures(&self) -> &IndexMap<String, CompiledMeasure> {
-        &self.measures
-    }
-    fn metrics(&self) -> &IndexMap<String, CompiledMetric> {
-        &self.metrics
-    }
-    fn filters(&self) -> &[CompiledFilter] {
-        &self.filters
-    }
-    fn keys(&self) -> Option<&Keys> {
-        self.keys.as_ref()
-    }
-    fn domain(&self) -> Option<&[String]> {
-        self.domain.as_deref()
-    }
-    fn temporal_dimension(&self) -> Option<&str> {
-        self.temporal_dim.as_deref()
+impl SemanticInterface for DatasetKind {
+    fn interface(&self) -> &KindInterface {
+        &self.interface
     }
 }
 
 // ============================================================================
-// ComplexDataKind -- Multi-Dataset Composition
+// UnionsetKind — UNION ALL Across Datasets
 // ============================================================================
 
-/// Multi-dataset composition (grainset/unionset/joinset).
+/// UNION ALL across multiple datasets. Each branch scans one dataset;
+/// unmapped columns are NULL-filled. Result is re-aggregated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComplexDataKind {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-
-    // Semantic interface
-    pub dimensions: IndexMap<String, CompiledDimension>,
-    pub measures: IndexMap<String, CompiledMeasure>,
-    pub metrics: IndexMap<String, CompiledMetric>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keys: Option<Keys>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub filters: Vec<CompiledFilter>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub domain: Option<Vec<String>>,
-
-    // Strategy -- how datasets are composed
-    pub strategy: KindStrategy,
-
-    // Binding -- dataset implementations
-    pub dataset_bindings: Vec<DatasetBinding>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub relationships: Vec<CompiledRelationship>,
-
+pub struct UnionsetKind {
+    #[serde(flatten)]
+    pub interface: KindInterface,
+    pub mode: UnionMode,
+    pub bindings: Vec<DatasetBinding>,
     // Acceleration structures
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub temporal_dim: Option<String>,
     pub coverage_index: CoverageIndex,
     pub dimension_index: DimensionIndex,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metric_order: Option<MetricOrder>,
+}
+
+impl SemanticInterface for UnionsetKind {
+    fn interface(&self) -> &KindInterface {
+        &self.interface
+    }
+}
+
+impl MultiDatasetKind for UnionsetKind {
+    fn bindings(&self) -> &[DatasetBinding] {
+        &self.bindings
+    }
+    fn coverage_index(&self) -> &CoverageIndex {
+        &self.coverage_index
+    }
+    fn dimension_index(&self) -> &DimensionIndex {
+        &self.dimension_index
+    }
+    fn metric_order(&self) -> Option<&MetricOrder> {
+        self.metric_order.as_ref()
+    }
+}
+
+// ============================================================================
+// GrainsetKind — Grain-Based Covering Dataset Selection
+// ============================================================================
+
+/// Grain-based covering: routes queries to the cheapest covering dataset(s).
+/// Multi-grain datasets are UNION ALL'd with DATE_TRUNC rollup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrainsetKind {
+    #[serde(flatten)]
+    pub interface: KindInterface,
+    pub bindings: Vec<DatasetBinding>,
+    // Acceleration structures
+    pub coverage_index: CoverageIndex,
+    pub dimension_index: DimensionIndex,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_order: Option<MetricOrder>,
+    /// Grain map for temporal routing. Present when kind has temporal dimensions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grain_map: Option<GrainMap>,
+}
+
+impl SemanticInterface for GrainsetKind {
+    fn interface(&self) -> &KindInterface {
+        &self.interface
+    }
+}
+
+impl MultiDatasetKind for GrainsetKind {
+    fn bindings(&self) -> &[DatasetBinding] {
+        &self.bindings
+    }
+    fn coverage_index(&self) -> &CoverageIndex {
+        &self.coverage_index
+    }
+    fn dimension_index(&self) -> &DimensionIndex {
+        &self.dimension_index
+    }
+    fn metric_order(&self) -> Option<&MetricOrder> {
+        self.metric_order.as_ref()
+    }
+}
+
+// ============================================================================
+// JoinsetKind — Join-Based Composition
+// ============================================================================
+
+/// Join-based composition via BFS join chain from an anchor dataset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinsetKind {
+    #[serde(flatten)]
+    pub interface: KindInterface,
+    pub associativity: JoinAssociativity,
+    pub bindings: Vec<DatasetBinding>,
+    pub relationships: Vec<CompiledRelationship>,
+    // Acceleration structures
+    pub coverage_index: CoverageIndex,
+    pub dimension_index: DimensionIndex,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub adjacency_index: Option<AdjacencyIndex>,
+    pub metric_order: Option<MetricOrder>,
+    pub adjacency_index: AdjacencyIndex,
 }
 
-impl SemanticInterface for ComplexDataKind {
-    fn dimensions(&self) -> &IndexMap<String, CompiledDimension> {
-        &self.dimensions
-    }
-    fn measures(&self) -> &IndexMap<String, CompiledMeasure> {
-        &self.measures
-    }
-    fn metrics(&self) -> &IndexMap<String, CompiledMetric> {
-        &self.metrics
-    }
-    fn filters(&self) -> &[CompiledFilter] {
-        &self.filters
-    }
-    fn keys(&self) -> Option<&Keys> {
-        self.keys.as_ref()
-    }
-    fn domain(&self) -> Option<&[String]> {
-        self.domain.as_deref()
-    }
-    fn temporal_dimension(&self) -> Option<&str> {
-        self.temporal_dim.as_deref()
+impl SemanticInterface for JoinsetKind {
+    fn interface(&self) -> &KindInterface {
+        &self.interface
     }
 }
 
-// ============================================================================
-// KindStrategy
-// ============================================================================
-
-/// How datasets within a ComplexDataKind are composed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum KindStrategy {
-    Grainset,
-    Unionset { mode: UnionMode },
-    Joinset { associativity: JoinAssociativity },
+impl MultiDatasetKind for JoinsetKind {
+    fn bindings(&self) -> &[DatasetBinding] {
+        &self.bindings
+    }
+    fn coverage_index(&self) -> &CoverageIndex {
+        &self.coverage_index
+    }
+    fn dimension_index(&self) -> &DimensionIndex {
+        &self.dimension_index
+    }
+    fn metric_order(&self) -> Option<&MetricOrder> {
+        self.metric_order.as_ref()
+    }
 }
 
 // ============================================================================
@@ -387,8 +486,24 @@ pub struct DatasetBinding {
 /// A resolved physical source reference.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedSource {
+    /// Original user-provided reference string (pattern/glob for debugging).
     pub reference: String,
     pub source_type: SourceType,
+    /// Fully qualified table name for SQL emission (e.g., "namespace.table_name").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_fqn: Option<String>,
+    /// Fully resolved physical location (populated by resolve_sources step).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// Data format (from storage config for paths, from catalog for tables).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<semstrait_core::DataFormat>,
+    /// Catalog alias that resolved this source (None for filesystem sources).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_alias: Option<String>,
+    /// Schema snapshot captured at compile time (best-effort).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Vec<crate::catalog_snapshot::ResolvedColumn>>,
 }
 
 impl ResolvedSource {
@@ -397,6 +512,11 @@ impl ResolvedSource {
         Self {
             reference: reference.into(),
             source_type: SourceType::Path,
+            table_fqn: None,
+            location: None,
+            format: None,
+            catalog_alias: None,
+            schema: None,
         }
     }
 
@@ -405,6 +525,11 @@ impl ResolvedSource {
         Self {
             reference: reference.into(),
             source_type: SourceType::Table,
+            table_fqn: None,
+            location: None,
+            format: None,
+            catalog_alias: None,
+            schema: None,
         }
     }
 }
@@ -924,12 +1049,33 @@ impl DatasetBinding {
     }
 }
 
+/// Build a `KindInterface` from a `CompiledKind` (shared extraction).
+fn build_interface(kind: &CompiledKind) -> KindInterface {
+    let temporal_dim = kind
+        .dimensions
+        .iter()
+        .find(|(_, d)| matches!(d.dim_type, DimensionType::Temporal(_)))
+        .map(|(name, _)| name.clone());
+
+    KindInterface {
+        name: kind.name.clone(),
+        description: kind.description.clone(),
+        dimensions: kind.dimensions.clone(),
+        measures: kind.measures.clone(),
+        metrics: kind.metrics.clone(),
+        keys: kind.keys.clone(),
+        filters: kind.filters.clone(),
+        domain: kind.domain.clone(),
+        temporal_dim,
+    }
+}
+
 /// Build a DataKind from a CompiledKind.
 ///
-/// Single-binding kinds are intentionally flattened to `CommonDataset` regardless
-/// of the declared `kind_type`. A single-dataset grainset/unionset/joinset is
-/// semantically equivalent to a direct dataset query — no routing, union, or join
-/// is needed. The planner dispatches `CommonDataset` via a simpler fast path.
+/// Single-binding kinds are flattened to `DataKind::Dataset` regardless of the
+/// declared `kind_type`. A single-dataset grainset/unionset/joinset is
+/// semantically equivalent to a direct dataset query — no routing, union, or
+/// join is needed. The planner dispatches `Dataset` via a simpler fast path.
 pub fn data_kind_from_compiled_kind(kind: &CompiledKind) -> DataKind {
     use crate::compiled::CompiledKindType;
 
@@ -939,78 +1085,57 @@ pub fn data_kind_from_compiled_kind(kind: &CompiledKind) -> DataKind {
         .map(DatasetBinding::from_compiled)
         .collect();
 
-    // Determine temporal dimension
-    let temporal_dim = kind
-        .dimensions
-        .iter()
-        .find(|(_, d)| matches!(d.dim_type, DimensionType::Temporal(_)))
-        .map(|(name, _)| name.clone());
+    let interface = build_interface(kind);
 
-    // Single-dataset kinds become CommonDataset
+    // Single-dataset kinds → DatasetKind (fast path)
     if bindings.len() == 1 {
         let binding = bindings.into_iter().next().unwrap();
-        return DataKind::CommonDataset(Box::new(CommonDataset {
-            name: kind.name.clone(),
-            description: kind.description.clone(),
-            dimensions: kind.dimensions.clone(),
-            measures: kind.measures.clone(),
-            metrics: kind.metrics.clone(),
-            keys: kind.keys.clone(),
-            filters: kind.filters.clone(),
-            domain: kind.domain.clone(),
-            dataset_ref: binding.dataset_name.clone(),
-            column_mapping: binding.column_mapping,
-            temporal_dim,
-            resolved_sources: binding.resolved_sources,
-        }));
+        return DataKind::Dataset(Box::new(DatasetKind { interface, binding }));
     }
 
-    // Multi-dataset kinds become ComplexDataKind
-    let strategy = match &kind.kind_type {
-        CompiledKindType::Grainset => KindStrategy::Grainset,
-        CompiledKindType::Unionset { mode } => KindStrategy::Unionset { mode: *mode },
-        CompiledKindType::Joinset { associativity } => KindStrategy::Joinset {
-            associativity: *associativity,
-        },
-    };
-
-    let coverage_index =
-        CoverageIndex::build(&kind.dimensions, &kind.measures, &bindings);
+    // Multi-dataset kinds → variant per strategy
+    let metric_order = MetricOrder::build(&kind.metrics, &kind.measures);
+    let coverage_index = CoverageIndex::build(&kind.dimensions, &kind.measures, &bindings);
     let dimension_index = DimensionIndex::build(&kind.dimensions, &bindings);
 
-    let grain_map = if matches!(strategy, KindStrategy::Grainset) {
-        temporal_dim
-            .as_deref()
-            .map(|td| GrainMap::build(td, &bindings))
-    } else {
-        None
-    };
+    match &kind.kind_type {
+        CompiledKindType::Grainset => {
+            let grain_map = interface
+                .temporal_dim
+                .as_deref()
+                .map(|td| GrainMap::build(td, &bindings));
 
-    let adjacency_index = if matches!(strategy, KindStrategy::Joinset { .. }) {
-        Some(AdjacencyIndex::build(&bindings, &kind.relationships))
-    } else {
-        None
-    };
-
-    DataKind::ComplexDataKind(Box::new(ComplexDataKind {
-        name: kind.name.clone(),
-        description: kind.description.clone(),
-        dimensions: kind.dimensions.clone(),
-        measures: kind.measures.clone(),
-        metrics: kind.metrics.clone(),
-        keys: kind.keys.clone(),
-        filters: kind.filters.clone(),
-        domain: kind.domain.clone(),
-        strategy,
-        dataset_bindings: bindings,
-        relationships: kind.relationships.clone(),
-        temporal_dim,
-        coverage_index,
-        dimension_index,
-        metric_order: MetricOrder::build(&kind.metrics, &kind.measures),
-        grain_map,
-        adjacency_index,
-    }))
+            DataKind::Grainset(Box::new(GrainsetKind {
+                interface,
+                bindings,
+                coverage_index,
+                dimension_index,
+                metric_order,
+                grain_map,
+            }))
+        }
+        CompiledKindType::Unionset { mode } => DataKind::Unionset(Box::new(UnionsetKind {
+            interface,
+            mode: *mode,
+            bindings,
+            coverage_index,
+            dimension_index,
+            metric_order,
+        })),
+        CompiledKindType::Joinset { associativity } => {
+            let adjacency_index = AdjacencyIndex::build(&bindings, &kind.relationships);
+            DataKind::Joinset(Box::new(JoinsetKind {
+                interface,
+                associativity: *associativity,
+                bindings,
+                relationships: kind.relationships.clone(),
+                coverage_index,
+                dimension_index,
+                metric_order,
+                adjacency_index,
+            }))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1126,7 +1251,7 @@ mod tests {
             CompiledDimension {
                 name: name.to_string(),
                 description: None,
-                data_type: "string".to_string(),
+                data_type: semstrait_core::DataType::Utf8,
                 dim_type: DimensionType::Categorical(CategoricalDimension { enum_values: None }),
             },
         )
@@ -1138,7 +1263,7 @@ mod tests {
             CompiledMeasure {
                 name: name.to_string(),
                 description: None,
-                data_type: "f64".to_string(),
+                data_type: semstrait_core::DataType::Float64,
                 agg: None,
                 expr: semstrait_core::Expr::EntityRef(semstrait_core::expr::EntityRef {
                     name: name.to_string(),
@@ -1207,7 +1332,7 @@ mod tests {
         let temporal_dim = CompiledDimension {
             name: "date".to_string(),
             description: None,
-            data_type: "date".to_string(),
+            data_type: semstrait_core::DataType::Date32,
             dim_type: DimensionType::Temporal(semstrait_model::TemporalDimension {
                 grains: vec![TemporalGrain::Day],
             }),
@@ -1216,7 +1341,7 @@ mod tests {
         let meta_dim = CompiledDimension {
             name: "platform".to_string(),
             description: None,
-            data_type: "string".to_string(),
+            data_type: semstrait_core::DataType::Utf8,
             dim_type: DimensionType::Metadata(MetadataDimension {
                 path: Some(semstrait_model::PathExtraction { token: 1 }),
                 partition: None,
@@ -1226,7 +1351,7 @@ mod tests {
         let cat_dim = CompiledDimension {
             name: "region".to_string(),
             description: None,
-            data_type: "string".to_string(),
+            data_type: semstrait_core::DataType::Utf8,
             dim_type: DimensionType::Categorical(CategoricalDimension { enum_values: None }),
         };
 
@@ -1507,7 +1632,7 @@ mod tests {
             CompiledMetric {
                 name: name.to_string(),
                 description: None,
-                data_type: "f64".to_string(),
+                data_type: semstrait_core::DataType::Float64,
                 agg: None,
                 expr,
                 expr_source: String::new(),

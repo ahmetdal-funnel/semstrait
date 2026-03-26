@@ -1,5 +1,5 @@
 # Semstrait Architecture Document
-**Version:** 5.2 | **Status:** V2.0 — Model Redesign (Phases 1-4 complete)
+**Version:** 5.3 | **Status:** V2.0 — Model Redesign (Phases 1-4 complete), DataKind planner migration (Phase E complete)
 
 ---
 
@@ -24,7 +24,7 @@ Active constraints that guide new code. Historical crate-organization decisions 
 
 | # | Constraint | Rationale |
 |---|---|---|
-| D5 | Glob expansion requires an explicit `CatalogProvider` | No `CatalogProvider` + glob patterns → `CompileError::GlobRequiresCatalog`. No silent no-ops. |
+| D5 | Wildcard expansion requires a provider | Wildcard patterns in `storage.paths` require a `StorageProvider`; wildcards in `storage.tables` require a `CatalogProvider` (via `CatalogRegistry`). No silent pass-through of unresolved globs. |
 | D6 | `Kind` has three distinct layers: interface, strategy, binding | Interface = what users query. Strategy (`KindType`) = plan structure. Binding = physical implementation. |
 | D8 | YAML field is `constraints`, not `requires` | Pre-resolution validity gates at step 0, before dataset routing. Apply to query scope, not datasets. |
 | E1 | Engine selection at request level | `engine` field in `RawQueryRequest`. Same server targets different engines per query. Model is engine-agnostic. |
@@ -45,8 +45,9 @@ Explicit definition of what v1 supports. All completed v2 model redesign changes
 |------|------------|--------|
 | **Compute** | DataFusion (SQL + Substrait) | DuckDB, Trino, Spark, Snowflake |
 | **Catalog** | Iceberg REST (via Polaris) | Unity, Glue, Hive Metastore |
-| **Storage** | Local paths, S3 (via DataFusion) | GCS, ADLS, HDFS |
+| **Storage** | Local paths (via `StorageProvider`), S3 (stub). Format-aware: Iceberg, Parquet, CSV | GCS, ADLS, HDFS |
 | **Auth** | OAuth2, Bearer, Polaris (AWS Secrets) | — |
+| **Multi-catalog** | Named catalogs via `catalogs.yaml` + `CatalogRegistry`. Per-entity `CatalogRef` | — |
 | **IR** | SQL (primary), Substrait (DataFusion) | — |
 | **Optimizer** | Identity (no-op) | Predicate pushdown, projection pruning |
 | **Repository** | InMemoryRepository | FileSystemRepository |
@@ -588,23 +589,22 @@ pub enum CompileSource {
 **Compilation pipeline (strict order):**
 
 ```
-Step 1    parse                      serde_yaml → SemanticModel (semstrait-model)
-Step 2    resolve_refs               expand ref: entries into inline definitions
-Step 3    expand_globs               GlobPattern → Vec<concrete KindDataset>
-                                     REQUIRES catalog. Err if catalog = None and globs exist.
-Step 4    validate_structure         dataset uniqueness, kind nesting matrix,
-                                     joinset anchor rules, ref target existence
-Step 4.6  validate_temporal_equiv    temporal properties must match across kind/dataset levels
-Step 4.7  validate_storage           paths/tables exclusivity, non-empty resolved sources
-Step 4.8  validate_metadata_dims     path requires storage paths, partition requires partition_def
-Step 4.5  expand_auto_mappings       auto → identity mapping (metadata dims excluded)
-Step 5    validate_mappings          column_mapping keys exist in kind interface;
-                                     physical columns verified against catalog.get_schema()
-Step 6    build_metric_graph         petgraph DiGraph — detect cycles, enforce depth ≤ 3
-Step 7    build_rel_graph            petgraph DiGraph — joinset anchor inference (in-degree = 0)
-Step 8    compile_exprs              parse expressions; reject raw SQL; declarative agg mapping
-Step 9    emit                       serialize to CompiledManifest (JSON, versioned)
-Step 9.5  capture_schema_snapshots   best-effort schema capture from catalog
+Step 1    parse                      serde_yaml → SemanticModel
+Step 2    resolve_refs               expand ref: entries
+Step 3    resolve_sources            expand globs/wildcards via StorageProvider/CatalogProvider,
+                                     fetch catalog metadata, build CatalogSnapshot
+                                     (async, requires providers for wildcards)
+Step 4    validate_structure         dataset uniqueness, kind nesting
+Step 4.5  expand_auto_mappings       ColumnMapping::Auto → identity
+Step 4.6  validate_temporal_equiv    kind/dataset temporal type match
+Step 4.7  validate_storage           paths/tables exclusivity, format requirements
+Step 4.8  validate_metadata_dims     path/partition preconditions
+Step 5    validate_mappings          column_mapping keys vs kind interface (union coverage)
+Step 5.5  validate_grain_compat      grain compatibility across datasets
+Step 6    build_metric_graph         cycle detection, depth ≤ 3
+Step 7    build_rel_graph            relationship graph, joinset anchor inference
+Step 8    compile_exprs              parse Expr DSL, reject raw SQL
+Step 9    emit                       serialize to CompiledManifest (consumes SourceResolutionResult)
 ```
 
 **Glob expansion detail (step 3):**

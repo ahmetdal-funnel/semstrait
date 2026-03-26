@@ -4,7 +4,6 @@
 //! Ships `InMemoryRepository` in v1; `FileSystemRepository` is v2.
 
 pub mod acceleration;
-mod catalog_builder;
 pub mod catalog_snapshot;
 mod compiled;
 mod compiler;
@@ -13,10 +12,10 @@ mod repository;
 mod steps;
 
 pub use acceleration::{
-    AdjacencyIndex, CommonDataset, CompileDiagnostics, CompileWarning, ComplexDataKind,
-    CoverageIndex, DataKind, DatasetBinding, DimensionIndex, FieldIndex, GrainMap, KindStrategy,
-    MetricOrder, RelationshipGraph, ResolvedColumnMapping, ResolvedSource, SemanticInterface,
-    SourceType, TemporalMapping,
+    AdjacencyIndex, CompileDiagnostics, CompileWarning, CoverageIndex, DataKind, DatasetBinding,
+    DatasetKind, DimensionIndex, FieldIndex, GrainMap, GrainsetKind, JoinsetKind, KindInterface,
+    MetricOrder, MultiDatasetKind, RelationshipGraph, ResolvedColumnMapping, ResolvedSource,
+    SemanticInterface, SourceType, TemporalMapping, UnionsetKind,
 };
 pub use catalog_snapshot::{
     CatalogSnapshot, IcebergMetadata, PartitionField, PartitionTransform, ResolvedColumn,

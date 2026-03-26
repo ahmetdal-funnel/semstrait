@@ -11,11 +11,7 @@ pub enum CompileError {
     #[error("reference resolution error: {0}")]
     RefResolution(String),
 
-    /// Glob expansion requires a catalog provider but none was configured (step 3)
-    #[error("glob pattern '{pattern}' in kind '{kind}' requires a catalog provider")]
-    GlobRequiresCatalog { pattern: String, kind: String },
-
-    /// Catalog error during glob expansion (step 3)
+    /// Catalog/storage error during source resolution (step 3)
     #[error("catalog error: {0}")]
     CatalogError(String),
 
@@ -59,10 +55,6 @@ pub enum CompileError {
     /// Raw SQL rejected (step 8)
     #[error("raw SQL rejected for '{entity}': {expr}")]
     RawSqlRejected { entity: String, expr: String },
-
-    /// Catalog configuration error (step 2.5)
-    #[error("catalog config error: {0}")]
-    CatalogConfig(String),
 
     /// IO error (reading files)
     #[error("IO error: {0}")]

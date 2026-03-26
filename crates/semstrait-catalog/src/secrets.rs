@@ -146,7 +146,9 @@ pub async fn build_polaris_catalog(
     );
 
     if let Some(wh) = config.warehouse {
-        catalog = catalog.with_warehouse(wh);
+        // Polaris expects the warehouse as a URL path prefix (/v1/{warehouse}/...),
+        // not as a query parameter (?warehouse=...).
+        catalog = catalog.with_prefix(wh);
     }
 
     if let Some(r) = config.realm {

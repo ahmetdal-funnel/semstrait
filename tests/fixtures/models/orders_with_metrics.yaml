@@ -25,4 +25,6 @@ semantic_model:
               region: region_name
               revenue: amount
             storage:
-              path: public.orders_daily
+              format: parquet
+              paths:
+                - public.orders_daily

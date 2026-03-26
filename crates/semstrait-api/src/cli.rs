@@ -35,6 +35,10 @@ pub enum Commands {
         /// Output path for the compiled manifest JSON.
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Path to catalogs.yaml for catalog connections.
+        #[arg(long)]
+        catalogs: Option<PathBuf>,
     },
 
     /// Show the query plan, SQL, and Substrait JSON for a query.
@@ -58,6 +62,10 @@ pub enum Commands {
         /// Output as JSON instead of text.
         #[arg(long)]
         json: bool,
+
+        /// Path to catalogs.yaml for catalog connections.
+        #[arg(long)]
+        catalogs: Option<PathBuf>,
     },
 
     /// Validate a query request against a manifest.
@@ -77,6 +85,10 @@ pub enum Commands {
         /// Named filters to apply.
         #[arg(long, num_args = 0..)]
         filters: Vec<String>,
+
+        /// Path to catalogs.yaml for catalog connections.
+        #[arg(long)]
+        catalogs: Option<PathBuf>,
     },
 
     /// Execute a query against local data files via DataFusion.
@@ -195,17 +207,154 @@ pub enum Commands {
 
 /// Compile a manifest from a YAML model file.
 ///
-/// Catalog configuration is read from the `catalog:` section in the YAML model.
-/// No CLI flags needed — the compiler builds the catalog provider internally.
+/// If `catalogs_path` is provided, parses `catalogs.yaml` and builds a
+/// `CatalogRegistry` with concrete providers for each named catalog entry.
 async fn compile_from_file(
     model: &PathBuf,
+    catalogs_path: Option<&PathBuf>,
 ) -> Result<semstrait_manifest::CompiledManifest, Box<dyn std::error::Error>> {
     let yaml = tokio::fs::read_to_string(model).await?;
-    let compiler = ManifestCompiler::new();
+    let mut compiler = ManifestCompiler::new();
+
+    if let Some(cat_path) = catalogs_path {
+        let registry = build_catalog_registry(cat_path).await?;
+        eprintln!(
+            "Loaded {} catalog(s): {}",
+            registry.len(),
+            registry.aliases().collect::<Vec<_>>().join(", ")
+        );
+        compiler = compiler.with_catalog_registry(registry);
+    }
+
     Ok(compiler
         .compile(CompileSource::Yaml(yaml))
         .await
         .map_err(|e| format!("compilation failed: {}", e))?)
+}
+
+/// Build a `CatalogRegistry` from a `catalogs.yaml` file.
+///
+/// Iterates each named catalog entry and constructs the appropriate
+/// `CatalogProvider` based on the entry's `provider_type` and `auth` method.
+async fn build_catalog_registry(
+    catalogs_path: &PathBuf,
+) -> Result<semstrait_catalog::CatalogRegistry, Box<dyn std::error::Error>> {
+    let yaml = tokio::fs::read_to_string(catalogs_path).await?;
+    let config = semstrait_model::parse_catalogs(&yaml)
+        .map_err(|e| format!("failed to parse catalogs.yaml: {}", e))?;
+
+    let mut registry = semstrait_catalog::CatalogRegistry::new();
+
+    for (alias, entry) in &config.catalogs {
+        let provider = build_catalog_provider(alias, entry).await?;
+        registry.register(alias, provider);
+    }
+
+    Ok(registry)
+}
+
+/// Build a single `CatalogProvider` from a `CatalogEntry`.
+async fn build_catalog_provider(
+    alias: &str,
+    entry: &semstrait_model::CatalogEntry,
+) -> Result<Arc<dyn semstrait_catalog::CatalogProvider>, Box<dyn std::error::Error>> {
+    match entry.provider_type.as_str() {
+        "polaris" | "iceberg_rest" => build_iceberg_provider(alias, entry).await,
+        other => Err(format!(
+            "catalog '{}': unsupported provider type '{}' (supported: polaris, iceberg_rest)",
+            alias, other
+        )
+        .into()),
+    }
+}
+
+/// Build an Iceberg REST catalog provider from a `CatalogEntry`.
+#[cfg(feature = "iceberg")]
+async fn build_iceberg_provider(
+    alias: &str,
+    entry: &semstrait_model::CatalogEntry,
+) -> Result<Arc<dyn semstrait_catalog::CatalogProvider>, Box<dyn std::error::Error>> {
+    use semstrait_model::CatalogAuthMethod;
+
+    match &entry.auth {
+        #[cfg(feature = "aws")]
+        CatalogAuthMethod::AwsSecrets {
+            secret_arn,
+            region,
+            scope,
+            aws_profile,
+            aws_access_key_id,
+            aws_secret_access_key,
+            aws_session_token,
+            ..
+        } => {
+            let config = semstrait_catalog::secrets::PolarisCatalogConfig {
+                catalog_url: &entry.url,
+                secret_arn,
+                aws_region: region.as_deref(),
+                warehouse: Some(&entry.name),
+                realm: entry.realm.as_deref(),
+                scope: scope.as_deref(),
+                aws_profile: aws_profile.as_deref(),
+                aws_access_key_id: aws_access_key_id.as_deref(),
+                aws_secret_access_key: aws_secret_access_key.as_deref(),
+                aws_session_token: aws_session_token.as_deref(),
+            };
+            let catalog = semstrait_catalog::secrets::build_polaris_catalog(&config)
+                .await
+                .map_err(|e| format!("catalog '{}': failed to build Polaris provider: {}", alias, e))?;
+            Ok(Arc::new(catalog))
+        }
+
+        CatalogAuthMethod::Oauth2 {
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+        } => {
+            let url = token_url
+                .clone()
+                .unwrap_or_else(|| format!("{}/v1/oauth/tokens", entry.url));
+            let mut catalog = semstrait_catalog::IcebergRestCatalog::new(&entry.url)
+                .with_prefix(&entry.name)
+                .with_oauth2(url, client_id, client_secret, scope.clone());
+            if let Some(ref realm) = entry.realm {
+                catalog = catalog.with_custom_header("Polaris-Realm", realm);
+            }
+            Ok(Arc::new(catalog))
+        }
+
+        CatalogAuthMethod::Bearer { token } => {
+            let mut catalog = semstrait_catalog::IcebergRestCatalog::new(&entry.url)
+                .with_prefix(&entry.name)
+                .with_bearer_token(token);
+            if let Some(ref realm) = entry.realm {
+                catalog = catalog.with_custom_header("Polaris-Realm", realm);
+            }
+            Ok(Arc::new(catalog))
+        }
+
+        #[cfg(not(feature = "aws"))]
+        CatalogAuthMethod::AwsSecrets { .. } => {
+            Err(format!(
+                "catalog '{}': aws_secrets auth requires the 'aws' feature",
+                alias
+            )
+            .into())
+        }
+    }
+}
+
+#[cfg(not(feature = "iceberg"))]
+async fn build_iceberg_provider(
+    alias: &str,
+    _entry: &semstrait_model::CatalogEntry,
+) -> Result<Arc<dyn semstrait_catalog::CatalogProvider>, Box<dyn std::error::Error>> {
+    Err(format!(
+        "catalog '{}': iceberg/polaris provider requires the 'iceberg' feature",
+        alias
+    )
+    .into())
 }
 
 /// Build a RawQueryRequest from common CLI args.
@@ -238,8 +387,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Compile {
             input,
             output,
+            catalogs,
         } => {
-            let manifest = compile_from_file(&input).await?;
+            let manifest = compile_from_file(&input, catalogs.as_ref()).await?;
             let json = serde_json::to_string_pretty(&manifest)?;
             match output {
                 Some(path) => {
@@ -257,9 +407,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             select,
             filters,
             json,
+            catalogs,
         } => {
-            let yaml = tokio::fs::read_to_string(&model).await?;
-            let engine = SemstraitEngine::with_manifest_yaml(&yaml).await?;
+            let manifest = compile_from_file(&model, catalogs.as_ref()).await?;
+            let engine = SemstraitEngine::with_manifest(manifest);
             let raw = build_raw_request(from, select, filters);
             let result = engine.explain(&raw).await?;
             if json {
@@ -281,9 +432,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             from,
             select,
             filters,
+            catalogs,
         } => {
-            let yaml = tokio::fs::read_to_string(&model).await?;
-            let engine = SemstraitEngine::with_manifest_yaml(&yaml).await?;
+            let manifest = compile_from_file(&model, catalogs.as_ref()).await?;
+            let engine = SemstraitEngine::with_manifest(manifest);
             let raw = build_raw_request(from, select, filters);
             let result = engine.validate(&raw);
             if result.valid {

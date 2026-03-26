@@ -36,7 +36,7 @@ pub struct TableSnapshot {
 }
 
 /// A resolved physical column from the catalog.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedColumn {
     pub name: String,
     pub data_type: DataType,
@@ -50,7 +50,8 @@ pub struct ResolvedColumn {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IcebergMetadata {
     /// Current snapshot ID from the Iceberg table.
-    pub snapshot_id: i64,
+    /// `None` for tables with no commits yet.
+    pub snapshot_id: Option<i64>,
     /// Partition spec fields with inferred temporal grains.
     pub partition_spec: Vec<PartitionField>,
     /// Iceberg format version (1 or 2).
@@ -183,7 +184,7 @@ mod tests {
                             },
                         ],
                         iceberg: Some(IcebergMetadata {
-                            snapshot_id: 123456789,
+                            snapshot_id: Some(123456789),
                             partition_spec: vec![PartitionField {
                                 source_column: "order_date".to_string(),
                                 transform: PartitionTransform::Day,
@@ -209,7 +210,7 @@ mod tests {
         assert_eq!(table.columns.len(), 2);
         assert_eq!(table.columns[0].name, "id");
         let iceberg = table.iceberg.as_ref().unwrap();
-        assert_eq!(iceberg.snapshot_id, 123456789);
+        assert_eq!(iceberg.snapshot_id, Some(123456789));
         assert_eq!(iceberg.partition_spec.len(), 1);
         assert_eq!(iceberg.partition_spec[0].transform, PartitionTransform::Day);
         assert_eq!(iceberg.partition_spec[0].inferred_grain, Some(TemporalGrain::Day));

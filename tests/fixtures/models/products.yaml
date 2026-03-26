@@ -23,4 +23,6 @@ semantic_model:
               brand: product_brand
               total_sales: sales_amount
             storage:
-              path: analytics.product_sales
+              format: parquet
+              paths:
+                - analytics.product_sales

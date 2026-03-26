@@ -31,6 +31,8 @@ fn scan(table: &str, cols: &[&str]) -> PlanNode {
     PlanNode::Scan(ScanNode {
         meta: meta(),
         table_name: table.to_string(),
+        location: None,
+        format: None,
         projection: cols.iter().map(|c| c.to_string()).collect(),
     })
 }

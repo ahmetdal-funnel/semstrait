@@ -125,7 +125,7 @@ impl CatalogColumn {
 /// Extended table metadata response including partitions, snapshots, and location.
 ///
 /// Returned by `CatalogProvider::load_table_metadata()`. Contains all metadata
-/// needed for catalog resolution steps 10-13.
+/// needed for catalog source resolution.
 #[derive(Debug, Clone)]
 pub struct TableMetadataResponse {
     /// Column schema.
@@ -138,6 +138,10 @@ pub struct TableMetadataResponse {
     pub format_version: Option<u32>,
     /// Physical table location (e.g., S3 URI).
     pub location: Option<String>,
+    /// Data format reported by the catalog (e.g., Iceberg, Parquet, Delta).
+    /// When `None`, the resolver defaults to `DataFormat::Iceberg` for
+    /// catalogs that return extended metadata (Iceberg REST, Polaris).
+    pub format: Option<semstrait_core::DataFormat>,
     /// Table properties.
     pub properties: HashMap<String, String>,
 }

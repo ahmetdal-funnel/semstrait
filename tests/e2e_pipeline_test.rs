@@ -30,16 +30,16 @@ async fn test_yaml_compile_plan_sql() {
 
     // Verify manifest structure
     assert_eq!(manifest.model_name, "e2e_test_model");
-    assert_eq!(manifest.kinds.len(), 1);
-    assert!(manifest.kinds.contains_key("orders"));
+    assert_eq!(manifest.data_kinds.len(), 1);
+    assert!(manifest.data_kinds.contains_key("orders"));
 
-    let kind = &manifest.kinds["orders"];
-    assert_eq!(kind.dimensions.len(), 3);
-    assert_eq!(kind.measures.len(), 1);
-    assert!(kind.dimensions.contains_key("date"));
-    assert!(kind.dimensions.contains_key("region"));
-    assert!(kind.dimensions.contains_key("customer"));
-    assert!(kind.measures.contains_key("revenue"));
+    let iface = manifest.data_kinds["orders"].interface();
+    assert_eq!(iface.dimensions.len(), 3);
+    assert_eq!(iface.measures.len(), 1);
+    assert!(iface.dimensions.contains_key("date"));
+    assert!(iface.dimensions.contains_key("region"));
+    assert!(iface.dimensions.contains_key("customer"));
+    assert!(iface.measures.contains_key("revenue"));
 
     // Step 2: Build a query request
     let request = ResolvedQueryRequest {

@@ -387,6 +387,7 @@ impl CatalogProvider for IcebergRestCatalog {
             snapshot_id: meta.current_snapshot_id,
             format_version: meta.format_version,
             location: meta.location.clone(),
+            format: Some(semstrait_core::DataFormat::Iceberg),
             properties: meta.properties.clone().unwrap_or_default(),
         }))
     }

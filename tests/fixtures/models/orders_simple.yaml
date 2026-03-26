@@ -20,4 +20,6 @@ semantic_model:
               date: order_date
               revenue: amount
             storage:
-              path: db.orders
+              format: parquet
+              paths:
+                - db.orders

@@ -59,49 +59,49 @@ The manifest is **conceptually a semantic graph** -- datasets, dimensions, measu
 
 ### 2.1 Replacing `CompiledKind`
 
-The current `CompiledKind` is a generic container with a `CompiledKindType` enum discriminant. This is misleading -- "kind" doesn't communicate what the entity *is*. The new design replaces it with a **`DataKind` hierarchy**:
+`CompiledKind` was a generic container with a `CompiledKindType` enum discriminant. It has been replaced by a **`DataKind` 4-variant enum** where each variant is a dedicated struct with embedded acceleration indices:
 
 ```
-DataKind (enum)
-|-- CommonDataset    -- single dataset, direct query, no routing
-|-- ComplexDataKind  -- multi-dataset composition
-    |-- strategy: KindStrategy
-        |-- Grainset   -- temporal grain routing
-        |-- Unionset   -- vertical stacking (UNION ALL/DISTINCT)
-        |-- Joinset    -- horizontal joining (BFS join chains)
+DataKind (enum, serde tag = "kind_type")
+|-- Dataset(Box<DatasetKind>)      -- single dataset, direct Scan → Agg → Project
+|-- Grainset(Box<GrainsetKind>)    -- grain-based covering dataset selection
+|-- Unionset(Box<UnionsetKind>)    -- UNION ALL across multiple datasets
+|-- Joinset(Box<JoinsetKind>)      -- BFS join chain from anchor dataset
 ```
+
+All variants embed `KindInterface` via composition (shared semantic fields: dimensions, measures, metrics, keys, filters, domain, temporal_dim). Multi-dataset variants also embed acceleration structures (CoverageIndex, DimensionIndex, etc.).
 
 ### 2.2 `DataKind` Enum
 
 ```rust
-/// A queryable semantic entity -- replaces `CompiledKind`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind_class", rename_all = "snake_case")]
+#[serde(tag = "kind_type", rename_all = "snake_case")]
 pub enum DataKind {
-    /// Single dataset, direct query. No dataset routing logic.
-    CommonDataset(CommonDataset),
-    /// Multi-dataset composition (grainset/unionset/joinset).
-    ComplexDataKind(ComplexDataKind),
+    Dataset(Box<DatasetKind>),
+    Unionset(Box<UnionsetKind>),
+    Grainset(Box<GrainsetKind>),
+    Joinset(Box<JoinsetKind>),
 }
 ```
 
 ### 2.3 `SemanticInterface` Trait
 
-Shared interface across all queryable entities. The planner works through this trait for operations common to all data kinds (dimension lookup, measure lookup, filter access).
+Shared interface across all queryable entities. Default methods delegate to `KindInterface`.
 
 ```rust
 pub trait SemanticInterface {
-    fn dimensions(&self) -> &IndexMap<String, CompiledDimension>;
-    fn measures(&self) -> &IndexMap<String, CompiledMeasure>;
-    fn metrics(&self) -> &IndexMap<String, CompiledMetric>;
-    fn filters(&self) -> &[CompiledFilter];
-    fn keys(&self) -> Option<&Keys>;
-    fn domain(&self) -> Option<&[String]>;
-    fn temporal_dimension(&self) -> Option<&str>;
+    fn interface(&self) -> &KindInterface;
+    fn dimensions(&self) -> &IndexMap<String, CompiledDimension> { .. }
+    fn measures(&self) -> &IndexMap<String, CompiledMeasure> { .. }
+    fn metrics(&self) -> &IndexMap<String, CompiledMetric> { .. }
+    fn filters(&self) -> &[CompiledFilter] { .. }
+    fn keys(&self) -> Option<&Keys> { .. }
+    fn domain(&self) -> Option<&[String]> { .. }
+    fn temporal_dimension(&self) -> Option<&str> { .. }
 }
 ```
 
-Both `CommonDataset` and `ComplexDataKind` implement `SemanticInterface`.
+`DataKind` and all variant structs implement `SemanticInterface`. Multi-dataset variants also implement `MultiDatasetKind` (access to `bindings()`, `coverage_index()`, `dimension_index()`, `metric_order()`).
 
 ### 2.4 `CommonDataset` -- Single-Dataset Fast Path
 

@@ -238,7 +238,8 @@ semantic_model:
           description: "Shopify order line-item detail (anchor — one row per line item with revenue, customer, and attribution)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/shopify/d067774d-2be0-4908-aa83-8d83d043ceba/"
+              paths:
+                - "fs1henp3k8p1hqo/shopify/d067774d-2be0-4908-aa83-8d83d043ceba/"
           column_mapping:
             date: date
             currency: currency
@@ -274,7 +275,8 @@ semantic_model:
           description: "Shopify inventory snapshot (satellite — variant unit cost and stock levels, daily snapshot)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/shopify/d6d7da76-06f3-4b1d-a34c-1286b252e4ef/"
+              paths:
+                - "fs1henp3k8p1hqo/shopify/d6d7da76-06f3-4b1d-a34c-1286b252e4ef/"
             temporal:
               type:
                 snapshot:

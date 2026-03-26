@@ -14,6 +14,7 @@ semstrait-adapter = { workspace = true }
 semstrait-ir = { workspace = true }
 semstrait-sql = { workspace = true }
 semstrait-catalog = { workspace = true }
+semstrait-model = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -46,7 +47,7 @@ duckdb = ["semstrait-connectors/duckdb", "semstrait-adapter/duckdb"]
 polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot", "semstrait-adapter/polyglot"]
 iceberg = ["semstrait-catalog/iceberg", "semstrait-manifest/iceberg"]
 unity = ["semstrait-catalog/unity"]
-aws-secrets = ["semstrait-catalog/aws-secrets", "semstrait-manifest/aws-secrets", "iceberg"]
+aws = ["semstrait-catalog/aws", "semstrait-manifest/aws", "iceberg"]
 trino = ["semstrait-connectors/trino", "semstrait-adapter/trino"]
 spark = ["semstrait-connectors/spark", "semstrait-adapter/spark"]
 

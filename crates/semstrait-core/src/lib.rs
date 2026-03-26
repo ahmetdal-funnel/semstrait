@@ -22,6 +22,7 @@ pub mod grain;
 pub mod constraints;
 pub mod expr;
 pub mod types;
+pub mod format;
 
 // Re-export key types for convenience
 pub use error::{CoreError, SchemaError};
@@ -33,3 +34,4 @@ pub use grain::Grain;
 pub use constraints::{AggregationConstraints, DimensionConstraints, MeasureConstraints};
 pub use expr::{Aggregation, BinaryOp, ColumnRef, Expr, Literal};
 pub use types::GlobPattern;
+pub use format::DataFormat;

@@ -29,4 +29,6 @@ semantic_model:
               transaction_count: id
               avg_amount: amount
             storage:
-              path: warehouse.transactions_daily
+              format: parquet
+              paths:
+                - warehouse.transactions_daily

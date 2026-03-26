@@ -330,7 +330,8 @@ semantic_model:
       ai_context: "Use for Facebook/Meta Ads performance at the adset level — spend, impressions, clicks, conversions (purchases, checkouts, leads, add-to-cart), revenue. Includes campaign, adset, objective, optimization goal, attribution setting, and country."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/facebookads/27f1d45a-97af-4fdd-b590-37c8ef7d1e27/"
+          paths:
+            - "fs1henp3k8p1hqo/facebookads/27f1d45a-97af-4fdd-b590-37c8ef7d1e27/"
       column_mapping:
         date: date
         currency: currency
@@ -545,7 +546,8 @@ semantic_model:
       ai_context: "Use for cross-channel attribution comparison. Shows spend, clicks, impressions, and conversions/revenue under five attribution models: algorithmic (a2), MTA, platform, last-click, first-click. Breakdowns by channel, campaign, country, brand, and conversion event."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/funnel_measurement_performance/28e60e7b-b089-48c3-90fe-4684aea3784d/"
+          paths:
+            - "fs1henp3k8p1hqo/funnel_measurement_performance/28e60e7b-b089-48c3-90fe-4684aea3784d/"
       column_mapping:
         date: date
         currency: currency
@@ -715,7 +717,8 @@ semantic_model:
       ai_context: "Use for GA4 event-level analytics — conversions, event values, purchase revenue by source, medium, campaign, channel grouping, and country. Includes is_conversion_event flag."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/googleanalytics/b3bb7862-2304-4948-8b79-0e841a93b44a/"
+          paths:
+            - "fs1henp3k8p1hqo/googleanalytics/b3bb7862-2304-4948-8b79-0e841a93b44a/"
       column_mapping:
         date: date
         currency: currency
@@ -804,7 +807,8 @@ semantic_model:
       ai_context: "Use for GA4 ecommerce funnel — sessions, new users, add-to-carts, checkouts, purchases, transaction IDs, and revenue. Supports first-touch and session-touch attribution via firstUser and session campaign/source dimensions."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/googleanalytics/d054ffc9-d2df-45a8-868c-e0f3e6a54d71/"
+          paths:
+            - "fs1henp3k8p1hqo/googleanalytics/d054ffc9-d2df-45a8-868c-e0f3e6a54d71/"
       column_mapping:
         date: date
         currency: currency
@@ -965,7 +969,8 @@ semantic_model:
       ai_context: "Use for Klaviyo campaign performance — email/SMS open rates, click-through rates, unsubscribe rates, recipients per campaign. Use for email channel performance analysis."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/klaviyo/7ed22788-866f-4f83-b1f0-6b5e35311f9d/"
+          paths:
+            - "fs1henp3k8p1hqo/klaviyo/7ed22788-866f-4f83-b1f0-6b5e35311f9d/"
       column_mapping:
         date: date
         campaign_id: klaviyo-campaign_id
@@ -1103,7 +1108,8 @@ semantic_model:
       ai_context: "Use for Klaviyo flow (automation) performance — open rates, click rates, bounces, spam reports, placed orders, order value per flow. Supports time-window-specific unique click/open breakdowns (1 day, weekly, monthly)."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/klaviyo/bd7df896-f98f-4fba-b4c2-53efd61c53c1/"
+          paths:
+            - "fs1henp3k8p1hqo/klaviyo/bd7df896-f98f-4fba-b4c2-53efd61c53c1/"
       column_mapping:
         date: date
         currency: currency
@@ -1286,7 +1292,8 @@ semantic_model:
       ai_context: "Use for TikTok Ads performance — spend, impressions (show count), clicks, conversions (complete payments), video engagement (plays, quartile views, average play duration), likes, shares, follows, and profile visits by campaign, adgroup, and ad."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/tiktok/4aff5315-fd23-4e99-bda6-1643cbae12e0/"
+          paths:
+            - "fs1henp3k8p1hqo/tiktok/4aff5315-fd23-4e99-bda6-1643cbae12e0/"
       column_mapping:
         date: date
         currency: currency
@@ -1638,7 +1645,8 @@ semantic_model:
         primary: [ticket_id]
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/29c47a4b-a6d4-41df-b54d-aa815a5edc2e/"
+          paths:
+            - "fs1henp3k8p1hqo/custom_alpinestars_gorgias/29c47a4b-a6d4-41df-b54d-aa815a5edc2e/"
       column_mapping:
         date: date
         ticket_id: custom_alpinestars_gorgias-ticket_id
@@ -1729,7 +1737,8 @@ semantic_model:
       ai_context: "Use for daily Gorgias support KPIs — new tickets, closed tickets, replied tickets, one-touch tickets, messages sent/received, median first response time, and median resolution time. Also includes delta (change vs. prior period) columns."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/b94f1727-b9c6-46b8-837e-4dad2fafbeb9/"
+          paths:
+            - "fs1henp3k8p1hqo/custom_alpinestars_gorgias/b94f1727-b9c6-46b8-837e-4dad2fafbeb9/"
       column_mapping:
         date: date
         total_new_tickets: custom_alpinestars_gorgias-total_new_tickets
@@ -1791,7 +1800,8 @@ semantic_model:
       ai_context: "Use for Gorgias channel volume analysis — how many tickets arrived via each support channel (email, chat, instagram…) per day and how that changed vs. prior period."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/9bd56460-3464-458b-954e-1114e06083e6/"
+          paths:
+            - "fs1henp3k8p1hqo/custom_alpinestars_gorgias/9bd56460-3464-458b-954e-1114e06083e6/"
       column_mapping:
         date: date
         channel: custom_alpinestars_gorgias-channel
@@ -1821,7 +1831,8 @@ semantic_model:
       ai_context: "Use for Gorgias CSAT (customer satisfaction) analysis — survey response rates, score distribution (1–5), and non-response breakdown."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/5e0fa9e7-bc79-49e3-9e0c-6ca6f6c4cf23/"
+          paths:
+            - "fs1henp3k8p1hqo/custom_alpinestars_gorgias/5e0fa9e7-bc79-49e3-9e0c-6ca6f6c4cf23/"
       column_mapping:
         date: date
         total_sent: custom_alpinestars_gorgias-total_sent
@@ -1895,7 +1906,8 @@ semantic_model:
             cardinality: many_to_one
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/c996cb8a-5260-457f-a7bd-ca2e12d8c8eb/"
+          paths:
+            - "fs1henp3k8p1hqo/custom_alpinestars_gorgias/c996cb8a-5260-457f-a7bd-ca2e12d8c8eb/"
       column_mapping:
         date: date
         ticket_id: custom_alpinestars_gorgias-ticket_id
@@ -2169,7 +2181,8 @@ semantic_model:
           description: "Adwords campaign performance + conversions (account 1)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/31952b77-699e-45ed-8982-5ef91d4bb613/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/31952b77-699e-45ed-8982-5ef91d4bb613/"
           column_mapping:
             date: date
             campaign_name: adwords-campaign
@@ -2215,7 +2228,8 @@ semantic_model:
           description: "Adwords campaign performance + conversions (account 2)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/71f37169-bfc8-449a-80be-e1ec82633fc3/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/71f37169-bfc8-449a-80be-e1ec82633fc3/"
           column_mapping:
             date: date
             campaign_name: adwords-campaign
@@ -2261,7 +2275,8 @@ semantic_model:
           description: "Adwords campaign performance + conversions (account 3)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/e13fbc92-cb8b-499c-9011-b5e0ae72b5f4/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/e13fbc92-cb8b-499c-9011-b5e0ae72b5f4/"
           column_mapping:
             date: date
             campaign_name: adwords-campaign
@@ -2307,7 +2322,8 @@ semantic_model:
           description: "Adwords campaign performance + conversions (account 4)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/e329a345-294b-4dff-81e3-8b1cf3a4f887/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/e329a345-294b-4dff-81e3-8b1cf3a4f887/"
           column_mapping:
             date: date
             campaign_name: adwords-campaign
@@ -2353,7 +2369,8 @@ semantic_model:
           description: "Adwords campaign performance + conversions (account 5)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/29ec81d6-caa9-4aa5-a737-f6a951f39496/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/29ec81d6-caa9-4aa5-a737-f6a951f39496/"
           column_mapping:
             date: date
             campaign_name: adwords-campaign
@@ -2399,7 +2416,8 @@ semantic_model:
           description: "Adwords campaign performance + conversions (account 6)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/317f0b1b-2c44-4e35-902e-3d3af8195aec/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/317f0b1b-2c44-4e35-902e-3d3af8195aec/"
           column_mapping:
             date: date
             campaign_name: adwords-campaign
@@ -2483,7 +2501,8 @@ semantic_model:
           description: "Keyword click attribution (account 1)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/2bfdf5a9-97f2-4fe0-aeba-b6bcde2f9692/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/2bfdf5a9-97f2-4fe0-aeba-b6bcde2f9692/"
           column_mapping:
             date: date
             click_id: adwords-click_id
@@ -2498,7 +2517,8 @@ semantic_model:
           description: "Keyword click attribution (account 2)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/566e88d4-15c2-480e-9c00-a5251610ef23/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/566e88d4-15c2-480e-9c00-a5251610ef23/"
           column_mapping:
             date: date
             click_id: adwords-click_id
@@ -2513,7 +2533,8 @@ semantic_model:
           description: "Keyword click attribution (account 3)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/728b558f-ccd5-4615-a345-de5949793f2b/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/728b558f-ccd5-4615-a345-de5949793f2b/"
           column_mapping:
             date: date
             click_id: adwords-click_id
@@ -2528,7 +2549,8 @@ semantic_model:
           description: "Keyword click attribution (account 4)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/8f68ac10-7677-4816-93e3-033ddec451e6/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/8f68ac10-7677-4816-93e3-033ddec451e6/"
           column_mapping:
             date: date
             click_id: adwords-click_id
@@ -2543,7 +2565,8 @@ semantic_model:
           description: "Keyword click attribution (account 5)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/e1c1188a-8be9-4aa1-bc41-91671e3a7c5a/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/e1c1188a-8be9-4aa1-bc41-91671e3a7c5a/"
           column_mapping:
             date: date
             click_id: adwords-click_id
@@ -2558,7 +2581,8 @@ semantic_model:
           description: "Keyword click attribution (account 6)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/adwords/e5461b63-cc97-4ad3-8bd3-d25174c3a2b3/"
+              paths:
+                - "fs1henp3k8p1hqo/adwords/e5461b63-cc97-4ad3-8bd3-d25174c3a2b3/"
           column_mapping:
             date: date
             click_id: adwords-click_id
@@ -2758,7 +2782,8 @@ semantic_model:
           description: "Bing campaign performance (account 1)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/bing/30c07d4c-686c-46f2-bbbc-7b0ebc8ae68b/"
+              paths:
+                - "fs1henp3k8p1hqo/bing/30c07d4c-686c-46f2-bbbc-7b0ebc8ae68b/"
           column_mapping:
             date: date
             currency: currency
@@ -2804,7 +2829,8 @@ semantic_model:
           description: "Bing campaign performance (account 2)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/bing/4b6fd23d-482b-4615-ba02-1b328a855753/"
+              paths:
+                - "fs1henp3k8p1hqo/bing/4b6fd23d-482b-4615-ba02-1b328a855753/"
           column_mapping:
             date: date
             currency: currency
@@ -2850,7 +2876,8 @@ semantic_model:
           description: "Bing campaign performance (account 3)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/bing/5326ea55-81e9-4376-992d-aa0de8a402e0/"
+              paths:
+                - "fs1henp3k8p1hqo/bing/5326ea55-81e9-4376-992d-aa0de8a402e0/"
           column_mapping:
             date: date
             currency: currency
@@ -2896,7 +2923,8 @@ semantic_model:
           description: "Bing campaign performance (account 4)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/bing/8cfb5d40-1553-4c6f-9cee-319e2463b897/"
+              paths:
+                - "fs1henp3k8p1hqo/bing/8cfb5d40-1553-4c6f-9cee-319e2463b897/"
           column_mapping:
             date: date
             currency: currency
@@ -2942,7 +2970,8 @@ semantic_model:
           description: "Bing campaign performance (account 5)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/bing/a9dd55dc-39ad-44b9-9d84-f6a48cae3f05/"
+              paths:
+                - "fs1henp3k8p1hqo/bing/a9dd55dc-39ad-44b9-9d84-f6a48cae3f05/"
           column_mapping:
             date: date
             currency: currency
@@ -2988,7 +3017,8 @@ semantic_model:
           description: "Bing campaign performance (account 6)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/bing/fa85fadf-9e40-4c1a-ace7-be6621a3e42a/"
+              paths:
+                - "fs1henp3k8p1hqo/bing/fa85fadf-9e40-4c1a-ace7-be6621a3e42a/"
           column_mapping:
             date: date
             currency: currency
@@ -3185,7 +3215,8 @@ semantic_model:
           description: "Impact conversion detail (anchor)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/impact/8da22144-bc36-4656-927a-26ae430da6c4/"
+              paths:
+                - "fs1henp3k8p1hqo/impact/8da22144-bc36-4656-927a-26ae430da6c4/"
           column_mapping:
             date: date
             currency: currency
@@ -3217,7 +3248,8 @@ semantic_model:
           description: "Impact campaign performance (satellite — campaign metadata only)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/impact/68028aea-3a3b-48c8-b7b8-fc9846979a75/"
+              paths:
+                - "fs1henp3k8p1hqo/impact/68028aea-3a3b-48c8-b7b8-fc9846979a75/"
           column_mapping:
             campaign_id: impact-campaign_id
             network: impact-network
@@ -3427,7 +3459,8 @@ semantic_model:
           description: "Shopify order line-item detail (anchor)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/shopify/d067774d-2be0-4908-aa83-8d83d043ceba/"
+              paths:
+                - "fs1henp3k8p1hqo/shopify/d067774d-2be0-4908-aa83-8d83d043ceba/"
           column_mapping:
             date: date
             currency: currency
@@ -3462,7 +3495,8 @@ semantic_model:
           description: "Shopify inventory snapshot (satellite — unit cost and stock)"
           extras:
             storage:
-              path: "fs1henp3k8p1hqo/shopify/d6d7da76-06f3-4b1d-a34c-1286b252e4ef/"
+              paths:
+                - "fs1henp3k8p1hqo/shopify/d6d7da76-06f3-4b1d-a34c-1286b252e4ef/"
             temporal:
               type:
                 snapshot:

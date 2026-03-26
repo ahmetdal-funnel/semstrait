@@ -180,7 +180,7 @@ mod tests {
             CompiledDimension {
                 name: "date".to_string(),
                 description: None,
-                data_type: "string".to_string(),
+                data_type: semstrait_core::DataType::Utf8,
                 dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
                     enum_values: None,
                 }),
@@ -191,7 +191,7 @@ mod tests {
             CompiledDimension {
                 name: "region".to_string(),
                 description: None,
-                data_type: "string".to_string(),
+                data_type: semstrait_core::DataType::Utf8,
                 dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
                     enum_values: None,
                 }),
@@ -204,7 +204,7 @@ mod tests {
             CompiledMeasure {
                 name: "revenue".to_string(),
                 description: None,
-                data_type: "float64".to_string(),
+                data_type: semstrait_core::DataType::Float64,
                 agg: None,
                 expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
                 expr_source: "SUM(amount)".to_string(),
@@ -235,7 +235,7 @@ mod tests {
             CompiledDimension {
                 name: "customer_name".to_string(),
                 description: None,
-                data_type: "string".to_string(),
+                data_type: semstrait_core::DataType::Utf8,
                 dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
                     enum_values: None,
                 }),

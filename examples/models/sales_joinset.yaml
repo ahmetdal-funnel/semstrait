@@ -39,21 +39,24 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: warehouse.orders
+              paths:
+                - warehouse.orders
 
         - name: customers
           extras:
             column_mapping:
               customer_name: name
             storage:
-              path: warehouse.customers
+              paths:
+                - warehouse.customers
 
         - name: products
           extras:
             column_mapping:
               product_category: category
             storage:
-              path: warehouse.products
+              paths:
+                - warehouse.products
 
       relationships:
         - name: orders_to_customers

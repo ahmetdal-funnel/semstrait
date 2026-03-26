@@ -28,7 +28,7 @@ async-trait = "0.1"
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
-# AWS (optional, behind aws-secrets feature)
+# AWS (optional, behind aws feature)
 aws-config = { version = "1.8" }
 aws-credential-types = { version = "1.2" }
 aws-sdk-secretsmanager = { version = "1.103" }
@@ -84,7 +84,7 @@ duckdb = ["semstrait-connectors/duckdb", "semstrait-api/duckdb"]
 polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot", "semstrait-api/polyglot"]
 iceberg = ["semstrait-api/iceberg"]
 unity = ["semstrait-api/unity"]
-aws-secrets = ["semstrait-api/aws-secrets"]
+aws = ["semstrait-api/aws"]
 trino = ["semstrait-connectors/trino", "semstrait-api/trino"]
 spark = ["semstrait-connectors/spark", "semstrait-api/spark"]
 

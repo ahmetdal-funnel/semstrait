@@ -51,6 +51,10 @@ impl PlanNode {
 pub struct ScanNode {
     pub meta: NodeMeta,
     pub table_name: String,
+    /// Fully resolved physical location (populated after source resolution).
+    pub location: Option<String>,
+    /// Data format (populated after source resolution).
+    pub format: Option<semstrait_core::DataFormat>,
     pub projection: Vec<String>,
 }
 

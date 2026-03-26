@@ -22,9 +22,10 @@ impl ConstraintEvaluator {
         request: &ResolvedQueryRequest,
         manifest: &CompiledManifest,
     ) -> Result<(), PlannerError> {
-        let kind = manifest
-            .get_kind(&request.entity_name)
+        let data_kind = manifest
+            .resolve(&request.entity_name)
             .ok_or_else(|| PlannerError::KindNotFound(request.entity_name.clone()))?;
+        let iface = data_kind.interface();
 
         // Build the query scope: all dimensions in GROUP BY + filter dimensions.
         let mut scope: HashSet<&str> = HashSet::new();
@@ -33,7 +34,7 @@ impl ConstraintEvaluator {
         }
         for filter in &request.filters {
             // If the filter field is a known dimension, add it to scope.
-            if kind.dimensions.contains_key(&filter.field) {
+            if iface.dimensions.contains_key(&filter.field) {
                 scope.insert(filter.field.as_str());
             }
         }
@@ -41,7 +42,7 @@ impl ConstraintEvaluator {
         // Check constraints on each requested measure.
         for measure_name in &request.measures {
             // Check measures first.
-            if let Some(measure) = kind.measures.get(measure_name) {
+            if let Some(measure) = iface.measures.get(measure_name) {
                 if let Some(ref constraints) = measure.constraints {
                     Self::check_dimension_constraints(
                         measure_name,
@@ -57,7 +58,7 @@ impl ConstraintEvaluator {
                 }
             }
             // Then check metrics.
-            else if let Some(metric) = kind.metrics.get(measure_name) {
+            else if let Some(metric) = iface.metrics.get(measure_name) {
                 if let Some(ref constraints) = metric.constraints {
                     Self::check_dimension_constraints(
                         measure_name,

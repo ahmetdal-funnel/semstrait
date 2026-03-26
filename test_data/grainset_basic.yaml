@@ -27,7 +27,8 @@ semantic_model:
               revenue: amount_usd
               order_count: num_orders
             storage:
-              path: warehouse.orders_daily
+              paths:
+                - warehouse.orders_daily
         - name: orders_monthly
           extras:
             column_mapping:
@@ -37,4 +38,5 @@ semantic_model:
               revenue: total_revenue
               order_count: total_orders
             storage:
-              path: warehouse.orders_monthly
+              paths:
+                - warehouse.orders_monthly

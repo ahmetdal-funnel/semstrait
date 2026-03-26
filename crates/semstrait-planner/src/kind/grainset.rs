@@ -10,20 +10,21 @@
 use crate::error::PlannerError;
 use crate::expr_lower;
 use super::{
-    extract_metadata_value, find_temporal_dimension, grain_to_temporal, partition_dimensions,
-    resolve_column_name, resolve_native_grain, KindPlanner, PlanFragment, PlannerContext,
+    extract_metadata_value_binding, grain_to_temporal, partition_dimensions_iface,
+    resolve_native_grain_binding, KindPlanner, PlanFragment, PlannerContext,
 };
-use super::shared::{build_scan_node, infer_aggregation};
+use super::shared;
+use super::shared::{build_scan_node_binding, infer_aggregation_iface};
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::DataType;
 use semstrait_ir::{
-    AggNode, AggregateMeasure, Aggregation, Expr, Field, NodeMeta, PlanNode, ProjectNode,
+    AggNode, AggregateMeasure, Expr, Field, NodeMeta, PlanNode, ProjectNode,
     Schema, UnionNode,
 };
 use semstrait_manifest::{
-    ColumnMappingValue, CompiledKind, CompiledKindDataset, CompiledKindType, LiteralValue,
-    TemporalGrain,
+    KindInterface, TemporalGrain,
 };
+use semstrait_manifest::acceleration::{DataKind, DatasetBinding};
 use std::collections::{HashMap, HashSet};
 
 /// Recursively collect all column references from an Expr tree.
@@ -97,43 +98,50 @@ pub fn collect_column_refs(expr: &Expr, columns: &mut Vec<String>, seen: &mut Ha
 pub struct GrainsetPlanner;
 
 impl KindPlanner for GrainsetPlanner {
-    fn supports(&self, kind_type: &CompiledKindType) -> bool {
-        matches!(kind_type, CompiledKindType::Grainset)
+    fn supports(&self, data_kind: &DataKind) -> bool {
+        matches!(data_kind, DataKind::Grainset(_))
     }
 
     fn resolve(
         &self,
-        kind: &CompiledKind,
+        data_kind: &DataKind,
         request: &ResolvedQueryRequest,
         ctx: &PlannerContext<'_>,
     ) -> Result<PlanFragment, PlannerError> {
-        if kind.datasets.is_empty() {
+        let grainset = match data_kind {
+            DataKind::Grainset(g) => g,
+            _ => return Err(PlannerError::Internal("GrainsetPlanner received non-Grainset DataKind".into())),
+        };
+        let iface = &grainset.interface;
+        let bindings = &grainset.bindings;
+
+        if bindings.is_empty() {
             return Err(PlannerError::NoCoveringDataset {
-                kind: kind.name.clone(),
+                kind: iface.name.clone(),
                 reason: "grainset kind has no datasets".to_string(),
             });
         }
 
         // Determine requested temporal grain.
-        let temporal_dim = find_temporal_dimension(kind);
+        let temporal_dim = iface.find_temporal_dimension();
         let request_grain = request.grain.map(grain_to_temporal);
 
         // Step 1: Prune datasets.
-        let eligible = prune_datasets(kind, request, temporal_dim, request_grain)?;
+        let eligible = prune_datasets(iface, bindings, request, temporal_dim, request_grain)?;
 
         if eligible.is_empty() {
             return Err(PlannerError::NoCoveringDataset {
-                kind: kind.name.clone(),
+                kind: iface.name.clone(),
                 reason: "no datasets remain after grain/coverage pruning".to_string(),
             });
         }
 
         // Separate requested names into actual measures vs metrics.
-        let (measure_names, metric_names) = classify_requested_measures(kind, &request.measures);
+        let (measure_names, metric_names) = classify_requested_measures(iface, &request.measures);
 
         // Step 2: Group by grain and assign measures/metrics.
         let assignments = assign_to_grain_groups(
-            kind,
+            iface,
             &eligible,
             temporal_dim,
             request_grain,
@@ -146,16 +154,16 @@ impl KindPlanner for GrainsetPlanner {
         if assignments.len() == 1 {
             let a = &assignments[0];
             let covers_all = request.measures.iter().all(|m| {
-                a.dataset.extras.column_mapping.contains_key(m)
-                    || kind.metrics.contains_key(m)
+                a.binding.column_mapping.contains_key(m)
+                    || iface.metrics.contains_key(m)
             });
             if covers_all {
-                return build_single_dataset_plan(kind, request, a.dataset, ctx, temporal_dim, request_grain);
+                return build_single_dataset_plan(iface, request, a.binding, ctx, temporal_dim, request_grain);
             }
         }
 
         // Step 3: Build UNION ALL plan.
-        build_union_plan(kind, request, &assignments, ctx, temporal_dim, request_grain)
+        build_union_plan(iface, request, &assignments, ctx, temporal_dim, request_grain)
     }
 }
 
@@ -163,19 +171,20 @@ impl KindPlanner for GrainsetPlanner {
 
 /// Prune datasets by grain eligibility and zero-coverage.
 fn prune_datasets<'a>(
-    kind: &'a CompiledKind,
+    iface: &KindInterface,
+    bindings: &'a [DatasetBinding],
     request: &ResolvedQueryRequest,
     temporal_dim: Option<&str>,
     request_grain: Option<TemporalGrain>,
-) -> Result<Vec<&'a CompiledKindDataset>, PlannerError> {
-    let (_, regular_dims) = partition_dimensions(&request.dimensions, kind);
+) -> Result<Vec<&'a DatasetBinding>, PlannerError> {
+    let (_, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
 
-    let mut eligible: Vec<&CompiledKindDataset> = Vec::new();
+    let mut eligible: Vec<&DatasetBinding> = Vec::new();
 
-    for ds in &kind.datasets {
+    for binding in bindings {
         // 1c. Grain eligibility: exclude datasets whose native grain is coarser than requested.
         if let (Some(rg), Some(td_name)) = (request_grain, temporal_dim) {
-            if let Some(native) = resolve_native_grain(ds, td_name, kind) {
+            if let Some(native) = resolve_native_grain_binding(binding, td_name, iface) {
                 if native.coarseness() > rg.coarseness() {
                     continue; // Can't disaggregate.
                 }
@@ -183,12 +192,20 @@ fn prune_datasets<'a>(
         }
 
         // 1d. Zero-coverage: exclude datasets that cover no requested semantics.
-        let mapping = &ds.extras.column_mapping;
+        // Expand metric names to their constituent measures for coverage check.
+        let mapping = &binding.column_mapping;
+        let expanded_measures: Vec<String> = request.measures.iter().flat_map(|m| {
+            if let Some(metric) = iface.metrics.get(m) {
+                extract_metric_constituents(metric)
+            } else {
+                vec![m.clone()]
+            }
+        }).collect();
         let covers_any = regular_dims.iter().any(|d| mapping.contains_key(d))
-            || request.measures.iter().any(|m| mapping.contains_key(m));
+            || expanded_measures.iter().any(|m| mapping.contains_key(m));
 
         if covers_any {
-            eligible.push(ds);
+            eligible.push(binding);
         }
     }
 
@@ -199,20 +216,20 @@ fn prune_datasets<'a>(
 
 /// A dataset with its assigned measures for a specific grain group.
 struct DatasetAssignment<'a> {
-    dataset: &'a CompiledKindDataset,
+    binding: &'a DatasetBinding,
     measures: Vec<String>,
     native_grain: Option<TemporalGrain>,
 }
 
 /// Separate requested measure names into actual measures vs metric names.
 fn classify_requested_measures(
-    kind: &CompiledKind,
+    iface: &KindInterface,
     requested: &[String],
 ) -> (Vec<String>, Vec<String>) {
     let mut measures = Vec::new();
     let mut metrics = Vec::new();
     for name in requested {
-        if kind.metrics.contains_key(name) {
+        if iface.metrics.contains_key(name) {
             metrics.push(name.clone());
         } else {
             measures.push(name.clone());
@@ -223,24 +240,24 @@ fn classify_requested_measures(
 
 /// Group eligible datasets by native grain, assign measures/metrics to cheapest group.
 fn assign_to_grain_groups<'a>(
-    kind: &CompiledKind,
-    eligible: &[&'a CompiledKindDataset],
+    iface: &KindInterface,
+    eligible: &[&'a DatasetBinding],
     temporal_dim: Option<&str>,
     _request_grain: Option<TemporalGrain>,
     measure_names: &[String],
     metric_names: &[String],
 ) -> Result<Vec<DatasetAssignment<'a>>, PlannerError> {
     // Group datasets by native grain (None = no temporal dimension).
-    let mut grain_groups: HashMap<Option<TemporalGrain>, Vec<&'a CompiledKindDataset>> =
+    let mut grain_groups: HashMap<Option<TemporalGrain>, Vec<&'a DatasetBinding>> =
         HashMap::new();
 
-    for ds in eligible {
-        let native = temporal_dim.and_then(|td| resolve_native_grain(ds, td, kind));
-        grain_groups.entry(native).or_default().push(ds);
+    for binding in eligible {
+        let native = temporal_dim.and_then(|td| resolve_native_grain_binding(binding, td, iface));
+        grain_groups.entry(native).or_default().push(binding);
     }
 
     // Sort grain groups by coarseness (coarsest first = cheapest).
-    let mut sorted_groups: Vec<(Option<TemporalGrain>, Vec<&'a CompiledKindDataset>)> =
+    let mut sorted_groups: Vec<(Option<TemporalGrain>, Vec<&'a DatasetBinding>)> =
         grain_groups.into_iter().collect();
     sorted_groups.sort_by_key(|(g, _)| std::cmp::Reverse(g.map_or(0, |g| g.coarseness())));
 
@@ -249,8 +266,8 @@ fn assign_to_grain_groups<'a>(
 
     for measure_name in measure_names {
         let mut assigned = false;
-        for (grain, datasets) in &sorted_groups {
-            if datasets.iter().any(|ds| ds.extras.column_mapping.contains_key(measure_name)) {
+        for (grain, bindings) in &sorted_groups {
+            if bindings.iter().any(|b| b.column_mapping.contains_key(measure_name)) {
                 measure_to_group.insert(measure_name.clone(), *grain);
                 assigned = true;
                 break;
@@ -258,7 +275,7 @@ fn assign_to_grain_groups<'a>(
         }
         if !assigned {
             return Err(PlannerError::NoCoveringDataset {
-                kind: kind.name.clone(),
+                kind: iface.name.clone(),
                 reason: format!(
                     "measure '{}' cannot be provided — no eligible dataset maps it",
                     measure_name
@@ -269,12 +286,12 @@ fn assign_to_grain_groups<'a>(
 
     // For metrics, find the cheapest group where all constituent measures are available.
     for metric_name in metric_names {
-        if let Some(metric) = kind.metrics.get(metric_name) {
+        if let Some(metric) = iface.metrics.get(metric_name) {
             let constituent_measures = extract_metric_constituents(metric);
             let mut assigned = false;
-            for (grain, datasets) in &sorted_groups {
+            for (grain, bindings) in &sorted_groups {
                 let group_covers_all = constituent_measures.iter().all(|cm| {
-                    datasets.iter().any(|ds| ds.extras.column_mapping.contains_key(cm))
+                    bindings.iter().any(|b| b.column_mapping.contains_key(cm))
                 });
                 if group_covers_all {
                     // Assign all constituent measures of this metric to this group.
@@ -287,7 +304,7 @@ fn assign_to_grain_groups<'a>(
             }
             if !assigned {
                 return Err(PlannerError::NoCoveringDataset {
-                    kind: kind.name.clone(),
+                    kind: iface.name.clone(),
                     reason: format!(
                         "metric '{}' cannot be provided — constituent measures split across incompatible grain groups",
                         metric_name
@@ -301,7 +318,7 @@ fn assign_to_grain_groups<'a>(
     let mut dataset_assignments: Vec<DatasetAssignment<'a>> = Vec::new();
     let mut assigned_measures: HashSet<String> = HashSet::new();
 
-    for (grain, datasets) in &sorted_groups {
+    for (grain, bindings) in &sorted_groups {
         // Measures assigned to this grain group.
         let group_measures: Vec<String> = measure_to_group
             .iter()
@@ -315,10 +332,10 @@ fn assign_to_grain_groups<'a>(
 
         // Distribute measures across datasets in this group.
         // Each measure goes to every dataset that maps it (for UNION ALL aggregation).
-        for ds in datasets {
+        for binding in bindings {
             let ds_measures: Vec<String> = group_measures
                 .iter()
-                .filter(|m| ds.extras.column_mapping.contains_key(m.as_str()))
+                .filter(|m| binding.column_mapping.contains_key(m.as_str()))
                 .cloned()
                 .collect();
 
@@ -327,7 +344,7 @@ fn assign_to_grain_groups<'a>(
                     assigned_measures.insert(m.clone());
                 }
                 dataset_assignments.push(DatasetAssignment {
-                    dataset: ds,
+                    binding,
                     measures: ds_measures,
                     native_grain: *grain,
                 });
@@ -339,11 +356,49 @@ fn assign_to_grain_groups<'a>(
 }
 
 /// Extract constituent measure names from a metric's expression.
-fn extract_metric_constituents(metric: &semstrait_manifest::CompiledMetric) -> Vec<String> {
+///
+/// Walks the pre-lowering expr tree, collecting both `Column` and `EntityRef`
+/// leaf names. Uses `&str` borrows from the expr tree for dedup — the tree
+/// outlives this call so no clones are needed for the seen-set.
+pub fn extract_metric_constituents(metric: &semstrait_manifest::CompiledMetric) -> Vec<String> {
     let mut names = Vec::new();
     let mut seen = HashSet::new();
-    collect_column_refs(&metric.expr, &mut names, &mut seen);
+    collect_leaf_refs(&metric.expr, &mut names, &mut seen);
     names
+}
+
+/// Collect leaf entity/column names from an expression tree (borrow-based dedup).
+///
+/// Unlike `collect_column_refs` (which serves the post-lowering scan-column path
+/// and only handles `Expr::Column`), this handles both `Column` and `EntityRef` —
+/// the two forms that appear in pre-lowering metric expressions.
+fn collect_leaf_refs<'a>(expr: &'a Expr, out: &mut Vec<String>, seen: &mut HashSet<&'a str>) {
+    match expr {
+        Expr::Column(col) => {
+            if seen.insert(&col.name) {
+                out.push(col.name.clone());
+            }
+        }
+        Expr::EntityRef(er) => {
+            if seen.insert(&er.name) {
+                out.push(er.name.clone());
+            }
+        }
+        Expr::BinaryOp(bin) => {
+            collect_leaf_refs(&bin.left, out, seen);
+            collect_leaf_refs(&bin.right, out, seen);
+        }
+        Expr::Case(case) => {
+            for wc in &case.when_then {
+                collect_leaf_refs(&wc.condition, out, seen);
+                collect_leaf_refs(&wc.result, out, seen);
+            }
+            if let Some(e) = &case.else_expr {
+                collect_leaf_refs(e, out, seen);
+            }
+        }
+        _ => {}
+    }
 }
 
 // ─────────────────── Step 3: Build Plan ──────────────────────
@@ -356,16 +411,16 @@ enum DimSource {
 }
 
 /// Build the unified output schema for the UNION plan.
-fn build_unified_schema(request: &ResolvedQueryRequest) -> Schema {
+fn build_unified_schema(request: &ResolvedQueryRequest, iface: &KindInterface) -> Schema {
     let fields: Vec<Field> = request
         .dimensions
         .iter()
-        .map(|name| Field::new(name.clone(), DataType::Utf8))
+        .map(|name| Field::new(name.clone(), iface.resolve_dim_type(name)))
         .chain(
             request
                 .measures
                 .iter()
-                .map(|name| Field::new(name.clone(), DataType::Float64)),
+                .map(|name| Field::new(name.clone(), iface.resolve_measure_type(name))),
         )
         .collect();
     Schema::new(fields)
@@ -373,16 +428,16 @@ fn build_unified_schema(request: &ResolvedQueryRequest) -> Schema {
 
 /// Build a single-dataset plan with optional grain rollup.
 fn build_single_dataset_plan(
-    kind: &CompiledKind,
+    iface: &KindInterface,
     request: &ResolvedQueryRequest,
-    dataset: &CompiledKindDataset,
+    binding: &DatasetBinding,
     ctx: &PlannerContext<'_>,
     temporal_dim: Option<&str>,
     request_grain: Option<TemporalGrain>,
 ) -> Result<PlanFragment, PlannerError> {
     // Determine if grain rollup is needed.
     let needs_rollup = if let (Some(rg), Some(td)) = (request_grain, temporal_dim) {
-        if let Some(native) = resolve_native_grain(dataset, td, kind) {
+        if let Some(native) = resolve_native_grain_binding(binding, td, iface) {
             native.coarseness() < rg.coarseness()
         } else {
             false
@@ -393,104 +448,87 @@ fn build_single_dataset_plan(
 
     // Use the shared single-dataset builder, but with grain rollup if needed.
     if needs_rollup {
-        build_single_dataset_with_rollup(kind, request, dataset, ctx, temporal_dim.unwrap(), request_grain.unwrap())
+        build_single_dataset_with_rollup(iface, request, binding, ctx, temporal_dim.unwrap(), request_grain.unwrap())
     } else {
-        super::shared::build_dataset_plan(kind, request, dataset, ctx, true)
+        shared::build_binding_plan(iface, binding, request, ctx, true)
     }
 }
 
 /// Build a single-dataset plan with DATE_TRUNC grain rollup.
 fn build_single_dataset_with_rollup(
-    kind: &CompiledKind,
+    iface: &KindInterface,
     request: &ResolvedQueryRequest,
-    dataset: &CompiledKindDataset,
+    binding: &DatasetBinding,
     _ctx: &PlannerContext<'_>,
     temporal_dim_name: &str,
     request_grain: TemporalGrain,
 ) -> Result<PlanFragment, PlannerError> {
-    let mapping = &dataset.extras.column_mapping;
+    let mapping = &binding.column_mapping;
 
     let mut scan_columns: Vec<String> = Vec::new();
     let mut scan_seen: HashSet<String> = HashSet::new();
 
-    let (metadata_dims, regular_dims) = partition_dimensions(&request.dimensions, kind);
+    let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
 
     // Map dimensions, applying DATE_TRUNC for the temporal dimension.
     let mut dim_physical: Vec<(String, DimResolve)> = Vec::new();
     let mut metadata_literals: Vec<(String, Expr)> = Vec::new();
 
     for dim_name in &regular_dims {
-        let mv = mapping.get(dim_name).ok_or_else(|| PlannerError::DimensionNotFound {
-            kind: kind.name.clone(),
-            dimension: dim_name.clone(),
-        })?;
-        match mv {
-            ColumnMappingValue::Literal(lit) => {
-                let expr = match lit {
-                    LiteralValue::String(s) => Expr::string(s.clone()),
-                };
-                metadata_literals.push((dim_name.clone(), expr));
+        if let Some(lit_val) = mapping.literals.get(dim_name) {
+            metadata_literals.push((dim_name.clone(), Expr::string(lit_val.clone())));
+        } else if let Some(phys) = mapping.physical.get(dim_name) {
+            if dim_name == temporal_dim_name {
+                dim_physical.push((dim_name.clone(), DimResolve::DateTrunc(phys.clone(), request_grain)));
+            } else {
+                dim_physical.push((dim_name.clone(), DimResolve::Column(phys.clone())));
             }
-            _ => {
-                let phys = resolve_column_name(mv).to_string();
-                if dim_name == temporal_dim_name {
-                    dim_physical.push((dim_name.clone(), DimResolve::DateTrunc(phys.clone(), request_grain)));
-                } else {
-                    dim_physical.push((dim_name.clone(), DimResolve::Column(phys.clone())));
-                }
-                if scan_seen.insert(phys.clone()) {
-                    scan_columns.push(phys);
-                }
+            if scan_seen.insert(phys.clone()) {
+                scan_columns.push(phys.clone());
             }
+        } else {
+            return Err(PlannerError::DimensionNotFound {
+                kind: iface.name.clone(),
+                dimension: dim_name.clone(),
+            });
         }
     }
 
     for (dim_name, meta) in &metadata_dims {
-        let value = extract_metadata_value(meta, dataset).unwrap_or_default();
+        let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
         metadata_literals.push((dim_name.clone(), Expr::string(value)));
     }
 
     // Lower measures.
     let mut lowered_measures: Vec<(String, expr_lower::LoweredMeasure)> = Vec::new();
     for measure_name in &request.measures {
-        if let Some(measure) = kind.measures.get(measure_name) {
+        if let Some(measure) = iface.measures.get(measure_name) {
             let lowered = if let Some(agg) = measure.agg {
-                expr_lower::lower_measure_declarative(measure_name, agg, &measure.expr, mapping, &measure.filters)?
+                expr_lower::lower_measure_declarative_physical(measure_name, agg, &measure.expr, &mapping.physical, &measure.filters)?
             } else {
-                expr_lower::lower_measure_with_filters(measure_name, &measure.expr, mapping, &measure.filters)?
+                expr_lower::lower_measure_with_filters_physical(measure_name, &measure.expr, &mapping.physical, &measure.filters)?
             };
             for agg in &lowered.aggregates {
                 collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
             }
             lowered_measures.push((measure_name.clone(), lowered));
-        } else if kind.metrics.contains_key(measure_name) {
-            let physical = mapping
-                .get(measure_name)
-                .map(resolve_column_name)
-                .unwrap_or(measure_name.as_str());
-            let phys = physical.to_string();
-            let lowered = expr_lower::LoweredMeasure {
-                aggregates: vec![AggregateMeasure {
-                    function: Aggregation::Sum,
-                    expr: Expr::column(phys.clone()),
-                    distinct: false,
-                }],
-                post_agg_expr: Expr::column(measure_name.clone()),
-            };
-            if scan_seen.insert(phys.clone()) {
-                scan_columns.push(phys);
+        } else if iface.metrics.contains_key(measure_name) {
+            let metric = &iface.metrics[measure_name];
+            let lowered = expr_lower::lower_metric_iface(measure_name, metric, iface, binding, 4)?;
+            for agg in &lowered.aggregates {
+                collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
             }
             lowered_measures.push((measure_name.clone(), lowered));
         } else {
             return Err(PlannerError::MeasureNotFound {
-                kind: kind.name.clone(),
+                kind: iface.name.clone(),
                 measure: measure_name.clone(),
             });
         }
     }
 
     // Build Scan (multi-source aware).
-    let scan = build_scan_node(dataset, &scan_columns);
+    let scan = build_scan_node_binding(binding, &scan_columns);
 
     // Build Aggregate with DATE_TRUNC in GROUP BY.
     let group_by: Vec<Expr> = dim_physical
@@ -510,13 +548,13 @@ fn build_single_dataset_with_rollup(
 
     let mut agg_fields: Vec<Field> = dim_physical
         .iter()
-        .map(|(semantic, _)| Field::new(semantic.clone(), DataType::Utf8))
+        .map(|(semantic, _)| Field::new(semantic.clone(), iface.resolve_dim_type(semantic)))
         .collect();
     let mut agg_idx = 0;
     for (semantic, lowered) in &lowered_measures {
         for (j, _) in lowered.aggregates.iter().enumerate() {
             if j == 0 {
-                agg_fields.push(Field::new(semantic.clone(), DataType::Float64));
+                agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
             } else {
                 agg_fields.push(Field::new(format!("__agg_{}", agg_idx), DataType::Float64));
             }
@@ -542,7 +580,7 @@ fn build_single_dataset_with_rollup(
         } else {
             project_exprs.push(Expr::column(dim_name.clone()));
         }
-        project_fields.push(Field::new(dim_name.clone(), DataType::Utf8));
+        project_fields.push(Field::new(dim_name.clone(), iface.resolve_dim_type(dim_name)));
     }
     for (_, lowered) in &lowered_measures {
         project_exprs.push(lowered.post_agg_expr.clone());
@@ -550,7 +588,7 @@ fn build_single_dataset_with_rollup(
     project_fields.extend(
         lowered_measures
             .iter()
-            .map(|(name, _)| Field::new(name.clone(), DataType::Float64)),
+            .map(|(name, _)| Field::new(name.clone(), iface.resolve_measure_type(name))),
     );
     let project_schema = Schema::new(project_fields);
 
@@ -575,15 +613,15 @@ enum DimResolve {
 
 /// Build UNION ALL plan across multiple dataset assignments.
 fn build_union_plan(
-    kind: &CompiledKind,
+    iface: &KindInterface,
     request: &ResolvedQueryRequest,
     assignments: &[DatasetAssignment<'_>],
     _ctx: &PlannerContext<'_>,
     temporal_dim: Option<&str>,
     request_grain: Option<TemporalGrain>,
 ) -> Result<PlanFragment, PlannerError> {
-    let unified_schema = build_unified_schema(request);
-    let (metadata_dims, regular_dims) = partition_dimensions(&request.dimensions, kind);
+    let unified_schema = build_unified_schema(request, iface);
+    let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
 
     // All requested measure/metric names for the unified schema.
     let all_measure_names: Vec<&str> = request.measures.iter().map(|s| s.as_str()).collect();
@@ -593,7 +631,7 @@ fn build_union_plan(
         .iter()
         .map(|a| {
             build_union_branch(
-                kind,
+                iface,
                 request,
                 a,
                 &metadata_dims,
@@ -605,6 +643,9 @@ fn build_union_plan(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+
+    // Validate type consistency across branches before UNION.
+    shared::validate_union_types(&branches)?;
 
     // UNION ALL.
     let union_input = if branches.len() == 1 {
@@ -628,7 +669,7 @@ fn build_union_plan(
         .measures
         .iter()
         .map(|name| AggregateMeasure {
-            function: infer_aggregation(kind, name),
+            function: infer_aggregation_iface(iface, name),
             expr: Expr::column(name.clone()),
             distinct: false,
         })
@@ -651,7 +692,7 @@ fn build_union_plan(
 /// Build a single UNION branch for one dataset assignment.
 #[allow(clippy::too_many_arguments)]
 fn build_union_branch(
-    kind: &CompiledKind,
+    iface: &KindInterface,
     _request: &ResolvedQueryRequest,
     assignment: &DatasetAssignment<'_>,
     metadata_dims: &[(String, semstrait_manifest::MetadataDimension)],
@@ -661,8 +702,8 @@ fn build_union_branch(
     temporal_dim: Option<&str>,
     request_grain: Option<TemporalGrain>,
 ) -> Result<PlanNode, PlannerError> {
-    let dataset = assignment.dataset;
-    let mapping = &dataset.extras.column_mapping;
+    let binding = assignment.binding;
+    let mapping = &binding.column_mapping;
 
     let mut scan_columns: Vec<String> = Vec::new();
     let mut scan_seen: HashSet<String> = HashSet::new();
@@ -677,21 +718,12 @@ fn build_union_branch(
     // Resolve regular dimensions.
     let mut dim_sources: Vec<(String, DimSource)> = Vec::new();
     for dim_name in regular_dims {
-        if let Some(mv) = mapping.get(dim_name) {
-            match mv {
-                ColumnMappingValue::Literal(lit) => {
-                    let expr = match lit {
-                        LiteralValue::String(s) => Expr::string(s.clone()),
-                    };
-                    dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(expr)));
-                }
-                _ => {
-                    let phys = resolve_column_name(mv).to_string();
-                    dim_sources.push((dim_name.clone(), DimSource::Physical(phys.clone())));
-                    if scan_seen.insert(phys.clone()) {
-                        scan_columns.push(phys);
-                    }
-                }
+        if let Some(lit_val) = mapping.literals.get(dim_name) {
+            dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(Expr::string(lit_val.clone()))));
+        } else if let Some(phys) = mapping.physical.get(dim_name) {
+            dim_sources.push((dim_name.clone(), DimSource::Physical(phys.clone())));
+            if scan_seen.insert(phys.clone()) {
+                scan_columns.push(phys.clone());
             }
         } else {
             dim_sources.push((dim_name.clone(), DimSource::NullFill));
@@ -701,46 +733,41 @@ fn build_union_branch(
     // Also resolve metadata dimensions.
     let mut meta_lit_sources: Vec<(String, Expr)> = Vec::new();
     for (dim_name, meta) in metadata_dims {
-        let value = extract_metadata_value(meta, dataset).unwrap_or_default();
+        let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
         meta_lit_sources.push((dim_name.clone(), Expr::string(value)));
     }
 
     // Lower measures that this branch covers.
     let mut lowered_measures: Vec<(String, Option<expr_lower::LoweredMeasure>)> = Vec::new();
     for measure_name in all_measure_names {
-        let ds_has_it = assignment.measures.contains(&measure_name.to_string());
-        if ds_has_it {
-            if let Some(measure) = kind.measures.get(*measure_name) {
+        if let Some(measure) = iface.measures.get(*measure_name) {
+            // Direct measure: check if this dataset was assigned it.
+            let ds_has_it = assignment.measures.contains(&measure_name.to_string());
+            if ds_has_it {
                 let lowered = if let Some(agg) = measure.agg {
-                    expr_lower::lower_measure_declarative(
-                        measure_name, agg, &measure.expr, mapping, &measure.filters,
+                    expr_lower::lower_measure_declarative_physical(
+                        measure_name, agg, &measure.expr, &mapping.physical, &measure.filters,
                     )?
                 } else {
-                    expr_lower::lower_measure_with_filters(
-                        measure_name, &measure.expr, mapping, &measure.filters,
+                    expr_lower::lower_measure_with_filters_physical(
+                        measure_name, &measure.expr, &mapping.physical, &measure.filters,
                     )?
                 };
                 for agg_m in &lowered.aggregates {
                     collect_column_refs(&agg_m.expr, &mut scan_columns, &mut scan_seen);
                 }
                 lowered_measures.push((measure_name.to_string(), Some(lowered)));
-            } else if kind.metrics.contains_key(*measure_name) {
-                // Metric: SUM pass-through on constituent column.
-                let physical = mapping
-                    .get(*measure_name)
-                    .map(resolve_column_name)
-                    .unwrap_or(measure_name);
-                let phys = physical.to_string();
-                let lowered = expr_lower::LoweredMeasure {
-                    aggregates: vec![AggregateMeasure {
-                        function: Aggregation::Sum,
-                        expr: Expr::column(phys.clone()),
-                        distinct: false,
-                    }],
-                    post_agg_expr: Expr::column(measure_name.to_string()),
-                };
-                if scan_seen.insert(phys.clone()) {
-                    scan_columns.push(phys);
+            } else {
+                lowered_measures.push((measure_name.to_string(), None));
+            }
+        } else if let Some(metric) = iface.metrics.get(*measure_name) {
+            // Metric: check if all constituent measures are assigned to this dataset.
+            let constituents = extract_metric_constituents(metric);
+            let ds_has_all = constituents.iter().all(|c| assignment.measures.contains(c));
+            if ds_has_all {
+                let lowered = expr_lower::lower_metric_iface(measure_name, metric, iface, binding, 4)?;
+                for agg_m in &lowered.aggregates {
+                    collect_column_refs(&agg_m.expr, &mut scan_columns, &mut scan_seen);
                 }
                 lowered_measures.push((measure_name.to_string(), Some(lowered)));
             } else {
@@ -752,7 +779,7 @@ fn build_union_branch(
     }
 
     // Build Scan (multi-source aware).
-    let scan = build_scan_node(dataset, &scan_columns);
+    let scan = build_scan_node_binding(binding, &scan_columns);
 
     // Build Aggregate node.
     let group_by: Vec<Expr> = dim_sources
@@ -781,7 +808,7 @@ fn build_union_branch(
     let mut agg_fields: Vec<Field> = dim_sources
         .iter()
         .filter_map(|(semantic, src)| match src {
-            DimSource::Physical(_) => Some(Field::new(semantic.clone(), DataType::Utf8)),
+            DimSource::Physical(_) => Some(Field::new(semantic.clone(), iface.resolve_dim_type(semantic))),
             _ => None,
         })
         .collect();
@@ -791,7 +818,7 @@ fn build_union_branch(
         if let Some(l) = lowered {
             for (j, _) in l.aggregates.iter().enumerate() {
                 if j == 0 {
-                    agg_fields.push(Field::new(semantic.clone(), DataType::Float64));
+                    agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
                 } else {
                     agg_fields.push(Field::new(format!("__agg_{}", agg_idx), DataType::Float64));
                 }
@@ -849,28 +876,226 @@ mod tests {
     use indexmap::IndexMap;
     use semstrait_ir::Aggregation;
     use semstrait_manifest::{
-        ColumnMappingValue, CompiledDimension, CompiledKind, CompiledKindDataset,
-        CompiledManifest, CompiledMeasure, DimensionType, KindDatasetExtras,
-        TemporalDimension,
+        CompiledDimension, CompiledMeasure, DimensionType,
     };
+    use semstrait_manifest::acceleration::{
+        CoverageIndex, DimensionIndex, GrainMap, GrainsetKind,
+        ResolvedColumnMapping, TemporalMapping,
+    };
+
+    // ── Test helpers ─────────────────────────────────────────────────
+
+    /// Build a DataKind::Grainset from dimensions, measures, and bindings.
+    fn make_grainset(
+        name: &str,
+        dimensions: IndexMap<String, CompiledDimension>,
+        measures: IndexMap<String, CompiledMeasure>,
+        bindings: Vec<DatasetBinding>,
+    ) -> DataKind {
+        make_grainset_with_metrics(name, dimensions, measures, IndexMap::new(), bindings)
+    }
+
+    fn make_grainset_with_metrics(
+        name: &str,
+        dimensions: IndexMap<String, CompiledDimension>,
+        measures: IndexMap<String, CompiledMeasure>,
+        metrics: IndexMap<String, semstrait_manifest::CompiledMetric>,
+        bindings: Vec<DatasetBinding>,
+    ) -> DataKind {
+        let temporal_dim = dimensions.iter().find_map(|(n, d)| {
+            if matches!(d.dim_type, DimensionType::Temporal(_)) {
+                Some(n.clone())
+            } else {
+                None
+            }
+        });
+        let iface = KindInterface {
+            name: name.to_string(),
+            description: None,
+            dimensions: dimensions.clone(),
+            measures: measures.clone(),
+            metrics,
+            keys: None,
+            filters: vec![],
+            domain: None,
+            temporal_dim: temporal_dim.clone(),
+        };
+        let coverage = CoverageIndex::build(&dimensions, &measures, &bindings);
+        let dimension_index = DimensionIndex::build(&dimensions, &bindings);
+        let grain_map = temporal_dim.as_deref().map(|td| GrainMap::build(td, &bindings));
+
+        DataKind::Grainset(Box::new(GrainsetKind {
+            interface: iface,
+            bindings,
+            coverage_index: coverage,
+            dimension_index,
+            metric_order: None,
+            grain_map,
+        }))
+    }
+
+    /// Build a simple DatasetBinding with physical-only mappings.
+    fn make_binding(name: &str, mappings: Vec<(&str, &str)>) -> DatasetBinding {
+        let physical: IndexMap<String, String> = mappings.into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        DatasetBinding {
+            dataset_name: name.to_string(),
+            column_mapping: ResolvedColumnMapping {
+                physical,
+                literals: HashMap::new(),
+                temporal: HashMap::new(),
+                anchored: HashMap::new(),
+            },
+            resolved_sources: vec![],
+        }
+    }
+
+    /// Build a DatasetBinding with temporal grain info.
+    fn make_temporal_binding(
+        name: &str,
+        mappings: Vec<(&str, &str)>,
+        temporal_dim: &str,
+        grain: Option<TemporalGrain>,
+    ) -> DatasetBinding {
+        let physical: IndexMap<String, String> = mappings.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let temporal_phys = mappings.iter()
+            .find(|(k, _)| *k == temporal_dim)
+            .map(|(_, v)| v.to_string())
+            .unwrap_or_default();
+        let mut temporal = HashMap::new();
+        temporal.insert(
+            temporal_dim.to_string(),
+            TemporalMapping {
+                physical_column: temporal_phys,
+                grain,
+            },
+        );
+        DatasetBinding {
+            dataset_name: name.to_string(),
+            column_mapping: ResolvedColumnMapping {
+                physical,
+                literals: HashMap::new(),
+                temporal,
+                anchored: HashMap::new(),
+            },
+            resolved_sources: vec![],
+        }
+    }
+
+    fn make_categorical_dim(name: &str) -> (String, CompiledDimension) {
+        (
+            name.to_string(),
+            CompiledDimension {
+                name: name.to_string(),
+                description: None,
+                data_type: semstrait_core::DataType::Utf8,
+                dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
+                    enum_values: None,
+                }),
+            },
+        )
+    }
+
+    fn make_temporal_dim(name: &str, grains: Vec<TemporalGrain>) -> (String, CompiledDimension) {
+        (
+            name.to_string(),
+            CompiledDimension {
+                name: name.to_string(),
+                description: None,
+                data_type: semstrait_core::DataType::Date32,
+                dim_type: DimensionType::Temporal(semstrait_manifest::TemporalDimension {
+                    grains,
+                }),
+            },
+        )
+    }
+
+    fn make_sum_measure(name: &str, expr_ref: &str) -> (String, CompiledMeasure) {
+        (
+            name.to_string(),
+            CompiledMeasure {
+                name: name.to_string(),
+                description: None,
+                data_type: semstrait_core::DataType::Float64,
+                agg: Some(Aggregation::Sum),
+                expr: semstrait_core::Expr::entity_ref(expr_ref),
+                expr_source: expr_ref.to_string(),
+                additivity: None,
+                constraints: None,
+                filters: vec![],
+            },
+        )
+    }
+
+    fn make_count_distinct_measure(name: &str, expr_ref: &str) -> (String, CompiledMeasure) {
+        (
+            name.to_string(),
+            CompiledMeasure {
+                name: name.to_string(),
+                description: None,
+                data_type: semstrait_core::DataType::Float64,
+                agg: Some(Aggregation::CountDistinct),
+                expr: semstrait_core::Expr::entity_ref(expr_ref),
+                expr_source: expr_ref.to_string(),
+                additivity: None,
+                constraints: None,
+                filters: vec![],
+            },
+        )
+    }
+
+    fn empty_manifest() -> semstrait_manifest::CompiledManifest {
+        semstrait_manifest::CompiledManifest {
+            version: 1,
+            compiled_at: chrono::Utc::now(),
+            source_hash: "test".to_string(),
+            datasets: IndexMap::new(),
+            kinds: IndexMap::new(),
+            relationships: vec![],
+            model_name: "test".to_string(),
+            model_description: None,
+            data_kinds: IndexMap::new(),
+            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
+            field_index: semstrait_manifest::FieldIndex::default(),
+            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            catalog_snapshot: None,
+        }
+    }
 
     // ── Single-dataset tests ─────────────────────────────────────────
 
     #[test]
     fn test_single_dataset_basic() {
-        let manifest = make_test_manifest();
-        let kind = manifest.get_kind("orders").unwrap();
-        let request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
+        let dimensions: IndexMap<_, _> = vec![
+            make_categorical_dim("date"),
+            make_categorical_dim("region"),
+        ].into_iter().collect();
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("revenue", "amount"),
+        ].into_iter().collect();
+        let binding = make_binding("orders_daily", vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("revenue", "amount"),
+        ]);
 
+        let data_kind = make_grainset("orders", dimensions, measures, vec![binding]);
+        let request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = std::collections::HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &std::collections::HashMap::new(),
+            session: &session,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok(), "single dataset should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -885,19 +1110,49 @@ mod tests {
 
     #[test]
     fn test_metadata_dimension_coverage() {
-        let manifest = make_metadata_manifest();
-        let kind = manifest.get_kind("orders").unwrap();
-        let request = make_test_request("orders", vec!["date", "source_info"], vec!["revenue"]);
+        use semstrait_manifest::{MetadataDimension, PathExtraction};
 
+        let mut dimensions: IndexMap<_, _> = vec![
+            make_categorical_dim("date"),
+        ].into_iter().collect();
+        dimensions.insert(
+            "source_info".to_string(),
+            CompiledDimension {
+                name: "source_info".to_string(),
+                description: None,
+                data_type: semstrait_core::DataType::Utf8,
+                dim_type: DimensionType::Metadata(MetadataDimension {
+                    path: Some(PathExtraction { token: 1 }),
+                    partition: None,
+                }),
+            },
+        );
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("revenue", "amount"),
+        ].into_iter().collect();
+
+        let mut binding = make_binding("orders_daily", vec![
+            ("date", "order_date"),
+            ("revenue", "amount"),
+        ]);
+        binding.resolved_sources = vec![
+            semstrait_manifest::acceleration::ResolvedSource::path("bucket/shopify/data.parquet"),
+        ];
+
+        let data_kind = make_grainset("orders", dimensions, measures, vec![binding]);
+        let request = make_test_request("orders", vec!["date", "source_info"], vec!["revenue"]);
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = std::collections::HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &std::collections::HashMap::new(),
+            session: &session,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok(), "metadata dim should not block: {:?}", result.err());
     }
 
@@ -905,19 +1160,40 @@ mod tests {
 
     #[test]
     fn test_multi_dataset_union_all() {
-        let manifest = make_multi_dataset_manifest();
-        let kind = manifest.get_kind("orders").unwrap();
-        let request = make_test_request("orders", vec!["date", "region"], vec!["cost", "revenue"]);
+        let dimensions: IndexMap<_, _> = vec![
+            make_categorical_dim("date"),
+            make_categorical_dim("region"),
+        ].into_iter().collect();
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("cost", "cost_amount"),
+            make_sum_measure("revenue", "rev_amount"),
+        ].into_iter().collect();
 
+        let binding1 = make_binding("cost_daily", vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("cost", "cost_amount"),
+        ]);
+        let binding2 = make_binding("revenue_daily", vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("revenue", "rev_amount"),
+        ]);
+
+        let data_kind = make_grainset("orders", dimensions, measures, vec![binding1, binding2]);
+        let request = make_test_request("orders", vec!["date", "region"], vec!["cost", "revenue"]);
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = std::collections::HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &std::collections::HashMap::new(),
+            session: &session,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok(), "union plan should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -943,19 +1219,40 @@ mod tests {
 
     #[test]
     fn test_null_fill_unmapped_measures() {
-        let manifest = make_multi_dataset_manifest();
-        let kind = manifest.get_kind("orders").unwrap();
-        let request = make_test_request("orders", vec!["date", "region"], vec!["cost", "revenue"]);
+        let dimensions: IndexMap<_, _> = vec![
+            make_categorical_dim("date"),
+            make_categorical_dim("region"),
+        ].into_iter().collect();
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("cost", "cost_amount"),
+            make_sum_measure("revenue", "rev_amount"),
+        ].into_iter().collect();
 
+        let binding1 = make_binding("cost_daily", vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("cost", "cost_amount"),
+        ]);
+        let binding2 = make_binding("revenue_daily", vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("revenue", "rev_amount"),
+        ]);
+
+        let data_kind = make_grainset("orders", dimensions, measures, vec![binding1, binding2]);
+        let request = make_test_request("orders", vec!["date", "region"], vec!["cost", "revenue"]);
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = std::collections::HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &std::collections::HashMap::new(),
+            session: &session,
         };
 
         let planner = GrainsetPlanner;
-        let fragment = planner.resolve(kind, &request, &ctx).unwrap();
+        let fragment = planner.resolve(&data_kind, &request, &ctx).unwrap();
 
         // Check that branches have NULL-fill for unmapped measures.
         match &fragment.root {
@@ -980,21 +1277,38 @@ mod tests {
 
     #[test]
     fn test_grain_rollup_single_dataset() {
-        let manifest = make_temporal_manifest();
-        let kind = manifest.get_kind("orders").unwrap();
+        let dimensions: IndexMap<_, _> = vec![
+            make_temporal_dim("date", vec![TemporalGrain::Day, TemporalGrain::Week, TemporalGrain::Month]),
+            make_categorical_dim("region"),
+        ].into_iter().collect();
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("revenue", "amount"),
+        ].into_iter().collect();
+
+        let binding = make_temporal_binding(
+            "orders_daily",
+            vec![("date", "order_date"), ("region", "region_name"), ("revenue", "amount")],
+            "date",
+            Some(TemporalGrain::Day),
+        );
+
+        let data_kind = make_grainset("orders", dimensions, measures, vec![binding]);
 
         let mut request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
         request.grain = Some(semstrait_core::Grain::Month);
 
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = std::collections::HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &std::collections::HashMap::new(),
+            session: &session,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok(), "grain rollup should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -1012,22 +1326,58 @@ mod tests {
 
     #[test]
     fn test_grain_pruning_excludes_coarser() {
-        let manifest = make_multi_grain_manifest();
-        let kind = manifest.get_kind("orders").unwrap();
+        let dimensions: IndexMap<_, _> = vec![
+            make_temporal_dim("date", vec![TemporalGrain::Day, TemporalGrain::Month]),
+            make_categorical_dim("region"),
+        ].into_iter().collect();
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("revenue", "amount"),
+            make_count_distinct_measure("unique_customers", "customer_id"),
+        ].into_iter().collect();
+
+        // Daily dataset: maps date(day), region, revenue, unique_customers.
+        let binding1 = make_temporal_binding(
+            "orders_daily",
+            vec![
+                ("date", "order_date"),
+                ("region", "region_name"),
+                ("revenue", "amount"),
+                ("unique_customers", "customer_id"),
+            ],
+            "date",
+            Some(TemporalGrain::Day),
+        );
+
+        // Monthly dataset: maps date(month), region, revenue (no unique_customers).
+        let binding2 = make_temporal_binding(
+            "orders_monthly",
+            vec![
+                ("date", "report_month"),
+                ("region", "region_name"),
+                ("revenue", "monthly_revenue"),
+            ],
+            "date",
+            Some(TemporalGrain::Month),
+        );
+
+        let data_kind = make_grainset("orders", dimensions, measures, vec![binding1, binding2]);
 
         // Request day grain — should exclude monthly dataset.
         let mut request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
         request.grain = Some(semstrait_core::Grain::Day);
 
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = std::collections::HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &std::collections::HashMap::new(),
+            session: &session,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok(), "should succeed with daily dataset: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -1045,40 +1395,80 @@ mod tests {
 
     #[test]
     fn test_multi_grain_assigns_to_cheapest() {
-        let manifest = make_multi_grain_manifest();
-        let kind = manifest.get_kind("orders").unwrap();
+        let dimensions: IndexMap<_, _> = vec![
+            make_temporal_dim("date", vec![TemporalGrain::Day, TemporalGrain::Month]),
+        ].into_iter().collect();
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("revenue", "amount"),
+        ].into_iter().collect();
+
+        let binding1 = make_temporal_binding(
+            "orders_daily",
+            vec![("date", "order_date"), ("revenue", "amount")],
+            "date",
+            Some(TemporalGrain::Day),
+        );
+        let binding2 = make_temporal_binding(
+            "orders_monthly",
+            vec![("date", "report_month"), ("revenue", "monthly_revenue")],
+            "date",
+            Some(TemporalGrain::Month),
+        );
+
+        let data_kind = make_grainset("orders", dimensions, measures, vec![binding1, binding2]);
 
         // Request month grain, revenue — monthly dataset is cheaper.
         let mut request = make_test_request("orders", vec!["date"], vec!["revenue"]);
         request.grain = Some(semstrait_core::Grain::Month);
 
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = std::collections::HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &std::collections::HashMap::new(),
+            session: &session,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_multi_source_dataset() {
-        let manifest = make_multi_source_manifest();
-        let kind = manifest.get_kind("orders").unwrap();
-        let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
+        let dimensions: IndexMap<_, _> = vec![
+            make_categorical_dim("date"),
+        ].into_iter().collect();
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("revenue", "amount"),
+        ].into_iter().collect();
 
+        let mut binding = make_binding("orders_daily", vec![
+            ("date", "order_date"),
+            ("revenue", "amount"),
+        ]);
+        binding.resolved_sources = vec![
+            semstrait_manifest::acceleration::ResolvedSource::path("bucket/account_001/orders.parquet"),
+            semstrait_manifest::acceleration::ResolvedSource::path("bucket/account_002/orders.parquet"),
+            semstrait_manifest::acceleration::ResolvedSource::path("bucket/account_003/orders.parquet"),
+        ];
+
+        let data_kind = make_grainset("orders", dimensions, measures, vec![binding]);
+        let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = std::collections::HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &std::collections::HashMap::new(),
+            session: &session,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok(), "multi-source should succeed: {:?}", result.err());
 
         // The scan layer should have a Union of scan nodes.
@@ -1096,459 +1486,23 @@ mod tests {
 
     #[test]
     fn test_empty_datasets_error() {
-        let kind = CompiledKind {
-            name: "empty".to_string(),
-            description: None,
-            dimensions: IndexMap::new(),
-            measures: IndexMap::new(),
-            metrics: IndexMap::new(),
-            keys: None,
-            kind_type: CompiledKindType::Grainset,
-            datasets: vec![],
-            relationships: vec![],
-            domain: None,
-            filters: vec![],
-        };
+        let dimensions: IndexMap<String, CompiledDimension> = IndexMap::new();
+        let measures: IndexMap<String, CompiledMeasure> = IndexMap::new();
 
+        let data_kind = make_grainset("empty", dimensions, measures, vec![]);
         let request = make_test_request("empty", vec![], vec![]);
-        let manifest = CompiledManifest {
-            version: 1,
-            compiled_at: chrono::Utc::now(),
-            source_hash: "test".to_string(),
-            datasets: IndexMap::new(),
-            kinds: IndexMap::new(),
-            relationships: vec![],
-            model_name: "test".to_string(),
-            model_description: None,
-            data_kinds: IndexMap::new(),
-            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
-            field_index: semstrait_manifest::FieldIndex::default(),
-            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
-            catalog_snapshot: None,
-        };
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = std::collections::HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &std::collections::HashMap::new(),
+            session: &session,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(&kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_err());
-    }
-
-    // ── Test helpers ─────────────────────────────────────────────────
-
-    fn make_metadata_manifest() -> CompiledManifest {
-        use semstrait_manifest::{MetadataDimension, PathExtraction};
-
-        let mut dimensions = IndexMap::new();
-        dimensions.insert(
-            "date".to_string(),
-            CompiledDimension {
-                name: "date".to_string(),
-                description: None,
-                data_type: "string".to_string(),
-                dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
-                    enum_values: None,
-                }),
-            },
-        );
-        dimensions.insert(
-            "source_info".to_string(),
-            CompiledDimension {
-                name: "source_info".to_string(),
-                description: None,
-                data_type: "string".to_string(),
-                dim_type: DimensionType::Metadata(MetadataDimension {
-                    path: Some(PathExtraction { token: 1 }),
-                    partition: None,
-                }),
-            },
-        );
-
-        let mut measures = IndexMap::new();
-        measures.insert(
-            "revenue".to_string(),
-            CompiledMeasure {
-                name: "revenue".to_string(),
-                description: None,
-                data_type: "float64".to_string(),
-                agg: Some(Aggregation::Sum),
-                expr: semstrait_core::Expr::entity_ref("amount"),
-                expr_source: "amount".to_string(),
-                additivity: None,
-                constraints: None,
-                filters: vec![],
-            },
-        );
-
-        let mut column_mapping = std::collections::HashMap::new();
-        column_mapping.insert("date".to_string(), ColumnMappingValue::Simple("order_date".to_string()));
-        column_mapping.insert("revenue".to_string(), ColumnMappingValue::Simple("amount".to_string()));
-
-        let dataset = CompiledKindDataset {
-            name: "orders_daily".to_string(),
-            extras: KindDatasetExtras {
-                column_mapping: column_mapping.into(),
-                temporal: None,
-                storage: None,
-                catalog: None,
-            },
-            resolved_sources: vec![semstrait_manifest::ResolvedSource::path("bucket/shopify/data.parquet")],
-        };
-
-        let kind = CompiledKind {
-            name: "orders".to_string(),
-            description: None,
-            dimensions,
-            measures,
-            metrics: IndexMap::new(),
-            keys: None,
-            kind_type: CompiledKindType::Grainset,
-            datasets: vec![dataset],
-            relationships: vec![],
-            domain: None,
-            filters: vec![],
-        };
-
-        let mut kinds = IndexMap::new();
-        kinds.insert("orders".to_string(), kind);
-
-        CompiledManifest {
-            version: 1,
-            compiled_at: chrono::Utc::now(),
-            source_hash: "test_metadata".to_string(),
-            datasets: IndexMap::new(),
-            kinds,
-            relationships: vec![],
-            model_name: "test_metadata_model".to_string(),
-            model_description: None,
-            data_kinds: IndexMap::new(),
-            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
-            field_index: semstrait_manifest::FieldIndex::default(),
-            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
-            catalog_snapshot: None,
-        }
-    }
-
-    /// Create a manifest with a temporal dimension for grain rollup testing.
-    fn make_temporal_manifest() -> CompiledManifest {
-        let mut dimensions = IndexMap::new();
-        dimensions.insert(
-            "date".to_string(),
-            CompiledDimension {
-                name: "date".to_string(),
-                description: None,
-                data_type: "date".to_string(),
-                dim_type: DimensionType::Temporal(TemporalDimension {
-                    grains: vec![TemporalGrain::Day, TemporalGrain::Week, TemporalGrain::Month],
-                }),
-            },
-        );
-        dimensions.insert(
-            "region".to_string(),
-            CompiledDimension {
-                name: "region".to_string(),
-                description: None,
-                data_type: "string".to_string(),
-                dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
-                    enum_values: None,
-                }),
-            },
-        );
-
-        let mut measures = IndexMap::new();
-        measures.insert(
-            "revenue".to_string(),
-            CompiledMeasure {
-                name: "revenue".to_string(),
-                description: None,
-                data_type: "float64".to_string(),
-                agg: Some(Aggregation::Sum),
-                expr: semstrait_core::Expr::entity_ref("amount"),
-                expr_source: "amount".to_string(),
-                additivity: None,
-                constraints: None,
-                filters: vec![],
-            },
-        );
-
-        let mut mapping = std::collections::HashMap::new();
-        mapping.insert(
-            "date".to_string(),
-            ColumnMappingValue::WithGrain {
-                column: "order_date".to_string(),
-                grain: Some(TemporalGrain::Day),
-            },
-        );
-        mapping.insert("region".to_string(), ColumnMappingValue::Simple("region_name".to_string()));
-        mapping.insert("revenue".to_string(), ColumnMappingValue::Simple("amount".to_string()));
-
-        let dataset = CompiledKindDataset {
-            name: "orders_daily".to_string(),
-            extras: KindDatasetExtras {
-                column_mapping: mapping.into(),
-                temporal: None,
-                storage: None,
-                catalog: None,
-            },
-            resolved_sources: vec![],
-        };
-
-        let kind = CompiledKind {
-            name: "orders".to_string(),
-            description: None,
-            dimensions,
-            measures,
-            metrics: IndexMap::new(),
-            keys: None,
-            kind_type: CompiledKindType::Grainset,
-            datasets: vec![dataset],
-            relationships: vec![],
-            domain: None,
-            filters: vec![],
-        };
-
-        let mut kinds = IndexMap::new();
-        kinds.insert("orders".to_string(), kind);
-
-        CompiledManifest {
-            version: 1,
-            compiled_at: chrono::Utc::now(),
-            source_hash: "test_temporal".to_string(),
-            datasets: IndexMap::new(),
-            kinds,
-            relationships: vec![],
-            model_name: "test_temporal_model".to_string(),
-            model_description: None,
-            data_kinds: IndexMap::new(),
-            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
-            field_index: semstrait_manifest::FieldIndex::default(),
-            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
-            catalog_snapshot: None,
-        }
-    }
-
-    /// Create a manifest with two datasets at different temporal grains.
-    fn make_multi_grain_manifest() -> CompiledManifest {
-        let mut dimensions = IndexMap::new();
-        dimensions.insert(
-            "date".to_string(),
-            CompiledDimension {
-                name: "date".to_string(),
-                description: None,
-                data_type: "date".to_string(),
-                dim_type: DimensionType::Temporal(TemporalDimension {
-                    grains: vec![TemporalGrain::Day, TemporalGrain::Month],
-                }),
-            },
-        );
-        dimensions.insert(
-            "region".to_string(),
-            CompiledDimension {
-                name: "region".to_string(),
-                description: None,
-                data_type: "string".to_string(),
-                dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
-                    enum_values: None,
-                }),
-            },
-        );
-
-        let mut measures = IndexMap::new();
-        measures.insert(
-            "revenue".to_string(),
-            CompiledMeasure {
-                name: "revenue".to_string(),
-                description: None,
-                data_type: "float64".to_string(),
-                agg: Some(Aggregation::Sum),
-                expr: semstrait_core::Expr::entity_ref("amount"),
-                expr_source: "amount".to_string(),
-                additivity: None,
-                constraints: None,
-                filters: vec![],
-            },
-        );
-        measures.insert(
-            "unique_customers".to_string(),
-            CompiledMeasure {
-                name: "unique_customers".to_string(),
-                description: None,
-                data_type: "float64".to_string(),
-                agg: Some(Aggregation::CountDistinct),
-                expr: semstrait_core::Expr::entity_ref("customer_id"),
-                expr_source: "customer_id".to_string(),
-                additivity: None,
-                constraints: None,
-                filters: vec![],
-            },
-        );
-
-        // Daily dataset: maps date(day), region, revenue, unique_customers.
-        let mut mapping1 = std::collections::HashMap::new();
-        mapping1.insert(
-            "date".to_string(),
-            ColumnMappingValue::WithGrain {
-                column: "order_date".to_string(),
-                grain: Some(TemporalGrain::Day),
-            },
-        );
-        mapping1.insert("region".to_string(), ColumnMappingValue::Simple("region_name".to_string()));
-        mapping1.insert("revenue".to_string(), ColumnMappingValue::Simple("amount".to_string()));
-        mapping1.insert("unique_customers".to_string(), ColumnMappingValue::Simple("customer_id".to_string()));
-
-        let ds1 = CompiledKindDataset {
-            name: "orders_daily".to_string(),
-            extras: KindDatasetExtras {
-                column_mapping: mapping1.into(),
-                temporal: None,
-                storage: None,
-                catalog: None,
-            },
-            resolved_sources: vec![],
-        };
-
-        // Monthly dataset: maps date(month), region, revenue (no unique_customers).
-        let mut mapping2 = std::collections::HashMap::new();
-        mapping2.insert(
-            "date".to_string(),
-            ColumnMappingValue::WithGrain {
-                column: "report_month".to_string(),
-                grain: Some(TemporalGrain::Month),
-            },
-        );
-        mapping2.insert("region".to_string(), ColumnMappingValue::Simple("region_name".to_string()));
-        mapping2.insert("revenue".to_string(), ColumnMappingValue::Simple("monthly_revenue".to_string()));
-
-        let ds2 = CompiledKindDataset {
-            name: "orders_monthly".to_string(),
-            extras: KindDatasetExtras {
-                column_mapping: mapping2.into(),
-                temporal: None,
-                storage: None,
-                catalog: None,
-            },
-            resolved_sources: vec![],
-        };
-
-        let kind = CompiledKind {
-            name: "orders".to_string(),
-            description: None,
-            dimensions,
-            measures,
-            metrics: IndexMap::new(),
-            keys: None,
-            kind_type: CompiledKindType::Grainset,
-            datasets: vec![ds1, ds2],
-            relationships: vec![],
-            domain: None,
-            filters: vec![],
-        };
-
-        let mut kinds = IndexMap::new();
-        kinds.insert("orders".to_string(), kind);
-
-        CompiledManifest {
-            version: 1,
-            compiled_at: chrono::Utc::now(),
-            source_hash: "test_multi_grain".to_string(),
-            datasets: IndexMap::new(),
-            kinds,
-            relationships: vec![],
-            model_name: "test_multi_grain_model".to_string(),
-            model_description: None,
-            data_kinds: IndexMap::new(),
-            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
-            field_index: semstrait_manifest::FieldIndex::default(),
-            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
-            catalog_snapshot: None,
-        }
-    }
-
-    /// Create a manifest with a dataset that has multiple resolved_sources.
-    fn make_multi_source_manifest() -> CompiledManifest {
-        let mut dimensions = IndexMap::new();
-        dimensions.insert(
-            "date".to_string(),
-            CompiledDimension {
-                name: "date".to_string(),
-                description: None,
-                data_type: "string".to_string(),
-                dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
-                    enum_values: None,
-                }),
-            },
-        );
-
-        let mut measures = IndexMap::new();
-        measures.insert(
-            "revenue".to_string(),
-            CompiledMeasure {
-                name: "revenue".to_string(),
-                description: None,
-                data_type: "float64".to_string(),
-                agg: Some(Aggregation::Sum),
-                expr: semstrait_core::Expr::entity_ref("amount"),
-                expr_source: "amount".to_string(),
-                additivity: None,
-                constraints: None,
-                filters: vec![],
-            },
-        );
-
-        let mut mapping = std::collections::HashMap::new();
-        mapping.insert("date".to_string(), ColumnMappingValue::Simple("order_date".to_string()));
-        mapping.insert("revenue".to_string(), ColumnMappingValue::Simple("amount".to_string()));
-
-        let dataset = CompiledKindDataset {
-            name: "orders_daily".to_string(),
-            extras: KindDatasetExtras {
-                column_mapping: mapping.into(),
-                temporal: None,
-                storage: None,
-                catalog: None,
-            },
-            resolved_sources: vec![
-                semstrait_manifest::ResolvedSource::path("bucket/account_001/orders.parquet"),
-                semstrait_manifest::ResolvedSource::path("bucket/account_002/orders.parquet"),
-                semstrait_manifest::ResolvedSource::path("bucket/account_003/orders.parquet"),
-            ],
-        };
-
-        let kind = CompiledKind {
-            name: "orders".to_string(),
-            description: None,
-            dimensions,
-            measures,
-            metrics: IndexMap::new(),
-            keys: None,
-            kind_type: CompiledKindType::Grainset,
-            datasets: vec![dataset],
-            relationships: vec![],
-            domain: None,
-            filters: vec![],
-        };
-
-        let mut kinds = IndexMap::new();
-        kinds.insert("orders".to_string(), kind);
-
-        CompiledManifest {
-            version: 1,
-            compiled_at: chrono::Utc::now(),
-            source_hash: "test_multi_source".to_string(),
-            datasets: IndexMap::new(),
-            kinds,
-            relationships: vec![],
-            model_name: "test_multi_source_model".to_string(),
-            model_description: None,
-            data_kinds: IndexMap::new(),
-            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
-            field_index: semstrait_manifest::FieldIndex::default(),
-            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
-            catalog_snapshot: None,
-        }
     }
 }

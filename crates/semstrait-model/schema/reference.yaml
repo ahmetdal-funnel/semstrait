@@ -392,7 +392,9 @@ semantic_model:
 
         # Storage location and optional partition metadata.
         storage: # optional
-          path: string # required if storage block present; e.g. "warehouse.orders"
+          format: string # required for paths (iceberg/parquet/csv), omitted for tables
+          paths:
+            - string # e.g. "s3://warehouse/orders.parquet"
           partition_def: # optional
             type: # discriminated union
               range:
@@ -608,9 +610,12 @@ semantic_model:
 
           extras: # required
             storage: # required
-                path: string # e.g. "/s3://warehouse/orders_monthly"
-                # OR if catalog in use
-                table: string # e.g. "schema_name.orders_monthly"
+                format: string # required for paths (iceberg/parquet/csv), omitted for tables
+                paths:
+                  - string # e.g. "s3://warehouse/orders_monthly"
+                # OR if catalog in use (format omitted — catalog determines it)
+                tables:
+                  - string # e.g. "schema_name.orders_monthly"
             catalog: # optional - required if other than default values
               type: string # e.g. "hive", "polaris", "glue"
             column_mapping: # optional - required if other than default values

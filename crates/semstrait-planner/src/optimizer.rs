@@ -121,6 +121,8 @@ mod tests {
         let scan = PlanNode::Scan(ScanNode {
             meta: NodeMeta::new(schema),
             table_name: "test_table".to_string(),
+            location: None,
+            format: None,
             projection: vec!["id".to_string()],
         });
         LogicalPlan::new(scan, vec!["id".to_string()])
@@ -166,6 +168,8 @@ mod tests {
         let scan = PlanNode::Scan(ScanNode {
             meta: NodeMeta::new(schema),
             table_name: "test".to_string(),
+            location: None,
+            format: None,
             projection: vec!["id".to_string()],
         });
         let plan = LogicalPlan::new(scan, vec![]);

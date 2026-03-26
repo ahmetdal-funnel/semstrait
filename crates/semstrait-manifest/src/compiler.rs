@@ -6,7 +6,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 
-use semstrait_catalog::CatalogProvider;
+use semstrait_catalog::{CatalogProvider, CatalogRegistry, StorageProvider};
 use semstrait_model::parse;
 use semstrait_model::resolve_refs;
 
@@ -25,35 +25,56 @@ pub enum CompileSource {
     Directory(PathBuf),
 }
 
-/// The manifest compiler. Orchestrates the 9-step pipeline.
+/// The manifest compiler. Orchestrates the compilation pipeline.
 pub struct ManifestCompiler {
     catalog: Option<Arc<dyn CatalogProvider>>,
+    catalog_registry: Option<CatalogRegistry>,
+    storage: Option<Arc<dyn StorageProvider>>,
 }
 
 impl ManifestCompiler {
-    /// Create a new compiler with no catalog provider.
+    /// Create a new compiler with no providers.
     pub fn new() -> Self {
-        Self { catalog: None }
+        Self {
+            catalog: None,
+            catalog_registry: None,
+            storage: None,
+        }
     }
 
-    /// Set a catalog provider (required for glob expansion).
+    /// Set a single catalog provider (legacy; prefer `with_catalog_registry` for multi-catalog).
     pub fn with_catalog(mut self, c: Arc<dyn CatalogProvider>) -> Self {
         self.catalog = Some(c);
         self
     }
 
-    /// Run the 9-step compilation pipeline.
+    /// Set a named catalog registry built from `catalogs.yaml`.
+    pub fn with_catalog_registry(mut self, registry: CatalogRegistry) -> Self {
+        self.catalog_registry = Some(registry);
+        self
+    }
+
+    /// Set a storage provider for filesystem/object store operations.
+    pub fn with_storage(mut self, s: Arc<dyn StorageProvider>) -> Self {
+        self.storage = Some(s);
+        self
+    }
+
+    /// Run the compilation pipeline.
     ///
     /// Steps:
     /// 1. parse — serde_yaml -> SemanticModel
     /// 2. resolve_refs — expand ref: entries
-    /// 3. expand_globs — GlobPattern -> concrete datasets (requires catalog)
+    /// 3. resolve_sources — expand globs/wildcards, fetch catalog metadata
     /// 4. validate_structure — dataset uniqueness, kind nesting, joinset anchors
+    /// 4.6-4.8. validate temporal, storage, metadata dimensions
+    /// 4.5. expand_auto_mappings
     /// 5. validate_mappings — column_mapping keys exist in kind interface
+    /// 5.5. validate_grain_compatibility
     /// 6. build_metric_graph — petgraph DiGraph, cycle detection, depth <= 3
     /// 7. build_rel_graph — relationship graph, joinset anchor inference
     /// 8. compile_exprs — parse Expr fields, reject raw SQL
-    /// 9. emit — serialize to CompiledManifest
+    /// 9. emit — serialize to CompiledManifest (with resolution result)
     pub async fn compile(&self, source: CompileSource) -> Result<CompiledManifest, CompileError> {
         // Load YAML source(s) into a single string
         let yaml_source = self.load_source(source)?;
@@ -71,23 +92,20 @@ impl ManifestCompiler {
         // Step 2: Resolve refs
         let model = resolve_refs(model)?;
 
-        // Step 2.5: Build catalog from model config if no external catalog provided.
-        let catalog: Option<Arc<dyn CatalogProvider>> =
-            match (&self.catalog, &model.catalog) {
-                (Some(ext), _) => Some(ext.clone()),
-                (None, Some(cfg)) => {
-                    Some(crate::catalog_builder::build_from_config(cfg).await?)
-                }
-                (None, None) => None,
-            };
-
-        // Step 3: Expand globs
-        let model = steps::expand_globs(model, catalog.as_deref()).await?;
+        // Step 3: Resolve sources — expand globs/wildcards, fetch catalog metadata.
+        // All physical binding (glob expansion, catalog metadata fetch) happens here.
+        let resolution = steps::resolve_sources(
+            &model,
+            self.catalog_registry.as_ref(),
+            self.catalog.as_deref(),
+            self.storage.as_deref(),
+        )
+        .await?;
 
         // Step 4: Validate structure
         steps::validate_structure(&model)?;
 
-        // Step 4.6: Validate temporal equivalence (before expand_auto_mappings mutates temporal)
+        // Step 4.6: Validate temporal equivalence
         steps::validate_temporal_equivalence(&model)?;
 
         // Step 4.7: Validate storage config (paths/tables exclusivity, non-empty sources)
@@ -103,7 +121,7 @@ impl ManifestCompiler {
         // Step 5: Validate mappings
         steps::validate_mappings(&model)?;
 
-        // Step 5b: Validate grain compatibility (dataset grains vs kind-level grains)
+        // Step 5.5: Validate grain compatibility
         steps::validate_grain_compatibility(&model)?;
 
         // Step 6: Build metric graph (cycle detection, depth check)
@@ -112,25 +130,14 @@ impl ManifestCompiler {
         // Step 7: Build relationship graph
         let _rel_graph = steps::build_rel_graph(&model)?;
 
-        // Capture namespace before model is consumed by emit().
-        let model_namespace = model.namespace.clone();
-
         // Step 8: Compile expressions
-        // Step 9: Emit CompiledManifest
-        let manifest = steps::emit(model, source_hash, &metric_depths)?;
+        // Step 9: Emit CompiledManifest (with resolution result for populated ResolvedSources)
+        let manifest = steps::emit(model, source_hash, &metric_depths, resolution)?;
 
-        let mut manifest = CompiledManifest {
+        let manifest = CompiledManifest {
             compiled_at: Utc::now(),
             ..manifest
         };
-
-        // Steps 10-13: Catalog resolution (best-effort).
-        // Resolves table metadata, validates column schemas, maps partition
-        // transforms to temporal grains, and assembles a CatalogSnapshot.
-        if let Some(ref cat) = catalog {
-            let namespace = model_namespace.as_deref().unwrap_or("default");
-            steps::resolve_catalog(&mut manifest, cat.as_ref(), namespace).await;
-        }
 
         Ok(manifest)
     }
@@ -181,5 +188,15 @@ impl ManifestCompiler {
 impl Default for ManifestCompiler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Debug for ManifestCompiler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManifestCompiler")
+            .field("has_catalog", &self.catalog.is_some())
+            .field("has_catalog_registry", &self.catalog_registry.is_some())
+            .field("has_storage", &self.storage.is_some())
+            .finish()
     }
 }

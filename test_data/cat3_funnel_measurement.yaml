@@ -70,7 +70,8 @@ semantic_model:
       ai_context: "Use for cross-channel attribution comparison. Shows spend, clicks, impressions, and conversions/revenue under five attribution models: algorithmic (a2), MTA, platform, last-click, first-click. Breakdowns by channel, campaign, country, brand, and conversion event."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/funnel_measurement_performance/28e60e7b-b089-48c3-90fe-4684aea3784d/"
+          paths:
+            - "fs1henp3k8p1hqo/funnel_measurement_performance/28e60e7b-b089-48c3-90fe-4684aea3784d/"
         column_mapping:
           # time & geography
           date: date

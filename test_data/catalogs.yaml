@@ -1,0 +1,15 @@
+# Catalog connections — referenced by alias from dataset extras.catalog
+catalogs:
+  polaris:
+    type: polaris
+    name: fs1henp3k8p1hqo
+    url: https://polaris.odp.test.funnel.io/api/catalog
+    realm: POLARIS
+    auth:
+      method: aws_secrets
+      secret_arn: arn:aws:secretsmanager:eu-west-1:457099346868:secret:funnel/dev/polaris-credentials-DB5OAj
+      region: eu-west-1
+      scope: "PRINCIPAL_ROLE:ALL"
+      aws_access_key_id: ""
+      aws_secret_access_key: ""
+      aws_session_token: ""

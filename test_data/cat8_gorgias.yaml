@@ -41,7 +41,8 @@ semantic_model:
         primary: [ticket_id]
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/29c47a4b-a6d4-41df-b54d-aa815a5edc2e/"
+          paths:
+            - "fs1henp3k8p1hqo/custom_alpinestars_gorgias/29c47a4b-a6d4-41df-b54d-aa815a5edc2e/"
         column_mapping:
           date: date
           ticket_id: custom_alpinestars_gorgias-ticket_id
@@ -107,7 +108,8 @@ semantic_model:
       ai_context: "Use for daily Gorgias KPIs — new/closed/replied/one-touch tickets, messages sent/received. All fields are from the Reporting Stats API scopes, not the Ticket REST API."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/b94f1727-b9c6-46b8-837e-4dad2fafbeb9/"
+          paths:
+            - "fs1henp3k8p1hqo/custom_alpinestars_gorgias/b94f1727-b9c6-46b8-837e-4dad2fafbeb9/"
         column_mapping:
           date: date
           total_new_tickets: custom_alpinestars_gorgias-total_new_tickets
@@ -152,7 +154,8 @@ semantic_model:
       ai_context: "Use for Gorgias channel volume analysis — tickets per channel per day. Delta is computed client-side (not native API field)."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/9bd56460-3464-458b-954e-1114e06083e6/"
+          paths:
+            - "fs1henp3k8p1hqo/custom_alpinestars_gorgias/9bd56460-3464-458b-954e-1114e06083e6/"
         column_mapping:
           date: date
           channel: custom_alpinestars_gorgias-channel
@@ -177,7 +180,8 @@ semantic_model:
       ai_context: "Use for CSAT analysis — survey response rates and score distribution. Raw data is SatisfactionSurvey.score (1-5); distributions are computed aggregates from Reporting API."
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/5e0fa9e7-bc79-49e3-9e0c-6ca6f6c4cf23/"
+          paths:
+            - "fs1henp3k8p1hqo/custom_alpinestars_gorgias/5e0fa9e7-bc79-49e3-9e0c-6ca6f6c4cf23/"
         column_mapping:
           date: date
           total_sent: custom_alpinestars_gorgias-total_sent
@@ -232,7 +236,8 @@ semantic_model:
             cardinality: many_to_one
       extras:
         storage:
-          path: "fs1henp3k8p1hqo/custom_alpinestars_gorgias/c996cb8a-5260-457f-a7bd-ca2e12d8c8eb/"
+          paths:
+            - "fs1henp3k8p1hqo/custom_alpinestars_gorgias/c996cb8a-5260-457f-a7bd-ca2e12d8c8eb/"
         column_mapping:
           date: date
           ticket_id: custom_alpinestars_gorgias-ticket_id

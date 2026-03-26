@@ -6,7 +6,10 @@
 use semstrait_core::expr::WhenClause;
 use semstrait_core::Expr;
 use semstrait_ir::{AggregateMeasure, Aggregation};
-use semstrait_manifest::{ColumnMappingValue, CompiledFilter, LiteralValue};
+use semstrait_manifest::{
+    ColumnMappingValue, CompiledFilter, CompiledMetric, KindInterface, LiteralValue,
+};
+use semstrait_manifest::acceleration::DatasetBinding;
 
 use crate::error::PlannerError;
 use indexmap::IndexMap;
@@ -65,6 +68,7 @@ pub(crate) fn lower_measure(
 /// The `agg` function is specified explicitly (from `CompiledMeasure.agg`),
 /// and the `expr` is a horizontal-only expression (no aggregation functions).
 /// This is the new declarative path: `agg: sum` + optional `expr: "amount + price"`.
+#[allow(dead_code)] // Used in tests; production uses lower_measure_declarative_physical
 pub fn lower_measure_declarative(
     measure_name: &str,
     agg: Aggregation,
@@ -167,11 +171,10 @@ fn wrap_with_filters(
     ))
 }
 
-// ─────────────────── v2: physical-mapping overloads ──────────────────
+// ─────────────────── physical-mapping overloads ──────────────────
 //
 // These accept `&IndexMap<String, String>` (from `ResolvedColumnMapping.physical`)
-// instead of `&HashMap<String, ColumnMappingValue>`. They are used by the v2
-// CommonDataset fast path where all mapping resolution is pre-computed.
+// for the pre-resolved column mapping path.
 
 /// Resolve an Expr using a pre-resolved physical mapping (v2 path).
 /// EntityRefs and Columns are resolved as column references through the mapping.
@@ -263,6 +266,133 @@ fn resolve_name_physical(name: &str, physical: &IndexMap<String, String>) -> Exp
         Some(phys) => Expr::column(phys.clone()),
         None => Expr::column(name),
     }
+}
+
+// ─────────────── metric decomposition via KindInterface ──────────────────
+
+/// Decompose a metric into constituent aggregates via KindInterface + DatasetBinding.
+pub fn lower_metric_iface(
+    metric_name: &str,
+    metric: &CompiledMetric,
+    iface: &KindInterface,
+    binding: &DatasetBinding,
+    max_depth: usize,
+) -> Result<LoweredMeasure, PlannerError> {
+    let physical = &binding.column_mapping.physical;
+    let mut aggregates: Vec<AggregateMeasure> = Vec::new();
+    let mut agg_names: HashMap<String, String> = HashMap::new();
+
+    let post_agg = decompose_metric_expr_iface(
+        &metric.expr,
+        iface,
+        physical,
+        &mut aggregates,
+        &mut agg_names,
+        metric_name,
+        0,
+        max_depth,
+    )?;
+
+    Ok(LoweredMeasure {
+        aggregates,
+        post_agg_expr: post_agg,
+    })
+}
+
+fn decompose_metric_expr_iface(
+    expr: &Expr,
+    iface: &KindInterface,
+    physical: &IndexMap<String, String>,
+    aggregates: &mut Vec<AggregateMeasure>,
+    agg_names: &mut HashMap<String, String>,
+    metric_name: &str,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Expr, PlannerError> {
+    match expr {
+        Expr::Column(col) => resolve_metric_leaf_iface(
+            &col.name, iface, physical, aggregates, agg_names, metric_name, depth, max_depth,
+        ),
+        Expr::EntityRef(er) => resolve_metric_leaf_iface(
+            &er.name, iface, physical, aggregates, agg_names, metric_name, depth, max_depth,
+        ),
+        Expr::BinaryOp(bin) => {
+            let left = decompose_metric_expr_iface(
+                &bin.left, iface, physical, aggregates, agg_names, metric_name, depth, max_depth,
+            )?;
+            let right = decompose_metric_expr_iface(
+                &bin.right, iface, physical, aggregates, agg_names, metric_name, depth, max_depth,
+            )?;
+            Ok(Expr::binary(left, bin.op, right))
+        }
+        Expr::Literal(_) => Ok(expr.clone()),
+        Expr::Case(case) => {
+            let mut whens = Vec::new();
+            for wt in &case.when_then {
+                let cond = decompose_metric_expr_iface(
+                    &wt.condition, iface, physical, aggregates, agg_names, metric_name, depth, max_depth,
+                )?;
+                let result = decompose_metric_expr_iface(
+                    &wt.result, iface, physical, aggregates, agg_names, metric_name, depth, max_depth,
+                )?;
+                whens.push(WhenClause::new(cond, result));
+            }
+            let else_expr = if let Some(ref e) = case.else_expr {
+                Some(decompose_metric_expr_iface(
+                    e, iface, physical, aggregates, agg_names, metric_name, depth, max_depth,
+                )?)
+            } else {
+                None
+            };
+            Ok(Expr::case(whens, else_expr))
+        }
+        _ => Ok(expr.clone()),
+    }
+}
+
+fn resolve_metric_leaf_iface(
+    name: &str,
+    iface: &KindInterface,
+    physical: &IndexMap<String, String>,
+    aggregates: &mut Vec<AggregateMeasure>,
+    agg_names: &mut HashMap<String, String>,
+    metric_name: &str,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Expr, PlannerError> {
+    if let Some(alias) = agg_names.get(name) {
+        return Ok(Expr::column(alias.clone()));
+    }
+
+    if let Some(measure) = iface.measures.get(name) {
+        let lowered = if let Some(agg) = measure.agg {
+            lower_measure_declarative_physical(name, agg, &measure.expr, physical, &measure.filters)?
+        } else {
+            lower_measure_with_filters_physical(name, &measure.expr, physical, &measure.filters)?
+        };
+        let alias = name.to_string();
+        for a in lowered.aggregates {
+            aggregates.push(a);
+        }
+        agg_names.insert(name.to_string(), alias.clone());
+        return Ok(lowered.post_agg_expr);
+    }
+
+    if let Some(sub_metric) = iface.metrics.get(name) {
+        if depth >= max_depth {
+            return Err(PlannerError::Internal(format!(
+                "metric '{}' exceeds max decomposition depth {} while resolving '{}'",
+                name, max_depth, metric_name
+            )));
+        }
+        let post_agg = decompose_metric_expr_iface(
+            &sub_metric.expr, iface, physical, aggregates, agg_names,
+            metric_name, depth + 1, max_depth,
+        )?;
+        return Ok(post_agg);
+    }
+
+    Ok(resolve_name_physical(name, physical))
 }
 
 // ────────────────────────── private helpers ──────────────────────────

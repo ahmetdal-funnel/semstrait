@@ -5,7 +5,6 @@
 //! - [`UnionsetPlanner`]: UNION ALL across multiple datasets
 //! - [`JoinsetPlanner`]: BFS join chain across datasets
 
-pub(crate) mod common;
 pub mod grainset;
 pub mod joinset;
 pub(crate) mod shared;
@@ -17,8 +16,8 @@ use semstrait_catalog::CatalogProvider;
 use semstrait_core::EngineProfile;
 use semstrait_ir::{Expr, PlanNode, Schema};
 use semstrait_manifest::{
-    ColumnMappingValue, CompiledKind, CompiledKindDataset, CompiledKindType, CompiledManifest,
-    DimensionType, MetadataDimension, TemporalGrain,
+    CompiledManifest, DataKind, DatasetBinding, DimensionType, KindInterface, MetadataDimension,
+    TemporalGrain,
 };
 
 pub use grainset::GrainsetPlanner;
@@ -27,6 +26,7 @@ pub use unionset::UnionsetPlanner;
 
 /// Context passed to kind planners during resolution.
 pub struct PlannerContext<'a> {
+    #[allow(dead_code)] // Used in future phases (manifest-aware planning)
     pub manifest: &'a CompiledManifest,
     #[allow(dead_code)] // Used in future phases (catalog-aware planning)
     pub profile: &'a dyn EngineProfile,
@@ -51,19 +51,19 @@ pub struct PlanFragment {
 
 /// Strategy trait for kind-specific plan construction.
 pub trait KindPlanner: Send + Sync {
-    /// Returns true if this planner handles the given kind type.
-    fn supports(&self, kind_type: &CompiledKindType) -> bool;
+    /// Returns true if this planner handles the given DataKind variant.
+    fn supports(&self, data_kind: &DataKind) -> bool;
 
-    /// Build a PlanFragment for the given kind and request.
+    /// Build a PlanFragment for the given DataKind and request.
     fn resolve(
         &self,
-        kind: &CompiledKind,
+        data_kind: &DataKind,
         request: &ResolvedQueryRequest,
         ctx: &PlannerContext<'_>,
     ) -> Result<PlanFragment, PlannerError>;
 }
 
-/// Registry that dispatches to the appropriate KindPlanner based on kind type.
+/// Registry that dispatches to the appropriate KindPlanner based on DataKind variant.
 pub struct KindPlannerRegistry {
     planners: Vec<Box<dyn KindPlanner>>,
 }
@@ -80,13 +80,13 @@ impl KindPlannerRegistry {
         }
     }
 
-    /// Dispatch to the appropriate planner for the given kind type.
-    pub fn dispatch(&self, kind_type: &CompiledKindType) -> Result<&dyn KindPlanner, PlannerError> {
+    /// Dispatch to the appropriate planner for the given DataKind.
+    pub fn dispatch(&self, data_kind: &DataKind) -> Result<&dyn KindPlanner, PlannerError> {
         self.planners
             .iter()
-            .find(|p| p.supports(kind_type))
+            .find(|p| p.supports(data_kind))
             .map(|p| p.as_ref())
-            .ok_or_else(|| PlannerError::UnsupportedKindType(format!("{:?}", kind_type)))
+            .ok_or_else(|| PlannerError::UnsupportedKindType(format!("{:?}", data_kind.name())))
     }
 }
 
@@ -96,35 +96,37 @@ impl Default for KindPlannerRegistry {
     }
 }
 
-/// Resolve a `ColumnMappingValue` to its physical column name.
+/// Dispatch a DataKind to the appropriate plan builder.
 ///
-/// Literal and Anchored variants must be handled before calling this function
-/// (Literal is routed to metadata_literals; Anchored is flattened to Simple
-/// entries during compilation step 4.5).
-pub fn resolve_column_name(mapping_value: &ColumnMappingValue) -> &str {
-    match mapping_value {
-        ColumnMappingValue::Simple(s) => s.as_str(),
-        ColumnMappingValue::WithGrain { column, .. } => column.as_str(),
-        ColumnMappingValue::Literal(_) | ColumnMappingValue::Anchored(_) => {
-            unreachable!("Literal/Anchored must be handled before resolve_column_name")
+/// Dataset kinds use the single-dataset fast path; complex kinds (grainset,
+/// unionset, joinset) delegate to their respective KindPlanner.
+pub fn dispatch_data_kind(
+    data_kind: &DataKind,
+    request: &ResolvedQueryRequest,
+    ctx: &PlannerContext<'_>,
+    registry: &KindPlannerRegistry,
+) -> Result<PlanFragment, PlannerError> {
+    match data_kind {
+        DataKind::Dataset(dk) => {
+            shared::build_dataset_kind_plan(dk, request, ctx)
+        }
+        _ => {
+            let planner = registry.dispatch(data_kind)?;
+            planner.resolve(data_kind, request, ctx)
         }
     }
 }
 
-/// Partition requested dimensions into (metadata, regular).
-///
-/// Metadata dimensions are virtual — their values come from source metadata
-/// (path segments, partition values), not from physical columns.
-/// Regular dimensions are resolved via column_mapping.
-pub(crate) fn partition_dimensions(
+/// Partition requested dimensions into (metadata, regular) using KindInterface.
+pub(crate) fn partition_dimensions_iface(
     request_dims: &[String],
-    kind: &CompiledKind,
+    iface: &KindInterface,
 ) -> (Vec<(String, MetadataDimension)>, Vec<String>) {
     let mut metadata = Vec::new();
     let mut regular = Vec::new();
 
     for dim_name in request_dims {
-        if let Some(dim) = kind.dimensions.get(dim_name) {
+        if let Some(dim) = iface.dimensions.get(dim_name) {
             if let DimensionType::Metadata(meta) = &dim.dim_type {
                 metadata.push((dim_name.clone(), meta.clone()));
                 continue;
@@ -136,21 +138,13 @@ pub(crate) fn partition_dimensions(
     (metadata, regular)
 }
 
-/// Extract the metadata dimension value for a specific dataset.
-///
-/// For `PathExtraction { token }`: splits the first resolved_source on `/`
-/// and returns the segment at position `token` (0-indexed).
-///
-/// For `PartitionExtraction { level }`: splits the storage path, finds
-/// Hive-style `key=value` segments, and returns the value at the given
-/// level (1-indexed).
-///
-/// Returns `None` if extraction fails (no sources, token out of range, etc.).
-pub(crate) fn extract_metadata_value(
+/// Extract metadata dimension value from a DatasetBinding's resolved sources.
+pub(crate) fn extract_metadata_value_binding(
     meta: &MetadataDimension,
-    dataset: &CompiledKindDataset,
+    binding: &DatasetBinding,
 ) -> Option<String> {
-    let source = &dataset.resolved_sources.first()?.reference;
+    let first = binding.resolved_sources.first()?;
+    let source = first.location.as_deref().unwrap_or(&first.reference);
 
     if let Some(ref path_ext) = meta.path {
         let segments: Vec<&str> = source.split('/').collect();
@@ -158,11 +152,7 @@ pub(crate) fn extract_metadata_value(
     }
 
     if let Some(ref part_ext) = meta.partition {
-        // Find Hive-style key=value segments and return the value at the given level.
-        let kv_segments: Vec<&str> = source
-            .split('/')
-            .filter(|s| s.contains('='))
-            .collect();
+        let kv_segments: Vec<&str> = source.split('/').filter(|s| s.contains('=')).collect();
         if part_ext.level == 0 || part_ext.level > kv_segments.len() {
             return None;
         }
@@ -173,41 +163,26 @@ pub(crate) fn extract_metadata_value(
     None
 }
 
-/// Resolve the native temporal grain for a dataset's temporal dimension.
-///
-/// If the column mapping uses `WithGrain { grain: Some(g) }`, returns that grain.
-/// If grain is unspecified (None) or the mapping is Simple, returns the finest
-/// grain from the kind-level temporal dimension definition.
-pub(crate) fn resolve_native_grain(
-    dataset: &CompiledKindDataset,
+/// Resolve the native temporal grain for a binding's temporal dimension.
+pub(crate) fn resolve_native_grain_binding(
+    binding: &DatasetBinding,
     dim_name: &str,
-    kind: &CompiledKind,
+    iface: &KindInterface,
 ) -> Option<TemporalGrain> {
-    // Check dataset-level explicit grain.
-    if let Some(ColumnMappingValue::WithGrain { grain: Some(g), .. }) =
-        dataset.extras.column_mapping.get(dim_name)
-    {
-        return Some(*g);
+    // Check binding-level explicit grain from ResolvedColumnMapping.temporal.
+    if let Some(tm) = binding.column_mapping.temporal.get(dim_name) {
+        if let Some(g) = tm.grain {
+            return Some(g);
+        }
     }
 
     // Fall back to finest kind-level grain.
-    if let Some(dim) = kind.dimensions.get(dim_name) {
+    if let Some(dim) = iface.dimensions.get(dim_name) {
         if let DimensionType::Temporal(ref td) = dim.dim_type {
             return td.grains.iter().copied().min_by_key(|g| g.coarseness());
         }
     }
     None
-}
-
-/// Find the temporal dimension name in a kind (first temporal dimension found).
-pub(crate) fn find_temporal_dimension(kind: &CompiledKind) -> Option<&str> {
-    kind.dimensions.iter().find_map(|(name, dim)| {
-        if matches!(dim.dim_type, DimensionType::Temporal(_)) {
-            Some(name.as_str())
-        } else {
-            None
-        }
-    })
 }
 
 /// Convert a core `Grain` to model `TemporalGrain`.
@@ -226,16 +201,17 @@ pub(crate) fn grain_to_temporal(grain: semstrait_core::Grain) -> TemporalGrain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use semstrait_manifest::{KindDatasetExtras, PathExtraction, PartitionExtraction};
+    use semstrait_manifest::{PathExtraction, PartitionExtraction};
+    use semstrait_manifest::acceleration::{DatasetBinding, ResolvedColumnMapping};
 
-    fn make_dataset(sources: Vec<&str>) -> CompiledKindDataset {
-        CompiledKindDataset {
-            name: "test".to_string(),
-            extras: KindDatasetExtras {
-                column_mapping: std::collections::HashMap::new().into(),
-                temporal: None,
-                storage: None,
-                catalog: None,
+    fn make_binding(sources: Vec<&str>) -> DatasetBinding {
+        DatasetBinding {
+            dataset_name: "test".to_string(),
+            column_mapping: ResolvedColumnMapping {
+                physical: indexmap::IndexMap::new(),
+                literals: std::collections::HashMap::new(),
+                temporal: std::collections::HashMap::new(),
+                anchored: std::collections::HashMap::new(),
             },
             resolved_sources: sources.into_iter().map(semstrait_manifest::ResolvedSource::path).collect(),
         }
@@ -247,8 +223,8 @@ mod tests {
             path: Some(PathExtraction { token: 1 }),
             partition: None,
         };
-        let ds = make_dataset(vec!["bucket/shopify/data.parquet"]);
-        assert_eq!(extract_metadata_value(&meta, &ds), Some("shopify".to_string()));
+        let binding = make_binding(vec!["bucket/shopify/data.parquet"]);
+        assert_eq!(extract_metadata_value_binding(&meta, &binding), Some("shopify".to_string()));
     }
 
     #[test]
@@ -257,8 +233,8 @@ mod tests {
             path: Some(PathExtraction { token: 0 }),
             partition: None,
         };
-        let ds = make_dataset(vec!["bucket/shopify/data.parquet"]);
-        assert_eq!(extract_metadata_value(&meta, &ds), Some("bucket".to_string()));
+        let binding = make_binding(vec!["bucket/shopify/data.parquet"]);
+        assert_eq!(extract_metadata_value_binding(&meta, &binding), Some("bucket".to_string()));
     }
 
     #[test]
@@ -267,8 +243,8 @@ mod tests {
             path: Some(PathExtraction { token: 99 }),
             partition: None,
         };
-        let ds = make_dataset(vec!["bucket/shopify/data.parquet"]);
-        assert_eq!(extract_metadata_value(&meta, &ds), None);
+        let binding = make_binding(vec!["bucket/shopify/data.parquet"]);
+        assert_eq!(extract_metadata_value_binding(&meta, &binding), None);
     }
 
     #[test]
@@ -277,8 +253,8 @@ mod tests {
             path: None,
             partition: Some(PartitionExtraction { level: 1 }),
         };
-        let ds = make_dataset(vec!["bucket/year=2024/month=01/data.parquet"]);
-        assert_eq!(extract_metadata_value(&meta, &ds), Some("2024".to_string()));
+        let binding = make_binding(vec!["bucket/year=2024/month=01/data.parquet"]);
+        assert_eq!(extract_metadata_value_binding(&meta, &binding), Some("2024".to_string()));
     }
 
     #[test]
@@ -287,8 +263,8 @@ mod tests {
             path: None,
             partition: Some(PartitionExtraction { level: 2 }),
         };
-        let ds = make_dataset(vec!["bucket/year=2024/month=01/data.parquet"]);
-        assert_eq!(extract_metadata_value(&meta, &ds), Some("01".to_string()));
+        let binding = make_binding(vec!["bucket/year=2024/month=01/data.parquet"]);
+        assert_eq!(extract_metadata_value_binding(&meta, &binding), Some("01".to_string()));
     }
 
     #[test]
@@ -297,8 +273,8 @@ mod tests {
             path: None,
             partition: Some(PartitionExtraction { level: 5 }),
         };
-        let ds = make_dataset(vec!["bucket/year=2024/data.parquet"]);
-        assert_eq!(extract_metadata_value(&meta, &ds), None);
+        let binding = make_binding(vec!["bucket/year=2024/data.parquet"]);
+        assert_eq!(extract_metadata_value_binding(&meta, &binding), None);
     }
 
     #[test]
@@ -307,7 +283,7 @@ mod tests {
             path: Some(PathExtraction { token: 0 }),
             partition: None,
         };
-        let ds = make_dataset(vec![]);
-        assert_eq!(extract_metadata_value(&meta, &ds), None);
+        let binding = make_binding(vec![]);
+        assert_eq!(extract_metadata_value_binding(&meta, &binding), None);
     }
 }

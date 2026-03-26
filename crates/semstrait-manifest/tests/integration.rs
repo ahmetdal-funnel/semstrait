@@ -79,7 +79,9 @@ semantic_model:
               order_date: created_at
               revenue: amount_usd
             storage:
-              path: warehouse.orders_daily
+              format: parquet
+              paths:
+                - warehouse.orders_daily
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -128,7 +130,9 @@ semantic_model:
           extras:
             column_mapping: auto
             storage:
-              path: warehouse.orders_daily
+              format: parquet
+              paths:
+                - warehouse.orders_daily
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -242,7 +246,9 @@ semantic_model:
               revenue: amount
               bogus_field: some_col
             storage:
-              path: warehouse.orders
+              format: parquet
+              paths:
+                - warehouse.orders
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -281,7 +287,9 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: warehouse.orders
+              format: parquet
+              paths:
+                - warehouse.orders
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -361,7 +369,9 @@ semantic_model:
               revenue: amount
               cost: cost_amount
             storage:
-              path: warehouse.orders
+              format: parquet
+              paths:
+                - warehouse.orders
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -557,11 +567,11 @@ semantic_model:
 }
 
 // ============================================================================
-// Glob expansion requires catalog
+// Source resolution: tables without catalog keeps patterns as-is
 // ============================================================================
 
 #[tokio::test]
-async fn test_glob_requires_catalog() {
+async fn test_tables_without_catalog_keeps_pattern() {
     let yaml = r#"
 semantic_model:
   name: glob_test
@@ -579,13 +589,59 @@ semantic_model:
           data_type: float64
           expr: "SUM(amount)"
       datasets:
-        - name: "orders_*"
+        - name: orders
           extras:
             column_mapping:
               order_date: created_at
               revenue: amount
             storage:
-              path: warehouse.orders
+              tables:
+                - warehouse.orders
+"#;
+
+    let compiler = ManifestCompiler::new(); // no catalog — tables kept as-is
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_ok(), "got: {:?}", result.unwrap_err());
+    let manifest = result.unwrap();
+    let kind = manifest.kinds.values().next().unwrap();
+    let ds = &kind.datasets[0];
+    assert_eq!(ds.resolved_sources.len(), 1);
+    assert_eq!(ds.resolved_sources[0].reference, "warehouse.orders");
+}
+
+// Wildcard patterns require a provider
+// ============================================================================
+
+#[tokio::test]
+async fn test_wildcard_tables_require_catalog() {
+    let yaml = r#"
+semantic_model:
+  name: wildcard_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              tables:
+                - "warehouse.orders_*"
 "#;
 
     let compiler = ManifestCompiler::new(); // no catalog
@@ -595,7 +651,55 @@ semantic_model:
 
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("requires a catalog"), "got: {}", msg);
+    assert!(
+        msg.contains("requires a catalog"),
+        "expected catalog error, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_wildcard_paths_require_storage() {
+    let yaml = r#"
+semantic_model:
+  name: wildcard_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+      measures:
+        - name: revenue
+          data_type: float64
+          expr: "SUM(amount)"
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              format: parquet
+              paths:
+                - "/data/orders/*.parquet"
+"#;
+
+    let compiler = ManifestCompiler::new(); // no storage provider
+    let result = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await;
+
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("requires a storage"),
+        "expected storage error, got: {}",
+        msg
+    );
 }
 
 // ============================================================================
@@ -679,7 +783,9 @@ semantic_model:
               d: date_col
               m: amount
             storage:
-              path: t1
+              format: parquet
+              paths:
+                - t1
   unionsets:
     - name: union_kind
       dimensions:
@@ -700,7 +806,9 @@ semantic_model:
               d: date_col
               m: amount
             storage:
-              path: t2
+              format: parquet
+              paths:
+                - t2
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -750,7 +858,9 @@ semantic_model:
         - name: orders_daily
           extras:
             storage:
-              path: warehouse.orders_daily
+              format: parquet
+              paths:
+                - warehouse.orders_daily
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -804,7 +914,9 @@ semantic_model:
             column_mapping:
               revenue: actual_amount
             storage:
-              path: warehouse.orders_daily
+              format: parquet
+              paths:
+                - warehouse.orders_daily
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -860,7 +972,9 @@ semantic_model:
         - name: orders_daily
           extras:
             storage:
-              path: warehouse.orders_daily
+              format: parquet
+              paths:
+                - warehouse.orders_daily
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -906,13 +1020,14 @@ semantic_model:
         column_mapping:
           order_date: created_at
           revenue: amount
-        catalog:
-          type: iceberg
+        catalog: polaris_prod
       datasets:
         - name: orders_daily
           extras:
             storage:
-              path: warehouse.orders_daily
+              format: parquet
+              paths:
+                - warehouse.orders_daily
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -926,12 +1041,12 @@ semantic_model:
 
     // catalog should have been propagated from kind.extras.catalog.
     let catalog = ds.extras.catalog.as_ref().expect("catalog should be present");
-    assert_eq!(catalog.catalog_type, "iceberg");
+    assert_eq!(catalog.alias, "polaris_prod");
 }
 
 #[tokio::test]
 async fn test_storage_table_field() {
-    // storage: { table: ... } should parse and compile without error.
+    // storage: { tables: [...] } should parse and compile without error.
     let yaml = r#"
 semantic_model:
   name: storage_table_test
@@ -955,7 +1070,8 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              table: schema_name.orders_daily
+              tables:
+                - schema_name.orders_daily
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -1003,7 +1119,9 @@ semantic_model:
           extras:
             column_mapping: inherited
             storage:
-              path: warehouse.orders
+              format: parquet
+              paths:
+                - warehouse.orders
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -1060,7 +1178,9 @@ semantic_model:
               region: region_name
               revenue: amount_usd
             storage:
-              path: warehouse.orders_daily
+              format: parquet
+              paths:
+                - warehouse.orders_daily
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -1130,7 +1250,9 @@ semantic_model:
                 snapshot:
                   snapshotted_at: snap_ts
             storage:
-              path: warehouse.orders_daily
+              format: parquet
+              paths:
+                - warehouse.orders_daily
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -1184,7 +1306,9 @@ semantic_model:
                 timeseries:
                   occurred_at: different_ts_col
             storage:
-              path: warehouse.orders_daily
+              format: parquet
+              paths:
+                - warehouse.orders_daily
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -1236,7 +1360,9 @@ semantic_model:
             column_mapping:
               order_date: created_at
             storage:
-              path: warehouse.orders
+              format: parquet
+              paths:
+                - warehouse.orders
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -1283,6 +1409,7 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
+              format: parquet
               paths:
                 - "s3://bucket/orders_2024.parquet"
                 - "s3://bucket/orders_2025.parquet"
@@ -1303,7 +1430,7 @@ semantic_model:
 }
 
 #[tokio::test]
-async fn test_storage_path_and_paths_merged() {
+async fn test_storage_two_paths_in_single_list() {
     let yaml = r#"
 semantic_model:
   name: merged_path_test
@@ -1327,8 +1454,9 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: "s3://bucket/orders_main.parquet"
+              format: parquet
               paths:
+                - "s3://bucket/orders_main.parquet"
                 - "s3://bucket/orders_archive.parquet"
 "#;
 
@@ -1336,7 +1464,7 @@ semantic_model:
     let manifest = compiler
         .compile(CompileSource::Yaml(yaml.to_string()))
         .await
-        .expect("path + paths should merge");
+        .expect("multiple paths should compile");
 
     let kind = &manifest.kinds["sales"];
     let ds = &kind.datasets[0];
@@ -1370,8 +1498,11 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: "s3://bucket/orders.parquet"
-              table: "catalog.schema.orders"
+              format: parquet
+              paths:
+                - "s3://bucket/orders.parquet"
+              tables:
+                - "catalog.schema.orders"
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -1389,8 +1520,8 @@ semantic_model:
 }
 
 #[tokio::test]
-async fn test_storage_singular_path_resolved() {
-    // Existing singular path: should populate resolved_sources with one entry.
+async fn test_storage_single_path_resolved() {
+    // Single path should populate resolved_sources with one entry.
     let yaml = r#"
 semantic_model:
   name: singular_path_test
@@ -1414,7 +1545,9 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: warehouse.orders
+              format: parquet
+              paths:
+                - warehouse.orders
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -1809,6 +1942,7 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
+              format: parquet
               paths:
                 - "s3://bucket/year=2024/month=01/data.parquet"
 "#;
@@ -1860,7 +1994,9 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: "s3://bucket/data.parquet"
+              format: parquet
+              paths:
+                - "s3://bucket/data.parquet"
               partition_def:
                 type:
                   range:
@@ -1926,8 +2062,8 @@ semantic_model:
     assert!(result.is_err(), "path.token without storage paths should fail");
     let msg = format!("{}", result.unwrap_err());
     assert!(
-        msg.contains("no storage paths"),
-        "error should mention missing storage paths, got: {}",
+        msg.contains("no storage sources configured"),
+        "error should mention missing storage sources, got: {}",
         msg
     );
 }
@@ -1964,7 +2100,9 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: "s3://bucket/data.parquet"
+              format: parquet
+              paths:
+                - "s3://bucket/data.parquet"
 "#;
 
     let compiler = ManifestCompiler::new();
@@ -2057,7 +2195,9 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: "s3://bucket/data.parquet"
+              format: parquet
+              paths:
+                - "s3://bucket/data.parquet"
               partition_def:
                 type:
                   range:
@@ -2111,7 +2251,9 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: "s3://bucket/data.parquet"
+              format: parquet
+              paths:
+                - "s3://bucket/data.parquet"
               partition_def:
                 type:
                   range:
@@ -2164,6 +2306,7 @@ semantic_model:
           extras:
             column_mapping: auto
             storage:
+              format: parquet
               paths:
                 - "s3://bucket/region=us/data.parquet"
 "#;
@@ -2224,7 +2367,9 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: "s3://bucket/data.parquet"
+              format: parquet
+              paths:
+                - "s3://bucket/data.parquet"
               partition_def:
                 type:
                   range:

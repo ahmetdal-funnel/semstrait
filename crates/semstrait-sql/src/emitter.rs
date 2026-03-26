@@ -42,7 +42,11 @@ impl<D: SqlDialect> AnsiSqlEmitter<D> {
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                Ok(format!("SELECT {cols} FROM {}", self.dialect.quote_identifier(&scan.table_name)))
+                let table_ref = scan.table_name.split('.')
+                    .map(|part| self.dialect.quote_identifier(part))
+                    .collect::<Vec<_>>()
+                    .join(".");
+                Ok(format!("SELECT {cols} FROM {table_ref}"))
             }
 
             PlanNode::Filter(filter) => {
@@ -53,13 +57,22 @@ impl<D: SqlDialect> AnsiSqlEmitter<D> {
 
             PlanNode::Project(project) => {
                 let input_sql = self.emit_node(&project.input)?;
-                let exprs: Result<Vec<String>, EmitError> = project
-                    .expressions
-                    .iter()
-                    .map(|e| renderer.render(e))
-                    .collect();
-                let exprs = exprs?;
-                let select_list = exprs.join(", ");
+                let schema_fields = &project.meta.output_schema.fields;
+                let mut select_parts = Vec::new();
+                for (i, e) in project.expressions.iter().enumerate() {
+                    let rendered = renderer.render(e)?;
+                    if let Some(field) = schema_fields.get(i) {
+                        let alias = self.dialect.quote_identifier(&field.name);
+                        if rendered != alias {
+                            select_parts.push(format!("{rendered} AS {alias}"));
+                        } else {
+                            select_parts.push(rendered);
+                        }
+                    } else {
+                        select_parts.push(rendered);
+                    }
+                }
+                let select_list = select_parts.join(", ");
                 Ok(format!("SELECT {select_list} FROM ({input_sql}) AS _p"))
             }
 

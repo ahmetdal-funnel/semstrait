@@ -126,10 +126,10 @@ impl DataFusionConnector {
 
         let mut registered = Vec::new();
 
-        for kind in manifest.kinds.values() {
-            for ds in &kind.datasets {
-                for source in &ds.resolved_sources {
-                    let table_name = &ds.name;
+        for data_kind in manifest.data_kinds.values() {
+            for binding in data_kind.bindings() {
+                for source in &binding.resolved_sources {
+                    let table_name = &binding.dataset_name;
                     match source.source_type {
                         SourceType::Path => {
                             match self.register_file(table_name, &source.reference).await {

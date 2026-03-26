@@ -7,50 +7,58 @@
 use crate::error::PlannerError;
 use crate::expr_lower;
 use super::grainset::collect_column_refs;
-use super::shared::infer_aggregation;
-use super::{extract_metadata_value, partition_dimensions, resolve_column_name, KindPlanner, PlanFragment, PlannerContext};
+use super::shared;
+use super::shared::{build_scan_node_binding, infer_aggregation_iface};
+use super::{extract_metadata_value_binding, partition_dimensions_iface, KindPlanner, PlanFragment, PlannerContext};
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::DataType;
 use semstrait_ir::{
     AggNode, AggregateMeasure, Expr, Field, NodeMeta, PlanNode, ProjectNode,
-    ScanNode, Schema, UnionNode,
+    Schema, UnionNode,
 };
-use semstrait_manifest::{ColumnMappingValue, CompiledKind, CompiledKindDataset, CompiledKindType, LiteralValue, UnionMode};
+use semstrait_manifest::{KindInterface, UnionMode};
+use semstrait_manifest::acceleration::{DataKind, DatasetBinding};
 use std::collections::HashSet;
 
 /// Planner for Unionset kinds — UNION ALL across multiple datasets.
 pub struct UnionsetPlanner;
 
 impl KindPlanner for UnionsetPlanner {
-    fn supports(&self, kind_type: &CompiledKindType) -> bool {
-        matches!(kind_type, CompiledKindType::Unionset { .. })
+    fn supports(&self, data_kind: &DataKind) -> bool {
+        matches!(data_kind, DataKind::Unionset(_))
     }
 
     fn resolve(
         &self,
-        kind: &CompiledKind,
+        data_kind: &DataKind,
         request: &ResolvedQueryRequest,
         ctx: &PlannerContext<'_>,
     ) -> Result<PlanFragment, PlannerError> {
-        if kind.datasets.is_empty() {
+        let unionset = match data_kind {
+            DataKind::Unionset(u) => u,
+            _ => return Err(PlannerError::Internal("UnionsetPlanner received non-Unionset DataKind".into())),
+        };
+        let iface = &unionset.interface;
+        let bindings = &unionset.bindings;
+
+        if bindings.is_empty() {
             return Err(PlannerError::NoCoveringDataset {
-                kind: kind.name.clone(),
+                kind: iface.name.clone(),
                 reason: "unionset kind has no datasets".to_string(),
             });
         }
 
-        // Extract union mode from the kind type.
-        let distinct = matches!(
-            kind.kind_type,
-            CompiledKindType::Unionset { mode: UnionMode::Unique }
-        );
+        // Extract union mode from the unionset kind.
+        let distinct = unionset.mode == UnionMode::Unique;
 
-        // Build one branch per dataset.
-        let branches: Vec<PlanNode> = kind
-            .datasets
+        // Build one branch per dataset binding.
+        let branches: Vec<PlanNode> = bindings
             .iter()
-            .map(|ds| build_union_branch(kind, request, ds, ctx))
+            .map(|binding| build_union_branch(iface, request, binding, ctx))
             .collect::<Result<Vec<_>, _>>()?;
+
+        // Validate type consistency across branches before UNION.
+        shared::validate_union_types(&branches)?;
 
         // If only one branch, skip the UNION node.
         let union_input = if branches.len() == 1 {
@@ -67,7 +75,7 @@ impl KindPlanner for UnionsetPlanner {
         };
 
         // Re-aggregate across all branches.
-        let unified_schema = build_unified_schema(request);
+        let unified_schema = build_unified_schema(request, iface);
 
         let group_by: Vec<Expr> = request
             .dimensions
@@ -79,7 +87,7 @@ impl KindPlanner for UnionsetPlanner {
             .measures
             .iter()
             .map(|name| AggregateMeasure {
-                function: infer_aggregation(kind, name),
+                function: infer_aggregation_iface(iface, name),
                 expr: Expr::column(name.clone()),
                 distinct: false,
             })
@@ -100,36 +108,36 @@ impl KindPlanner for UnionsetPlanner {
     }
 }
 
-/// Build the unified output schema: dimensions (Utf8) + measures (Float64).
-fn build_unified_schema(request: &ResolvedQueryRequest) -> Schema {
+/// Build the unified output schema with types from the kind's semantic model.
+fn build_unified_schema(request: &ResolvedQueryRequest, iface: &KindInterface) -> Schema {
     let fields: Vec<Field> = request
         .dimensions
         .iter()
-        .map(|name| Field::new(name.clone(), DataType::Utf8))
+        .map(|name| Field::new(name.clone(), iface.resolve_dim_type(name)))
         .chain(
             request
                 .measures
                 .iter()
-                .map(|name| Field::new(name.clone(), DataType::Float64)),
+                .map(|name| Field::new(name.clone(), iface.resolve_measure_type(name))),
         )
         .collect();
     Schema::new(fields)
 }
 
-/// Build a single UNION branch for one dataset.
+/// Build a single UNION branch for one dataset binding.
 ///
 /// Produces: Scan -> Aggregate -> Project
 /// The Project outputs the unified schema, using NULL for unmapped fields.
 fn build_union_branch(
-    kind: &CompiledKind,
+    iface: &KindInterface,
     request: &ResolvedQueryRequest,
-    dataset: &CompiledKindDataset,
-    ctx: &PlannerContext<'_>,
+    binding: &DatasetBinding,
+    _ctx: &PlannerContext<'_>,
 ) -> Result<PlanNode, PlannerError> {
-    let mapping = &dataset.extras.column_mapping;
+    let mapping = &binding.column_mapping;
 
     // Partition dimensions into metadata (literal injection) and regular.
-    let (metadata_dims, _) = partition_dimensions(&request.dimensions, kind);
+    let (metadata_dims, _) = partition_dimensions_iface(&request.dimensions, iface);
 
     // Determine which requested fields this dataset covers.
     let mut scan_columns: Vec<String> = Vec::new();
@@ -146,23 +154,14 @@ fn build_union_branch(
     let mut dim_sources: Vec<(String, DimSource)> = Vec::new();
     for dim_name in &request.dimensions {
         if let Some((_, meta)) = metadata_dims.iter().find(|(n, _)| n == dim_name) {
-            let value = extract_metadata_value(meta, dataset).unwrap_or_default();
+            let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
             dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(Expr::string(value))));
-        } else if let Some(mv) = mapping.get(dim_name) {
-            match mv {
-                ColumnMappingValue::Literal(lit) => {
-                    let expr = match lit {
-                        LiteralValue::String(s) => Expr::string(s.clone()),
-                    };
-                    dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(expr)));
-                }
-                _ => {
-                    let phys = resolve_column_name(mv).to_string();
-                    dim_sources.push((dim_name.clone(), DimSource::Physical(phys.clone())));
-                    if scan_seen.insert(phys.clone()) {
-                        scan_columns.push(phys);
-                    }
-                }
+        } else if let Some(lit_val) = mapping.literals.get(dim_name) {
+            dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(Expr::string(lit_val.clone()))));
+        } else if let Some(phys) = mapping.physical.get(dim_name) {
+            dim_sources.push((dim_name.clone(), DimSource::Physical(phys.clone())));
+            if scan_seen.insert(phys.clone()) {
+                scan_columns.push(phys.clone());
             }
         } else {
             dim_sources.push((dim_name.clone(), DimSource::NullFill));
@@ -172,24 +171,41 @@ fn build_union_branch(
     // Lower measures that this dataset covers.
     let mut lowered_measures: Vec<(String, Option<expr_lower::LoweredMeasure>)> = Vec::new();
     for measure_name in &request.measures {
-        if let Some(measure) = kind.measures.get(measure_name) {
+        if let Some(measure) = iface.measures.get(measure_name) {
             if mapping.contains_key(measure_name) {
                 let lowered = if let Some(agg) = measure.agg {
-                    expr_lower::lower_measure_declarative(
+                    expr_lower::lower_measure_declarative_physical(
                         measure_name,
                         agg,
                         &measure.expr,
-                        mapping,
+                        &mapping.physical,
                         &measure.filters,
                     )?
                 } else {
-                    expr_lower::lower_measure_with_filters(
+                    expr_lower::lower_measure_with_filters_physical(
                         measure_name,
                         &measure.expr,
-                        mapping,
+                        &mapping.physical,
                         &measure.filters,
                     )?
                 };
+                for agg_measure in &lowered.aggregates {
+                    collect_column_refs(
+                        &agg_measure.expr,
+                        &mut scan_columns,
+                        &mut scan_seen,
+                    );
+                }
+                lowered_measures.push((measure_name.clone(), Some(lowered)));
+            } else {
+                lowered_measures.push((measure_name.clone(), None));
+            }
+        } else if let Some(metric) = iface.metrics.get(measure_name) {
+            // Check if the dataset has any of the metric's constituent measures.
+            let constituents = crate::kind::grainset::extract_metric_constituents(metric);
+            let has_any = constituents.iter().any(|c| mapping.contains_key(c));
+            if has_any {
+                let lowered = expr_lower::lower_metric_iface(measure_name, metric, iface, binding, 4)?;
                 for agg_measure in &lowered.aggregates {
                     collect_column_refs(
                         &agg_measure.expr,
@@ -206,25 +222,8 @@ fn build_union_branch(
         }
     }
 
-    // Resolve table name.
-    let table_name = if let Some(ds) = ctx.manifest.get_dataset(&dataset.name) {
-        &ds.name
-    } else {
-        &dataset.name
-    };
-
-    // Build Scan node.
-    let scan_schema = Schema::new(
-        scan_columns
-            .iter()
-            .map(|c| Field::new(c.clone(), DataType::Utf8))
-            .collect(),
-    );
-    let scan = PlanNode::Scan(ScanNode {
-        meta: NodeMeta::new(scan_schema),
-        table_name: table_name.to_string(),
-        projection: scan_columns,
-    });
+    // Build Scan node (multi-source aware).
+    let scan = build_scan_node_binding(binding, &scan_columns);
 
     // Build Aggregate node (only physical dimensions in group_by).
     let group_by: Vec<Expr> = dim_sources
@@ -245,7 +244,7 @@ fn build_union_branch(
     let mut agg_fields: Vec<Field> = dim_sources
         .iter()
         .filter_map(|(semantic, src)| match src {
-            DimSource::Physical(_) => Some(Field::new(semantic.clone(), DataType::Utf8)),
+            DimSource::Physical(_) => Some(Field::new(semantic.clone(), iface.resolve_dim_type(semantic))),
             _ => None,
         })
         .collect();
@@ -255,7 +254,7 @@ fn build_union_branch(
         if let Some(l) = lowered {
             for (j, _) in l.aggregates.iter().enumerate() {
                 if j == 0 {
-                    agg_fields.push(Field::new(semantic.clone(), DataType::Float64));
+                    agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
                 } else {
                     agg_fields.push(Field::new(format!("__agg_{}", agg_idx), DataType::Float64));
                 }
@@ -274,7 +273,7 @@ fn build_union_branch(
 
     // Build Project node — outputs the unified schema.
     // Uncovered dimensions/measures are NULL-filled.
-    let unified_schema = build_unified_schema(request);
+    let unified_schema = build_unified_schema(request, iface);
 
     let mut project_exprs: Vec<Expr> = Vec::new();
     for (semantic, src) in &dim_sources {
@@ -308,103 +307,72 @@ mod tests {
     use crate::test_helpers::*;
     use indexmap::IndexMap;
     use semstrait_manifest::{
-        CompiledKind, CompiledKindDataset, CompiledKindType, CompiledMeasure,
-        ColumnMappingValue, KindDatasetExtras,
+        CompiledDimension, CompiledMeasure,
+    };
+    use semstrait_manifest::acceleration::{
+        CoverageIndex, DimensionIndex, ResolvedColumnMapping, UnionsetKind,
     };
     use std::collections::HashMap;
 
-    /// Create a Unionset kind with two datasets, each covering different columns.
-    fn make_unionset_manifest() -> semstrait_manifest::CompiledManifest {
-        let mut dimensions = IndexMap::new();
-        for name in &["date", "region"] {
-            dimensions.insert(
-                name.to_string(),
-                semstrait_manifest::CompiledDimension {
-                    name: name.to_string(),
-                    description: None,
-                    data_type: "string".to_string(),
-                    dim_type: semstrait_manifest::DimensionType::Categorical(
-                        semstrait_manifest::CategoricalDimension { enum_values: None },
-                    ),
-                },
-            );
-        }
+    // ── Test helpers ─────────────────────────────────────────────────
 
-        let mut measures = IndexMap::new();
-        measures.insert(
-            "revenue".to_string(),
-            CompiledMeasure {
-                name: "revenue".to_string(),
+    /// Build a simple DatasetBinding with physical-only mappings.
+    fn make_binding(name: &str, mappings: Vec<(&str, &str)>) -> DatasetBinding {
+        let physical: IndexMap<String, String> = mappings.into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        DatasetBinding {
+            dataset_name: name.to_string(),
+            column_mapping: ResolvedColumnMapping {
+                physical,
+                literals: HashMap::new(),
+                temporal: HashMap::new(),
+                anchored: HashMap::new(),
+            },
+            resolved_sources: vec![],
+        }
+    }
+
+    fn make_categorical_dim(name: &str) -> (String, CompiledDimension) {
+        (
+            name.to_string(),
+            CompiledDimension {
+                name: name.to_string(),
                 description: None,
-                data_type: "float64".to_string(),
+                data_type: semstrait_core::DataType::Utf8,
+                dim_type: semstrait_manifest::DimensionType::Categorical(
+                    semstrait_manifest::CategoricalDimension { enum_values: None },
+                ),
+            },
+        )
+    }
+
+    fn make_sum_measure(name: &str, expr_ref: &str) -> (String, CompiledMeasure) {
+        (
+            name.to_string(),
+            CompiledMeasure {
+                name: name.to_string(),
+                description: None,
+                data_type: semstrait_core::DataType::Float64,
                 agg: None,
-                expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
-                expr_source: "SUM(amount)".to_string(),
+                expr: semstrait_core::Expr::entity_ref(expr_ref),
+                expr_source: format!("SUM({})", expr_ref),
                 additivity: None,
                 constraints: None,
                 filters: vec![],
             },
-        );
+        )
+    }
 
-        // Dataset 1: covers date + revenue
-        let mut mapping1 = HashMap::new();
-        mapping1.insert("date".to_string(), ColumnMappingValue::Simple("order_date".to_string()));
-        mapping1.insert("region".to_string(), ColumnMappingValue::Simple("region_name".to_string()));
-        mapping1.insert("revenue".to_string(), ColumnMappingValue::Simple("amount".to_string()));
-
-        let ds1 = CompiledKindDataset {
-            name: "orders_us".to_string(),
-            extras: KindDatasetExtras {
-                column_mapping: mapping1.into(),
-                temporal: None,
-                storage: None,
-                catalog: None,
-            },
-            resolved_sources: vec![],
-        };
-
-        // Dataset 2: covers date + revenue (different physical names)
-        let mut mapping2 = HashMap::new();
-        mapping2.insert("date".to_string(), ColumnMappingValue::Simple("sale_date".to_string()));
-        mapping2.insert("region".to_string(), ColumnMappingValue::Simple("region".to_string()));
-        mapping2.insert("revenue".to_string(), ColumnMappingValue::Simple("total".to_string()));
-
-        let ds2 = CompiledKindDataset {
-            name: "orders_eu".to_string(),
-            extras: KindDatasetExtras {
-                column_mapping: mapping2.into(),
-                temporal: None,
-                storage: None,
-                catalog: None,
-            },
-            resolved_sources: vec![],
-        };
-
-        let kind = CompiledKind {
-            name: "all_orders".to_string(),
-            description: None,
-            dimensions,
-            measures,
-            metrics: IndexMap::new(),
-            keys: None,
-            kind_type: CompiledKindType::Unionset { mode: UnionMode::All },
-            datasets: vec![ds1, ds2],
-            relationships: vec![],
-            domain: None,
-            filters: vec![],
-        };
-
-        let mut kinds = IndexMap::new();
-        kinds.insert("all_orders".to_string(), kind);
-
+    fn empty_manifest() -> semstrait_manifest::CompiledManifest {
         semstrait_manifest::CompiledManifest {
             version: 1,
             compiled_at: chrono::Utc::now(),
             source_hash: "test".to_string(),
             datasets: IndexMap::new(),
-            kinds,
+            kinds: IndexMap::new(),
             relationships: vec![],
-            model_name: "test_model".to_string(),
+            model_name: "test".to_string(),
             model_description: None,
             data_kinds: IndexMap::new(),
             relationship_graph: semstrait_manifest::RelationshipGraph::default(),
@@ -414,21 +382,83 @@ mod tests {
         }
     }
 
+    /// Build a DataKind::Unionset from dimensions, measures, and bindings.
+    fn make_unionset(
+        name: &str,
+        dimensions: IndexMap<String, CompiledDimension>,
+        measures: IndexMap<String, CompiledMeasure>,
+        bindings: Vec<DatasetBinding>,
+        mode: UnionMode,
+    ) -> DataKind {
+        let iface = KindInterface {
+            name: name.to_string(),
+            description: None,
+            dimensions: dimensions.clone(),
+            measures: measures.clone(),
+            metrics: IndexMap::new(),
+            keys: None,
+            filters: vec![],
+            domain: None,
+            temporal_dim: None,
+        };
+        let coverage = CoverageIndex::build(&dimensions, &measures, &bindings);
+        let dimension_index = DimensionIndex::build(&dimensions, &bindings);
+
+        DataKind::Unionset(Box::new(UnionsetKind {
+            interface: iface,
+            mode,
+            bindings,
+            coverage_index: coverage,
+            dimension_index,
+            metric_order: None,
+        }))
+    }
+
+    /// Create a Unionset kind with two datasets, each covering all columns.
+    fn make_unionset_data_kind() -> DataKind {
+        let dimensions: IndexMap<_, _> = vec![
+            make_categorical_dim("date"),
+            make_categorical_dim("region"),
+        ].into_iter().collect();
+
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("revenue", "amount"),
+        ].into_iter().collect();
+
+        // Dataset 1: covers date + region + revenue
+        let ds1 = make_binding("orders_us", vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("revenue", "amount"),
+        ]);
+
+        // Dataset 2: covers date + region + revenue (different physical names)
+        let ds2 = make_binding("orders_eu", vec![
+            ("date", "sale_date"),
+            ("region", "region"),
+            ("revenue", "total"),
+        ]);
+
+        make_unionset("all_orders", dimensions, measures, vec![ds1, ds2], UnionMode::All)
+    }
+
     #[test]
     fn test_unionset_two_datasets() {
-        let manifest = make_unionset_manifest();
-        let kind = manifest.get_kind("all_orders").unwrap();
+        let data_kind = make_unionset_data_kind();
         let request = make_test_request("all_orders", vec!["date", "region"], vec!["revenue"]);
 
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &HashMap::new(),
+            session: &session,
         };
 
         let planner = UnionsetPlanner;
-        let result = planner.resolve(kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok(), "unionset resolve should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -460,21 +490,36 @@ mod tests {
 
     #[test]
     fn test_unionset_single_dataset() {
-        let manifest = make_unionset_manifest();
-        // Modify: create a kind with just one dataset.
-        let mut kind = manifest.get_kind("all_orders").unwrap().clone();
-        kind.datasets.truncate(1);
+        let dimensions: IndexMap<_, _> = vec![
+            make_categorical_dim("date"),
+            make_categorical_dim("region"),
+        ].into_iter().collect();
 
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("revenue", "amount"),
+        ].into_iter().collect();
+
+        let ds1 = make_binding("orders_us", vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("revenue", "amount"),
+        ]);
+
+        let data_kind = make_unionset("all_orders", dimensions, measures, vec![ds1], UnionMode::All);
         let request = make_test_request("all_orders", vec!["date"], vec!["revenue"]);
+
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &HashMap::new(),
+            session: &session,
         };
 
         let planner = UnionsetPlanner;
-        let result = planner.resolve(&kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok());
 
         let fragment = result.unwrap();
@@ -492,95 +537,36 @@ mod tests {
 
     #[test]
     fn test_unionset_null_fill() {
-        let mut dimensions = IndexMap::new();
-        for name in &["date", "region"] {
-            dimensions.insert(
-                name.to_string(),
-                semstrait_manifest::CompiledDimension {
-                    name: name.to_string(),
-                    description: None,
-                    data_type: "string".to_string(),
-                    dim_type: semstrait_manifest::DimensionType::Categorical(
-                        semstrait_manifest::CategoricalDimension { enum_values: None },
-                    ),
-                },
-            );
-        }
+        let dimensions: IndexMap<_, _> = vec![
+            make_categorical_dim("date"),
+            make_categorical_dim("region"),
+        ].into_iter().collect();
 
-        let mut measures = IndexMap::new();
-        measures.insert(
-            "revenue".to_string(),
-            CompiledMeasure {
-                name: "revenue".to_string(),
-                description: None,
-                data_type: "float64".to_string(),
-                agg: None,
-                expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
-                expr_source: "SUM(amount)".to_string(),
-                additivity: None,
-                constraints: None,
-                filters: vec![],
-            },
-        );
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("revenue", "amount"),
+        ].into_iter().collect();
 
         // Dataset 1: covers date + revenue but NOT region.
-        let mut mapping1 = HashMap::new();
-        mapping1.insert("date".to_string(), ColumnMappingValue::Simple("order_date".to_string()));
-        mapping1.insert("revenue".to_string(), ColumnMappingValue::Simple("amount".to_string()));
+        let ds1 = make_binding("partial_orders", vec![
+            ("date", "order_date"),
+            ("revenue", "amount"),
+        ]);
 
-        let ds1 = CompiledKindDataset {
-            name: "partial_orders".to_string(),
-            extras: KindDatasetExtras {
-                column_mapping: mapping1.into(),
-                temporal: None,
-                storage: None,
-                catalog: None,
-            },
-            resolved_sources: vec![],
-        };
-
-        let kind = CompiledKind {
-            name: "partial".to_string(),
-            description: None,
-            dimensions,
-            measures,
-            metrics: IndexMap::new(),
-            keys: None,
-            kind_type: CompiledKindType::Unionset { mode: UnionMode::All },
-            datasets: vec![ds1],
-            relationships: vec![],
-            domain: None,
-            filters: vec![],
-        };
-
+        let data_kind = make_unionset("partial", dimensions, measures, vec![ds1], UnionMode::All);
         let request = make_test_request("partial", vec!["date", "region"], vec!["revenue"]);
-        let mut kinds = IndexMap::new();
-        kinds.insert("partial".to_string(), kind.clone());
-        let manifest = semstrait_manifest::CompiledManifest {
-            version: 1,
-            compiled_at: chrono::Utc::now(),
-            source_hash: "test".to_string(),
-            datasets: IndexMap::new(),
-            kinds,
-            relationships: vec![],
-            model_name: "test".to_string(),
-            model_description: None,
-            data_kinds: IndexMap::new(),
-            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
-            field_index: semstrait_manifest::FieldIndex::default(),
-            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
-            catalog_snapshot: None,
-        };
 
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &HashMap::new(),
+            session: &session,
         };
 
         let planner = UnionsetPlanner;
-        let result = planner.resolve(&kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok(), "should succeed with NULL-fill for missing region");
 
         let fragment = result.unwrap();
@@ -601,45 +587,24 @@ mod tests {
 
     #[test]
     fn test_unionset_empty_datasets() {
-        let kind = CompiledKind {
-            name: "empty".to_string(),
-            description: None,
-            dimensions: IndexMap::new(),
-            measures: IndexMap::new(),
-            metrics: IndexMap::new(),
-            keys: None,
-            kind_type: CompiledKindType::Unionset { mode: UnionMode::All },
-            datasets: vec![],
-            relationships: vec![],
-            domain: None,
-            filters: vec![],
-        };
+        let dimensions: IndexMap<String, CompiledDimension> = IndexMap::new();
+        let measures: IndexMap<String, CompiledMeasure> = IndexMap::new();
 
+        let data_kind = make_unionset("empty", dimensions, measures, vec![], UnionMode::All);
         let request = make_test_request("empty", vec![], vec![]);
-        let manifest = semstrait_manifest::CompiledManifest {
-            version: 1,
-            compiled_at: chrono::Utc::now(),
-            source_hash: "test".to_string(),
-            datasets: IndexMap::new(),
-            kinds: IndexMap::new(),
-            relationships: vec![],
-            model_name: "test".to_string(),
-            model_description: None,
-            data_kinds: IndexMap::new(),
-            relationship_graph: semstrait_manifest::RelationshipGraph::default(),
-            field_index: semstrait_manifest::FieldIndex::default(),
-            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
-            catalog_snapshot: None,
-        };
+
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &HashMap::new(),
+            session: &session,
         };
 
         let planner = UnionsetPlanner;
-        let result = planner.resolve(&kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -649,20 +614,41 @@ mod tests {
 
     #[test]
     fn test_unionset_distinct_mode() {
-        let manifest = make_unionset_manifest();
-        let mut kind = manifest.get_kind("all_orders").unwrap().clone();
-        kind.kind_type = CompiledKindType::Unionset { mode: UnionMode::Unique };
+        let dimensions: IndexMap<_, _> = vec![
+            make_categorical_dim("date"),
+            make_categorical_dim("region"),
+        ].into_iter().collect();
 
+        let measures: IndexMap<_, _> = vec![
+            make_sum_measure("revenue", "amount"),
+        ].into_iter().collect();
+
+        let ds1 = make_binding("orders_us", vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("revenue", "amount"),
+        ]);
+        let ds2 = make_binding("orders_eu", vec![
+            ("date", "sale_date"),
+            ("region", "region"),
+            ("revenue", "total"),
+        ]);
+
+        let data_kind = make_unionset("all_orders", dimensions, measures, vec![ds1, ds2], UnionMode::Unique);
         let request = make_test_request("all_orders", vec!["date", "region"], vec!["revenue"]);
+
+        let manifest = empty_manifest();
+        let profile = semstrait_core::ConsumerProfile::default();
+        let session = HashMap::new();
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &semstrait_core::ConsumerProfile::default(),
+            profile: &profile,
             catalog: None,
-            session: &HashMap::new(),
+            session: &session,
         };
 
         let planner = UnionsetPlanner;
-        let result = planner.resolve(&kind, &request, &ctx);
+        let result = planner.resolve(&data_kind, &request, &ctx);
         assert!(result.is_ok(), "unionset distinct should succeed");
 
         let fragment = result.unwrap();

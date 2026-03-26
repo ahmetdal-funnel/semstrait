@@ -1,20 +1,72 @@
 //! Test helper functions for constructing test fixtures.
 //!
 //! These helpers create minimal CompiledManifest and ResolvedQueryRequest
-//! instances for unit testing.
+//! instances for unit testing. All fixtures construct DataKind directly
+//! (no bridge from v1 CompiledKind).
 
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
 use semstrait_manifest::{
-    CompiledDimension, CompiledKind, CompiledKindDataset, CompiledKindType, CompiledManifest,
-    CompiledMeasure,
+    CompiledDimension, CompiledManifest, CompiledMeasure, DimensionType,
 };
-use semstrait_manifest::{ColumnMappingValue, DimensionType, KindDatasetExtras};
+use semstrait_manifest::acceleration::{
+    CoverageIndex, DataKind, DatasetBinding, DatasetKind, DimensionIndex, GrainsetKind,
+    KindInterface, ResolvedColumnMapping,
+};
 
 use crate::request::ResolvedQueryRequest;
 
-/// Create a basic test manifest with a single Grainset kind "orders".
+/// Build a KindInterface from dimensions, measures, and metrics.
+fn build_interface(
+    name: &str,
+    dimensions: IndexMap<String, CompiledDimension>,
+    measures: IndexMap<String, CompiledMeasure>,
+) -> KindInterface {
+    let temporal_dim = dimensions
+        .iter()
+        .find(|(_, d)| matches!(d.dim_type, DimensionType::Temporal(_)))
+        .map(|(name, _)| name.clone());
+
+    KindInterface {
+        name: name.to_string(),
+        description: None,
+        dimensions,
+        measures,
+        metrics: IndexMap::new(),
+        keys: None,
+        filters: vec![],
+        domain: None,
+        temporal_dim,
+    }
+}
+
+/// Build a DatasetBinding from a name and physical column mapping pairs.
+fn build_binding(
+    name: &str,
+    physical_pairs: Vec<(&str, &str)>,
+    sources: Vec<&str>,
+) -> DatasetBinding {
+    let mut physical = IndexMap::new();
+    for (semantic, phys) in physical_pairs {
+        physical.insert(semantic.to_string(), phys.to_string());
+    }
+    DatasetBinding {
+        dataset_name: name.to_string(),
+        column_mapping: ResolvedColumnMapping {
+            physical,
+            literals: HashMap::new(),
+            temporal: HashMap::new(),
+            anchored: HashMap::new(),
+        },
+        resolved_sources: sources
+            .into_iter()
+            .map(semstrait_manifest::ResolvedSource::path)
+            .collect(),
+    }
+}
+
+/// Create a basic test manifest with a single Dataset kind "orders".
 ///
 /// The kind has dimensions [date, region, customer, user_id] and measure [revenue].
 /// It has one dataset "orders_daily" that covers all fields.
@@ -43,7 +95,7 @@ pub fn make_test_manifest_with_constraints(
             CompiledDimension {
                 name: name.to_string(),
                 description: None,
-                data_type: "string".to_string(),
+                data_type: semstrait_core::DataType::Utf8,
                 dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
                     enum_values: None,
                 }),
@@ -57,7 +109,7 @@ pub fn make_test_manifest_with_constraints(
         CompiledMeasure {
             name: "revenue".to_string(),
             description: None,
-            data_type: "float64".to_string(),
+            data_type: semstrait_core::DataType::Float64,
             agg: None,
             expr: semstrait_core::Expr::entity_ref("SUM(amount)"),
             expr_source: "SUM(amount)".to_string(),
@@ -67,89 +119,41 @@ pub fn make_test_manifest_with_constraints(
         },
     );
 
-    // Build the column mapping for the dataset.
-    let mut column_mapping = HashMap::new();
-    column_mapping.insert(
-        "date".to_string(),
-        ColumnMappingValue::Simple("order_date".to_string()),
-    );
-    column_mapping.insert(
-        "region".to_string(),
-        ColumnMappingValue::Simple("region_name".to_string()),
-    );
-    column_mapping.insert(
-        "customer".to_string(),
-        ColumnMappingValue::Simple("customer_name".to_string()),
-    );
-    column_mapping.insert(
-        "user_id".to_string(),
-        ColumnMappingValue::Simple("user_id".to_string()),
-    );
-    column_mapping.insert(
-        "revenue".to_string(),
-        ColumnMappingValue::Simple("amount".to_string()),
+    let interface = build_interface("orders", dimensions, measures);
+
+    let binding = build_binding(
+        "orders_daily",
+        vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("customer", "customer_name"),
+            ("user_id", "user_id"),
+            ("revenue", "amount"),
+        ],
+        vec![],
     );
 
-    let dataset = CompiledKindDataset {
-        name: "orders_daily".to_string(),
-        extras: KindDatasetExtras {
-            column_mapping: column_mapping.into(),
-            temporal: None,
-            storage: None,
-            catalog: None,
-        },
-        resolved_sources: vec![],
-    };
+    // Single dataset → DataKind::Dataset (fast path).
+    let data_kind = DataKind::Dataset(Box::new(DatasetKind { interface, binding }));
 
-    let kind = CompiledKind {
-        name: "orders".to_string(),
-        description: None,
-        dimensions,
-        measures,
-        metrics: IndexMap::new(),
-        keys: None,
-        kind_type: CompiledKindType::Grainset,
-        datasets: vec![dataset],
-        relationships: vec![],
-        domain: None,
-        filters: vec![],
-    };
-
-    let mut kinds = IndexMap::new();
-    kinds.insert("orders".to_string(), kind);
+    let mut data_kinds = IndexMap::new();
+    data_kinds.insert("orders".to_string(), data_kind);
 
     CompiledManifest {
         version: 2,
         compiled_at: chrono::Utc::now(),
         source_hash: "test".to_string(),
         datasets: IndexMap::new(),
-        kinds,
+        kinds: IndexMap::new(),
         relationships: vec![],
         model_name: "test_model".to_string(),
         model_description: None,
-        data_kinds: IndexMap::new(),
+        data_kinds,
         relationship_graph: semstrait_manifest::RelationshipGraph::default(),
         field_index: semstrait_manifest::FieldIndex::default(),
         diagnostics: semstrait_manifest::CompileDiagnostics::default(),
         catalog_snapshot: None,
     }
-}
-
-/// Create a test manifest with data_kinds populated (for v2 dispatch testing).
-///
-/// Unlike `make_test_manifest()`, this populates `data_kinds` from compiled kinds,
-/// enabling the v2 CommonDataset fast path.
-pub fn make_test_manifest_v2() -> CompiledManifest {
-    let mut manifest = make_test_manifest();
-    let mut data_kinds = IndexMap::new();
-    for (name, kind) in &manifest.kinds {
-        data_kinds.insert(
-            name.clone(),
-            semstrait_manifest::acceleration::data_kind_from_compiled_kind(kind),
-        );
-    }
-    manifest.data_kinds = data_kinds;
-    manifest
 }
 
 /// Create a test manifest with two partial-coverage datasets for horizontal join testing.
@@ -165,7 +169,7 @@ pub fn make_multi_dataset_manifest() -> CompiledManifest {
             CompiledDimension {
                 name: name.to_string(),
                 description: None,
-                data_type: "string".to_string(),
+                data_type: semstrait_core::DataType::Utf8,
                 dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
                     enum_values: None,
                 }),
@@ -179,7 +183,7 @@ pub fn make_multi_dataset_manifest() -> CompiledManifest {
         CompiledMeasure {
             name: "cost".to_string(),
             description: None,
-            data_type: "float64".to_string(),
+            data_type: semstrait_core::DataType::Float64,
             agg: None,
             expr: semstrait_core::Expr::entity_ref("SUM(cost_amount)"),
             expr_source: "SUM(cost_amount)".to_string(),
@@ -193,7 +197,7 @@ pub fn make_multi_dataset_manifest() -> CompiledManifest {
         CompiledMeasure {
             name: "revenue".to_string(),
             description: None,
-            data_type: "float64".to_string(),
+            data_type: semstrait_core::DataType::Float64,
             agg: None,
             expr: semstrait_core::Expr::entity_ref("SUM(rev_amount)"),
             expr_source: "SUM(rev_amount)".to_string(),
@@ -203,67 +207,54 @@ pub fn make_multi_dataset_manifest() -> CompiledManifest {
         },
     );
 
-    // Dataset 1: covers date, region, cost
-    let mut mapping1 = HashMap::new();
-    mapping1.insert("date".to_string(), ColumnMappingValue::Simple("order_date".to_string()));
-    mapping1.insert("region".to_string(), ColumnMappingValue::Simple("region_name".to_string()));
-    mapping1.insert("cost".to_string(), ColumnMappingValue::Simple("cost_amount".to_string()));
+    let interface = build_interface("orders", dimensions.clone(), measures.clone());
 
-    let ds1 = CompiledKindDataset {
-        name: "cost_daily".to_string(),
-        extras: KindDatasetExtras {
-            column_mapping: mapping1.into(),
-            temporal: None,
-            storage: None,
-            catalog: None,
-        },
-        resolved_sources: vec![],
-    };
+    let binding1 = build_binding(
+        "cost_daily",
+        vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("cost", "cost_amount"),
+        ],
+        vec![],
+    );
 
-    // Dataset 2: covers date, region, revenue
-    let mut mapping2 = HashMap::new();
-    mapping2.insert("date".to_string(), ColumnMappingValue::Simple("order_date".to_string()));
-    mapping2.insert("region".to_string(), ColumnMappingValue::Simple("region_name".to_string()));
-    mapping2.insert("revenue".to_string(), ColumnMappingValue::Simple("rev_amount".to_string()));
+    let binding2 = build_binding(
+        "revenue_daily",
+        vec![
+            ("date", "order_date"),
+            ("region", "region_name"),
+            ("revenue", "rev_amount"),
+        ],
+        vec![],
+    );
 
-    let ds2 = CompiledKindDataset {
-        name: "revenue_daily".to_string(),
-        extras: KindDatasetExtras {
-            column_mapping: mapping2.into(),
-            temporal: None,
-            storage: None,
-            catalog: None,
-        },
-        resolved_sources: vec![],
-    };
+    let bindings = vec![binding1, binding2];
+    let coverage_index = CoverageIndex::build(&dimensions, &measures, &bindings);
+    let dimension_index = DimensionIndex::build(&dimensions, &bindings);
 
-    let kind = CompiledKind {
-        name: "orders".to_string(),
-        description: None,
-        dimensions,
-        measures,
-        metrics: IndexMap::new(),
-        keys: None,
-        kind_type: CompiledKindType::Grainset,
-        datasets: vec![ds1, ds2],
-        relationships: vec![],
-        domain: None,
-        filters: vec![],
-    };
+    let data_kind = DataKind::Grainset(Box::new(GrainsetKind {
+        interface,
+        bindings,
+        coverage_index,
+        dimension_index,
+        metric_order: None,
+        grain_map: None,
+    }));
 
-    let mut kinds = IndexMap::new();
-    kinds.insert("orders".to_string(), kind);
+    let mut data_kinds = IndexMap::new();
+    data_kinds.insert("orders".to_string(), data_kind);
 
     CompiledManifest {
         version: 1,
         compiled_at: chrono::Utc::now(),
         source_hash: "test_multi".to_string(),
         datasets: IndexMap::new(),
-        kinds,
+        kinds: IndexMap::new(),
         relationships: vec![],
         model_name: "test_multi_model".to_string(),
         model_description: None,
-        data_kinds: IndexMap::new(),
+        data_kinds,
         relationship_graph: semstrait_manifest::RelationshipGraph::default(),
         field_index: semstrait_manifest::FieldIndex::default(),
         diagnostics: semstrait_manifest::CompileDiagnostics::default(),

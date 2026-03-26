@@ -78,8 +78,6 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
         #[serde(default)]
         namespace: Option<String>,
         #[serde(default)]
-        catalog: Option<CatalogConnectionConfig>,
-        #[serde(default)]
         datasets: Vec<Dataset>,
         #[serde(default)]
         grainsets: Vec<YamlGrainset>,
@@ -112,7 +110,6 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
         ai_context: m.ai_context,
         labels: m.labels,
         namespace: m.namespace,
-        catalog: m.catalog,
         datasets: m.datasets,
         kinds,
         relationships: m.relationships,
@@ -274,7 +271,8 @@ semantic_model:
               order_date: created_at
               revenue: amount_usd
             storage:
-              path: warehouse.orders_daily
+              paths:
+                - warehouse.orders_daily
 "#;
         let model = parse(yaml).unwrap();
         assert_eq!(model.kinds.len(), 1);
@@ -436,7 +434,8 @@ semantic_model:
               order_date: created_at
               revenue: amount_usd
             storage:
-              path: warehouse.orders_daily
+              paths:
+                - warehouse.orders_daily
 "#;
         let model = parse(yaml).unwrap();
         let kind = &model.kinds[0];
@@ -484,7 +483,8 @@ semantic_model:
                 grain: month
               revenue: total_revenue
             storage:
-              path: warehouse.orders_monthly
+              paths:
+                - warehouse.orders_monthly
 "#;
         let model = parse(yaml).unwrap();
         let kind = &model.kinds[0];
@@ -530,7 +530,8 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: warehouse.orders
+              paths:
+                - warehouse.orders
 "#;
         let model = parse(yaml).unwrap();
         let kind = &model.kinds[0];
@@ -687,101 +688,6 @@ semantic_model:
     }
 
     #[test]
-    fn test_parse_catalog_connection() {
-        let yaml = r#"
-semantic_model:
-  name: catalog_test
-  catalog:
-    type: iceberg_rest
-    url: https://polaris.example.com/api/catalog
-    warehouse: my_warehouse
-  datasets:
-    - name: orders
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-"#;
-        let model = parse(yaml).unwrap();
-        let catalog = model.catalog.as_ref().unwrap();
-        assert_eq!(catalog.catalog_type, "iceberg_rest");
-        assert_eq!(catalog.url, "https://polaris.example.com/api/catalog");
-        assert_eq!(catalog.warehouse.as_deref(), Some("my_warehouse"));
-        assert!(catalog.auth.is_none());
-    }
-
-    #[test]
-    fn test_parse_catalog_auth_bearer() {
-        std::env::set_var("SEMSTRAIT_TEST_TOKEN", "my_token");
-        let yaml = r#"
-semantic_model:
-  name: bearer_test
-  catalog:
-    type: iceberg_rest
-    url: https://polaris.example.com/api/catalog
-    auth:
-      method: bearer
-      token: ${SEMSTRAIT_TEST_TOKEN}
-  datasets:
-    - name: orders
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-"#;
-        let model = parse(yaml).unwrap();
-        let auth = model.catalog.unwrap().auth.unwrap();
-        match auth {
-            CatalogAuthConfig::Bearer { token } => {
-                assert_eq!(token, "my_token");
-            }
-            _ => panic!("expected bearer auth"),
-        }
-        std::env::remove_var("SEMSTRAIT_TEST_TOKEN");
-    }
-
-    #[test]
-    fn test_parse_catalog_auth_polaris() {
-        let yaml = r#"
-semantic_model:
-  name: polaris_test
-  catalog:
-    type: iceberg_rest
-    url: https://polaris.example.com/api/catalog
-    warehouse: wh
-    auth:
-      method: polaris
-      secret_arn: arn:aws:secretsmanager:eu-west-1:123:secret/polaris
-      region: eu-west-1
-      realm: POLARIS
-      scope: "PRINCIPAL_ROLE:ALL"
-  datasets:
-    - name: orders
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-"#;
-        let model = parse(yaml).unwrap();
-        let auth = model.catalog.unwrap().auth.unwrap();
-        match auth {
-            CatalogAuthConfig::Polaris {
-                secret_arn,
-                region,
-                realm,
-                scope,
-                ..
-            } => {
-                assert_eq!(secret_arn, "arn:aws:secretsmanager:eu-west-1:123:secret/polaris");
-                assert_eq!(region.as_deref(), Some("eu-west-1"));
-                assert_eq!(realm.as_deref(), Some("POLARIS"));
-                assert_eq!(scope.as_deref(), Some("PRINCIPAL_ROLE:ALL"));
-            }
-            _ => panic!("expected polaris auth"),
-        }
-    }
-
-    #[test]
     fn test_parse_joinset() {
         let yaml = r#"
 semantic_model:
@@ -807,12 +713,14 @@ semantic_model:
               order_date: created_at
               revenue: amount
             storage:
-              path: warehouse.orders
+              paths:
+                - warehouse.orders
         - name: customers
           extras:
             column_mapping: {}
             storage:
-              path: warehouse.customers
+              paths:
+                - warehouse.customers
       relationships:
         - name: orders_customers
           from: orders

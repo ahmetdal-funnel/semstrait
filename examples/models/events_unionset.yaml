@@ -40,7 +40,8 @@ semantic_model:
               channel: web_channel
               event_count: event_id
             storage:
-              path: warehouse.web_events
+              paths:
+                - warehouse.web_events
 
         - name: mobile_events
           extras:
@@ -50,4 +51,5 @@ semantic_model:
               event_count: event_id
               # channel is not mapped — will be NULL-filled in UNION
             storage:
-              path: warehouse.mobile_events
+              paths:
+                - warehouse.mobile_events

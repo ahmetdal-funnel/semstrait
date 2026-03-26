@@ -36,4 +36,5 @@ semantic_model:
               balance: balance_amount
               transaction_count: txn_id
             storage:
-              path: warehouse.account_balances
+              paths:
+                - warehouse.account_balances

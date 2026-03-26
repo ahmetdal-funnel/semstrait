@@ -83,6 +83,8 @@ mod tests {
         let scan = PlanNode::Scan(ScanNode {
             meta: NodeMeta::new(scan_schema),
             table_name: "orders_daily".to_string(),
+            location: None,
+            format: None,
             projection: vec!["region".to_string(), "amount".to_string()],
         });
 
@@ -109,6 +111,8 @@ mod tests {
         let scan = PlanNode::Scan(ScanNode {
             meta: NodeMeta::new(schema.clone()),
             table_name: "orders".to_string(),
+            location: None,
+            format: None,
             projection: vec!["id".to_string(), "amount".to_string()],
         });
 
