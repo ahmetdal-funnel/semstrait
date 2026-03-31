@@ -10,7 +10,7 @@ use semstrait_planner::{
     FilterOperator, FilterValue, OrderByClause, QueryFilter, ResolvedQueryRequest,
     SemanticPlanner, SortDirection,
 };
-use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
+use semstrait_adapter::sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
 
 /// Load a test fixture YAML model by name (without extension).
 fn load_model(name: &str) -> String {
@@ -33,7 +33,6 @@ fn make_request(
         grain: None,
         limit: None,
         order_by: vec![],
-        domain_hint: None,
         session_variables: HashMap::new(),
     }
 }

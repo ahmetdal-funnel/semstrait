@@ -2,7 +2,7 @@
 
 use crate::error::ModelError;
 use crate::types::*;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Substitute `${VAR}` patterns in a string with environment variable values.
 ///
@@ -66,19 +66,42 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
         semantic_model: YamlModel,
     }
 
+    /// Intermediate YAML dataset with Vec fields (for array deserialization).
+    /// Converted to Dataset with BTreeMap-based SemanticInterface after parse.
+    #[derive(serde::Deserialize)]
+    struct YamlDataset {
+        name: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        ai_context: Option<AiContext>,
+        #[serde(default)]
+        keys: Option<Keys>,
+        #[serde(default)]
+        dimensions: Vec<DimensionEntry>,
+        #[serde(default)]
+        measures: Vec<MeasureEntry>,
+        #[serde(default)]
+        metrics: Vec<MetricEntry>,
+        #[serde(default)]
+        filters: Vec<MeasureFilter>,
+        #[serde(default)]
+        extras: Option<DatasetExtras>,
+    }
+
     #[derive(serde::Deserialize)]
     struct YamlModel {
         name: String,
         #[serde(default)]
         description: Option<String>,
         #[serde(default)]
-        ai_context: Option<String>,
+        ai_context: Option<AiContext>,
         #[serde(default)]
         labels: Vec<String>,
         #[serde(default)]
         namespace: Option<String>,
         #[serde(default)]
-        datasets: Vec<Dataset>,
+        datasets: Vec<YamlDataset>,
         #[serde(default)]
         grainsets: Vec<YamlGrainset>,
         #[serde(default)]
@@ -98,11 +121,41 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
     let root: YamlRoot = serde_yaml::from_str(yaml)?;
     let m = root.semantic_model;
 
-    // Merge grainsets/unionsets/joinsets into kinds.
-    let mut kinds: Vec<Kind> = Vec::new();
-    kinds.extend(m.grainsets.into_iter().map(Kind::from));
-    kinds.extend(m.unionsets.into_iter().map(Kind::from));
-    kinds.extend(m.joinsets.into_iter().map(Kind::from));
+    // Build unified data_kinds map from datasets + grainsets + unionsets + joinsets.
+    let mut data_kinds = BTreeMap::new();
+
+    // Convert YAML datasets to DataKind::Dataset with BTreeMap-based SemanticInterface.
+    for yd in m.datasets {
+        let name = yd.name.clone();
+        let dk = DataKind::Dataset(DatasetKind {
+            name: yd.name,
+            interface: build_semantic_interface(
+                &name,
+                yd.description,
+                yd.ai_context,
+                yd.keys,
+                yd.dimensions,
+                yd.measures,
+                yd.metrics,
+                yd.filters,
+            )?,
+            extras: yd.extras,
+        });
+        insert_unique_kind(&mut data_kinds, name, dk)?;
+    }
+
+    // Convert grainsets/unionsets/joinsets to DataKind variants.
+    // Nested kind blocks are flattened: extracted as top-level entries with
+    // DataKindEntry::Ref added to the parent's datasets.
+    for g in m.grainsets {
+        flatten_grainset(&mut data_kinds, g)?;
+    }
+    for u in m.unionsets {
+        flatten_unionset(&mut data_kinds, u)?;
+    }
+    for j in m.joinsets {
+        flatten_joinset(&mut data_kinds, j)?;
+    }
 
     Ok(SemanticModel {
         name: m.name,
@@ -110,13 +163,96 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
         ai_context: m.ai_context,
         labels: m.labels,
         namespace: m.namespace,
-        datasets: m.datasets,
-        kinds,
+        data_kinds,
         relationships: m.relationships,
         dimensions: m.dimensions,
         measures: m.measures,
         metrics: m.metrics,
     })
+}
+
+// =============================================================================
+// Nested kind flattening
+// =============================================================================
+// Nested kind blocks (e.g., `unionsets:` inside a grainset) are syntactic sugar.
+// Each nested kind is extracted as a standalone top-level entry in `data_kinds`
+// and a `DataKindEntry::Ref` is added to the parent's `datasets` array.
+// The nesting matrix restricts which combinations are valid (enforced in
+// validate_structure, step 4).
+
+fn insert_unique_kind(
+    map: &mut BTreeMap<String, DataKind>,
+    name: String,
+    dk: DataKind,
+) -> Result<(), ModelError> {
+    if map.contains_key(&name) {
+        return Err(ModelError::Validation(format!(
+            "duplicate entity name: '{}'",
+            name
+        )));
+    }
+    map.insert(name, dk);
+    Ok(())
+}
+
+fn flatten_grainset(
+    data_kinds: &mut BTreeMap<String, DataKind>,
+    mut g: YamlGrainset,
+) -> Result<(), ModelError> {
+    // Extract nested kinds, flatten recursively, add refs to parent.
+    for u in std::mem::take(&mut g.unionsets) {
+        let ref_name = u.name.clone();
+        flatten_unionset(data_kinds, u)?;
+        g.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Unionset)));
+    }
+    for j in std::mem::take(&mut g.joinsets) {
+        let ref_name = j.name.clone();
+        flatten_joinset(data_kinds, j)?;
+        g.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Joinset)));
+    }
+    let name = g.name.clone();
+    insert_unique_kind(data_kinds, name, DataKind::try_from(g)?)
+}
+
+fn flatten_unionset(
+    data_kinds: &mut BTreeMap<String, DataKind>,
+    mut u: YamlUnionset,
+) -> Result<(), ModelError> {
+    for g in std::mem::take(&mut u.grainsets) {
+        let ref_name = g.name.clone();
+        flatten_grainset(data_kinds, g)?;
+        u.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Grainset)));
+    }
+    for nested_u in std::mem::take(&mut u.unionsets) {
+        let ref_name = nested_u.name.clone();
+        flatten_unionset(data_kinds, nested_u)?;
+        u.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Unionset)));
+    }
+    for j in std::mem::take(&mut u.joinsets) {
+        let ref_name = j.name.clone();
+        flatten_joinset(data_kinds, j)?;
+        u.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Joinset)));
+    }
+    let name = u.name.clone();
+    insert_unique_kind(data_kinds, name, DataKind::try_from(u)?)
+}
+
+fn flatten_joinset(
+    data_kinds: &mut BTreeMap<String, DataKind>,
+    mut j: YamlJoinset,
+) -> Result<(), ModelError> {
+    for g in std::mem::take(&mut j.grainsets) {
+        let ref_name = g.name.clone();
+        flatten_grainset(data_kinds, g)?;
+        j.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Grainset)));
+    }
+    for u in std::mem::take(&mut j.unionsets) {
+        let ref_name = u.name.clone();
+        flatten_unionset(data_kinds, u)?;
+        j.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Unionset)));
+    }
+    let name = j.name.clone();
+    insert_unique_kind(data_kinds, name, DataKind::try_from(j)?)
 }
 
 /// Resolve all `ref:` entries in the model.
@@ -152,28 +288,22 @@ pub fn resolve_refs(mut model: SemanticModel) -> Result<SemanticModel, ModelErro
         .map(|m| (m.name.as_str(), m))
         .collect();
 
-    // Resolve refs in datasets
-    for dataset in &mut model.datasets {
-        resolve_dimension_entries(&mut dataset.dimensions, &dim_map)?;
-        resolve_measure_entries(&mut dataset.measures, &measure_map)?;
-        resolve_metric_entries(&mut dataset.metrics, &metric_map)?;
-    }
-
-    // Resolve refs in kinds
-    for kind in &mut model.kinds {
-        resolve_dimension_entries(&mut kind.dimensions, &dim_map)?;
-        resolve_measure_entries(&mut kind.measures, &measure_map)?;
-        resolve_metric_entries(&mut kind.metrics, &metric_map)?;
+    // Resolve refs in all data kinds (datasets + grainsets + unionsets + joinsets)
+    for dk in model.data_kinds.values_mut() {
+        let iface = dk.interface_mut();
+        resolve_dimension_entries(&mut iface.dimensions, &dim_map)?;
+        resolve_measure_entries(&mut iface.measures, &measure_map)?;
+        resolve_metric_entries(&mut iface.metrics, &metric_map)?;
     }
 
     Ok(model)
 }
 
 fn resolve_dimension_entries(
-    entries: &mut [DimensionEntry],
+    entries: &mut BTreeMap<String, DimensionEntry>,
     map: &HashMap<&str, &Dimension>,
 ) -> Result<(), ModelError> {
-    for entry in entries.iter_mut() {
+    for entry in entries.values_mut() {
         if let DimensionEntry::Ref(r) = entry {
             let name = &r.ref_name;
             let resolved = map.get(name.as_str()).ok_or_else(|| {
@@ -186,10 +316,10 @@ fn resolve_dimension_entries(
 }
 
 fn resolve_measure_entries(
-    entries: &mut [MeasureEntry],
+    entries: &mut BTreeMap<String, MeasureEntry>,
     map: &HashMap<&str, &Measure>,
 ) -> Result<(), ModelError> {
-    for entry in entries.iter_mut() {
+    for entry in entries.values_mut() {
         if let MeasureEntry::Ref(r) = entry {
             let name = &r.ref_name;
             let resolved = map.get(name.as_str()).ok_or_else(|| {
@@ -202,10 +332,10 @@ fn resolve_measure_entries(
 }
 
 fn resolve_metric_entries(
-    entries: &mut [MetricEntry],
+    entries: &mut BTreeMap<String, MetricEntry>,
     map: &HashMap<&str, &Metric>,
 ) -> Result<(), ModelError> {
-    for entry in entries.iter_mut() {
+    for entry in entries.values_mut() {
         if let MetricEntry::Ref(r) = entry {
             let name = &r.ref_name;
             let resolved = map.get(name.as_str()).ok_or_else(|| {
@@ -242,8 +372,8 @@ semantic_model:
 "#;
         let model = parse(yaml).unwrap();
         assert_eq!(model.name, "test_model");
-        assert_eq!(model.datasets.len(), 1);
-        assert_eq!(model.datasets[0].name, "orders");
+        assert_eq!(model.data_kinds.len(), 1);
+        assert_eq!(model.data_kinds.get("orders").unwrap().name(), "orders");
     }
 
     #[test]
@@ -275,9 +405,9 @@ semantic_model:
                 - warehouse.orders_daily
 "#;
         let model = parse(yaml).unwrap();
-        assert_eq!(model.kinds.len(), 1);
-        assert_eq!(model.kinds[0].name, "sales");
-        assert_eq!(model.kinds[0].datasets.len(), 1);
+        let sales = model.data_kinds.get("sales").unwrap();
+        assert!(matches!(sales, DataKind::Grainset(_)));
+        assert_eq!(sales.children().unwrap().len(), 1);
     }
 
     #[test]
@@ -304,10 +434,10 @@ semantic_model:
         let model = parse(yaml).unwrap();
         let resolved = resolve_refs(model).unwrap();
 
-        assert_eq!(resolved.datasets.len(), 1);
-        assert_eq!(resolved.datasets[0].dimensions.len(), 1);
+        let orders = resolved.data_kinds.get("orders").unwrap();
+        assert_eq!(orders.interface().dimensions.len(), 1);
 
-        match &resolved.datasets[0].dimensions[0] {
+        match orders.interface().dimensions.values().next().unwrap() {
             DimensionEntry::Inline(d) => assert_eq!(d.name, "order_date"),
             DimensionEntry::Ref(_) => panic!("expected ref to be resolved"),
         }
@@ -337,7 +467,8 @@ semantic_model:
         let model = parse(yaml).unwrap();
         let resolved = resolve_refs(model).unwrap();
 
-        match &resolved.datasets[0].measures[0] {
+        let orders = resolved.data_kinds.get("orders").unwrap();
+        match orders.interface().measures.values().next().unwrap() {
             MeasureEntry::Inline(m) => assert_eq!(m.name, "revenue"),
             MeasureEntry::Ref(_) => panic!("expected ref to be resolved"),
         }
@@ -370,46 +501,6 @@ semantic_model:
     }
 
     #[test]
-    fn test_parse_domain_single() {
-        let yaml = r#"
-semantic_model:
-  name: domain_test
-  datasets:
-    - name: orders
-      domain: financial.transactions
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-"#;
-        let model = parse(yaml).unwrap();
-        let domain = model.datasets[0].domain.as_ref().unwrap();
-        assert_eq!(domain.0, vec!["financial.transactions"]);
-    }
-
-    #[test]
-    fn test_parse_domain_array() {
-        let yaml = r#"
-semantic_model:
-  name: domain_test
-  datasets:
-    - name: orders
-      domain:
-        - financial.transactions
-        - marketing.orders
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"
-"#;
-        let model = parse(yaml).unwrap();
-        let domain = model.datasets[0].domain.as_ref().unwrap();
-        assert_eq!(domain.0.len(), 2);
-        assert_eq!(domain.0[0], "financial.transactions");
-        assert_eq!(domain.0[1], "marketing.orders");
-    }
-
-    #[test]
     fn test_parse_column_mapping_simple() {
         let yaml = r#"
 semantic_model:
@@ -438,10 +529,11 @@ semantic_model:
                 - warehouse.orders_daily
 "#;
         let model = parse(yaml).unwrap();
-        let kind = &model.kinds[0];
+        let sales = model.data_kinds.get("sales").unwrap();
+        let children = sales.children().unwrap();
 
-        match &kind.datasets[0] {
-            KindDatasetEntry::Inline(ds) => {
+        match &children[0] {
+            DataKindEntry::Inline(ds) => {
                 let mapping = &ds.extras.column_mapping;
                 assert!(mapping.contains_key("order_date"));
                 assert!(mapping.contains_key("revenue"));
@@ -487,10 +579,11 @@ semantic_model:
                 - warehouse.orders_monthly
 "#;
         let model = parse(yaml).unwrap();
-        let kind = &model.kinds[0];
+        let sales = model.data_kinds.get("sales").unwrap();
+        let children = sales.children().unwrap();
 
-        match &kind.datasets[0] {
-            KindDatasetEntry::Inline(ds) => {
+        match &children[0] {
+            DataKindEntry::Inline(ds) => {
                 let mapping = &ds.extras.column_mapping;
 
                 match mapping.get("order_date").unwrap() {
@@ -534,10 +627,11 @@ semantic_model:
                 - warehouse.orders
 "#;
         let model = parse(yaml).unwrap();
-        let kind = &model.kinds[0];
+        let sales = model.data_kinds.get("sales").unwrap();
+        let children = sales.children().unwrap();
 
-        match &kind.datasets[0] {
-            KindDatasetEntry::Inline(ds) => {
+        match &children[0] {
+            DataKindEntry::Inline(ds) => {
                 match &ds.name {
                     DatasetName::Glob(pattern) => {
                         assert_eq!(pattern.0, "orders_*");
@@ -567,9 +661,9 @@ semantic_model:
               resolution_strategy: latest
 "#;
         let model = parse(yaml).unwrap();
-        let dataset = &model.datasets[0];
+        let dataset = model.data_kinds.get("accounts").unwrap();
 
-        match &dataset.measures[0] {
+        match dataset.interface().measures.values().next().unwrap() {
             MeasureEntry::Inline(m) => {
                 assert!(m.additivity.is_some());
                 match m.additivity.as_ref().unwrap() {
@@ -732,15 +826,158 @@ semantic_model:
           cardinality: many_to_one
 "#;
         let model = parse(yaml).unwrap();
-        let kind = &model.kinds[0];
+        let dk = model.data_kinds.get("order_details").unwrap();
 
-        match &kind.kind_type {
-            KindTypeSpec::Joinset(config) => {
-                assert_eq!(config.associativity, JoinAssociativity::Left);
+        match dk {
+            DataKind::Joinset(j) => {
+                assert_eq!(j.associativity, JoinAssociativity::Left);
+                assert_eq!(j.relationships.len(), 1);
             }
             _ => panic!("expected joinset"),
         }
+    }
 
-        assert_eq!(kind.relationships.len(), 1);
+    /// DL-049: Declarative ExprSource at kind level (Tier 2) must parse correctly.
+    /// Previously failed because ExprSource used #[serde(untagged)] nested inside
+    /// DimensionEntry (also untagged) — serde_yaml 0.9 limitation.
+    #[test]
+    fn test_kind_level_declarative_expr_dl049() {
+        let yaml = r#"
+semantic_model:
+  name: dl049_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: raw_name
+          data_type: string
+        - name: name_upper
+          data_type: string
+          expr:
+            upper: raw_name
+      measures:
+        - name: revenue
+          data_type: f64
+          agg: sum
+      datasets:
+        - name: orders
+          extras:
+            column_mapping:
+              order_date: created_at
+              raw_name: name
+              revenue: amount
+            storage:
+              paths:
+                - s3://data/orders/
+"#;
+        let model = parse(yaml).unwrap();
+        let sales = model.data_kinds.get("sales").unwrap();
+        assert!(matches!(sales, DataKind::Grainset(_)));
+
+        // Verify declarative expr parsed on the kind-level dimension
+        let iface = sales.interface();
+        let dim = match iface.dimensions.get("name_upper").unwrap() {
+            DimensionEntry::Inline(d) => d,
+            DimensionEntry::Ref(_) => panic!("expected inline"),
+        };
+        assert!(dim.expr.is_some(), "declarative expr must parse at kind level");
+        match dim.expr.as_ref().unwrap() {
+            crate::expr_block::ExprSource::Declarative(_) => {} // correct
+            crate::expr_block::ExprSource::Inline(s) => {
+                panic!("expected Declarative, got Inline(\"{}\")", s)
+            }
+        }
+    }
+
+    /// SR-1 / SR-3: Duplicate dimension name in same container → error at parse time.
+    #[test]
+    fn test_duplicate_dimension_name_error() {
+        let yaml = r#"
+semantic_model:
+  name: dup_test
+  datasets:
+    - name: orders
+      dimensions:
+        - name: country
+          data_type: string
+        - name: country
+          data_type: string
+      measures:
+        - name: revenue
+          data_type: f64
+          agg: sum
+"#;
+        let result = parse(yaml);
+        assert!(result.is_err(), "duplicate dimension should cause error");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("duplicate") && err.contains("country"), "error: {}", err);
+    }
+
+    /// SR-4: Dataset nested in a kind with semantic fields → deserialization error.
+    #[test]
+    fn test_dataset_binding_rejects_semantic_fields() {
+        let yaml = r#"
+semantic_model:
+  name: sr4_test
+  grainsets:
+    - name: sales
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day]
+      measures:
+        - name: revenue
+          data_type: f64
+          agg: sum
+      datasets:
+        - name: orders
+          dimensions:
+            - name: country
+              data_type: string
+          extras:
+            column_mapping:
+              order_date: created_at
+              revenue: amount
+            storage:
+              paths:
+                - s3://data/orders/
+"#;
+        let result = parse(yaml);
+        assert!(result.is_err(), "dataset binding with dimensions should be rejected");
+    }
+
+    /// SR-1: Duplicate measure name in same container → error.
+    #[test]
+    fn test_duplicate_measure_name_error() {
+        let yaml = r#"
+semantic_model:
+  name: dup_test
+  datasets:
+    - name: orders
+      dimensions:
+        - name: order_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day]
+      measures:
+        - name: revenue
+          data_type: f64
+          agg: sum
+        - name: revenue
+          data_type: f64
+          agg: avg
+"#;
+        let result = parse(yaml);
+        assert!(result.is_err(), "duplicate measure should cause error");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("duplicate") && err.contains("revenue"), "error: {}", err);
     }
 }

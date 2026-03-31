@@ -1,8 +1,0 @@
-semantic_model:
-  name: ""
-  datasets:
-    - name: orders
-      measures:
-        - name: revenue
-          data_type: float64
-          expr: "SUM(amount)"

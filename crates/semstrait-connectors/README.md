@@ -6,7 +6,7 @@ Compute connector traits and feature-gated engine implementations.
 
 ## Responsibility
 
-Provides the `ComputeConnector` trait and concrete implementations for executing `PlanArtifact`s (SQL or Substrait) against compute engines. Each connector holds a reference to its `EngineAdapter` (from `semstrait-adapter`) for profile and dialect access.
+Provides the `ComputeConnector` trait and concrete implementations for executing `PlanArtifact`s (SQL or Substrait) against compute engines. Connectors are fully independent from adapters — pure artifact execution (DL-056).
 
 Does not own the compilation or planning pipeline. Receives a `PlanArtifact` from upstream and routes execution to the appropriate engine.
 
@@ -19,9 +19,6 @@ Does not own the compilation or planning pipeline. Receives a `PlanArtifact` fro
 ```rust
 #[async_trait]
 pub trait ComputeConnector: Send + Sync {
-    /// The adapter that produces artifacts for this engine.
-    fn adapter(&self) -> &dyn EngineAdapter;
-
     /// Execute a plan artifact against the compute engine.
     async fn execute(&self, artifact: &PlanArtifact) -> Result<ComputeResult, ConnectorError>;
 
@@ -69,11 +66,12 @@ pub enum ConnectorError {
 
 ### DataFusion (`feature = "datafusion"`)
 
-Full SQL execution via DataFusion's `SessionContext`. Converts Arrow `RecordBatch`es to JSON rows.
+Dual-path execution via DataFusion's `SessionContext`. Accepts both SQL and Substrait artifacts natively.
 
-- Requires: `PlanArtifact::Sql`
+- Accepts: `PlanArtifact::Sql` (via `ctx.sql()`) and `PlanArtifact::Substrait` (via `datafusion-substrait::from_substrait_plan()`)
 - Returns: `ComputeResultData::Json`
 - Supports registering CSV, Parquet, and in-memory tables
+- `register_manifest_sources()` auto-registers sources using planner's name priority (table_fqn → reference → dataset_name)
 - Also exposes `ArrowBatches` helper with `to_json_rows()` for custom use
 
 ```rust
@@ -81,6 +79,7 @@ use semstrait_connectors::datafusion::DataFusionConnector;
 
 let connector = DataFusionConnector::new();
 connector.register_csv("orders", "data/orders.csv").await?;
+// Executes Substrait plans natively — no SQL fallback needed
 let result = connector.execute(&artifact).await?;
 ```
 
@@ -134,7 +133,7 @@ let connector = SparkConnector::new("sc://spark:15002");
 
 | Feature | Enables | Key Dependencies |
 |---|---|---|
-| `datafusion` | `DataFusionConnector` | `datafusion` v52, `tokio` |
+| `datafusion` | `DataFusionConnector` | `datafusion` v52, `datafusion-substrait` v52, `tokio` |
 | `duckdb` | `DuckDbConnector` | `duckdb` >=1.3.0 <1.4.0 (bundled), `arrow` v55, `tokio` |
 | `trino` | `TrinoConnector` | `reqwest`, `serde`, `tokio` |
 | `spark` | `SparkConnector` | `uuid` |
@@ -144,8 +143,10 @@ let connector = SparkConnector::new("sc://spark:15002");
 
 ## Dependencies
 
-- `semstrait-adapter` -- `EngineAdapter` trait and per-engine adapters
+- `semstrait-core` -- shared types (`DataType`, `Schema`)
 - `semstrait-ir` -- `PlanArtifact` (SQL string or Substrait plan)
 - `async-trait` -- async trait support
 - `thiserror` -- `ConnectorError` derive
 - `serde_json` -- JSON result serialization
+
+**Note:** `semstrait-adapter` is NOT a dependency. Connectors and adapters are independent (DL-056).

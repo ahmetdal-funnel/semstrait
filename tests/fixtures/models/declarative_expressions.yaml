@@ -1,0 +1,580 @@
+# =============================================================================
+# Declarative ExprBlock Expression Coverage
+# =============================================================================
+#
+# Tests every ExprBlock tag through the full pipeline: YAML → compile → plan → SQL.
+# Three standalone datasets cover all expression categories as computed dimensions.
+# A grainset and unionset wrap these datasets to test expressions in kind contexts.
+#
+# Categories:
+#   String:      upper, lower, trim, ltrim, rtrim, length, concat, replace,
+#                substring, left, right, lpad, rpad
+#   Math:        abs, ceil, floor, round, power, sqrt, mod
+#   Date:        extract, date_trunc, date_add, date_diff
+#   Conditional: case, coalesce, nullif, if, greatest, least
+#   Predicate:   in, not_in, between, like, ilike, is_null, is_not_null
+#   Type:        cast
+#   Control:     guard
+#   Arithmetic:  add, subtract, multiply, divide, safe_divide
+#   Comparison:  eq, not_eq, lt, gt, lte, gte
+#   Logical:     and, or, not, negate
+#
+# =============================================================================
+
+semantic_model:
+  name: declarative_expressions
+  description: "Declarative ExprBlock coverage across all function categories"
+
+  # ===========================================================================
+  # Dataset 1: String functions
+  # ===========================================================================
+  datasets:
+    - name: string_ops
+      description: "String function expressions as computed dimensions"
+
+      dimensions:
+        - name: event_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day, month]
+
+        - name: raw_name
+          data_type: string
+          type:
+            categorical:
+
+        - name: raw_code
+          data_type: string
+          type:
+            categorical:
+
+        - name: raw_url
+          data_type: string
+          type:
+            categorical:
+
+        # --- Declarative computed dimensions: string functions ---
+
+        - name: name_upper
+          data_type: string
+          expr:
+            upper: raw_name
+
+        - name: name_lower
+          data_type: string
+          expr:
+            lower: raw_name
+
+        - name: name_trimmed
+          data_type: string
+          expr:
+            trim: raw_name
+
+        - name: name_ltrimmed
+          data_type: string
+          expr:
+            ltrim: raw_name
+
+        - name: name_rtrimmed
+          data_type: string
+          expr:
+            rtrim: raw_name
+
+        - name: name_length
+          data_type: i32
+          expr:
+            length: raw_name
+
+        - name: full_label
+          data_type: string
+          expr:
+            concat:
+              - raw_name
+              - {lit: " - "}
+              - raw_code
+
+        - name: url_fixed
+          data_type: string
+          expr:
+            replace:
+              col: raw_url
+              old: {lit: "http"}
+              new: {lit: "https"}
+
+        - name: code_prefix
+          data_type: string
+          expr:
+            substr:
+              col: raw_code
+              start: 1
+              length: 3
+
+        - name: name_left
+          data_type: string
+          expr:
+            left:
+              col: raw_name
+              length: 5
+
+        - name: name_right
+          data_type: string
+          expr:
+            right:
+              col: raw_name
+              length: 3
+
+        - name: code_padded
+          data_type: string
+          expr:
+            lpad:
+              col: raw_code
+              length: 10
+              fill: "0"
+
+        - name: code_rpadded
+          data_type: string
+          expr:
+            rpad:
+              col: raw_code
+              length: 8
+              fill: "."
+
+      measures:
+        - name: record_count
+          data_type: i64
+          agg: count
+
+      extras:
+        storage:
+          format: parquet
+          paths:
+            - s3://data/string_ops/
+
+    # ===========================================================================
+    # Dataset 2: Math + type conversion functions
+    # ===========================================================================
+    - name: math_ops
+      description: "Math function expressions as computed dimensions"
+
+      dimensions:
+        - name: event_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day, month]
+
+        - name: category
+          data_type: string
+          type:
+            categorical:
+
+        - name: raw_value
+          data_type: f64
+          type:
+            categorical:
+
+        - name: raw_delta
+          data_type: f64
+          type:
+            categorical:
+
+        - name: raw_exponent
+          data_type: i32
+          type:
+            categorical:
+
+        # --- Declarative computed dimensions: math functions ---
+
+        - name: abs_delta
+          data_type: f64
+          expr:
+            abs: raw_delta
+
+        - name: ceil_value
+          data_type: f64
+          expr:
+            ceil: raw_value
+
+        - name: floor_value
+          data_type: f64
+          expr:
+            floor: raw_value
+
+        - name: rounded_value
+          data_type: f64
+          expr:
+            round:
+              col: raw_value
+              scale: 2
+
+        - name: power_value
+          data_type: f64
+          expr:
+            power:
+              base: raw_value
+              exponent: 2
+
+        - name: sqrt_value
+          data_type: f64
+          expr:
+            sqrt: raw_value
+
+        - name: mod_value
+          data_type: f64
+          expr:
+            mod: [raw_value, 3]
+
+        - name: cast_string
+          data_type: string
+          expr:
+            cast:
+              col: raw_value
+              to: "VARCHAR"
+
+        # --- Arithmetic ---
+
+        - name: sum_values
+          data_type: f64
+          expr:
+            add: [raw_value, raw_delta]
+
+        - name: diff_values
+          data_type: f64
+          expr:
+            subtract: [raw_value, raw_delta]
+
+        - name: product_values
+          data_type: f64
+          expr:
+            multiply: [raw_value, raw_delta]
+
+        - name: ratio_values
+          data_type: f64
+          expr:
+            divide: [raw_value, raw_delta]
+
+        - name: safe_ratio
+          data_type: f64
+          expr:
+            safe_divide: [raw_value, raw_delta]
+
+        - name: negated_delta
+          data_type: f64
+          expr:
+            negate: raw_delta
+
+      measures:
+        - name: total_value
+          data_type: f64
+          agg: sum
+
+        - name: record_count
+          data_type: i64
+          agg: count
+
+      extras:
+        storage:
+          format: parquet
+          paths:
+            - s3://data/math_ops/
+
+    # ===========================================================================
+    # Dataset 3: Conditional + predicate + date functions
+    # ===========================================================================
+    - name: conditional_ops
+      description: "Conditional, predicate, and date expressions"
+
+      dimensions:
+        - name: event_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day, month]
+
+        - name: status
+          data_type: string
+          type:
+            categorical:
+
+        - name: country
+          data_type: string
+          type:
+            categorical:
+
+        - name: score
+          data_type: f64
+          type:
+            categorical:
+
+        - name: email
+          data_type: string
+          type:
+            categorical:
+
+        # --- Conditional ---
+
+        - name: status_label
+          data_type: string
+          expr:
+            case:
+              when:
+                - condition: {eq: [status, {lit: active}]}
+                  then: {lit: "Active"}
+                - condition: {eq: [status, {lit: suspended}]}
+                  then: {lit: "Suspended"}
+              else: {lit: "Unknown"}
+
+        - name: score_safe
+          data_type: f64
+          expr:
+            coalesce:
+              - score
+              - 0
+
+        - name: score_nonzero
+          data_type: f64
+          expr:
+            nullif:
+              col: score
+              null_expr: 0
+
+        - name: score_category
+          data_type: string
+          expr:
+            if: [{gt: [score, 50]}, {lit: "high"}, {lit: "low"}]
+
+        - name: best_score
+          data_type: f64
+          expr:
+            greatest:
+              - score
+              - 0
+
+        - name: capped_score
+          data_type: f64
+          expr:
+            least:
+              - score
+              - 100
+
+        # --- Predicate-based (as computed bool dims) ---
+
+        - name: is_premium
+          data_type: bool
+          expr:
+            in:
+              col: country
+              list:
+                - {lit: US}
+                - {lit: UK}
+                - {lit: DE}
+
+        - name: is_excluded
+          data_type: bool
+          expr:
+            not_in:
+              col: status
+              list:
+                - {lit: deleted}
+
+        - name: in_range
+          data_type: bool
+          expr:
+            between:
+              col: score
+              low: 10
+              high: 90
+
+        - name: has_email
+          data_type: bool
+          expr:
+            is_not_null: email
+
+        - name: missing_score
+          data_type: bool
+          expr:
+            is_null: score
+
+        # --- Date functions ---
+
+        - name: event_year
+          data_type: i32
+          expr:
+            extract:
+              part: "year"
+              col: event_date
+
+        - name: next_month
+          data_type: date
+          expr:
+            date_add:
+              col: event_date
+              days: 30
+
+        # --- Logical ---
+
+        - name: active_premium
+          data_type: bool
+          expr:
+            and:
+              - {eq: [status, {lit: active}]}
+              - {in: {col: country, list: [{lit: US}, {lit: UK}]}}
+
+        - name: any_flag
+          data_type: bool
+          expr:
+            or:
+              - {gt: [score, 90]}
+              - {eq: [status, {lit: vip}]}
+
+        - name: not_deleted
+          data_type: bool
+          expr:
+            not: {eq: [status, {lit: deleted}]}
+
+        # --- Comparison ---
+
+        - name: is_high_score
+          data_type: bool
+          expr:
+            gte: [score, 80]
+
+        - name: is_low_score
+          data_type: bool
+          expr:
+            lte: [score, 20]
+
+        # --- Guard ---
+
+        - name: guarded_score
+          data_type: f64
+          expr:
+            guard:
+              condition: {gt: [score, 0]}
+              col: score
+
+      measures:
+        - name: record_count
+          data_type: i64
+          agg: count
+
+        - name: total_score
+          data_type: f64
+          agg: sum
+
+      extras:
+        storage:
+          format: parquet
+          paths:
+            - s3://data/conditional_ops/
+
+  # ===========================================================================
+  # GRAINSET — declarative expressions through grain routing
+  # ===========================================================================
+  grainsets:
+    - name: string_by_grain
+      description: "String ops with grain-aware routing"
+
+      dimensions:
+        - name: event_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day, month]
+
+        - name: raw_name
+          data_type: string
+          type:
+            categorical:
+
+        # Declarative computed dims at grainset level
+        - name: name_upper
+          data_type: string
+          expr:
+            upper: raw_name
+
+        - name: name_trimmed
+          data_type: string
+          expr:
+            trim: raw_name
+
+        - name: full_label
+          data_type: string
+          expr:
+            concat:
+              - raw_name
+              - {lit: " [grain]"}
+
+      measures:
+        - name: record_count
+          data_type: i64
+          agg: count
+
+      datasets:
+        - name: string_ops
+          extras:
+            column_mapping:
+              event_date: event_date
+              raw_name: raw_name
+              record_count: record_id
+            storage:
+              format: parquet
+              paths:
+                - s3://data/string_ops/
+
+  # ===========================================================================
+  # UNIONSET — declarative expressions through UNION
+  # ===========================================================================
+  unionsets:
+    - name: all_ops
+      description: "Unified view across string and math datasets"
+      mode: all
+
+      dimensions:
+        - name: event_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day, month]
+
+        - name: source
+          data_type: string
+          type:
+            categorical:
+
+        # Declarative computed dim at unionset level
+        - name: source_upper
+          data_type: string
+          expr:
+            upper: source
+
+      measures:
+        - name: record_count
+          data_type: i64
+          agg: count
+
+      datasets:
+        - name: string_ops
+          extras:
+            column_mapping:
+              event_date: event_date
+              source:
+                lit: strings
+              record_count: record_id
+            storage:
+              format: parquet
+              paths:
+                - s3://data/string_ops/
+
+        - name: math_ops
+          extras:
+            column_mapping:
+              event_date: event_date
+              source:
+                lit: math
+              record_count: record_id
+            storage:
+              format: parquet
+              paths:
+                - s3://data/math_ops/

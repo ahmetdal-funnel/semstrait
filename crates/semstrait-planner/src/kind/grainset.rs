@@ -8,112 +8,46 @@
 //! 5. UNION ALL all branches → Re-aggregate → Final Project
 
 use crate::error::PlannerError;
-use crate::expr_lower;
+use crate::decomposer::{self, DecomposedMeasure};
+use crate::resolver::PhysicalResolver;
 use super::{
     extract_metadata_value_binding, grain_to_temporal, partition_dimensions_iface,
-    resolve_native_grain_binding, KindPlanner, PlanFragment, PlannerContext,
+    resolve_native_grain_binding, KindPlanner, PlanFragment, PlannerContext, PrunedView,
 };
-use super::shared;
-use super::shared::{build_scan_node_binding, infer_aggregation_iface};
+use super::plan_builder;
+use super::plan_builder::{build_scan_node_binding, build_semantic_type_map, infer_aggregation_iface};
 use crate::request::ResolvedQueryRequest;
-use semstrait_core::DataType;
 use semstrait_ir::{
     AggNode, AggregateMeasure, Expr, Field, NodeMeta, PlanNode, ProjectNode,
     Schema, UnionNode,
 };
 use semstrait_manifest::{
-    KindInterface, TemporalGrain,
+    CompiledInterface, TemporalGrain,
 };
-use semstrait_manifest::acceleration::{DataKind, DatasetBinding};
+use semstrait_manifest::acceleration::{CompiledDataKind, DatasetBinding};
 use std::collections::{HashMap, HashSet};
-
-/// Recursively collect all column references from an Expr tree.
-pub fn collect_column_refs(expr: &Expr, columns: &mut Vec<String>, seen: &mut HashSet<String>) {
-    match expr {
-        Expr::Column(col) => {
-            if seen.insert(col.name.clone()) {
-                columns.push(col.name.clone());
-            }
-        }
-        Expr::BinaryOp(bin) => {
-            collect_column_refs(&bin.left, columns, seen);
-            collect_column_refs(&bin.right, columns, seen);
-        }
-        Expr::Case(case) => {
-            for wc in &case.when_then {
-                collect_column_refs(&wc.condition, columns, seen);
-                collect_column_refs(&wc.result, columns, seen);
-            }
-            if let Some(e) = &case.else_expr {
-                collect_column_refs(e, columns, seen);
-            }
-        }
-        Expr::FunctionCall(fc) => {
-            for arg in &fc.args {
-                collect_column_refs(arg, columns, seen);
-            }
-        }
-        Expr::Aggregate(agg) => {
-            collect_column_refs(&agg.expr, columns, seen);
-        }
-        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
-            collect_column_refs(&u.expr, columns, seen);
-        }
-        Expr::InList(il) => {
-            collect_column_refs(&il.expr, columns, seen);
-            for item in &il.list {
-                collect_column_refs(item, columns, seen);
-            }
-        }
-        Expr::Between(bt) => {
-            collect_column_refs(&bt.expr, columns, seen);
-            collect_column_refs(&bt.low, columns, seen);
-            collect_column_refs(&bt.high, columns, seen);
-        }
-        Expr::Like(lk) => {
-            collect_column_refs(&lk.expr, columns, seen);
-            collect_column_refs(&lk.pattern, columns, seen);
-        }
-        Expr::Coalesce(co) => {
-            for e in &co.exprs {
-                collect_column_refs(e, columns, seen);
-            }
-        }
-        Expr::NullIf(ni) => {
-            collect_column_refs(&ni.expr, columns, seen);
-            collect_column_refs(&ni.null_expr, columns, seen);
-        }
-        Expr::DateTrunc(dt) => {
-            collect_column_refs(&dt.expr, columns, seen);
-        }
-        Expr::Guard(g) => {
-            collect_column_refs(&g.condition, columns, seen);
-            collect_column_refs(&g.expr, columns, seen);
-        }
-        Expr::Literal(_) | Expr::EntityRef(_) => {}
-    }
-}
+use super::collect_column_refs;
 
 /// Planner for Grainset kinds — grain-aware UNION ALL resolution.
 pub struct GrainsetPlanner;
 
 impl KindPlanner for GrainsetPlanner {
-    fn supports(&self, data_kind: &DataKind) -> bool {
-        matches!(data_kind, DataKind::Grainset(_))
+    fn supports(&self, data_kind: &CompiledDataKind) -> bool {
+        matches!(data_kind, CompiledDataKind::Grainset(_))
     }
 
     fn resolve(
         &self,
-        data_kind: &DataKind,
+        pruned: &PrunedView<'_>,
         request: &ResolvedQueryRequest,
         ctx: &PlannerContext<'_>,
     ) -> Result<PlanFragment, PlannerError> {
-        let grainset = match data_kind {
-            DataKind::Grainset(g) => g,
-            _ => return Err(PlannerError::Internal("GrainsetPlanner received non-Grainset DataKind".into())),
+        let grainset = match pruned.data_kind() {
+            CompiledDataKind::Grainset(g) => g,
+            _ => return Err(PlannerError::Internal("GrainsetPlanner received non-Grainset CompiledDataKind".into())),
         };
         let iface = &grainset.interface;
-        let bindings = &grainset.bindings;
+        let bindings = pruned.active_bindings();
 
         if bindings.is_empty() {
             return Err(PlannerError::NoCoveringDataset {
@@ -127,7 +61,7 @@ impl KindPlanner for GrainsetPlanner {
         let request_grain = request.grain.map(grain_to_temporal);
 
         // Step 1: Prune datasets.
-        let eligible = prune_datasets(iface, bindings, request, temporal_dim, request_grain)?;
+        let eligible = prune_datasets(iface, &bindings, request, temporal_dim, request_grain)?;
 
         if eligible.is_empty() {
             return Err(PlannerError::NoCoveringDataset {
@@ -150,14 +84,19 @@ impl KindPlanner for GrainsetPlanner {
         )?;
 
         // Single-dataset optimization: if all eligible datasets resolved to a single
-        // dataset covering all requested measures/metrics, use the simpler plan.
+        // dataset covering all requested measures/metrics AND dimensions, use the simpler plan.
         if assignments.len() == 1 {
             let a = &assignments[0];
-            let covers_all = request.measures.iter().all(|m| {
+            let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
+            let _ = &metadata_dims; // metadata dims don't need column_mapping coverage
+            let covers_measures = request.measures.iter().all(|m| {
                 a.binding.column_mapping.contains_key(m)
                     || iface.metrics.contains_key(m)
             });
-            if covers_all {
+            let covers_dims = regular_dims.iter().all(|d| {
+                a.binding.column_mapping.contains_key(d)
+            });
+            if covers_measures && covers_dims {
                 return build_single_dataset_plan(iface, request, a.binding, ctx, temporal_dim, request_grain);
             }
         }
@@ -171,8 +110,8 @@ impl KindPlanner for GrainsetPlanner {
 
 /// Prune datasets by grain eligibility and zero-coverage.
 fn prune_datasets<'a>(
-    iface: &KindInterface,
-    bindings: &'a [DatasetBinding],
+    iface: &CompiledInterface,
+    bindings: &[&'a DatasetBinding],
     request: &ResolvedQueryRequest,
     temporal_dim: Option<&str>,
     request_grain: Option<TemporalGrain>,
@@ -181,7 +120,7 @@ fn prune_datasets<'a>(
 
     let mut eligible: Vec<&DatasetBinding> = Vec::new();
 
-    for binding in bindings {
+    for &binding in bindings {
         // 1c. Grain eligibility: exclude datasets whose native grain is coarser than requested.
         if let (Some(rg), Some(td_name)) = (request_grain, temporal_dim) {
             if let Some(native) = resolve_native_grain_binding(binding, td_name, iface) {
@@ -196,7 +135,7 @@ fn prune_datasets<'a>(
         let mapping = &binding.column_mapping;
         let expanded_measures: Vec<String> = request.measures.iter().flat_map(|m| {
             if let Some(metric) = iface.metrics.get(m) {
-                extract_metric_constituents(metric)
+                extract_metric_constituents(metric, iface)
             } else {
                 vec![m.clone()]
             }
@@ -223,7 +162,7 @@ struct DatasetAssignment<'a> {
 
 /// Separate requested measure names into actual measures vs metric names.
 fn classify_requested_measures(
-    iface: &KindInterface,
+    iface: &CompiledInterface,
     requested: &[String],
 ) -> (Vec<String>, Vec<String>) {
     let mut measures = Vec::new();
@@ -240,7 +179,7 @@ fn classify_requested_measures(
 
 /// Group eligible datasets by native grain, assign measures/metrics to cheapest group.
 fn assign_to_grain_groups<'a>(
-    iface: &KindInterface,
+    iface: &CompiledInterface,
     eligible: &[&'a DatasetBinding],
     temporal_dim: Option<&str>,
     _request_grain: Option<TemporalGrain>,
@@ -287,7 +226,7 @@ fn assign_to_grain_groups<'a>(
     // For metrics, find the cheapest group where all constituent measures are available.
     for metric_name in metric_names {
         if let Some(metric) = iface.metrics.get(metric_name) {
-            let constituent_measures = extract_metric_constituents(metric);
+            let constituent_measures = extract_metric_constituents(metric, iface);
             let mut assigned = false;
             for (grain, bindings) in &sorted_groups {
                 let group_covers_all = constituent_measures.iter().all(|cm| {
@@ -355,49 +294,74 @@ fn assign_to_grain_groups<'a>(
     Ok(dataset_assignments)
 }
 
-/// Extract constituent measure names from a metric's expression.
+/// Extract transitive leaf measure names from a metric's expression.
 ///
-/// Walks the pre-lowering expr tree, collecting both `Column` and `EntityRef`
-/// leaf names. Uses `&str` borrows from the expr tree for dedup — the tree
-/// outlives this call so no clones are needed for the seen-set.
-pub fn extract_metric_constituents(metric: &semstrait_manifest::CompiledMetric) -> Vec<String> {
+/// Recursively expands nested metric references to their underlying measures.
+/// For example, `roi = profit / cost` where `profit = revenue - cost` returns
+/// `["revenue", "cost"]` — the actual physical measures, not intermediate metrics.
+pub fn extract_metric_constituents(
+    metric: &semstrait_manifest::CompiledMetric,
+    iface: &CompiledInterface,
+) -> Vec<String> {
     let mut names = Vec::new();
     let mut seen = HashSet::new();
-    collect_leaf_refs(&metric.expr, &mut names, &mut seen);
+    collect_leaf_measures(&metric.expr, iface, &mut names, &mut seen);
     names
 }
 
-/// Collect leaf entity/column names from an expression tree (borrow-based dedup).
+/// Collect transitive leaf measure names from an expression tree.
 ///
-/// Unlike `collect_column_refs` (which serves the post-lowering scan-column path
-/// and only handles `Expr::Column`), this handles both `Column` and `EntityRef` —
-/// the two forms that appear in pre-lowering metric expressions.
-fn collect_leaf_refs<'a>(expr: &'a Expr, out: &mut Vec<String>, seen: &mut HashSet<&'a str>) {
+/// When a leaf reference is itself a metric in the interface, recursively
+/// expands it to its underlying measures. This ensures coverage checks
+/// operate on actual physical measures, consistent with how
+/// `lower_metric_iface()` decomposes metrics at lowering time.
+fn collect_leaf_measures(
+    expr: &Expr,
+    iface: &CompiledInterface,
+    out: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) {
     match expr {
         Expr::Column(col) => {
-            if seen.insert(&col.name) {
-                out.push(col.name.clone());
-            }
+            resolve_leaf_or_expand(&col.name, iface, out, seen);
         }
         Expr::EntityRef(er) => {
-            if seen.insert(&er.name) {
-                out.push(er.name.clone());
-            }
+            resolve_leaf_or_expand(&er.name, iface, out, seen);
         }
         Expr::BinaryOp(bin) => {
-            collect_leaf_refs(&bin.left, out, seen);
-            collect_leaf_refs(&bin.right, out, seen);
+            collect_leaf_measures(&bin.left, iface, out, seen);
+            collect_leaf_measures(&bin.right, iface, out, seen);
         }
         Expr::Case(case) => {
             for wc in &case.when_then {
-                collect_leaf_refs(&wc.condition, out, seen);
-                collect_leaf_refs(&wc.result, out, seen);
+                collect_leaf_measures(&wc.condition, iface, out, seen);
+                collect_leaf_measures(&wc.result, iface, out, seen);
             }
             if let Some(e) = &case.else_expr {
-                collect_leaf_refs(e, out, seen);
+                collect_leaf_measures(e, iface, out, seen);
             }
         }
         _ => {}
+    }
+}
+
+/// If `name` is a nested metric, recursively expand; otherwise keep as leaf measure.
+fn resolve_leaf_or_expand(
+    name: &str,
+    iface: &CompiledInterface,
+    out: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) {
+    if let Some(sub_metric) = iface.metrics.get(name) {
+        // Nested metric — recursively expand to leaf measures.
+        // The seen-set prevents infinite recursion on circular references
+        // (which should be caught at compile time, but defensive here).
+        if seen.insert(format!("__metric__{}", name)) {
+            collect_leaf_measures(&sub_metric.expr, iface, out, seen);
+        }
+    } else if seen.insert(name.to_string()) {
+        // Leaf measure (or unknown ref) — include as constituent.
+        out.push(name.to_string());
     }
 }
 
@@ -411,7 +375,7 @@ enum DimSource {
 }
 
 /// Build the unified output schema for the UNION plan.
-fn build_unified_schema(request: &ResolvedQueryRequest, iface: &KindInterface) -> Schema {
+fn build_unified_schema(request: &ResolvedQueryRequest, iface: &CompiledInterface) -> Schema {
     let fields: Vec<Field> = request
         .dimensions
         .iter()
@@ -428,7 +392,7 @@ fn build_unified_schema(request: &ResolvedQueryRequest, iface: &KindInterface) -
 
 /// Build a single-dataset plan with optional grain rollup.
 fn build_single_dataset_plan(
-    iface: &KindInterface,
+    iface: &CompiledInterface,
     request: &ResolvedQueryRequest,
     binding: &DatasetBinding,
     ctx: &PlannerContext<'_>,
@@ -450,13 +414,13 @@ fn build_single_dataset_plan(
     if needs_rollup {
         build_single_dataset_with_rollup(iface, request, binding, ctx, temporal_dim.unwrap(), request_grain.unwrap())
     } else {
-        shared::build_binding_plan(iface, binding, request, ctx, true)
+        plan_builder::build_binding_plan(iface, binding, request, ctx, true)
     }
 }
 
 /// Build a single-dataset plan with DATE_TRUNC grain rollup.
 fn build_single_dataset_with_rollup(
-    iface: &KindInterface,
+    iface: &CompiledInterface,
     request: &ResolvedQueryRequest,
     binding: &DatasetBinding,
     _ctx: &PlannerContext<'_>,
@@ -500,21 +464,20 @@ fn build_single_dataset_with_rollup(
     }
 
     // Lower measures.
-    let mut lowered_measures: Vec<(String, expr_lower::LoweredMeasure)> = Vec::new();
+    let phys_resolver = PhysicalResolver::new(&mapping.physical);
+    let mut lowered_measures: Vec<(String, DecomposedMeasure)> = Vec::new();
     for measure_name in &request.measures {
         if let Some(measure) = iface.measures.get(measure_name) {
-            let lowered = if let Some(agg) = measure.agg {
-                expr_lower::lower_measure_declarative_physical(measure_name, agg, &measure.expr, &mapping.physical, &measure.filters)?
-            } else {
-                expr_lower::lower_measure_with_filters_physical(measure_name, &measure.expr, &mapping.physical, &measure.filters)?
-            };
+            let lowered = decomposer::decompose_measure(
+                &phys_resolver, measure_name, measure.agg, &measure.expr, &measure.filters, &measure.data_type,
+            )?;
             for agg in &lowered.aggregates {
                 collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
             }
             lowered_measures.push((measure_name.clone(), lowered));
         } else if iface.metrics.contains_key(measure_name) {
             let metric = &iface.metrics[measure_name];
-            let lowered = expr_lower::lower_metric_iface(measure_name, metric, iface, binding, 4)?;
+            let lowered = decomposer::decompose_metric(measure_name, metric, iface, binding, 4)?;
             for agg in &lowered.aggregates {
                 collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
             }
@@ -528,7 +491,8 @@ fn build_single_dataset_with_rollup(
     }
 
     // Build Scan (multi-source aware).
-    let scan = build_scan_node_binding(binding, &scan_columns);
+    let sem_types = build_semantic_type_map(iface, &binding.column_mapping.physical);
+    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types);
 
     // Build Aggregate with DATE_TRUNC in GROUP BY.
     let group_by: Vec<Expr> = dim_physical
@@ -552,11 +516,11 @@ fn build_single_dataset_with_rollup(
         .collect();
     let mut agg_idx = 0;
     for (semantic, lowered) in &lowered_measures {
-        for (j, _) in lowered.aggregates.iter().enumerate() {
+        for (j, agg_m) in lowered.aggregates.iter().enumerate() {
             if j == 0 {
                 agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
             } else {
-                agg_fields.push(Field::new(format!("__agg_{}", agg_idx), DataType::Float64));
+                agg_fields.push(Field::new(format!("__agg_{}", agg_idx), agg_m.data_type.clone()));
             }
             agg_idx += 1;
         }
@@ -613,7 +577,7 @@ enum DimResolve {
 
 /// Build UNION ALL plan across multiple dataset assignments.
 fn build_union_plan(
-    iface: &KindInterface,
+    iface: &CompiledInterface,
     request: &ResolvedQueryRequest,
     assignments: &[DatasetAssignment<'_>],
     _ctx: &PlannerContext<'_>,
@@ -645,7 +609,7 @@ fn build_union_plan(
         .collect::<Result<Vec<_>, _>>()?;
 
     // Validate type consistency across branches before UNION.
-    shared::validate_union_types(&branches)?;
+    plan_builder::validate_union_types(&branches)?;
 
     // UNION ALL.
     let union_input = if branches.len() == 1 {
@@ -672,6 +636,7 @@ fn build_union_plan(
             function: infer_aggregation_iface(iface, name),
             expr: Expr::column(name.clone()),
             distinct: false,
+            data_type: iface.resolve_measure_type(name),
         })
         .collect();
 
@@ -692,7 +657,7 @@ fn build_union_plan(
 /// Build a single UNION branch for one dataset assignment.
 #[allow(clippy::too_many_arguments)]
 fn build_union_branch(
-    iface: &KindInterface,
+    iface: &CompiledInterface,
     _request: &ResolvedQueryRequest,
     assignment: &DatasetAssignment<'_>,
     metadata_dims: &[(String, semstrait_manifest::MetadataDimension)],
@@ -738,21 +703,16 @@ fn build_union_branch(
     }
 
     // Lower measures that this branch covers.
-    let mut lowered_measures: Vec<(String, Option<expr_lower::LoweredMeasure>)> = Vec::new();
+    let phys_resolver = PhysicalResolver::new(&mapping.physical);
+    let mut lowered_measures: Vec<(String, Option<DecomposedMeasure>)> = Vec::new();
     for measure_name in all_measure_names {
         if let Some(measure) = iface.measures.get(*measure_name) {
             // Direct measure: check if this dataset was assigned it.
             let ds_has_it = assignment.measures.contains(&measure_name.to_string());
             if ds_has_it {
-                let lowered = if let Some(agg) = measure.agg {
-                    expr_lower::lower_measure_declarative_physical(
-                        measure_name, agg, &measure.expr, &mapping.physical, &measure.filters,
-                    )?
-                } else {
-                    expr_lower::lower_measure_with_filters_physical(
-                        measure_name, &measure.expr, &mapping.physical, &measure.filters,
-                    )?
-                };
+                let lowered = decomposer::decompose_measure(
+                    &phys_resolver, measure_name, measure.agg, &measure.expr, &measure.filters, &measure.data_type,
+                )?;
                 for agg_m in &lowered.aggregates {
                     collect_column_refs(&agg_m.expr, &mut scan_columns, &mut scan_seen);
                 }
@@ -761,11 +721,11 @@ fn build_union_branch(
                 lowered_measures.push((measure_name.to_string(), None));
             }
         } else if let Some(metric) = iface.metrics.get(*measure_name) {
-            // Metric: check if all constituent measures are assigned to this dataset.
-            let constituents = extract_metric_constituents(metric);
+            // Metric: check if all transitive constituent measures are assigned to this dataset.
+            let constituents = extract_metric_constituents(metric, iface);
             let ds_has_all = constituents.iter().all(|c| assignment.measures.contains(c));
             if ds_has_all {
-                let lowered = expr_lower::lower_metric_iface(measure_name, metric, iface, binding, 4)?;
+                let lowered = decomposer::decompose_metric(measure_name, metric, iface, binding, 4)?;
                 for agg_m in &lowered.aggregates {
                     collect_column_refs(&agg_m.expr, &mut scan_columns, &mut scan_seen);
                 }
@@ -779,7 +739,8 @@ fn build_union_branch(
     }
 
     // Build Scan (multi-source aware).
-    let scan = build_scan_node_binding(binding, &scan_columns);
+    let sem_types = build_semantic_type_map(iface, &mapping.physical);
+    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types);
 
     // Build Aggregate node.
     let group_by: Vec<Expr> = dim_sources
@@ -816,11 +777,11 @@ fn build_union_branch(
     let mut agg_idx = 0;
     for (semantic, lowered) in &lowered_measures {
         if let Some(l) = lowered {
-            for (j, _) in l.aggregates.iter().enumerate() {
+            for (j, agg_m) in l.aggregates.iter().enumerate() {
                 if j == 0 {
                     agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
                 } else {
-                    agg_fields.push(Field::new(format!("__agg_{}", agg_idx), DataType::Float64));
+                    agg_fields.push(Field::new(format!("__agg_{}", agg_idx), agg_m.data_type.clone()));
                 }
                 agg_idx += 1;
             }
@@ -872,26 +833,26 @@ fn build_union_branch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::*;
+    use crate::tests::helpers::*;
     use indexmap::IndexMap;
     use semstrait_ir::Aggregation;
     use semstrait_manifest::{
         CompiledDimension, CompiledMeasure, DimensionType,
     };
     use semstrait_manifest::acceleration::{
-        CoverageIndex, DimensionIndex, GrainMap, GrainsetKind,
+        CoverageIndex, DimensionIndex, GrainMap, CompiledGrainsetKind,
         ResolvedColumnMapping, TemporalMapping,
     };
 
     // ── Test helpers ─────────────────────────────────────────────────
 
-    /// Build a DataKind::Grainset from dimensions, measures, and bindings.
+    /// Build a CompiledDataKind::Grainset from dimensions, measures, and bindings.
     fn make_grainset(
         name: &str,
         dimensions: IndexMap<String, CompiledDimension>,
         measures: IndexMap<String, CompiledMeasure>,
         bindings: Vec<DatasetBinding>,
-    ) -> DataKind {
+    ) -> CompiledDataKind {
         make_grainset_with_metrics(name, dimensions, measures, IndexMap::new(), bindings)
     }
 
@@ -901,7 +862,7 @@ mod tests {
         measures: IndexMap<String, CompiledMeasure>,
         metrics: IndexMap<String, semstrait_manifest::CompiledMetric>,
         bindings: Vec<DatasetBinding>,
-    ) -> DataKind {
+    ) -> CompiledDataKind {
         let temporal_dim = dimensions.iter().find_map(|(n, d)| {
             if matches!(d.dim_type, DimensionType::Temporal(_)) {
                 Some(n.clone())
@@ -909,7 +870,7 @@ mod tests {
                 None
             }
         });
-        let iface = KindInterface {
+        let iface = CompiledInterface {
             name: name.to_string(),
             description: None,
             dimensions: dimensions.clone(),
@@ -917,14 +878,13 @@ mod tests {
             metrics,
             keys: None,
             filters: vec![],
-            domain: None,
             temporal_dim: temporal_dim.clone(),
         };
         let coverage = CoverageIndex::build(&dimensions, &measures, &bindings);
         let dimension_index = DimensionIndex::build(&dimensions, &bindings);
         let grain_map = temporal_dim.as_deref().map(|td| GrainMap::build(td, &bindings));
 
-        DataKind::Grainset(Box::new(GrainsetKind {
+        CompiledDataKind::Grainset(Box::new(CompiledGrainsetKind {
             interface: iface,
             bindings,
             coverage_index: coverage,
@@ -991,10 +951,12 @@ mod tests {
             CompiledDimension {
                 name: name.to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Utf8,
+                data_type: semstrait_core::DataType::String,
                 dim_type: DimensionType::Categorical(semstrait_manifest::CategoricalDimension {
                     enum_values: None,
                 }),
+                expr: None,
+                expr_source: None,
             },
         )
     }
@@ -1005,10 +967,12 @@ mod tests {
             CompiledDimension {
                 name: name.to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Date32,
+                data_type: semstrait_core::DataType::Date,
                 dim_type: DimensionType::Temporal(semstrait_manifest::TemporalDimension {
                     grains,
                 }),
+                expr: None,
+                expr_source: None,
             },
         )
     }
@@ -1019,8 +983,8 @@ mod tests {
             CompiledMeasure {
                 name: name.to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Float64,
-                agg: Some(Aggregation::Sum),
+                data_type: semstrait_core::DataType::Number,
+                agg: Aggregation::Sum,
                 expr: semstrait_core::Expr::entity_ref(expr_ref),
                 expr_source: expr_ref.to_string(),
                 additivity: None,
@@ -1036,8 +1000,8 @@ mod tests {
             CompiledMeasure {
                 name: name.to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Float64,
-                agg: Some(Aggregation::CountDistinct),
+                data_type: semstrait_core::DataType::Number,
+                agg: Aggregation::CountDistinct,
                 expr: semstrait_core::Expr::entity_ref(expr_ref),
                 expr_source: expr_ref.to_string(),
                 additivity: None,
@@ -1052,8 +1016,6 @@ mod tests {
             version: 1,
             compiled_at: chrono::Utc::now(),
             source_hash: "test".to_string(),
-            datasets: IndexMap::new(),
-            kinds: IndexMap::new(),
             relationships: vec![],
             model_name: "test".to_string(),
             model_description: None,
@@ -1061,6 +1023,7 @@ mod tests {
             relationship_graph: semstrait_manifest::RelationshipGraph::default(),
             field_index: semstrait_manifest::FieldIndex::default(),
             diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            semantic_graph: semstrait_manifest::SemanticGraph::default(),
             catalog_snapshot: None,
         }
     }
@@ -1085,17 +1048,18 @@ mod tests {
         let data_kind = make_grainset("orders", dimensions, measures, vec![binding]);
         let request = make_test_request("orders", vec!["date", "region"], vec!["revenue"]);
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = std::collections::HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok(), "single dataset should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -1120,11 +1084,13 @@ mod tests {
             CompiledDimension {
                 name: "source_info".to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Utf8,
+                data_type: semstrait_core::DataType::String,
                 dim_type: DimensionType::Metadata(MetadataDimension {
                     path: Some(PathExtraction { token: 1 }),
                     partition: None,
                 }),
+                expr: None,
+                expr_source: None,
             },
         );
         let measures: IndexMap<_, _> = vec![
@@ -1142,17 +1108,18 @@ mod tests {
         let data_kind = make_grainset("orders", dimensions, measures, vec![binding]);
         let request = make_test_request("orders", vec!["date", "source_info"], vec!["revenue"]);
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = std::collections::HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok(), "metadata dim should not block: {:?}", result.err());
     }
 
@@ -1183,17 +1150,18 @@ mod tests {
         let data_kind = make_grainset("orders", dimensions, measures, vec![binding1, binding2]);
         let request = make_test_request("orders", vec!["date", "region"], vec!["cost", "revenue"]);
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = std::collections::HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok(), "union plan should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -1242,17 +1210,18 @@ mod tests {
         let data_kind = make_grainset("orders", dimensions, measures, vec![binding1, binding2]);
         let request = make_test_request("orders", vec!["date", "region"], vec!["cost", "revenue"]);
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = std::collections::HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = GrainsetPlanner;
-        let fragment = planner.resolve(&data_kind, &request, &ctx).unwrap();
+        let pruned = super::PrunedView::all(&data_kind);
+        let fragment = planner.resolve(&pruned, &request, &ctx).unwrap();
 
         // Check that branches have NULL-fill for unmapped measures.
         match &fragment.root {
@@ -1298,17 +1267,18 @@ mod tests {
         request.grain = Some(semstrait_core::Grain::Month);
 
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = std::collections::HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok(), "grain rollup should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -1367,17 +1337,18 @@ mod tests {
         request.grain = Some(semstrait_core::Grain::Day);
 
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = std::collections::HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok(), "should succeed with daily dataset: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -1422,17 +1393,18 @@ mod tests {
         request.grain = Some(semstrait_core::Grain::Month);
 
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = std::collections::HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok());
     }
 
@@ -1458,17 +1430,18 @@ mod tests {
         let data_kind = make_grainset("orders", dimensions, measures, vec![binding]);
         let request = make_test_request("orders", vec!["date"], vec!["revenue"]);
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = std::collections::HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok(), "multi-source should succeed: {:?}", result.err());
 
         // The scan layer should have a Union of scan nodes.
@@ -1492,17 +1465,18 @@ mod tests {
         let data_kind = make_grainset("empty", dimensions, measures, vec![]);
         let request = make_test_request("empty", vec![], vec![]);
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = std::collections::HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = GrainsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_err());
     }
 }

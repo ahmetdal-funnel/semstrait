@@ -8,14 +8,16 @@ pub mod catalog_snapshot;
 mod compiled;
 mod compiler;
 mod error;
+pub mod function_registry;
 mod repository;
 mod steps;
 
 pub use acceleration::{
-    AdjacencyIndex, CompileDiagnostics, CompileWarning, CoverageIndex, DataKind, DatasetBinding,
-    DatasetKind, DimensionIndex, FieldIndex, GrainMap, GrainsetKind, JoinsetKind, KindInterface,
-    MetricOrder, MultiDatasetKind, RelationshipGraph, ResolvedColumnMapping, ResolvedSource,
-    SemanticInterface, SourceType, TemporalMapping, UnionsetKind,
+    AdjacencyIndex, CompileDiagnostics, CompileWarning, CompiledDataKind, CompiledDatasetKind,
+    CompiledGrainsetKind, CompiledInterface, CompiledJoinsetKind, CompiledSemanticInterface,
+    CompiledUnionsetKind, CoverageIndex, DatasetBinding, DimensionIndex, FieldIndex, FieldType,
+    GrainMap, MetricOrder, MultiDatasetKind, RelationshipGraph, ResolvedColumnMapping,
+    ResolvedSource, SemanticEdge, SemanticGraph, SemanticNode, SourceType, TemporalMapping,
 };
 pub use catalog_snapshot::{
     CatalogSnapshot, IcebergMetadata, PartitionField, PartitionTransform, ResolvedColumn,
@@ -31,7 +33,7 @@ pub use repository::{FileSystemRepository, InMemoryRepository, Repository};
 pub use semstrait_model::{
     AdditivityType, AggregationConstraints, Cardinality, CategoricalDimension,
     ColumnMapping, ColumnMappingValue, DimensionConstraints, DimensionType, LiteralValue,
-    JoinAssociativity, JoinColumnPair, JoinType, KindDatasetExtras, KindExtras, KindTypeSpec,
+    JoinAssociativity, JoinColumnPair, JoinType, DataKindBindingExtras, DataKindExtras,
     MeasureConstraints, MetadataDimension, PathExtraction, PartitionExtraction,
     TemporalDimension, TemporalGrain, UnionMode,
 };

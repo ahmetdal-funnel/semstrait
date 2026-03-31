@@ -12,8 +12,25 @@ use crate::payload::{
     ComputeResult, ComputeResultData, ConnectorError, ExecutionStats,
 };
 use crate::traits::ComputeConnector;
-use semstrait_adapter::{EngineAdapter, TrinoAdapter};
-use semstrait_ir::PlanArtifact;
+use semstrait_adapter::sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
+use semstrait_adapter::{AdaptError, EngineAdapter};
+use semstrait_ir::{LogicalPlan, PlanArtifact};
+
+/// Trino adapter — produces SQL with ANSI dialect.
+///
+/// Self-contained within the connector crate. Trino uses FETCH FIRST N ROWS ONLY
+/// (ANSI standard).
+struct TrinoAdapter;
+
+impl EngineAdapter for TrinoAdapter {
+    fn name(&self) -> &str { "trino" }
+
+    fn adapt(&self, plan: &LogicalPlan) -> Result<PlanArtifact, AdaptError> {
+        let emitter = AnsiSqlEmitter::new(AnsiDialect);
+        let sql = emitter.emit(plan).map_err(|e| AdaptError::SqlEmission(e.to_string()))?;
+        Ok(PlanArtifact::Sql(sql))
+    }
+}
 
 /// Authentication configuration for Trino.
 #[derive(Debug, Clone)]

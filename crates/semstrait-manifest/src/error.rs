@@ -28,6 +28,10 @@ pub enum CompileError {
         dataset_type: String,
     },
 
+    /// Temporal dimension name conflict across datasets within a kind (step 4.5)
+    #[error("kind '{kind}': datasets disagree on temporal.dimension — found [{values}]")]
+    TemporalDimensionConflict { kind: String, values: String },
+
     /// Column mapping validation error (step 5)
     #[error("mapping validation errors: {}", .0.join("; "))]
     MappingValidation(Vec<String>),

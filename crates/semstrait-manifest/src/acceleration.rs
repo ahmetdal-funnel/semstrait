@@ -15,20 +15,20 @@ use semstrait_model::{
 };
 
 use crate::compiled::{
-    CompiledDimension, CompiledFilter, CompiledKind, CompiledKindDataset, CompiledMeasure,
+    CompiledDimension, CompiledFilter, CompiledMeasure,
     CompiledMetric, CompiledRelationship,
 };
 use semstrait_model::Keys;
 
 // ============================================================================
-// KindInterface — shared semantic fields (zero duplication across variants)
+// CompiledInterface — shared semantic fields (zero duplication across variants)
 // ============================================================================
 
 /// The semantic interface of a queryable entity.
-/// Every DataKind variant embeds this struct via composition.
+/// Every CompiledDataKind variant embeds this struct via composition.
 /// Type resolution methods live here — one implementation, no duplication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KindInterface {
+pub struct CompiledInterface {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -40,27 +40,31 @@ pub struct KindInterface {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<CompiledFilter>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub domain: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporal_dim: Option<String>,
 }
 
-impl KindInterface {
+impl CompiledInterface {
     /// Resolve dimension DataType by name. O(1) via IndexMap.
+    ///
+    /// Panics if the dimension is not found — this is a programming error
+    /// because the compiled interface guarantees all dimensions have data_type.
     pub fn resolve_dim_type(&self, name: &str) -> semstrait_core::DataType {
         self.dimensions
             .get(name)
             .map(|d| d.data_type.clone())
-            .unwrap_or(semstrait_core::DataType::Utf8)
+            .expect("compiled interface guarantees dimension data_type is present")
     }
 
     /// Resolve measure or metric DataType by name. O(1) via IndexMap.
+    ///
+    /// Panics if neither measure nor metric is found — this is a programming error
+    /// because the compiled interface guarantees all measures/metrics have data_type.
     pub fn resolve_measure_type(&self, name: &str) -> semstrait_core::DataType {
         self.measures
             .get(name)
             .map(|m| m.data_type.clone())
             .or_else(|| self.metrics.get(name).map(|m| m.data_type.clone()))
-            .unwrap_or(semstrait_core::DataType::Float64)
+            .expect("compiled interface guarantees measure/metric data_type is present")
     }
 
     /// Find the temporal dimension name (first temporal dimension found).
@@ -94,32 +98,32 @@ impl KindInterface {
 }
 
 // ============================================================================
-// DataKind — 4-variant enum (dataset, unionset, grainset, joinset)
+// CompiledDataKind — 4-variant enum (dataset, unionset, grainset, joinset)
 // ============================================================================
 
 /// A queryable semantic entity. Four variants map directly to the four
 /// kind types in the semantic model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind_type", rename_all = "snake_case")]
-pub enum DataKind {
+pub enum CompiledDataKind {
     /// Single dataset, direct query. No dataset routing logic.
-    Dataset(Box<DatasetKind>),
+    Dataset(Box<CompiledDatasetKind>),
     /// UNION ALL across multiple datasets.
-    Unionset(Box<UnionsetKind>),
+    Unionset(Box<CompiledUnionsetKind>),
     /// Grain-based covering dataset selection.
-    Grainset(Box<GrainsetKind>),
+    Grainset(Box<CompiledGrainsetKind>),
     /// Join-based composition via BFS join chain.
-    Joinset(Box<JoinsetKind>),
+    Joinset(Box<CompiledJoinsetKind>),
 }
 
-impl DataKind {
-    /// Access the shared KindInterface regardless of variant.
-    pub fn interface(&self) -> &KindInterface {
+impl CompiledDataKind {
+    /// Access the shared CompiledInterface regardless of variant.
+    pub fn interface(&self) -> &CompiledInterface {
         match self {
-            DataKind::Dataset(k) => &k.interface,
-            DataKind::Unionset(k) => &k.interface,
-            DataKind::Grainset(k) => &k.interface,
-            DataKind::Joinset(k) => &k.interface,
+            CompiledDataKind::Dataset(k) => &k.interface,
+            CompiledDataKind::Unionset(k) => &k.interface,
+            CompiledDataKind::Grainset(k) => &k.interface,
+            CompiledDataKind::Joinset(k) => &k.interface,
         }
     }
 
@@ -128,31 +132,31 @@ impl DataKind {
         &self.interface().name
     }
 
-    /// Mutable access to the shared KindInterface (for tests / configuration).
-    pub fn interface_mut(&mut self) -> &mut KindInterface {
+    /// Mutable access to the shared CompiledInterface (for tests / configuration).
+    pub fn interface_mut(&mut self) -> &mut CompiledInterface {
         match self {
-            DataKind::Dataset(k) => &mut k.interface,
-            DataKind::Unionset(k) => &mut k.interface,
-            DataKind::Grainset(k) => &mut k.interface,
-            DataKind::Joinset(k) => &mut k.interface,
+            CompiledDataKind::Dataset(k) => &mut k.interface,
+            CompiledDataKind::Unionset(k) => &mut k.interface,
+            CompiledDataKind::Grainset(k) => &mut k.interface,
+            CompiledDataKind::Joinset(k) => &mut k.interface,
         }
     }
 
     /// All dataset bindings across all variants.
     pub fn bindings(&self) -> &[DatasetBinding] {
         match self {
-            DataKind::Dataset(k) => std::slice::from_ref(&k.binding),
-            DataKind::Unionset(k) => &k.bindings,
-            DataKind::Grainset(k) => &k.bindings,
-            DataKind::Joinset(k) => &k.bindings,
+            CompiledDataKind::Dataset(k) => std::slice::from_ref(&k.binding),
+            CompiledDataKind::Unionset(k) => &k.bindings,
+            CompiledDataKind::Grainset(k) => &k.bindings,
+            CompiledDataKind::Joinset(k) => &k.bindings,
         }
     }
 }
 
 /// Shared interface across all queryable entities.
 /// Returns references only — no cloning in the hot path.
-pub trait SemanticInterface {
-    fn interface(&self) -> &KindInterface;
+pub trait CompiledSemanticInterface {
+    fn interface(&self) -> &CompiledInterface;
 
     fn dimensions(&self) -> &IndexMap<String, CompiledDimension> {
         &self.interface().dimensions
@@ -169,22 +173,19 @@ pub trait SemanticInterface {
     fn keys(&self) -> Option<&Keys> {
         self.interface().keys.as_ref()
     }
-    fn domain(&self) -> Option<&[String]> {
-        self.interface().domain.as_deref()
-    }
     fn temporal_dimension(&self) -> Option<&str> {
         self.interface().temporal_dim.as_deref()
     }
 }
 
-impl SemanticInterface for DataKind {
-    fn interface(&self) -> &KindInterface {
+impl CompiledSemanticInterface for CompiledDataKind {
+    fn interface(&self) -> &CompiledInterface {
         self.interface()
     }
 }
 
 /// Shared behavior for multi-dataset kinds (unionset, grainset, joinset).
-pub trait MultiDatasetKind: SemanticInterface {
+pub trait MultiDatasetKind: CompiledSemanticInterface {
     fn bindings(&self) -> &[DatasetBinding];
     fn coverage_index(&self) -> &CoverageIndex;
     fn dimension_index(&self) -> &DimensionIndex;
@@ -192,34 +193,34 @@ pub trait MultiDatasetKind: SemanticInterface {
 }
 
 // ============================================================================
-// DatasetKind — Single-Dataset Fast Path
+// CompiledDatasetKind — Single-Dataset Fast Path
 // ============================================================================
 
 /// Single dataset, direct Scan → Agg → Project. No routing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DatasetKind {
+pub struct CompiledDatasetKind {
     #[serde(flatten)]
-    pub interface: KindInterface,
+    pub interface: CompiledInterface,
     /// The single dataset binding for this entity.
     pub binding: DatasetBinding,
 }
 
-impl SemanticInterface for DatasetKind {
-    fn interface(&self) -> &KindInterface {
+impl CompiledSemanticInterface for CompiledDatasetKind {
+    fn interface(&self) -> &CompiledInterface {
         &self.interface
     }
 }
 
 // ============================================================================
-// UnionsetKind — UNION ALL Across Datasets
+// CompiledUnionsetKind — UNION ALL Across Datasets
 // ============================================================================
 
 /// UNION ALL across multiple datasets. Each branch scans one dataset;
 /// unmapped columns are NULL-filled. Result is re-aggregated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UnionsetKind {
+pub struct CompiledUnionsetKind {
     #[serde(flatten)]
-    pub interface: KindInterface,
+    pub interface: CompiledInterface,
     pub mode: UnionMode,
     pub bindings: Vec<DatasetBinding>,
     // Acceleration structures
@@ -229,13 +230,13 @@ pub struct UnionsetKind {
     pub metric_order: Option<MetricOrder>,
 }
 
-impl SemanticInterface for UnionsetKind {
-    fn interface(&self) -> &KindInterface {
+impl CompiledSemanticInterface for CompiledUnionsetKind {
+    fn interface(&self) -> &CompiledInterface {
         &self.interface
     }
 }
 
-impl MultiDatasetKind for UnionsetKind {
+impl MultiDatasetKind for CompiledUnionsetKind {
     fn bindings(&self) -> &[DatasetBinding] {
         &self.bindings
     }
@@ -251,15 +252,15 @@ impl MultiDatasetKind for UnionsetKind {
 }
 
 // ============================================================================
-// GrainsetKind — Grain-Based Covering Dataset Selection
+// CompiledGrainsetKind — Grain-Based Covering Dataset Selection
 // ============================================================================
 
 /// Grain-based covering: routes queries to the cheapest covering dataset(s).
 /// Multi-grain datasets are UNION ALL'd with DATE_TRUNC rollup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GrainsetKind {
+pub struct CompiledGrainsetKind {
     #[serde(flatten)]
-    pub interface: KindInterface,
+    pub interface: CompiledInterface,
     pub bindings: Vec<DatasetBinding>,
     // Acceleration structures
     pub coverage_index: CoverageIndex,
@@ -271,13 +272,13 @@ pub struct GrainsetKind {
     pub grain_map: Option<GrainMap>,
 }
 
-impl SemanticInterface for GrainsetKind {
-    fn interface(&self) -> &KindInterface {
+impl CompiledSemanticInterface for CompiledGrainsetKind {
+    fn interface(&self) -> &CompiledInterface {
         &self.interface
     }
 }
 
-impl MultiDatasetKind for GrainsetKind {
+impl MultiDatasetKind for CompiledGrainsetKind {
     fn bindings(&self) -> &[DatasetBinding] {
         &self.bindings
     }
@@ -293,14 +294,14 @@ impl MultiDatasetKind for GrainsetKind {
 }
 
 // ============================================================================
-// JoinsetKind — Join-Based Composition
+// CompiledJoinsetKind — Join-Based Composition
 // ============================================================================
 
 /// Join-based composition via BFS join chain from an anchor dataset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JoinsetKind {
+pub struct CompiledJoinsetKind {
     #[serde(flatten)]
-    pub interface: KindInterface,
+    pub interface: CompiledInterface,
     pub associativity: JoinAssociativity,
     pub bindings: Vec<DatasetBinding>,
     pub relationships: Vec<CompiledRelationship>,
@@ -312,13 +313,13 @@ pub struct JoinsetKind {
     pub adjacency_index: AdjacencyIndex,
 }
 
-impl SemanticInterface for JoinsetKind {
-    fn interface(&self) -> &KindInterface {
+impl CompiledSemanticInterface for CompiledJoinsetKind {
+    fn interface(&self) -> &CompiledInterface {
         &self.interface
     }
 }
 
-impl MultiDatasetKind for JoinsetKind {
+impl MultiDatasetKind for CompiledJoinsetKind {
     fn bindings(&self) -> &[DatasetBinding] {
         &self.bindings
     }
@@ -468,8 +469,7 @@ pub struct TemporalMapping {
 // DatasetBinding -- Per-Dataset Binding in Complex Kinds
 // ============================================================================
 
-/// A resolved dataset binding within a complex data kind.
-/// Replaces `CompiledKindDataset`.
+/// A resolved dataset binding within a compiled data kind.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetBinding {
     /// Dataset name (reference into manifest.datasets).
@@ -620,10 +620,10 @@ impl CoverageIndex {
         measures: &IndexMap<String, CompiledMeasure>,
         bindings: &[DatasetBinding],
     ) -> Self {
-        // Collect all mappable field names (dimensions + measures, excluding metadata).
+        // Collect all mappable field names (dimensions + measures, excluding metadata and computed).
         let field_names: Vec<String> = dimensions
             .iter()
-            .filter(|(_, d)| !matches!(d.dim_type, DimensionType::Metadata(_)))
+            .filter(|(_, d)| !matches!(d.dim_type, DimensionType::Metadata(_)) && d.expr.is_none())
             .map(|(name, _)| name.clone())
             .chain(measures.keys().cloned())
             .collect();
@@ -941,6 +941,18 @@ fn collect_entity_refs_inner(expr: &semstrait_core::Expr, refs: &mut Vec<String>
             collect_entity_refs_inner(&l.expr, refs);
             collect_entity_refs_inner(&l.pattern, refs);
         }
+        Expr::ILike(l) => {
+            collect_entity_refs_inner(&l.expr, refs);
+            collect_entity_refs_inner(&l.pattern, refs);
+        }
+        Expr::RegexpMatch(re) => {
+            collect_entity_refs_inner(&re.expr, refs);
+            collect_entity_refs_inner(&re.pattern, refs);
+        }
+        Expr::RegexpExtract(re) => {
+            collect_entity_refs_inner(&re.expr, refs);
+            collect_entity_refs_inner(&re.pattern, refs);
+        }
         Expr::Coalesce(c) => {
             for e in &c.exprs {
                 collect_entity_refs_inner(e, refs);
@@ -958,6 +970,7 @@ fn collect_entity_refs_inner(expr: &semstrait_core::Expr, refs: &mut Vec<String>
                 collect_entity_refs_inner(arg, refs);
             }
         }
+        Expr::Cast(c) => collect_entity_refs_inner(&c.expr, refs),
         Expr::Guard(g) => {
             collect_entity_refs_inner(&g.condition, refs);
             collect_entity_refs_inner(&g.expr, refs);
@@ -1015,6 +1028,165 @@ pub struct FieldIndex {
 }
 
 // ============================================================================
+// Unified Semantic Graph (petgraph)
+// ============================================================================
+
+/// Node in the unified semantic graph.
+#[derive(Debug, Clone)]
+pub enum SemanticNode {
+    /// A dataset node (physical source).
+    Dataset { name: String, kind_name: String },
+    /// A field node (dimension, measure, or metric).
+    Field { name: String, field_type: FieldType },
+}
+
+/// The type of a field node in the semantic graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldType {
+    Dimension,
+    Measure,
+    Metric,
+}
+
+/// Edge in the unified semantic graph.
+#[derive(Debug, Clone)]
+pub enum SemanticEdge {
+    /// A join relationship between two datasets.
+    Join { relationship_idx: usize },
+    /// A dataset provides this field.
+    ProvidesField,
+}
+
+/// Unified semantic graph combining relationship traversal and field indexing.
+///
+/// Replaces separate `RelationshipGraph` + `FieldIndex` with a single petgraph
+/// that supports both join path resolution and field-to-dataset lookups.
+#[derive(Debug, Clone, Default)]
+pub struct SemanticGraph {
+    graph: petgraph::Graph<SemanticNode, SemanticEdge>,
+    dataset_nodes: HashMap<String, petgraph::graph::NodeIndex>,
+    field_nodes: HashMap<String, petgraph::graph::NodeIndex>,
+}
+
+impl SemanticGraph {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a dataset node. Returns the node index.
+    pub fn add_dataset(&mut self, name: &str, kind_name: &str) -> petgraph::graph::NodeIndex {
+        if let Some(&idx) = self.dataset_nodes.get(name) {
+            return idx;
+        }
+        let idx = self.graph.add_node(SemanticNode::Dataset {
+            name: name.to_string(),
+            kind_name: kind_name.to_string(),
+        });
+        self.dataset_nodes.insert(name.to_string(), idx);
+        idx
+    }
+
+    /// Add a field node. Returns the node index.
+    pub fn add_field(&mut self, name: &str, field_type: FieldType) -> petgraph::graph::NodeIndex {
+        if let Some(&idx) = self.field_nodes.get(name) {
+            return idx;
+        }
+        let idx = self.graph.add_node(SemanticNode::Field {
+            name: name.to_string(),
+            field_type,
+        });
+        self.field_nodes.insert(name.to_string(), idx);
+        idx
+    }
+
+    /// Add a join edge between two datasets.
+    pub fn add_join(&mut self, from: &str, to: &str, relationship_idx: usize) {
+        let from_idx = self.dataset_nodes.get(from).copied()
+            .unwrap_or_else(|| self.add_dataset(from, ""));
+        let to_idx = self.dataset_nodes.get(to).copied()
+            .unwrap_or_else(|| self.add_dataset(to, ""));
+        self.graph.add_edge(from_idx, to_idx, SemanticEdge::Join { relationship_idx });
+    }
+
+    /// Add a "provides field" edge from dataset to field.
+    pub fn add_provides_field(&mut self, dataset: &str, field: &str, field_type: FieldType) {
+        let ds_idx = self.dataset_nodes.get(dataset).copied()
+            .unwrap_or_else(|| self.add_dataset(dataset, ""));
+        let f_idx = self.field_nodes.get(field).copied()
+            .unwrap_or_else(|| self.add_field(field, field_type));
+        self.graph.add_edge(ds_idx, f_idx, SemanticEdge::ProvidesField);
+    }
+
+    /// Find datasets that provide a given field.
+    pub fn field_providers(&self, field: &str) -> Vec<&str> {
+        let Some(&f_idx) = self.field_nodes.get(field) else {
+            return Vec::new();
+        };
+        self.graph
+            .neighbors_directed(f_idx, petgraph::Direction::Incoming)
+            .filter_map(|n| match &self.graph[n] {
+                SemanticNode::Dataset { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Find fields provided by a given dataset.
+    pub fn dataset_fields(&self, dataset: &str) -> Vec<&str> {
+        let Some(&ds_idx) = self.dataset_nodes.get(dataset) else {
+            return Vec::new();
+        };
+        self.graph
+            .neighbors_directed(ds_idx, petgraph::Direction::Outgoing)
+            .filter_map(|n| match &self.graph[n] {
+                SemanticNode::Field { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Get all dimension names in the graph.
+    pub fn all_dimensions(&self) -> Vec<&str> {
+        self.field_nodes.iter()
+            .filter_map(|(name, &idx)| match &self.graph[idx] {
+                SemanticNode::Field { field_type: FieldType::Dimension, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Get all measure names in the graph.
+    pub fn all_measures(&self) -> Vec<&str> {
+        self.field_nodes.iter()
+            .filter_map(|(name, &idx)| match &self.graph[idx] {
+                SemanticNode::Field { field_type: FieldType::Measure, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Get all metric names in the graph.
+    pub fn all_metrics(&self) -> Vec<&str> {
+        self.field_nodes.iter()
+            .filter_map(|(name, &idx)| match &self.graph[idx] {
+                SemanticNode::Field { field_type: FieldType::Metric, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Number of dataset nodes.
+    pub fn dataset_count(&self) -> usize {
+        self.dataset_nodes.len()
+    }
+
+    /// Number of field nodes.
+    pub fn field_count(&self) -> usize {
+        self.field_nodes.len()
+    }
+}
+
+// ============================================================================
 // Diagnostics
 // ============================================================================
 
@@ -1032,115 +1204,10 @@ pub struct CompileWarning {
     pub location: String,
 }
 
-// ============================================================================
-// Conversion from existing types
-// ============================================================================
-
-impl DatasetBinding {
-    /// Create a DatasetBinding from a CompiledKindDataset.
-    pub fn from_compiled(ds: &CompiledKindDataset) -> Self {
-        let column_mapping = ResolvedColumnMapping::from_column_mapping(&ds.extras.column_mapping);
-
-        Self {
-            dataset_name: ds.name.clone(),
-            column_mapping,
-            resolved_sources: ds.resolved_sources.clone(),
-        }
-    }
-}
-
-/// Build a `KindInterface` from a `CompiledKind` (shared extraction).
-fn build_interface(kind: &CompiledKind) -> KindInterface {
-    let temporal_dim = kind
-        .dimensions
-        .iter()
-        .find(|(_, d)| matches!(d.dim_type, DimensionType::Temporal(_)))
-        .map(|(name, _)| name.clone());
-
-    KindInterface {
-        name: kind.name.clone(),
-        description: kind.description.clone(),
-        dimensions: kind.dimensions.clone(),
-        measures: kind.measures.clone(),
-        metrics: kind.metrics.clone(),
-        keys: kind.keys.clone(),
-        filters: kind.filters.clone(),
-        domain: kind.domain.clone(),
-        temporal_dim,
-    }
-}
-
-/// Build a DataKind from a CompiledKind.
-///
-/// Single-binding kinds are flattened to `DataKind::Dataset` regardless of the
-/// declared `kind_type`. A single-dataset grainset/unionset/joinset is
-/// semantically equivalent to a direct dataset query — no routing, union, or
-/// join is needed. The planner dispatches `Dataset` via a simpler fast path.
-pub fn data_kind_from_compiled_kind(kind: &CompiledKind) -> DataKind {
-    use crate::compiled::CompiledKindType;
-
-    let bindings: Vec<DatasetBinding> = kind
-        .datasets
-        .iter()
-        .map(DatasetBinding::from_compiled)
-        .collect();
-
-    let interface = build_interface(kind);
-
-    // Single-dataset kinds → DatasetKind (fast path)
-    if bindings.len() == 1 {
-        let binding = bindings.into_iter().next().unwrap();
-        return DataKind::Dataset(Box::new(DatasetKind { interface, binding }));
-    }
-
-    // Multi-dataset kinds → variant per strategy
-    let metric_order = MetricOrder::build(&kind.metrics, &kind.measures);
-    let coverage_index = CoverageIndex::build(&kind.dimensions, &kind.measures, &bindings);
-    let dimension_index = DimensionIndex::build(&kind.dimensions, &bindings);
-
-    match &kind.kind_type {
-        CompiledKindType::Grainset => {
-            let grain_map = interface
-                .temporal_dim
-                .as_deref()
-                .map(|td| GrainMap::build(td, &bindings));
-
-            DataKind::Grainset(Box::new(GrainsetKind {
-                interface,
-                bindings,
-                coverage_index,
-                dimension_index,
-                metric_order,
-                grain_map,
-            }))
-        }
-        CompiledKindType::Unionset { mode } => DataKind::Unionset(Box::new(UnionsetKind {
-            interface,
-            mode: *mode,
-            bindings,
-            coverage_index,
-            dimension_index,
-            metric_order,
-        })),
-        CompiledKindType::Joinset { associativity } => {
-            let adjacency_index = AdjacencyIndex::build(&bindings, &kind.relationships);
-            DataKind::Joinset(Box::new(JoinsetKind {
-                interface,
-                associativity: *associativity,
-                bindings,
-                relationships: kind.relationships.clone(),
-                coverage_index,
-                dimension_index,
-                metric_order,
-                adjacency_index,
-            }))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MetricType;
     use semstrait_model::{CategoricalDimension, ColumnMapping, ColumnMappingValue, LiteralValue};
     use std::collections::HashMap;
 
@@ -1251,8 +1318,10 @@ mod tests {
             CompiledDimension {
                 name: name.to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Utf8,
+                data_type: semstrait_core::DataType::String,
                 dim_type: DimensionType::Categorical(CategoricalDimension { enum_values: None }),
+                expr: None,
+                expr_source: None,
             },
         )
     }
@@ -1263,8 +1332,8 @@ mod tests {
             CompiledMeasure {
                 name: name.to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Float64,
-                agg: None,
+                data_type: semstrait_core::DataType::Number,
+                agg: semstrait_core::Aggregation::Sum,
                 expr: semstrait_core::Expr::EntityRef(semstrait_core::expr::EntityRef {
                     name: name.to_string(),
                 }),
@@ -1332,27 +1401,33 @@ mod tests {
         let temporal_dim = CompiledDimension {
             name: "date".to_string(),
             description: None,
-            data_type: semstrait_core::DataType::Date32,
+            data_type: semstrait_core::DataType::Date,
             dim_type: DimensionType::Temporal(semstrait_model::TemporalDimension {
                 grains: vec![TemporalGrain::Day],
             }),
+            expr: None,
+            expr_source: None,
         };
 
         let meta_dim = CompiledDimension {
             name: "platform".to_string(),
             description: None,
-            data_type: semstrait_core::DataType::Utf8,
+            data_type: semstrait_core::DataType::String,
             dim_type: DimensionType::Metadata(MetadataDimension {
                 path: Some(semstrait_model::PathExtraction { token: 1 }),
                 partition: None,
             }),
+            expr: None,
+            expr_source: None,
         };
 
         let cat_dim = CompiledDimension {
             name: "region".to_string(),
             description: None,
-            data_type: semstrait_core::DataType::Utf8,
+            data_type: semstrait_core::DataType::String,
             dim_type: DimensionType::Categorical(CategoricalDimension { enum_values: None }),
+            expr: None,
+            expr_source: None,
         };
 
         let dimensions: IndexMap<String, CompiledDimension> = vec![
@@ -1632,7 +1707,8 @@ mod tests {
             CompiledMetric {
                 name: name.to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Float64,
+                data_type: semstrait_core::DataType::Number,
+                metric_type: MetricType::infer(&expr),
                 agg: None,
                 expr,
                 expr_source: String::new(),
@@ -1760,5 +1836,159 @@ mod tests {
 
         let order = MetricOrder::build(&metrics, &measures).unwrap();
         assert_eq!(order.evaluation_order, vec!["m1", "m2", "m3"]);
+    }
+
+    // ================================================================
+    // CoverageIndex: computed dimension exclusion (DL-047)
+    // ================================================================
+
+    #[test]
+    fn test_coverage_index_excludes_computed_dims() {
+        let mut dimensions: IndexMap<String, CompiledDimension> = IndexMap::new();
+
+        // Physical dimension — should be in coverage
+        dimensions.insert(
+            "region".to_string(),
+            CompiledDimension {
+                name: "region".to_string(),
+                description: None,
+                data_type: semstrait_core::DataType::String,
+                dim_type: DimensionType::Categorical(CategoricalDimension { enum_values: None }),
+                expr: None,
+                expr_source: None,
+            },
+        );
+
+        // Computed dimension — should be EXCLUDED from coverage
+        dimensions.insert(
+            "market".to_string(),
+            CompiledDimension {
+                name: "market".to_string(),
+                description: None,
+                data_type: semstrait_core::DataType::String,
+                dim_type: DimensionType::Categorical(CategoricalDimension { enum_values: None }),
+                expr: Some(semstrait_core::Expr::function_call(
+                    "UPPER",
+                    vec![semstrait_core::Expr::column("region")],
+                )),
+                expr_source: None,
+            },
+        );
+
+        let measures: IndexMap<String, CompiledMeasure> =
+            vec![make_test_measure("revenue")].into_iter().collect();
+
+        let binding = DatasetBinding {
+            dataset_name: "ds1".into(),
+            column_mapping: ResolvedColumnMapping::from_column_mapping(&make_explicit_mapping(
+                vec![
+                    ("region", ColumnMappingValue::Simple("region_col".into())),
+                    ("revenue", ColumnMappingValue::Simple("amount".into())),
+                ],
+            )),
+            resolved_sources: vec![],
+        };
+
+        let coverage = CoverageIndex::build(&dimensions, &measures, &[binding]);
+
+        // Only "region" and "revenue" should be in field_names — NOT "market"
+        assert_eq!(coverage.field_names.len(), 2);
+        assert!(coverage.field_names.contains(&"region".to_string()));
+        assert!(coverage.field_names.contains(&"revenue".to_string()));
+        assert!(!coverage.field_names.contains(&"market".to_string()));
+    }
+
+    // ── SemanticGraph tests ─────────────────────────────────────
+
+    #[test]
+    fn test_semantic_graph_dataset_nodes() {
+        let mut g = SemanticGraph::new();
+        g.add_dataset("orders", "order_grain");
+        g.add_dataset("products", "product_grain");
+        assert_eq!(g.dataset_count(), 2);
+    }
+
+    #[test]
+    fn test_semantic_graph_field_nodes() {
+        let mut g = SemanticGraph::new();
+        g.add_field("region", FieldType::Dimension);
+        g.add_field("revenue", FieldType::Measure);
+        g.add_field("margin", FieldType::Metric);
+        assert_eq!(g.field_count(), 3);
+    }
+
+    #[test]
+    fn test_semantic_graph_provides_field_edges() {
+        let mut g = SemanticGraph::new();
+        g.add_dataset("orders", "order_grain");
+        g.add_dataset("products", "product_grain");
+        g.add_provides_field("orders", "revenue", FieldType::Measure);
+        g.add_provides_field("products", "revenue", FieldType::Measure);
+
+        let mut providers = g.field_providers("revenue");
+        providers.sort();
+        assert_eq!(providers, vec!["orders", "products"]);
+    }
+
+    #[test]
+    fn test_semantic_graph_dataset_fields() {
+        let mut g = SemanticGraph::new();
+        g.add_dataset("orders", "order_grain");
+        g.add_provides_field("orders", "region", FieldType::Dimension);
+        g.add_provides_field("orders", "revenue", FieldType::Measure);
+
+        let mut fields = g.dataset_fields("orders");
+        fields.sort();
+        assert_eq!(fields, vec!["region", "revenue"]);
+    }
+
+    #[test]
+    fn test_semantic_graph_all_dimensions() {
+        let mut g = SemanticGraph::new();
+        g.add_field("region", FieldType::Dimension);
+        g.add_field("date", FieldType::Dimension);
+        g.add_field("revenue", FieldType::Measure);
+
+        let mut dims = g.all_dimensions();
+        dims.sort();
+        assert_eq!(dims, vec!["date", "region"]);
+    }
+
+    #[test]
+    fn test_semantic_graph_all_measures() {
+        let mut g = SemanticGraph::new();
+        g.add_field("revenue", FieldType::Measure);
+        g.add_field("cost", FieldType::Measure);
+        g.add_field("margin", FieldType::Metric);
+
+        let mut measures = g.all_measures();
+        measures.sort();
+        assert_eq!(measures, vec!["cost", "revenue"]);
+    }
+
+    #[test]
+    fn test_semantic_graph_join_edges() {
+        let mut g = SemanticGraph::new();
+        g.add_dataset("orders", "order_grain");
+        g.add_dataset("products", "product_grain");
+        g.add_join("orders", "products", 0);
+
+        // Verify join edge exists by checking neighbors
+        let ds_fields = g.dataset_fields("orders");
+        // orders -> products is a join edge (not provides_field), so dataset_fields won't show it
+        assert!(ds_fields.is_empty());
+        assert_eq!(g.dataset_count(), 2);
+    }
+
+    #[test]
+    fn test_semantic_graph_dedup_nodes() {
+        let mut g = SemanticGraph::new();
+        g.add_dataset("orders", "kind_a");
+        g.add_dataset("orders", "kind_b"); // same name, different kind
+        assert_eq!(g.dataset_count(), 1); // deduped by name
+
+        g.add_field("revenue", FieldType::Measure);
+        g.add_field("revenue", FieldType::Dimension); // same name, different type
+        assert_eq!(g.field_count(), 1); // deduped by name
     }
 }

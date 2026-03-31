@@ -2,7 +2,21 @@
 
 Engine adapter layer — produces engine-appropriate artifacts from logical plans.
 
-Each adapter implements both `EngineProfile` (capability flags) and `EngineAdapter` (plan conversion). This is the core value layer of semstrait's engine integration.
+Each adapter holds an `EngineProfile` internally (HAS-A, not IS-A — see DL-055) and implements `EngineAdapter` for plan conversion. This is the core value layer of semstrait's engine integration.
+
+---
+
+## Core Trait
+
+```rust
+pub trait EngineAdapter: Send + Sync {
+    fn profile(&self) -> &dyn EngineProfile;
+    fn adapt(&self, plan: &LogicalPlan) -> Result<PlanArtifact, AdaptError>;
+    fn debug_sql(&self, plan: &LogicalPlan) -> Result<String, AdaptError>;
+}
+```
+
+The facade extracts `adapter.profile()` and passes it to the planner (DL-059). Connectors never reference adapters (DL-056).
 
 ---
 

@@ -67,10 +67,10 @@ impl ManifestCompiler {
     /// 2. resolve_refs — expand ref: entries
     /// 3. resolve_sources — expand globs/wildcards, fetch catalog metadata
     /// 4. validate_structure — dataset uniqueness, kind nesting, joinset anchors
-    /// 4.6-4.8. validate temporal, storage, metadata dimensions
-    /// 4.5. expand_auto_mappings
+    ///    4.5. expand_auto_mappings
+    ///    4.6-4.8. validate temporal, storage, metadata dimensions
     /// 5. validate_mappings — column_mapping keys exist in kind interface
-    /// 5.5. validate_grain_compatibility
+    ///    5.5. validate_grain_compatibility
     /// 6. build_metric_graph — petgraph DiGraph, cycle detection, depth <= 3
     /// 7. build_rel_graph — relationship graph, joinset anchor inference
     /// 8. compile_exprs — parse Expr fields, reject raw SQL
@@ -118,6 +118,13 @@ impl ManifestCompiler {
         let mut model = model;
         steps::expand_auto_mappings(&mut model);
 
+        // Step 4.55: Validate temporal.dimension consistency across datasets
+        steps::validate_temporal_dimension_consistency(&model)?;
+
+        // Step 4.9: Derive dimension grains from dataset temporal configs
+        let mut derivation_warnings = Vec::new();
+        steps::derive_dimension_grains(&mut model, &mut derivation_warnings);
+
         // Step 5: Validate mappings
         steps::validate_mappings(&model)?;
 
@@ -132,7 +139,7 @@ impl ManifestCompiler {
 
         // Step 8: Compile expressions
         // Step 9: Emit CompiledManifest (with resolution result for populated ResolvedSources)
-        let manifest = steps::emit(model, source_hash, &metric_depths, resolution)?;
+        let manifest = steps::emit(model, source_hash, &metric_depths, resolution, derivation_warnings)?;
 
         let manifest = CompiledManifest {
             compiled_at: Utc::now(),

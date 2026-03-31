@@ -13,6 +13,7 @@ src/
   lib.rs                Public API, re-exports
   compiler.rs           ManifestCompiler orchestrator (load YAML, run pipeline, hash)
   steps.rs              All compilation steps: validation, graph building, expr parsing, emit
+  function_registry.rs  FunctionRegistry: 28 ANSI SQL functions with compile-time arity validation
   compiled.rs           Output types: CompiledManifest, CompiledKind, CompiledDataset, etc.
   acceleration.rs       Planner-optimized types: DataKind, CoverageIndex, FieldIndex, GrainMap
   catalog_snapshot.rs   CatalogSnapshot, TableSnapshot, ResolvedColumn, IcebergMetadata
@@ -38,11 +39,14 @@ CompileSource (YAML string, files, or directory)
   4.8 validate_metadata   path extraction requires storage.paths; partition requires partition_def
        |
   5. validate_mappings    column_mapping keys vs kind interface (union coverage)
+                          (excludes metadata dims and computed dims from checks)
   5.5 validate_grain      grain compatibility across kind datasets
        |
   6. build_metric_graph   petgraph DiGraph, cycle detection, depth <= 3
   7. build_rel_graph      relationship graph, joinset anchor inference
-  8. compile_exprs        parse Expr DSL fields, reject raw SQL
+  8. compile_exprs        parse Expr DSL fields, reject raw SQL,
+                          compile computed dim expressions (no aggregation allowed),
+                          FunctionRegistry arity validation
        |
   9. emit                 serialize to CompiledManifest + build acceleration structures
        |
@@ -77,10 +81,20 @@ Wildcard patterns require providers: paths need `StorageProvider`, tables need `
 
 Parses string expressions into typed `Expr` trees using the DSL parser:
 
-- Measure expressions: `SUM(amount)`, `COUNT(DISTINCT id)`, or declarative `agg: sum` + horizontal expr
+- Measure expressions: declarative `agg: sum` + horizontal expr (preferred), or legacy `SUM(amount)` (auto-upgraded)
 - Metric expressions: `clicks / impressions` (arithmetic over measure references)
 - Filter expressions: `status = 'active'`, `amount > 100`
+- Computed dimension expressions: compiled via `ExprSource` (inline string or declarative block), validated for no aggregation, function calls checked against `FunctionRegistry` (28 ANSI SQL functions)
 - Rejects raw SQL strings — only DSL constructs allowed
+
+**Declarative auto-upgrade:** Legacy measures with inline aggregation (e.g., `expr: "SUM(amount)"`) are auto-upgraded at compile time — the aggregation function is extracted into `agg` and the expr becomes horizontal-only (`Column("amount")`). A deprecation warning diagnostic is emitted.
+
+**MetricType inference:** Compiler infers `MetricType` from the metric's compiled `Expr` tree:
+- Single `EntityRef`/`Column` → `Simple` (wraps one measure)
+- Top-level `Divide`/`SafeDivide` with leaf refs → `Ratio`
+- Everything else → `Derived`
+
+**Additivity derivation:** When `measure.additivity` is not specified in YAML, compiler derives from `agg`: SUM/COUNT/MIN/MAX → Full, AVG/CountDistinct → Non. Metric additivity is the worst-case of all transitive leaf measure additivity values (Full < Semi < Non).
 
 Model-level `DataType` (I64, F64, Date, String, ...) is converted to core `DataType` (Int64, Float64, Date32, Utf8, ...) via `map_data_type()` during emission.
 
@@ -127,36 +141,21 @@ pub struct CompiledManifest {
 }
 ```
 
-### CompiledKind — Three Layers (Legacy)
+### CompiledDataKind — 4-Variant Entity Enum
 
-> **Note:** `CompiledKind` is the v1 type retained for backward compatibility. The planner uses `DataKind` from `manifest.data_kinds` (see [Acceleration Structures](#acceleration-structures) below).
-
-Each kind has three distinct layers:
-
-```
-Interface       what users query        dimensions, measures, metrics, keys
-Strategy        how the plan works      kind_type: Grainset | Unionset | Joinset
-Binding         where data lives        datasets[], column_mapping, resolved_sources
-```
+All entity types (datasets, grainsets, unionsets, joinsets) live in a single `data_kinds: IndexMap<String, CompiledDataKind>` map. Each variant carries a `CompiledInterface` (shared semantic fields) plus variant-specific fields and `DatasetBinding`s.
 
 ```rust
-pub struct CompiledKind {
-    pub name: String,
+pub enum CompiledDataKind {
+    Dataset(Box<CompiledDatasetKind>),
+    Grainset(Box<CompiledGrainsetKind>),
+    Unionset(Box<CompiledUnionsetKind>),
+    Joinset(Box<CompiledJoinsetKind>),
+}
 
-    // Interface
-    pub dimensions: IndexMap<String, CompiledDimension>,
-    pub measures: IndexMap<String, CompiledMeasure>,
-    pub metrics: IndexMap<String, CompiledMetric>,
-    pub keys: Option<Keys>,
-
-    // Strategy
-    pub kind_type: CompiledKindType,    // Grainset | Unionset { mode } | Joinset { associativity }
-
-    // Binding
-    pub datasets: Vec<CompiledKindDataset>,
-    pub relationships: Vec<CompiledRelationship>,
-    pub domain: Option<Vec<String>>,
-    pub filters: Vec<CompiledFilter>,
+impl CompiledDataKind {
+    pub fn interface(&self) -> &CompiledInterface;
+    pub fn bindings(&self) -> &[DatasetBinding];
 }
 ```
 
@@ -168,38 +167,44 @@ All compiled types use `semstrait_core::DataType` (Arrow-aligned) rather than st
 pub struct CompiledDimension {
     pub name: String,
     pub description: Option<String>,
-    pub data_type: DataType,         // Date32, Utf8, Int64, etc.
+    pub data_type: DataType,         // Integer, String, Date, etc. (ANSI logical types)
     pub dim_type: DimensionType,     // Categorical | Temporal | Metadata | Binary | Geo | Bucketed
+    pub expr: Option<Expr>,          // computed dimension expression; None = physical column
+    pub expr_source: Option<String>, // original YAML string for debugging/display
 }
 
 pub struct CompiledMeasure {
     pub name: String,
     pub data_type: DataType,         // Float64, Int64, Decimal, etc.
-    pub agg: Option<Aggregation>,    // declarative agg (sum, avg, count, min, max, count_distinct)
-    pub expr: Expr,                  // parsed DSL expression tree
+    pub agg: Aggregation,            // always present (auto-upgraded from legacy)
+    pub expr: Expr,                  // horizontal-only (no aggregation functions)
     pub expr_source: String,         // original string for debugging
-    pub additivity: Option<AdditivityType>,
+    pub additivity: Option<AdditivityType>,  // derived from agg when not specified
     pub constraints: Option<MeasureConstraints>,
     pub filters: Vec<CompiledFilter>,
 }
 
+pub enum MetricType { Simple, Ratio, Derived }  // compiler-inferred from metric expr
+
 pub struct CompiledMetric {
     pub name: String,
     pub data_type: DataType,
+    pub metric_type: MetricType,     // inferred: Simple | Ratio | Derived
     pub agg: Option<Aggregation>,    // two-stage metric computation
     pub expr: Expr,                  // ratio/arithmetic expression over measures
     pub expr_source: String,
+    pub additivity: Option<AdditivityType>,  // worst-case of leaf measures
     pub depth: usize,                // depth in metric dependency graph (leaf = 0)
     pub filters: Vec<CompiledFilter>,
 }
 ```
 
-### CompiledKindDataset — Physical Binding
+### DatasetBinding — Physical Binding
 
 ```rust
-pub struct CompiledKindDataset {
+pub struct DatasetBinding {
     pub name: String,
-    pub extras: KindDatasetExtras,              // column_mapping, temporal, storage, catalog
+    pub column_mapping: ResolvedColumnMapping,  // physical, literals, temporal, anchored
     pub resolved_sources: Vec<ResolvedSource>,  // expanded paths/tables with schema
 }
 ```
@@ -505,7 +510,7 @@ pub trait Repository: Send + Sync {
 
 | Crate | Role |
 |-------|------|
-| `semstrait-core` | `DataType`, `Expr`, `Aggregation`, `EngineProfile` |
+| `semstrait-core` | `DataType`, `Expr`, `Aggregation`, `DataFormat` |
 | `semstrait-model` | `SemanticModel`, `parse()`, `resolve_refs()`, dimension/measure types |
 | `semstrait-catalog` | `CatalogProvider`, `StorageProvider`, `CatalogRegistry` |
 | `chrono` | `compiled_at` timestamp |

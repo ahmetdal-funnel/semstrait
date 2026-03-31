@@ -635,7 +635,7 @@ semantic_model:
             column_mapping:
               # metadata & classification
               campaign_category:
-                literal: "search"
+                lit: "search"
               # time & geography
               date: date
               currency: currency
@@ -696,7 +696,7 @@ semantic_model:
             column_mapping:
               # metadata & classification
               campaign_category:
-                literal: "search"
+                lit: "search"
               # time & geography
               date: date
               currency: currency
@@ -758,7 +758,7 @@ semantic_model:
             column_mapping:
               # metadata & classification
               campaign_category:
-                literal: "social"
+                lit: "social"
               # time & geography
               date: date
               currency: currency
@@ -813,7 +813,7 @@ semantic_model:
             column_mapping:
               # metadata & classification
               campaign_category:
-                literal: "social"
+                lit: "social"
               # time & geography
               date: date
               currency: currency

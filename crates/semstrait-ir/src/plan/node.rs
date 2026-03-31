@@ -89,6 +89,8 @@ pub struct AggregateMeasure {
     pub function: Aggregation,
     pub expr: Expr,
     pub distinct: bool,
+    /// Output data type of this aggregate, derived from aggregation function + input type.
+    pub data_type: semstrait_core::DataType,
 }
 
 /// Join node.

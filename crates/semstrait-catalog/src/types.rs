@@ -196,9 +196,9 @@ mod tests {
 
     #[test]
     fn test_catalog_column_new() {
-        let col = CatalogColumn::new("id", DataType::Int64, false);
+        let col = CatalogColumn::new("id", DataType::Integer, false);
         assert_eq!(col.name, "id");
-        assert_eq!(col.data_type, DataType::Int64);
+        assert_eq!(col.data_type, DataType::Integer);
         assert!(!col.nullable);
         assert_eq!(col.comment, None);
     }
@@ -207,12 +207,12 @@ mod tests {
     fn test_catalog_column_with_comment() {
         let col = CatalogColumn::with_comment(
             "customer_id",
-            DataType::Int64,
+            DataType::Integer,
             true,
             "Foreign key to customers table",
         );
         assert_eq!(col.name, "customer_id");
-        assert_eq!(col.data_type, DataType::Int64);
+        assert_eq!(col.data_type, DataType::Integer);
         assert!(col.nullable);
         assert_eq!(
             col.comment,

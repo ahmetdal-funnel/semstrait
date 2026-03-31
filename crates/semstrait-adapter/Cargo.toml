@@ -3,18 +3,16 @@ name = "semstrait-adapter"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Engine adapter layer for semstrait — per-engine profiles and artifact adaptation"
+description = "Engine adapter layer for semstrait — per-engine profiles, SQL emission, and artifact adaptation"
 
 [dependencies]
 semstrait-core = { workspace = true }
 semstrait-ir = { workspace = true }
-semstrait-sql = { workspace = true }
 thiserror = { workspace = true }
+polyglot-sql = { workspace = true, features = ["all-dialects", "transpile"], optional = true }
 
 [features]
 default = []
 datafusion = []
-duckdb = []
-trino = []
-spark = []
-polyglot = ["semstrait-sql/polyglot"]
+duckdb = ["dep:polyglot-sql"]
+spark = ["dep:polyglot-sql"]

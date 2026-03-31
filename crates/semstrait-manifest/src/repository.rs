@@ -133,17 +133,16 @@ mod tests {
 
     fn make_test_manifest(name: &str) -> CompiledManifest {
         CompiledManifest {
-            version: 1,
+            version: 3,
             compiled_at: chrono::Utc::now(),
             source_hash: "test".to_string(),
-            datasets: IndexMap::new(),
-            kinds: IndexMap::new(),
             relationships: Vec::new(),
             model_name: name.to_string(),
             model_description: None,
             data_kinds: IndexMap::new(),
             relationship_graph: crate::acceleration::RelationshipGraph::default(),
             field_index: crate::acceleration::FieldIndex::default(),
+            semantic_graph: crate::acceleration::SemanticGraph::default(),
             diagnostics: crate::acceleration::CompileDiagnostics::default(),
             catalog_snapshot: None,
         }

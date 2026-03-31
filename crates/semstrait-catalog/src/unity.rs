@@ -229,16 +229,15 @@ struct UnityColumn {
 fn unity_type_to_datatype(type_name: &str) -> DataType {
     match type_name.to_uppercase().as_str() {
         "BOOLEAN" => DataType::Boolean,
-        "BYTE" | "TINYINT" | "SHORT" | "SMALLINT" | "INT" | "INTEGER" => DataType::Int32,
-        "LONG" | "BIGINT" => DataType::Int64,
-        "FLOAT" => DataType::Float32,
-        "DOUBLE" => DataType::Float64,
-        "STRING" | "CHAR" | "VARCHAR" => DataType::Utf8,
-        "DATE" => DataType::Date32,
-        "TIMESTAMP" | "TIMESTAMP_NTZ" => DataType::TimestampMicrosecond,
+        "BYTE" | "TINYINT" | "SHORT" | "SMALLINT" | "INT" | "INTEGER"
+        | "LONG" | "BIGINT" => DataType::Integer,
+        "FLOAT" | "DOUBLE" => DataType::Number,
+        "STRING" | "CHAR" | "VARCHAR" => DataType::String,
+        "DATE" => DataType::Date,
+        "TIMESTAMP" | "TIMESTAMP_NTZ" => DataType::Timestamp { precision: 6 },
         "BINARY" => DataType::Binary,
-        s if s.starts_with("DECIMAL") => DataType::Float64, // simplified
-        _ => DataType::Utf8, // complex types → Utf8
+        s if s.starts_with("DECIMAL") => DataType::Number, // simplified
+        _ => DataType::String, // complex types → String
     }
 }
 
@@ -253,15 +252,15 @@ mod tests {
     #[test]
     fn test_unity_type_to_datatype() {
         assert_eq!(unity_type_to_datatype("BOOLEAN"), DataType::Boolean);
-        assert_eq!(unity_type_to_datatype("INT"), DataType::Int32);
-        assert_eq!(unity_type_to_datatype("LONG"), DataType::Int64);
-        assert_eq!(unity_type_to_datatype("BIGINT"), DataType::Int64);
-        assert_eq!(unity_type_to_datatype("FLOAT"), DataType::Float32);
-        assert_eq!(unity_type_to_datatype("DOUBLE"), DataType::Float64);
-        assert_eq!(unity_type_to_datatype("STRING"), DataType::Utf8);
-        assert_eq!(unity_type_to_datatype("DATE"), DataType::Date32);
-        assert_eq!(unity_type_to_datatype("TIMESTAMP"), DataType::TimestampMicrosecond);
-        assert_eq!(unity_type_to_datatype("DECIMAL(10,2)"), DataType::Float64);
+        assert_eq!(unity_type_to_datatype("INT"), DataType::Integer);
+        assert_eq!(unity_type_to_datatype("LONG"), DataType::Integer);
+        assert_eq!(unity_type_to_datatype("BIGINT"), DataType::Integer);
+        assert_eq!(unity_type_to_datatype("FLOAT"), DataType::Number);
+        assert_eq!(unity_type_to_datatype("DOUBLE"), DataType::Number);
+        assert_eq!(unity_type_to_datatype("STRING"), DataType::String);
+        assert_eq!(unity_type_to_datatype("DATE"), DataType::Date);
+        assert_eq!(unity_type_to_datatype("TIMESTAMP"), DataType::Timestamp { precision: 6 });
+        assert_eq!(unity_type_to_datatype("DECIMAL(10,2)"), DataType::Number);
         assert_eq!(unity_type_to_datatype("BINARY"), DataType::Binary);
     }
 

@@ -117,7 +117,7 @@ mod tests {
     }
 
     fn make_test_plan() -> LogicalPlan {
-        let schema = Schema::new(vec![Field::new("id", DataType::Int64)]);
+        let schema = Schema::new(vec![Field::new("id", DataType::Integer)]);
         let scan = PlanNode::Scan(ScanNode {
             meta: NodeMeta::new(schema),
             table_name: "test_table".to_string(),
@@ -164,7 +164,7 @@ mod tests {
     fn test_conditional_pass_skipped() {
         let optimizer = Optimizer::new(vec![Box::new(ConditionalPass)]);
         // Plan with empty output names — conditional pass should be skipped.
-        let schema = Schema::new(vec![Field::new("id", DataType::Int64)]);
+        let schema = Schema::new(vec![Field::new("id", DataType::Integer)]);
         let scan = PlanNode::Scan(ScanNode {
             meta: NodeMeta::new(schema),
             table_name: "test".to_string(),

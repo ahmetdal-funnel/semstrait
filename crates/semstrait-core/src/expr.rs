@@ -44,6 +44,18 @@ pub enum Expr {
     /// expr LIKE pattern.
     Like(LikeExpr),
 
+    /// expr ILIKE pattern (case-insensitive LIKE).
+    ILike(ILikeExpr),
+
+    /// Regex match: expr matches pattern.
+    /// `full_match` controls whether the pattern must match the entire string
+    /// (Spark behavior) or just a substring (DataFusion/DuckDB behavior).
+    RegexpMatch(RegexpExpr),
+
+    /// Regex extract: REGEXP_EXTRACT(expr, pattern, group_idx).
+    /// Extracts the nth capture group from the first match.
+    RegexpExtract(RegexpExtractExpr),
+
     /// expr IS NULL.
     IsNull(UnaryExpr),
 
@@ -61,6 +73,9 @@ pub enum Expr {
 
     /// Generic function call (escape hatch for non-standard functions).
     FunctionCall(FunctionCallExpr),
+
+    /// CAST(expr AS data_type).
+    Cast(CastExpr),
 
     /// Guard: CASE WHEN condition THEN expr ELSE NULL END.
     /// Sugar for measure filters; resolved during planning.
@@ -217,6 +232,29 @@ pub struct LikeExpr {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ILikeExpr {
+    pub expr: Box<Expr>,
+    pub pattern: Box<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegexpExpr {
+    pub expr: Box<Expr>,
+    pub pattern: Box<Expr>,
+    /// When `true`, the pattern must match the entire string (Spark behavior).
+    /// When `false`, a substring match suffices (DataFusion/DuckDB behavior).
+    pub full_match: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegexpExtractExpr {
+    pub expr: Box<Expr>,
+    pub pattern: Box<Expr>,
+    /// 0-based capture group index. 0 = entire match, 1 = first group, etc.
+    pub group_idx: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CoalesceExpr {
     pub exprs: Vec<Expr>,
 }
@@ -238,6 +276,12 @@ pub struct FunctionCallExpr {
     pub name: String,
     pub args: Vec<Expr>,
     pub distinct: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CastExpr {
+    pub expr: Box<Expr>,
+    pub data_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -470,6 +514,29 @@ impl Expr {
         })
     }
 
+    pub fn ilike(expr: Expr, pattern: Expr) -> Self {
+        Expr::ILike(ILikeExpr {
+            expr: Box::new(expr),
+            pattern: Box::new(pattern),
+        })
+    }
+
+    pub fn regexp_match(expr: Expr, pattern: Expr, full_match: bool) -> Self {
+        Expr::RegexpMatch(RegexpExpr {
+            expr: Box::new(expr),
+            pattern: Box::new(pattern),
+            full_match,
+        })
+    }
+
+    pub fn regexp_extract(expr: Expr, pattern: Expr, group_idx: usize) -> Self {
+        Expr::RegexpExtract(RegexpExtractExpr {
+            expr: Box::new(expr),
+            pattern: Box::new(pattern),
+            group_idx,
+        })
+    }
+
     // ── Conditional constructors ─────────────────────────────────────
 
     pub fn case(when_then: Vec<WhenClause>, else_expr: Option<Expr>) -> Self {
@@ -505,11 +572,90 @@ impl Expr {
         })
     }
 
+    pub fn cast(expr: Expr, data_type: impl Into<String>) -> Self {
+        Expr::Cast(CastExpr {
+            expr: Box::new(expr),
+            data_type: data_type.into(),
+        })
+    }
+
     pub fn guard(condition: Expr, expr: Expr) -> Self {
         Expr::Guard(GuardExpr {
             condition: Box::new(condition),
             expr: Box::new(expr),
         })
+    }
+
+    // ── Introspection ───────────────────────────────────────────────
+
+    /// Collect all unique column reference names in this expression tree.
+    pub fn column_refs(&self) -> std::collections::HashSet<String> {
+        let mut refs = std::collections::HashSet::new();
+        self.collect_column_refs_into(&mut refs);
+        refs
+    }
+
+    fn collect_column_refs_into(&self, refs: &mut std::collections::HashSet<String>) {
+        match self {
+            Expr::Column(c) => { refs.insert(c.name.clone()); }
+            Expr::Literal(_) | Expr::EntityRef(_) => {}
+            Expr::Aggregate(a) => a.expr.collect_column_refs_into(refs),
+            Expr::BinaryOp(b) => {
+                b.left.collect_column_refs_into(refs);
+                b.right.collect_column_refs_into(refs);
+            }
+            Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
+                u.expr.collect_column_refs_into(refs);
+            }
+            Expr::Case(c) => {
+                for wc in &c.when_then {
+                    wc.condition.collect_column_refs_into(refs);
+                    wc.result.collect_column_refs_into(refs);
+                }
+                if let Some(e) = &c.else_expr { e.collect_column_refs_into(refs); }
+            }
+            Expr::InList(il) => {
+                il.expr.collect_column_refs_into(refs);
+                for v in &il.list { v.collect_column_refs_into(refs); }
+            }
+            Expr::Between(b) => {
+                b.expr.collect_column_refs_into(refs);
+                b.low.collect_column_refs_into(refs);
+                b.high.collect_column_refs_into(refs);
+            }
+            Expr::Like(l) => {
+                l.expr.collect_column_refs_into(refs);
+                l.pattern.collect_column_refs_into(refs);
+            }
+            Expr::ILike(l) => {
+                l.expr.collect_column_refs_into(refs);
+                l.pattern.collect_column_refs_into(refs);
+            }
+            Expr::RegexpMatch(r) => {
+                r.expr.collect_column_refs_into(refs);
+                r.pattern.collect_column_refs_into(refs);
+            }
+            Expr::RegexpExtract(r) => {
+                r.expr.collect_column_refs_into(refs);
+                r.pattern.collect_column_refs_into(refs);
+            }
+            Expr::FunctionCall(f) => {
+                for a in &f.args { a.collect_column_refs_into(refs); }
+            }
+            Expr::Coalesce(c) => {
+                for e in &c.exprs { e.collect_column_refs_into(refs); }
+            }
+            Expr::NullIf(n) => {
+                n.expr.collect_column_refs_into(refs);
+                n.null_expr.collect_column_refs_into(refs);
+            }
+            Expr::DateTrunc(d) => d.expr.collect_column_refs_into(refs),
+            Expr::Cast(c) => c.expr.collect_column_refs_into(refs),
+            Expr::Guard(g) => {
+                g.condition.collect_column_refs_into(refs);
+                g.expr.collect_column_refs_into(refs);
+            }
+        }
     }
 
     // ── Tree transformation ─────────────────────────────────────────
@@ -585,6 +731,23 @@ impl Expr {
                 pattern: Box::new(lk.pattern.transform(f)?),
             })),
 
+            Expr::ILike(lk) => Ok(Expr::ILike(ILikeExpr {
+                expr: Box::new(lk.expr.transform(f)?),
+                pattern: Box::new(lk.pattern.transform(f)?),
+            })),
+
+            Expr::RegexpMatch(re) => Ok(Expr::RegexpMatch(RegexpExpr {
+                expr: Box::new(re.expr.transform(f)?),
+                pattern: Box::new(re.pattern.transform(f)?),
+                full_match: re.full_match,
+            })),
+
+            Expr::RegexpExtract(re) => Ok(Expr::RegexpExtract(RegexpExtractExpr {
+                expr: Box::new(re.expr.transform(f)?),
+                pattern: Box::new(re.pattern.transform(f)?),
+                group_idx: re.group_idx,
+            })),
+
             Expr::Case(c) => {
                 let when_then = c
                     .when_then
@@ -634,6 +797,8 @@ impl Expr {
                     distinct: fc.distinct,
                 }))
             }
+
+            Expr::Cast(c) => Ok(Expr::cast(c.expr.transform(f)?, c.data_type.clone())),
 
             Expr::Guard(g) => Ok(Expr::guard(
                 g.condition.transform(f)?,
@@ -815,6 +980,7 @@ mod tests {
                 Expr::lt(Expr::column("y"), Expr::int(100)),
             ),
             Expr::guard(Expr::boolean(true), Expr::column("val")),
+            Expr::cast(Expr::column("amount"), "VARCHAR"),
         ];
 
         for expr in exprs {
@@ -843,6 +1009,109 @@ mod tests {
         assert_eq!(BinaryOp::Eq.as_str(), "=");
         assert_eq!(BinaryOp::And.as_str(), "AND");
         assert_eq!(BinaryOp::SafeDivide.as_str(), "/");
+    }
+
+    #[test]
+    fn test_ilike_expr() {
+        let expr = Expr::ilike(Expr::column("name"), Expr::string("%alice%"));
+        match &expr {
+            Expr::ILike(lk) => {
+                assert_eq!(*lk.expr, Expr::column("name"));
+                assert_eq!(*lk.pattern, Expr::string("%alice%"));
+            }
+            _ => panic!("Expected ILike"),
+        }
+    }
+
+    #[test]
+    fn test_regexp_match_expr() {
+        let expr = Expr::regexp_match(Expr::column("email"), Expr::string(".*@example\\.com"), true);
+        match &expr {
+            Expr::RegexpMatch(re) => {
+                assert_eq!(*re.expr, Expr::column("email"));
+                assert!(re.full_match);
+            }
+            _ => panic!("Expected RegexpMatch"),
+        }
+    }
+
+    #[test]
+    fn test_regexp_extract_expr() {
+        let expr = Expr::regexp_extract(Expr::column("url"), Expr::string("https?://([^/]+)"), 1);
+        match &expr {
+            Expr::RegexpExtract(re) => {
+                assert_eq!(*re.expr, Expr::column("url"));
+                assert_eq!(re.group_idx, 1);
+            }
+            _ => panic!("Expected RegexpExtract"),
+        }
+    }
+
+    #[test]
+    fn test_serde_roundtrip_new_variants() {
+        let exprs = vec![
+            Expr::ilike(Expr::column("name"), Expr::string("%test%")),
+            Expr::regexp_match(Expr::column("x"), Expr::string("^abc"), false),
+            Expr::regexp_match(Expr::column("x"), Expr::string("^abc$"), true),
+            Expr::regexp_extract(Expr::column("y"), Expr::string("(\\d+)"), 0),
+        ];
+        for expr in exprs {
+            let json = serde_json::to_string(&expr).unwrap();
+            let parsed: Expr = serde_json::from_str(&json).unwrap();
+            assert_eq!(expr, parsed);
+        }
+    }
+
+    #[test]
+    fn test_transform_through_new_variants() {
+        // Rename column "a" → "x" inside ILike
+        let expr = Expr::ilike(Expr::column("a"), Expr::string("%test%"));
+        let result: Result<Expr, std::convert::Infallible> = expr.transform(&|e| {
+            if let Expr::Column(col) = e {
+                if col.name == "a" {
+                    return Ok(Some(Expr::column("x")));
+                }
+            }
+            Ok(None)
+        });
+        let expected = Expr::ilike(Expr::column("x"), Expr::string("%test%"));
+        assert_eq!(result.unwrap(), expected);
+
+        // Rename through RegexpMatch
+        let expr = Expr::regexp_match(Expr::column("a"), Expr::string("pat"), false);
+        let result: Result<Expr, std::convert::Infallible> = expr.transform(&|e| {
+            if let Expr::Column(col) = e {
+                if col.name == "a" {
+                    return Ok(Some(Expr::column("x")));
+                }
+            }
+            Ok(None)
+        });
+        match result.unwrap() {
+            Expr::RegexpMatch(re) => {
+                assert_eq!(*re.expr, Expr::column("x"));
+                assert!(!re.full_match);
+            }
+            other => panic!("Expected RegexpMatch, got {:?}", other),
+        }
+
+        // Rename through RegexpExtract
+        let expr = Expr::regexp_extract(Expr::column("a"), Expr::string("(\\d+)"), 1);
+        let result: Result<Expr, std::convert::Infallible> = expr.transform(&|e| {
+            if let Expr::Column(col) = e {
+                if col.name == "a" {
+                    return Ok(Some(Expr::column("x")));
+                }
+            }
+            Ok(None)
+        });
+        match result.unwrap() {
+            Expr::RegexpExtract(re) => {
+                assert_eq!(*re.expr, Expr::column("x"));
+                assert_eq!(re.group_idx, 1);
+            }
+            other => panic!("Expected RegexpExtract, got {:?}", other),
+        }
     }
 
     #[test]

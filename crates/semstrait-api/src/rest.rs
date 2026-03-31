@@ -85,26 +85,11 @@ async fn schema(State(engine): State<SharedEngine>) -> impl IntoResponse {
                     }),
                 );
             }
-            let mut datasets = serde_json::Map::new();
-            for (name, dataset) in &manifest.datasets {
-                let dims: Vec<&str> = dataset.dimensions.keys().map(|s| s.as_str()).collect();
-                let measures: Vec<&str> = dataset.measures.keys().map(|s| s.as_str()).collect();
-                let metrics: Vec<&str> = dataset.metrics.keys().map(|s| s.as_str()).collect();
-                datasets.insert(
-                    name.clone(),
-                    serde_json::json!({
-                        "dimensions": dims,
-                        "measures": measures,
-                        "metrics": metrics,
-                    }),
-                );
-            }
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "model_name": manifest.model_name,
-                    "kinds": kinds,
-                    "datasets": datasets,
+                    "data_kinds": kinds,
                 })),
             )
         }

@@ -538,6 +538,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-recursion"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b43422f69d8ff38f95f1b2bb76517c91589a924d1559a0e935d7c8ce0274c11"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2021,6 +2032,26 @@ dependencies = [
  "log",
  "regex",
  "sqlparser",
+]
+
+[[package]]
+name = "datafusion-substrait"
+version = "52.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe00df31ca03a167d3e40054120930fe5fb689e66bc625b602fac7153b222aea"
+dependencies = [
+ "async-recursion",
+ "async-trait",
+ "chrono",
+ "datafusion",
+ "half",
+ "itertools",
+ "object_store",
+ "pbjson-types",
+ "prost",
+ "substrait",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -4062,7 +4093,6 @@ dependencies = [
  "semstrait-ir",
  "semstrait-manifest",
  "semstrait-planner",
- "semstrait-sql",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -4071,9 +4101,9 @@ dependencies = [
 name = "semstrait-adapter"
 version = "0.1.0"
 dependencies = [
+ "polyglot-sql",
  "semstrait-core",
  "semstrait-ir",
- "semstrait-sql",
  "thiserror 2.0.18",
 ]
 
@@ -4083,6 +4113,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "chrono",
  "clap",
  "prost",
  "semstrait-adapter",
@@ -4093,7 +4124,6 @@ dependencies = [
  "semstrait-manifest",
  "semstrait-model",
  "semstrait-planner",
- "semstrait-sql",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4130,6 +4160,7 @@ dependencies = [
  "arrow 55.2.0",
  "async-trait",
  "datafusion",
+ "datafusion-substrait",
  "duckdb",
  "reqwest",
  "semstrait-adapter",
@@ -4157,13 +4188,13 @@ dependencies = [
 name = "semstrait-integration-tests"
 version = "0.1.0"
 dependencies = [
+ "semstrait-adapter",
  "semstrait-api",
  "semstrait-connectors",
  "semstrait-core",
  "semstrait-ir",
  "semstrait-manifest",
  "semstrait-planner",
- "semstrait-sql",
  "serde_json",
  "tokio",
 ]
@@ -4223,16 +4254,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "semstrait-sql"
-version = "0.1.0"
-dependencies = [
- "polyglot-sql",
- "semstrait-core",
- "semstrait-ir",
- "thiserror 2.0.18",
 ]
 
 [[package]]

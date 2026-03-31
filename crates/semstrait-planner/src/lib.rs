@@ -8,7 +8,7 @@
 //!
 //! The planner follows the pipeline defined in CONTEXT.md section 5.6:
 //!
-//! 1. `ConstraintEvaluator::check()` — validate measure/dimension constraints
+//! 1. `ConstraintValidator::check()` — validate measure/dimension constraints
 //! 2. `KindPlannerRegistry::dispatch()` — route to correct KindPlanner
 //! 3. `KindPlanner::resolve()` — build PlanFragment
 //! 4. `AdditivityResolver` — handle semi/non-additive measures
@@ -17,18 +17,17 @@
 
 pub mod error;
 pub mod request;
-pub(crate) mod constraint_evaluator;
+pub(crate) mod validator;
+pub(crate) mod expr;
+pub(crate) mod resolver;
+pub(crate) mod decomposer;
 pub(crate) mod kind;
-pub(crate) mod expr_lower;
-pub(crate) mod additivity_resolver;
+pub(crate) mod additivity;
 pub(crate) mod optimizer;
-pub(crate) mod join;
 pub mod planner;
 
 #[cfg(test)]
-pub(crate) mod test_helpers;
-#[cfg(test)]
-mod integration_tests;
+mod tests;
 
 // Re-export primary public API.
 pub use error::PlannerError;

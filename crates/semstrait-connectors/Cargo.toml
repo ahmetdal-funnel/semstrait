@@ -14,6 +14,7 @@ serde_json = { workspace = true }
 
 # Feature-gated engine deps
 datafusion-engine = { package = "datafusion", version = "52", default-features = false, features = ["sql", "parquet"], optional = true }
+datafusion-substrait = { version = "52", default-features = false, optional = true }
 duckdb-engine = { package = "duckdb", version = ">=1.3.0, <1.4.0", default-features = false, features = ["bundled"], optional = true }
 arrow = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
@@ -29,7 +30,7 @@ tokio = { workspace = true }
 [features]
 default = []
 duckdb = ["duckdb-engine", "arrow", "tokio", "semstrait-adapter/duckdb"]
-datafusion = ["datafusion-engine", "tokio", "semstrait-adapter/datafusion", "semstrait-manifest"]
-trino = ["reqwest", "serde", "tokio", "semstrait-adapter/trino"]
+datafusion = ["datafusion-engine", "datafusion-substrait", "tokio", "semstrait-adapter/datafusion", "semstrait-manifest"]
+trino = ["reqwest", "serde", "tokio"]
 spark = ["uuid", "semstrait-adapter/spark"]
-polyglot = ["semstrait-adapter/polyglot"]
+polyglot = [] # kept for backward compat; polyglot-sql is activated via duckdb/spark features

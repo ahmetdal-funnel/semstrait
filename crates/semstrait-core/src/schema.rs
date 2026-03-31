@@ -156,9 +156,9 @@ mod tests {
 
     fn make_test_schema() -> Schema {
         Schema::from_fields(vec![
-            ("id".to_string(), DataType::Int32, false),
-            ("name".to_string(), DataType::Utf8, false),
-            ("amount".to_string(), DataType::Float64, false),
+            ("id".to_string(), DataType::Integer, false),
+            ("name".to_string(), DataType::String, false),
+            ("amount".to_string(), DataType::Number, false),
         ])
     }
 
@@ -179,13 +179,13 @@ mod tests {
     #[test]
     fn test_join() {
         let left = Schema::from_fields(vec![
-            ("id".to_string(), DataType::Int32, false),
-            ("name".to_string(), DataType::Utf8, false),
+            ("id".to_string(), DataType::Integer, false),
+            ("name".to_string(), DataType::String, false),
         ]);
 
         let right = Schema::from_fields(vec![
-            ("amount".to_string(), DataType::Float64, false),
-            ("date".to_string(), DataType::Date32, false),
+            ("amount".to_string(), DataType::Number, false),
+            ("date".to_string(), DataType::Date, false),
         ]);
 
         let joined = Schema::join(&left, &right);
@@ -223,15 +223,15 @@ mod tests {
     #[test]
     fn test_emit_mapping() {
         let source = Schema::from_fields(vec![
-            ("id".to_string(), DataType::Int32, false),
-            ("name".to_string(), DataType::Utf8, false),
-            ("amount".to_string(), DataType::Float64, false),
+            ("id".to_string(), DataType::Integer, false),
+            ("name".to_string(), DataType::String, false),
+            ("amount".to_string(), DataType::Number, false),
         ]);
 
         let target = Schema::from_fields(vec![
-            ("name".to_string(), DataType::Utf8, false),
-            ("id".to_string(), DataType::Int32, false),
-            ("extra".to_string(), DataType::Int32, false),
+            ("name".to_string(), DataType::String, false),
+            ("id".to_string(), DataType::Integer, false),
+            ("extra".to_string(), DataType::Integer, false),
         ]);
 
         let mapping = source.emit_mapping(&target);
@@ -248,7 +248,7 @@ mod tests {
 
         let col = schema.get_column("name").unwrap();
         assert_eq!(col.name, "name");
-        assert_eq!(col.data_type, DataType::Utf8);
+        assert_eq!(col.data_type, DataType::String);
         assert_eq!(col.ordinal, 1);
 
         assert!(schema.get_column("nonexistent").is_none());
@@ -260,7 +260,7 @@ mod tests {
 
         let col = schema.get_column_by_ordinal(1).unwrap();
         assert_eq!(col.name, "name");
-        assert_eq!(col.data_type, DataType::Utf8);
+        assert_eq!(col.data_type, DataType::String);
 
         assert!(schema.get_column_by_ordinal(99).is_none());
     }

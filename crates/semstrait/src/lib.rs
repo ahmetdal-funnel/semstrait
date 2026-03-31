@@ -21,7 +21,7 @@
 
 // Re-export core types
 pub use semstrait_core::{
-    ConsumerProfile, DataType, Grain, Schema, SchemaColumn,
+    DataType, Grain, Schema, SchemaColumn,
 };
 
 // Re-export IR types

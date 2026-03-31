@@ -1,23 +1,32 @@
 //! EngineAdapter trait — the core abstraction for engine-specific plan adaptation.
 
-use semstrait_core::EngineProfile;
-use semstrait_ir::{LogicalPlan, PlanArtifact};
-use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
+use semstrait_ir::{LogicalPlan, PlanArtifact, PlanBuilder};
+use crate::sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
 
 use crate::AdaptError;
 
 /// Produces an engine-appropriate artifact from a LogicalPlan.
 ///
-/// Each engine adapter:
-/// 1. Implements `EngineProfile` (capability flags)
-/// 2. Implements `EngineAdapter` (plan -> artifact conversion)
+/// Each engine adapter converts a logical plan into an engine-specific artifact
+/// (SQL string or Substrait plan). The adapter knows its target engine and
+/// produces the appropriate output format.
 ///
-/// The adapter inspects its own profile to decide whether to emit SQL or Substrait.
-pub trait EngineAdapter: EngineProfile {
-    /// Convert a LogicalPlan into an engine-ready artifact.
+/// Adapters may also provide an engine-specific `PlanBuilder` that overrides
+/// how plan nodes are constructed (e.g., custom scan nodes for catalog-aware engines).
+pub trait EngineAdapter: Send + Sync {
+    /// Human-readable engine name (e.g., "datafusion", "duckdb", "spark").
+    fn name(&self) -> &str;
+
+    /// Return an engine-specific plan builder, or `None` for default behavior.
     ///
-    /// - If `supports_substrait()` is true, produces `PlanArtifact::Substrait`.
-    /// - Otherwise, produces `PlanArtifact::Sql` using the appropriate dialect.
+    /// When provided, the planner uses this builder to construct plan nodes,
+    /// allowing engines to override specific node construction (e.g., scan nodes
+    /// with engine-specific metadata, custom function anchors).
+    fn plan_builder(&self) -> Option<Box<dyn PlanBuilder>> {
+        None
+    }
+
+    /// Convert a LogicalPlan into an engine-ready artifact.
     fn adapt(&self, plan: &LogicalPlan) -> Result<PlanArtifact, AdaptError>;
 
     /// Generate SQL from a LogicalPlan for debugging purposes.
@@ -37,7 +46,6 @@ pub trait EngineAdapter: EngineProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use semstrait_core::EngineProfile;
     use semstrait_ir::{
         AggNode, AggregateMeasure, Aggregation, Expr, Field, LogicalPlan, NodeMeta, PlanArtifact,
         PlanNode, ScanNode, Schema,
@@ -48,37 +56,11 @@ mod tests {
     /// A minimal adapter for testing the trait without feature flags.
     struct TestAdapter;
 
-    impl EngineProfile for TestAdapter {
+    impl EngineAdapter for TestAdapter {
         fn name(&self) -> &str {
             "test"
         }
-        fn supports_substrait(&self) -> bool {
-            false
-        }
-        fn supports_window_functions(&self) -> bool {
-            true
-        }
-        fn supports_full_outer_join(&self) -> bool {
-            true
-        }
-        fn supports_cte(&self) -> bool {
-            true
-        }
-        fn supports_subquery(&self) -> bool {
-            true
-        }
-        fn supports_inline_views(&self) -> bool {
-            true
-        }
-        fn supports_fetch_rel(&self) -> bool {
-            true
-        }
-        fn max_join_depth(&self) -> Option<usize> {
-            Some(10)
-        }
-    }
 
-    impl EngineAdapter for TestAdapter {
         fn adapt(&self, plan: &LogicalPlan) -> Result<PlanArtifact, AdaptError> {
             let emitter = AnsiSqlEmitter::new(AnsiDialect);
             let sql = emitter
@@ -90,13 +72,13 @@ mod tests {
 
     fn make_test_plan() -> LogicalPlan {
         let schema = Schema::new(vec![
-            Field::new("region", DataType::Utf8),
-            Field::new("revenue", DataType::Float64),
+            Field::new("region", DataType::String),
+            Field::new("revenue", DataType::Number),
         ]);
 
         let scan_schema = Schema::new(vec![
-            Field::new("region", DataType::Utf8),
-            Field::new("amount", DataType::Float64),
+            Field::new("region", DataType::String),
+            Field::new("amount", DataType::Number),
         ]);
 
         let scan = PlanNode::Scan(ScanNode {
@@ -115,6 +97,7 @@ mod tests {
                 function: Aggregation::Sum,
                 expr: Expr::column("amount"),
                 distinct: false,
+                data_type: semstrait_core::DataType::Number,
             }],
         });
 

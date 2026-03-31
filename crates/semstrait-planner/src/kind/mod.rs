@@ -1,25 +1,33 @@
 //! KindPlanner trait, registry, and kind-specific planner implementations.
 //!
 //! - [`KindPlanner`] trait: strategy pattern for kind-specific planning
+//! - [`DatasetPlanner`]: single-dataset fast path
 //! - [`GrainsetPlanner`]: single-dataset covering strategy
 //! - [`UnionsetPlanner`]: UNION ALL across multiple datasets
 //! - [`JoinsetPlanner`]: BFS join chain across datasets
 
+pub mod dataset;
 pub mod grainset;
 pub mod joinset;
-pub(crate) mod shared;
+pub(crate) mod plan_builder;
 pub mod unionset;
 
 use crate::error::PlannerError;
 use crate::request::{ResolvedQueryRequest, SessionVariables};
 use semstrait_catalog::CatalogProvider;
-use semstrait_core::EngineProfile;
-use semstrait_ir::{Expr, PlanNode, Schema};
+use semstrait_ir::{Expr, PlanBuilder, PlanNode, Schema};
 use semstrait_manifest::{
-    CompiledManifest, DataKind, DatasetBinding, DimensionType, KindInterface, MetadataDimension,
-    TemporalGrain,
+    CompiledManifest, CompiledDataKind, DimensionType, MetadataDimension,
+};
+use semstrait_manifest::acceleration::DatasetBinding;
+
+// Re-export expression/metadata utilities so kind submodules can use `super::`.
+pub(crate) use crate::expr::{
+    collect_column_refs, extract_metadata_value_binding, grain_to_temporal,
+    partition_dimensions_iface, resolve_native_grain_binding, split_computed_dims,
 };
 
+pub use dataset::DatasetPlanner;
 pub use grainset::GrainsetPlanner;
 pub use joinset::JoinsetPlanner;
 pub use unionset::UnionsetPlanner;
@@ -29,11 +37,12 @@ pub struct PlannerContext<'a> {
     #[allow(dead_code)] // Used in future phases (manifest-aware planning)
     pub manifest: &'a CompiledManifest,
     #[allow(dead_code)] // Used in future phases (catalog-aware planning)
-    pub profile: &'a dyn EngineProfile,
-    #[allow(dead_code)] // Used in future phases (catalog-aware planning)
     pub catalog: Option<&'a dyn CatalogProvider>,
     #[allow(dead_code)] // Used in future phases (session-aware planning)
     pub session: &'a SessionVariables,
+    /// Engine-specific plan node builder. DefaultPlanBuilder when no adapter is configured.
+    #[allow(dead_code)] // Used when adapters override node construction
+    pub plan_builder: &'a dyn PlanBuilder,
 }
 
 /// A partially-built plan from kind-specific resolution.
@@ -49,21 +58,179 @@ pub struct PlanFragment {
     pub(crate) pending_filters: Vec<Expr>,
 }
 
+/// A borrowed view of a CompiledDataKind with a subset of active bindings.
+///
+/// Avoids cloning the entire CompiledDataKind when pruning bindings by metadata
+/// or literal filters. The original data kind is borrowed; only active binding
+/// indices are tracked.
+pub struct PrunedView<'a> {
+    data_kind: &'a CompiledDataKind,
+    /// None means all bindings are active (common case — avoids allocation).
+    active_indices: Option<Vec<usize>>,
+}
+
+impl<'a> PrunedView<'a> {
+    /// Create a view where all bindings are active.
+    pub fn all(data_kind: &'a CompiledDataKind) -> Self {
+        Self { data_kind, active_indices: None }
+    }
+
+    /// The underlying CompiledDataKind (for variant matching and field access).
+    pub fn data_kind(&self) -> &'a CompiledDataKind {
+        self.data_kind
+    }
+
+    /// Collect active bindings as references.
+    pub fn active_bindings(&self) -> Vec<&'a DatasetBinding> {
+        let all = self.data_kind.bindings();
+        match &self.active_indices {
+            None => all.iter().collect(),
+            Some(indices) => indices.iter().map(|&i| &all[i]).collect(),
+        }
+    }
+
+    /// Check if a binding at the given original index is active.
+    pub fn is_active(&self, idx: usize) -> bool {
+        match &self.active_indices {
+            None => idx < self.data_kind.bindings().len(),
+            Some(indices) => indices.contains(&idx),
+        }
+    }
+
+    /// Number of active bindings.
+    pub fn active_count(&self) -> usize {
+        match &self.active_indices {
+            None => self.data_kind.bindings().len(),
+            Some(indices) => indices.len(),
+        }
+    }
+
+    /// Prune bindings by metadata dimension equality filters.
+    pub fn prune_by_metadata(
+        &mut self,
+        request: &ResolvedQueryRequest,
+    ) -> Result<(), PlannerError> {
+        let iface = self.data_kind.interface();
+
+        // Collect metadata equality filters: (expected_value, MetadataDimension).
+        let mut metadata_filters: Vec<(String, MetadataDimension)> = Vec::new();
+        for filter in &request.filters {
+            if !matches!(filter.operator, crate::request::FilterOperator::Eq) {
+                continue;
+            }
+            if let Some(dim) = iface.dimensions.get(&filter.field) {
+                if let DimensionType::Metadata(ref meta) = dim.dim_type {
+                    if let Some(crate::request::FilterValue::String(ref val)) = filter.values.first() {
+                        metadata_filters.push((val.clone(), meta.clone()));
+                    }
+                }
+            }
+        }
+
+        if metadata_filters.is_empty() {
+            return Ok(());
+        }
+
+        let all_bindings = self.data_kind.bindings();
+        let current: Vec<usize> = match &self.active_indices {
+            None => (0..all_bindings.len()).collect(),
+            Some(indices) => indices.clone(),
+        };
+
+        let filtered: Vec<usize> = current
+            .into_iter()
+            .filter(|&i| {
+                metadata_filters.iter().all(|(expected, meta)| {
+                    match extract_metadata_value_binding(meta, &all_bindings[i]) {
+                        Some(ref actual) => actual == expected,
+                        None => true, // conservative: keep if extraction fails
+                    }
+                })
+            })
+            .collect();
+
+        if filtered.is_empty() {
+            return Err(PlannerError::NoCoveringDataset {
+                kind: iface.name.clone(),
+                reason: "no datasets match metadata dimension filters".to_string(),
+            });
+        }
+
+        self.active_indices = Some(filtered);
+        Ok(())
+    }
+
+    /// Prune bindings by literal column mapping equality filters.
+    pub fn prune_by_literals(
+        &mut self,
+        request: &ResolvedQueryRequest,
+    ) -> Result<(), PlannerError> {
+        let all_bindings = self.data_kind.bindings();
+
+        // Collect equality filters on fields that have a literal mapping in at least one active binding.
+        let active_bindings = self.active_bindings();
+        let mut literal_filters: Vec<(String, String)> = Vec::new();
+        for filter in &request.filters {
+            if !matches!(filter.operator, crate::request::FilterOperator::Eq) {
+                continue;
+            }
+            let field = &filter.field;
+            let has_literal = active_bindings.iter().any(|b| b.column_mapping.literals.contains_key(field));
+            if has_literal {
+                if let Some(crate::request::FilterValue::String(ref val)) = filter.values.first() {
+                    literal_filters.push((field.clone(), val.clone()));
+                }
+            }
+        }
+
+        if literal_filters.is_empty() {
+            return Ok(());
+        }
+
+        let current: Vec<usize> = match &self.active_indices {
+            None => (0..all_bindings.len()).collect(),
+            Some(indices) => indices.clone(),
+        };
+
+        let filtered: Vec<usize> = current
+            .into_iter()
+            .filter(|&i| {
+                literal_filters.iter().all(|(field, expected)| {
+                    match all_bindings[i].column_mapping.literals.get(field) {
+                        Some(actual) => actual == expected,
+                        None => true, // no literal for this field → keep (conservative)
+                    }
+                })
+            })
+            .collect();
+
+        if filtered.is_empty() {
+            return Err(PlannerError::NoCoveringDataset {
+                kind: self.data_kind.interface().name.clone(),
+                reason: "no datasets match literal dimension filters".to_string(),
+            });
+        }
+
+        self.active_indices = Some(filtered);
+        Ok(())
+    }
+}
+
 /// Strategy trait for kind-specific plan construction.
 pub trait KindPlanner: Send + Sync {
-    /// Returns true if this planner handles the given DataKind variant.
-    fn supports(&self, data_kind: &DataKind) -> bool;
+    /// Returns true if this planner handles the given CompiledDataKind variant.
+    fn supports(&self, data_kind: &CompiledDataKind) -> bool;
 
-    /// Build a PlanFragment for the given DataKind and request.
+    /// Build a PlanFragment for the given CompiledDataKind and request.
     fn resolve(
         &self,
-        data_kind: &DataKind,
+        pruned: &PrunedView<'_>,
         request: &ResolvedQueryRequest,
         ctx: &PlannerContext<'_>,
     ) -> Result<PlanFragment, PlannerError>;
 }
 
-/// Registry that dispatches to the appropriate KindPlanner based on DataKind variant.
+/// Registry that dispatches to the appropriate KindPlanner based on CompiledDataKind variant.
 pub struct KindPlannerRegistry {
     planners: Vec<Box<dyn KindPlanner>>,
 }
@@ -73,6 +240,7 @@ impl KindPlannerRegistry {
     pub fn new() -> Self {
         Self {
             planners: vec![
+                Box::new(DatasetPlanner),
                 Box::new(GrainsetPlanner),
                 Box::new(UnionsetPlanner),
                 Box::new(JoinsetPlanner),
@@ -80,8 +248,8 @@ impl KindPlannerRegistry {
         }
     }
 
-    /// Dispatch to the appropriate planner for the given DataKind.
-    pub fn dispatch(&self, data_kind: &DataKind) -> Result<&dyn KindPlanner, PlannerError> {
+    /// Dispatch to the appropriate planner for the given CompiledDataKind.
+    pub fn dispatch(&self, data_kind: &CompiledDataKind) -> Result<&dyn KindPlanner, PlannerError> {
         self.planners
             .iter()
             .find(|p| p.supports(data_kind))
@@ -96,194 +264,16 @@ impl Default for KindPlannerRegistry {
     }
 }
 
-/// Dispatch a DataKind to the appropriate plan builder.
+/// Dispatch a CompiledDataKind to the appropriate KindPlanner via the registry.
 ///
-/// Dataset kinds use the single-dataset fast path; complex kinds (grainset,
-/// unionset, joinset) delegate to their respective KindPlanner.
+/// All kinds (Dataset, Grainset, Unionset, Joinset) go through the registry.
 pub fn dispatch_data_kind(
-    data_kind: &DataKind,
+    pruned: &PrunedView<'_>,
     request: &ResolvedQueryRequest,
     ctx: &PlannerContext<'_>,
     registry: &KindPlannerRegistry,
 ) -> Result<PlanFragment, PlannerError> {
-    match data_kind {
-        DataKind::Dataset(dk) => {
-            shared::build_dataset_kind_plan(dk, request, ctx)
-        }
-        _ => {
-            let planner = registry.dispatch(data_kind)?;
-            planner.resolve(data_kind, request, ctx)
-        }
-    }
+    let planner = registry.dispatch(pruned.data_kind())?;
+    planner.resolve(pruned, request, ctx)
 }
 
-/// Partition requested dimensions into (metadata, regular) using KindInterface.
-pub(crate) fn partition_dimensions_iface(
-    request_dims: &[String],
-    iface: &KindInterface,
-) -> (Vec<(String, MetadataDimension)>, Vec<String>) {
-    let mut metadata = Vec::new();
-    let mut regular = Vec::new();
-
-    for dim_name in request_dims {
-        if let Some(dim) = iface.dimensions.get(dim_name) {
-            if let DimensionType::Metadata(meta) = &dim.dim_type {
-                metadata.push((dim_name.clone(), meta.clone()));
-                continue;
-            }
-        }
-        regular.push(dim_name.clone());
-    }
-
-    (metadata, regular)
-}
-
-/// Extract metadata dimension value from a DatasetBinding's resolved sources.
-pub(crate) fn extract_metadata_value_binding(
-    meta: &MetadataDimension,
-    binding: &DatasetBinding,
-) -> Option<String> {
-    let first = binding.resolved_sources.first()?;
-    let source = first.location.as_deref().unwrap_or(&first.reference);
-
-    if let Some(ref path_ext) = meta.path {
-        let segments: Vec<&str> = source.split('/').collect();
-        return segments.get(path_ext.token).map(|s: &&str| s.to_string());
-    }
-
-    if let Some(ref part_ext) = meta.partition {
-        let kv_segments: Vec<&str> = source.split('/').filter(|s| s.contains('=')).collect();
-        if part_ext.level == 0 || part_ext.level > kv_segments.len() {
-            return None;
-        }
-        let segment = kv_segments[part_ext.level - 1];
-        return segment.split_once('=').map(|(_, v): (&str, &str)| v.to_string());
-    }
-
-    None
-}
-
-/// Resolve the native temporal grain for a binding's temporal dimension.
-pub(crate) fn resolve_native_grain_binding(
-    binding: &DatasetBinding,
-    dim_name: &str,
-    iface: &KindInterface,
-) -> Option<TemporalGrain> {
-    // Check binding-level explicit grain from ResolvedColumnMapping.temporal.
-    if let Some(tm) = binding.column_mapping.temporal.get(dim_name) {
-        if let Some(g) = tm.grain {
-            return Some(g);
-        }
-    }
-
-    // Fall back to finest kind-level grain.
-    if let Some(dim) = iface.dimensions.get(dim_name) {
-        if let DimensionType::Temporal(ref td) = dim.dim_type {
-            return td.grains.iter().copied().min_by_key(|g| g.coarseness());
-        }
-    }
-    None
-}
-
-/// Convert a core `Grain` to model `TemporalGrain`.
-pub(crate) fn grain_to_temporal(grain: semstrait_core::Grain) -> TemporalGrain {
-    match grain {
-        semstrait_core::Grain::Minute => TemporalGrain::Minute,
-        semstrait_core::Grain::Hour => TemporalGrain::Hour,
-        semstrait_core::Grain::Day => TemporalGrain::Day,
-        semstrait_core::Grain::Week => TemporalGrain::Week,
-        semstrait_core::Grain::Month => TemporalGrain::Month,
-        semstrait_core::Grain::Quarter => TemporalGrain::Quarter,
-        semstrait_core::Grain::Year => TemporalGrain::Year,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use semstrait_manifest::{PathExtraction, PartitionExtraction};
-    use semstrait_manifest::acceleration::{DatasetBinding, ResolvedColumnMapping};
-
-    fn make_binding(sources: Vec<&str>) -> DatasetBinding {
-        DatasetBinding {
-            dataset_name: "test".to_string(),
-            column_mapping: ResolvedColumnMapping {
-                physical: indexmap::IndexMap::new(),
-                literals: std::collections::HashMap::new(),
-                temporal: std::collections::HashMap::new(),
-                anchored: std::collections::HashMap::new(),
-            },
-            resolved_sources: sources.into_iter().map(semstrait_manifest::ResolvedSource::path).collect(),
-        }
-    }
-
-    #[test]
-    fn test_path_extraction() {
-        let meta = MetadataDimension {
-            path: Some(PathExtraction { token: 1 }),
-            partition: None,
-        };
-        let binding = make_binding(vec!["bucket/shopify/data.parquet"]);
-        assert_eq!(extract_metadata_value_binding(&meta, &binding), Some("shopify".to_string()));
-    }
-
-    #[test]
-    fn test_path_extraction_token_zero() {
-        let meta = MetadataDimension {
-            path: Some(PathExtraction { token: 0 }),
-            partition: None,
-        };
-        let binding = make_binding(vec!["bucket/shopify/data.parquet"]);
-        assert_eq!(extract_metadata_value_binding(&meta, &binding), Some("bucket".to_string()));
-    }
-
-    #[test]
-    fn test_path_extraction_out_of_range() {
-        let meta = MetadataDimension {
-            path: Some(PathExtraction { token: 99 }),
-            partition: None,
-        };
-        let binding = make_binding(vec!["bucket/shopify/data.parquet"]);
-        assert_eq!(extract_metadata_value_binding(&meta, &binding), None);
-    }
-
-    #[test]
-    fn test_partition_extraction() {
-        let meta = MetadataDimension {
-            path: None,
-            partition: Some(PartitionExtraction { level: 1 }),
-        };
-        let binding = make_binding(vec!["bucket/year=2024/month=01/data.parquet"]);
-        assert_eq!(extract_metadata_value_binding(&meta, &binding), Some("2024".to_string()));
-    }
-
-    #[test]
-    fn test_partition_extraction_level_two() {
-        let meta = MetadataDimension {
-            path: None,
-            partition: Some(PartitionExtraction { level: 2 }),
-        };
-        let binding = make_binding(vec!["bucket/year=2024/month=01/data.parquet"]);
-        assert_eq!(extract_metadata_value_binding(&meta, &binding), Some("01".to_string()));
-    }
-
-    #[test]
-    fn test_partition_extraction_out_of_range() {
-        let meta = MetadataDimension {
-            path: None,
-            partition: Some(PartitionExtraction { level: 5 }),
-        };
-        let binding = make_binding(vec!["bucket/year=2024/data.parquet"]);
-        assert_eq!(extract_metadata_value_binding(&meta, &binding), None);
-    }
-
-    #[test]
-    fn test_no_sources_returns_none() {
-        let meta = MetadataDimension {
-            path: Some(PathExtraction { token: 0 }),
-            partition: None,
-        };
-        let binding = make_binding(vec![]);
-        assert_eq!(extract_metadata_value_binding(&meta, &binding), None);
-    }
-}

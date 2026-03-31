@@ -12,7 +12,6 @@ semstrait-manifest = { workspace = true }
 semstrait-connectors = { workspace = true }
 semstrait-adapter = { workspace = true }
 semstrait-ir = { workspace = true }
-semstrait-sql = { workspace = true }
 semstrait-catalog = { workspace = true }
 semstrait-model = { workspace = true }
 serde = { workspace = true }
@@ -33,6 +32,9 @@ tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 tonic-prost = { version = "0.14", optional = true }
 
+[dev-dependencies]
+chrono = { workspace = true }
+
 [build-dependencies]
 tonic-build = { version = "0.14", optional = true }
 tonic-prost-build = { version = "0.14", optional = true }
@@ -44,11 +46,11 @@ rest = ["dep:axum"]
 grpc = ["dep:tonic", "dep:prost", "dep:tonic-prost", "dep:tonic-build", "dep:tonic-prost-build"]
 datafusion = ["semstrait-connectors/datafusion", "semstrait-adapter/datafusion"]
 duckdb = ["semstrait-connectors/duckdb", "semstrait-adapter/duckdb"]
-polyglot = ["semstrait-sql/polyglot", "semstrait-connectors/polyglot", "semstrait-adapter/polyglot"]
+polyglot = ["semstrait-connectors/polyglot"] # polyglot-sql is now always-on in semstrait-adapter
 iceberg = ["semstrait-catalog/iceberg", "semstrait-manifest/iceberg"]
 unity = ["semstrait-catalog/unity"]
 aws = ["semstrait-catalog/aws", "semstrait-manifest/aws", "iceberg"]
-trino = ["semstrait-connectors/trino", "semstrait-adapter/trino"]
+trino = ["semstrait-connectors/trino"]
 spark = ["semstrait-connectors/spark", "semstrait-adapter/spark"]
 
 [[bin]]

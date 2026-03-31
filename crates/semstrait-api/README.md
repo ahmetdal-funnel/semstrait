@@ -41,9 +41,9 @@ impl SemstraitEngine {
 ### query() flow
 
 1. Parse and plan (same as explain)
-2. `adapter.adapt()` produces a `PlanArtifact`
-3. If the artifact is Substrait (not SQL), fall back to `adapter.debug_sql()` for a SQL artifact
-4. `connector.execute()` runs the artifact and returns JSON
+2. `adapter.adapt()` produces a `PlanArtifact` (SQL or Substrait depending on engine)
+3. `connector.execute()` runs the artifact directly — connectors handle both artifact types natively
+4. Returns JSON result with rows and execution stats
 
 ---
 

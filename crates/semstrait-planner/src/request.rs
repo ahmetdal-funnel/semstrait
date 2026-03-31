@@ -23,8 +23,6 @@ pub struct ResolvedQueryRequest {
     pub limit: Option<u64>,
     /// ORDER BY clauses.
     pub order_by: Vec<OrderByClause>,
-    /// Optional domain hint to narrow candidate datasets.
-    pub domain_hint: Option<String>,
     /// Runtime session variables (tenant_id, user_id, etc.).
     pub session_variables: SessionVariables,
 }

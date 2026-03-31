@@ -47,6 +47,14 @@ pub const FUNC_BETWEEN: u32 = 207;
 pub const FUNC_LIKE: u32 = 208;
 pub const FUNC_NULLIF: u32 = 209;
 pub const FUNC_DATE_TRUNC: u32 = 210;
+pub const FUNC_ILIKE: u32 = 211;
+pub const FUNC_REGEXP_MATCH: u32 = 212;
+pub const FUNC_REGEXP_EXTRACT: u32 = 213;
+pub const FUNC_CAST: u32 = 214;
+
+// ── String function anchors ───────────────────────────────────────────────
+
+pub const URI_STRING: u32 = 5;
 
 // ── Arithmetic function anchors ─────────────────────────────────────────────
 

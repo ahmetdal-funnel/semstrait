@@ -2,7 +2,7 @@
 //!
 //! Steps 1 (parse) and 2 (resolve_refs) are handled by semstrait-model.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use indexmap::IndexMap;
 use petgraph::algo::is_cyclic_directed;
@@ -22,7 +22,7 @@ use crate::error::CompileError;
 /// Result of source resolution (step 3).
 ///
 /// Contains per-dataset resolved sources and catalog snapshot data.
-/// Consumed by `emit()` to populate `ResolvedSource` fields on `CompiledKindDataset`
+/// Consumed by `emit()` to populate `ResolvedSource` fields on `DatasetBinding`
 /// and attach `CatalogSnapshot` to the manifest.
 #[derive(Debug, Default)]
 pub(crate) struct SourceResolutionResult {
@@ -58,17 +58,17 @@ pub(crate) async fn resolve_sources(
     let mut table_snapshots: HashMap<String, crate::catalog_snapshot::TableSnapshot> =
         HashMap::new();
 
-    // Resolve kind datasets
-    for kind in &model.kinds {
-        for entry in &kind.datasets {
-            match entry {
-                KindDatasetEntry::Inline(ds) => {
-                    let ds_name = dataset_display_name(&ds.name).to_string();
-                    if let Some(storage_config) = &ds.extras.storage {
+    // Resolve sources for all data kinds
+    for dk in model.data_kinds.values() {
+        match dk {
+            DataKind::Dataset(dsk) => {
+                // Standalone dataset with storage config
+                if let Some(extras) = &dsk.extras {
+                    if let Some(storage_config) = &extras.storage {
                         let sources = resolve_dataset_storage(
-                            &ds_name,
+                            &dsk.name,
                             storage_config,
-                            ds.extras.catalog.as_ref(),
+                            extras.catalog.as_ref(),
                             namespace,
                             registry,
                             legacy_catalog,
@@ -78,41 +78,42 @@ pub(crate) async fn resolve_sources(
                         )
                         .await?;
                         if !sources.is_empty() {
-                            result.resolved.insert(ds_name, sources);
+                            result.resolved.insert(dsk.name.clone(), sources);
                         }
                     }
                 }
-                KindDatasetEntry::Ref(_) => {
-                    // Ref entries should have been resolved by step 2 (resolve_refs).
-                    // If one survives here, it's a pipeline ordering bug.
-                    debug_assert!(
-                        false,
-                        "KindDatasetEntry::Ref survived to resolve_sources (step 3); \
-                         resolve_refs (step 2) should have expanded all refs"
-                    );
-                }
             }
-        }
-    }
-
-    // Resolve standalone datasets (model-level datasets with storage config)
-    for ds in &model.datasets {
-        if let Some(extras) = &ds.extras {
-            if let Some(storage_config) = &extras.storage {
-                let sources = resolve_dataset_storage(
-                    &ds.name,
-                    storage_config,
-                    extras.catalog.as_ref(),
-                    namespace,
-                    registry,
-                    legacy_catalog,
-                    storage,
-                    &mut table_snapshots,
-                    &mut result.warnings,
-                )
-                .await?;
-                if !sources.is_empty() {
-                    result.resolved.insert(ds.name.clone(), sources);
+            _ => {
+                // Kind with children — resolve each child dataset
+                if let Some(children) = dk.children() {
+                    for entry in children {
+                        match entry {
+                            DataKindEntry::Inline(ds) => {
+                                let ds_name = dataset_display_name(&ds.name).to_string();
+                                if let Some(storage_config) = &ds.extras.storage {
+                                    let sources = resolve_dataset_storage(
+                                        &ds_name,
+                                        storage_config,
+                                        ds.extras.catalog.as_ref(),
+                                        namespace,
+                                        registry,
+                                        legacy_catalog,
+                                        storage,
+                                        &mut table_snapshots,
+                                        &mut result.warnings,
+                                    )
+                                    .await?;
+                                    if !sources.is_empty() {
+                                        result.resolved.insert(ds_name, sources);
+                                    }
+                                }
+                            }
+                            DataKindEntry::Ref(_) => {
+                                // Nested kind reference — compiled separately as its own
+                                // CompiledDataKind entry. No storage resolution needed here.
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -413,58 +414,79 @@ fn contains_glob_chars(s: &str) -> bool {
 pub(crate) fn validate_structure(model: &SemanticModel) -> Result<(), CompileError> {
     let mut errors = Vec::new();
 
-    // Check dataset name uniqueness
-    let mut ds_names = HashSet::new();
-    for ds in &model.datasets {
-        if !ds_names.insert(&ds.name) {
-            errors.push(format!("duplicate dataset name: '{}'", ds.name));
-        }
-    }
-
-    // Check kind name uniqueness
-    let mut kind_names = HashSet::new();
-    for kind in &model.kinds {
-        if !kind_names.insert(&kind.name) {
-            errors.push(format!("duplicate kind name: '{}'", kind.name));
+    // Check entity name uniqueness (all data_kinds share a namespace)
+    let mut seen_names = HashSet::new();
+    for dk in model.data_kinds.values() {
+        let name = dk.name();
+        if !seen_names.insert(name.to_string()) {
+            errors.push(format!("duplicate entity name: '{}'", name));
         }
 
-        // Kind must have at least one dataset
-        if kind.datasets.is_empty() {
-            errors.push(format!(
-                "kind '{}' must have at least one dataset",
-                kind.name
-            ));
+        // Non-dataset kinds must have at least one child dataset
+        if let Some(children) = dk.children() {
+            if children.is_empty() {
+                errors.push(format!(
+                    "{} '{}' must have at least one dataset",
+                    dk.kind_variant(), name
+                ));
+            }
         }
 
         // Joinsets must have relationships
-        if matches!(kind.kind_type, KindTypeSpec::Joinset(_)) && kind.relationships.is_empty() {
+        if dk.is_joinset() && dk.relationships().is_empty() {
             errors.push(format!(
-                "joinset kind '{}' must have at least one relationship",
-                kind.name
+                "joinset '{}' must have at least one relationship",
+                name
             ));
         }
 
-        // Check duplicate dimension/measure/metric names within each kind
-        check_dim_uniqueness(&kind.dimensions, &kind.name, &mut errors);
-        check_measure_uniqueness(&kind.measures, &kind.name, &mut errors);
-        check_metric_uniqueness(&kind.metrics, &kind.name, &mut errors);
-    }
+        // Check duplicate dimension/measure/metric names
+        check_dim_uniqueness(&dk.interface().dimensions, name, &mut errors);
+        check_measure_uniqueness(&dk.interface().measures, name, &mut errors);
+        check_metric_uniqueness(&dk.interface().metrics, name, &mut errors);
 
-    // Check that dataset and kind names don't overlap (unique entity namespace).
-    for ds_name in &ds_names {
-        if kind_names.contains(ds_name) {
-            errors.push(format!(
-                "name '{}' is used as both a dataset and a kind; all entity names must be unique",
-                ds_name
-            ));
+        // Nesting matrix validation: check that DataKindEntry::Ref targets
+        // are allowed child kinds for this parent kind.
+        if let Some(children) = dk.children() {
+            let parent_variant = dk.kind_variant_enum();
+            for child_entry in children {
+                if let DataKindEntry::Ref(r) = child_entry {
+                    use semstrait_model::KindVariant;
+                    match (parent_variant, r.variant) {
+                        (KindVariant::Grainset, KindVariant::Grainset) => {
+                            errors.push(format!(
+                                "grainset '{}' cannot nest grainset '{}' \
+                                 (prohibited: flatten to a single grainset)",
+                                name, r.ref_name
+                            ));
+                        }
+                        (KindVariant::Joinset, KindVariant::Joinset) => {
+                            errors.push(format!(
+                                "joinset '{}' cannot nest joinset '{}' \
+                                 (prohibited: creates ambiguous join graph)",
+                                name, r.ref_name
+                            ));
+                        }
+                        // unionset → unionset is allowed with warning (COMP_W010),
+                        // emitted as a diagnostic during compilation, not a hard error.
+                        _ => {} // all other combinations are valid
+                    }
+                }
+            }
         }
     }
 
-    // Check dimension/measure/metric uniqueness in top-level datasets
-    for ds in &model.datasets {
-        check_dim_uniqueness(&ds.dimensions, &ds.name, &mut errors);
-        check_measure_uniqueness(&ds.measures, &ds.name, &mut errors);
-        check_metric_uniqueness(&ds.metrics, &ds.name, &mut errors);
+    // Nesting depth limit: max 2 levels in v1.
+    for dk in model.data_kinds.values() {
+        if dk.children().is_some() {
+            let depth = measure_nesting_depth(&model.data_kinds, dk.name(), 0);
+            if depth > 2 {
+                errors.push(format!(
+                    "{} '{}' exceeds maximum nesting depth of 2 (found {})",
+                    dk.kind_variant(), dk.name(), depth
+                ));
+            }
+        }
     }
 
     if errors.is_empty() {
@@ -474,9 +496,29 @@ pub(crate) fn validate_structure(model: &SemanticModel) -> Result<(), CompileErr
     }
 }
 
-fn check_dim_uniqueness(entries: &[DimensionEntry], container: &str, errors: &mut Vec<String>) {
+/// Measure the maximum nesting depth from a given kind, following Ref chains.
+fn measure_nesting_depth(
+    data_kinds: &BTreeMap<String, DataKind>,
+    name: &str,
+    current: usize,
+) -> usize {
+    let Some(dk) = data_kinds.get(name) else { return current };
+    let Some(children) = dk.children() else { return current };
+
+    let mut max_depth = current;
+    for child in children {
+        if let DataKindEntry::Ref(r) = child {
+            max_depth = max_depth.max(
+                measure_nesting_depth(data_kinds, &r.ref_name, current + 1)
+            );
+        }
+    }
+    max_depth
+}
+
+fn check_dim_uniqueness(entries: &BTreeMap<String, DimensionEntry>, container: &str, errors: &mut Vec<String>) {
     let mut names = HashSet::new();
-    for entry in entries {
+    for entry in entries.values() {
         if let DimensionEntry::Inline(d) = entry {
             if !names.insert(&d.name) {
                 errors.push(format!(
@@ -488,9 +530,9 @@ fn check_dim_uniqueness(entries: &[DimensionEntry], container: &str, errors: &mu
     }
 }
 
-fn check_measure_uniqueness(entries: &[MeasureEntry], container: &str, errors: &mut Vec<String>) {
+fn check_measure_uniqueness(entries: &BTreeMap<String, MeasureEntry>, container: &str, errors: &mut Vec<String>) {
     let mut names = HashSet::new();
-    for entry in entries {
+    for entry in entries.values() {
         if let MeasureEntry::Inline(m) = entry {
             if !names.insert(&m.name) {
                 errors.push(format!(
@@ -502,9 +544,9 @@ fn check_measure_uniqueness(entries: &[MeasureEntry], container: &str, errors: &
     }
 }
 
-fn check_metric_uniqueness(entries: &[MetricEntry], container: &str, errors: &mut Vec<String>) {
+fn check_metric_uniqueness(entries: &BTreeMap<String, MetricEntry>, container: &str, errors: &mut Vec<String>) {
     let mut names = HashSet::new();
-    for entry in entries {
+    for entry in entries.values() {
         if let MetricEntry::Inline(m) = entry {
             if !names.insert(&m.name) {
                 errors.push(format!(
@@ -528,10 +570,11 @@ fn check_metric_uniqueness(entries: &[MetricEntry], container: &str, errors: &mu
 pub(crate) fn validate_temporal_equivalence(
     model: &SemanticModel,
 ) -> Result<(), CompileError> {
-    for kind in &model.kinds {
-        let kind_temporal = kind
-            .extras
-            .as_ref()
+    for dk in model.data_kinds.values() {
+        if dk.is_dataset() { continue; }
+
+        let kind_temporal = dk
+            .kind_extras()
             .and_then(|e| e.temporal.as_ref());
 
         let kind_temporal = match kind_temporal {
@@ -539,14 +582,14 @@ pub(crate) fn validate_temporal_equivalence(
             None => continue, // No kind-level temporal; nothing to conflict with.
         };
 
-        for ds_entry in &kind.datasets {
-            if let KindDatasetEntry::Inline(ds) = ds_entry {
+        for ds_entry in dk.children().unwrap_or(&[]) {
+            if let DataKindEntry::Inline(ds) = ds_entry {
                 if let Some(ds_temporal) = &ds.extras.temporal {
                     let kind_variant = kind_temporal.temporal_type.variant_name();
                     let ds_variant = ds_temporal.temporal_type.variant_name();
                     if kind_variant != ds_variant {
                         return Err(CompileError::TemporalMismatch {
-                            kind: kind.name.clone(),
+                            kind: dk.name().to_string(),
                             dataset: dataset_display_name(&ds.name).to_string(),
                             kind_type: kind_variant.to_string(),
                             dataset_type: ds_variant.to_string(),
@@ -561,6 +604,41 @@ pub(crate) fn validate_temporal_equivalence(
 }
 
 // ============================================================================
+// Step 4.55: Validate temporal.dimension consistency across datasets
+// ============================================================================
+
+/// Ensure all datasets within a kind agree on `temporal.dimension`.
+///
+/// After `expand_auto_mappings` propagates kind-level temporal to datasets,
+/// every dataset that specifies `temporal.dimension` must use the same value.
+/// This makes `build_interface()`'s `find_map` provably correct — any pick
+/// is the right pick because all datasets agree.
+pub(crate) fn validate_temporal_dimension_consistency(
+    model: &SemanticModel,
+) -> Result<(), CompileError> {
+    for dk in model.data_kinds.values() {
+        if dk.is_dataset() { continue; }
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for ds_entry in dk.children().unwrap_or(&[]) {
+            if let DataKindEntry::Inline(ds) = ds_entry {
+                if let Some(ref temporal) = ds.extras.temporal {
+                    if let Some(ref dim_name) = temporal.dimension {
+                        seen.insert(dim_name.clone());
+                    }
+                }
+            }
+        }
+        if seen.len() > 1 {
+            return Err(CompileError::TemporalDimensionConflict {
+                kind: dk.name().to_string(),
+                values: seen.into_iter().collect::<Vec<_>>().join(", "),
+            });
+        }
+    }
+    Ok(())
+}
+
+// ============================================================================
 // Step 4.7: Validate Storage Config
 // ============================================================================
 
@@ -569,24 +647,25 @@ pub(crate) fn validate_temporal_equivalence(
 pub(crate) fn validate_storage(model: &SemanticModel) -> Result<(), CompileError> {
     let mut errors = Vec::new();
 
-    // Validate kind-level datasets.
-    for kind in &model.kinds {
-        for ds_entry in &kind.datasets {
-            if let KindDatasetEntry::Inline(ds) = ds_entry {
-                if let Some(ref storage) = ds.extras.storage {
-                    let ctx = format!("kind '{}', dataset '{}'", kind.name, dataset_display_name(&ds.name));
-                    validate_storage_config(storage, &ctx, &mut errors);
+    for dk in model.data_kinds.values() {
+        match dk {
+            DataKind::Dataset(dsk) => {
+                if let Some(ref extras) = dsk.extras {
+                    if let Some(ref storage) = extras.storage {
+                        let ctx = format!("dataset '{}'", dsk.name);
+                        validate_storage_config(storage, &ctx, &mut errors);
+                    }
                 }
             }
-        }
-    }
-
-    // Validate standalone datasets.
-    for ds in &model.datasets {
-        if let Some(ref extras) = ds.extras {
-            if let Some(ref storage) = extras.storage {
-                let ctx = format!("dataset '{}'", ds.name);
-                validate_storage_config(storage, &ctx, &mut errors);
+            _ => {
+                for ds_entry in dk.children().unwrap_or(&[]) {
+                    if let DataKindEntry::Inline(ds) = ds_entry {
+                        if let Some(ref storage) = ds.extras.storage {
+                            let ctx = format!("{} '{}', dataset '{}'", dk.kind_variant(), dk.name(), dataset_display_name(&ds.name));
+                            validate_storage_config(storage, &ctx, &mut errors);
+                        }
+                    }
+                }
             }
         }
     }
@@ -633,17 +712,18 @@ fn validate_storage_config(
 pub(crate) fn validate_metadata_dimensions(model: &SemanticModel) -> Result<(), CompileError> {
     let mut errors = Vec::new();
 
-    for kind in &model.kinds {
+    for dk in model.data_kinds.values() {
+        if dk.is_dataset() { continue; }
         // Collect kind-level dimensions that are metadata type.
-        for dim in &kind.dimensions {
+        for dim in dk.interface().dimensions.values() {
             if let DimensionEntry::Inline(dim_def) = dim {
                 if let DimensionType::Metadata(ref meta) = dim_def.dim_type {
                     // Check each dataset for metadata dimension preconditions.
-                    for ds_entry in &kind.datasets {
-                        if let KindDatasetEntry::Inline(ds) = ds_entry {
+                    for ds_entry in dk.children().unwrap_or(&[]) {
+                        if let DataKindEntry::Inline(ds) = ds_entry {
                             let ds_display = dataset_display_name(&ds.name);
                             validate_metadata_for_dataset(
-                                &kind.name,
+                                dk.name(),
                                 ds_display,
                                 &dim_def.name,
                                 meta,
@@ -669,7 +749,7 @@ fn validate_metadata_for_dataset(
     ds_display: &str,
     dim_name: &str,
     meta: &MetadataDimension,
-    extras: &KindDatasetExtras,
+    extras: &DataKindBindingExtras,
     errors: &mut Vec<String>,
 ) {
     if let Some(ref path_ext) = meta.path {
@@ -747,14 +827,15 @@ fn validate_metadata_for_dataset(
 /// After this step every dataset has `ColumnMapping::Explicit`. `temporal` and
 /// `catalog` defaults from `kind.extras` are also propagated (dataset value wins).
 pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
-    for kind in &mut model.kinds {
+    for dk in model.data_kinds.values_mut() {
+        if dk.is_dataset() { continue; }
         // Use mappable names (excludes metadata dimensions and metrics)
         // since those entities don't require physical column mapping.
-        let interface_names: Vec<String> = collect_mappable_names(kind).collect();
+        let interface_names: Vec<String> = collect_mappable_names(dk).collect();
 
         // Resolve the kind-level default mapping once per kind.
         let kind_default: Option<HashMap<String, ColumnMappingValue>> =
-            kind.extras.as_ref().and_then(|e| e.column_mapping.as_ref()).map(|cm| {
+            dk.kind_extras().and_then(|e| e.column_mapping.as_ref()).map(|cm| {
                 match cm {
                     ColumnMapping::Auto | ColumnMapping::Inherited => interface_names
                         .iter()
@@ -764,8 +845,12 @@ pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
                 }
             });
 
-        for ds_entry in &mut kind.datasets {
-            if let KindDatasetEntry::Inline(ds) = ds_entry {
+        // Clone kind extras before mutable borrow of children.
+        let kind_extras_temporal = dk.kind_extras().and_then(|e| e.temporal.clone());
+        let kind_extras_catalog = dk.kind_extras().and_then(|e| e.catalog.clone());
+
+        for ds_entry in dk.children_mut().unwrap() {
+            if let DataKindEntry::Inline(ds) = ds_entry {
                 let effective: HashMap<String, ColumnMappingValue> = match &ds.extras.column_mapping {
                     ColumnMapping::Auto => {
                         // Identity map — same behaviour as before.
@@ -811,12 +896,109 @@ pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
                 ds.extras.column_mapping = ColumnMapping::Explicit(effective);
 
                 // Propagate temporal and catalog defaults (dataset value always wins).
-                if let Some(kind_extras) = &kind.extras {
-                    if ds.extras.temporal.is_none() {
-                        ds.extras.temporal = kind_extras.temporal.clone();
+                if ds.extras.temporal.is_none() {
+                    ds.extras.temporal = kind_extras_temporal.clone();
+                }
+                if ds.extras.catalog.is_none() {
+                    ds.extras.catalog = kind_extras_catalog.clone();
+                }
+
+                // Grain auto-propagation: when temporal.grain is set and the
+                // temporal dimension's column_mapping points to the same physical
+                // column as the temporal config's occurred_at/snapshotted_at,
+                // auto-set the mapping grain. Explicit grain always wins.
+                if let Some(ref temporal) = ds.extras.temporal {
+                    if let (Some(grain), Some(ref dim_name)) = (temporal.grain, &temporal.dimension) {
+                        let temporal_physical = match &temporal.temporal_type {
+                            TemporalHistorization::Events(e) => Some(&e.occurred_at),
+                            TemporalHistorization::Timeseries(t) => Some(&t.occurred_at),
+                            TemporalHistorization::Snapshot(s) => Some(&s.snapshotted_at),
+                            TemporalHistorization::Scd(_) => None,
+                        };
+                        if let Some(temporal_col) = temporal_physical {
+                            if let ColumnMapping::Explicit(ref mut mapping) = ds.extras.column_mapping {
+                                let should_propagate = match mapping.get(dim_name) {
+                                    Some(ColumnMappingValue::Simple(col)) => col == temporal_col,
+                                    Some(ColumnMappingValue::WithGrain { column, grain: existing }) =>
+                                        existing.is_none() && column == temporal_col,
+                                    _ => false,
+                                };
+                                if should_propagate {
+                                    mapping.insert(dim_name.clone(), ColumnMappingValue::WithGrain {
+                                        column: temporal_col.clone(),
+                                        grain: Some(grain),
+                                    });
+                                }
+                            }
+                        }
                     }
-                    if ds.extras.catalog.is_none() {
-                        ds.extras.catalog = kind_extras.catalog.clone();
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Step 4.9: Derive Dimension Grains
+// ============================================================================
+
+/// Derive temporal dimension grains from dataset temporal configs when the
+/// dimension's grains list is empty.
+///
+/// For each kind with temporal dimensions that have empty grains:
+/// - Collect `temporal.grain` values from all datasets with `temporal.dimension` matching
+/// - Set dimension grains = all standard grains coarser-or-equal to finest dataset grain
+/// - Emit COMP_I001 diagnostic
+pub(crate) fn derive_dimension_grains(
+    model: &mut SemanticModel,
+    diagnostics: &mut Vec<crate::acceleration::CompileWarning>,
+) {
+    for dk in model.data_kinds.values_mut() {
+        if dk.is_dataset() { continue; }
+
+        // Collect dataset grains keyed by temporal.dimension name.
+        let mut dim_grains: HashMap<String, Vec<TemporalGrain>> = HashMap::new();
+        if let Some(children) = dk.children() {
+            for ds_entry in children {
+                if let DataKindEntry::Inline(ds) = ds_entry {
+                    if let Some(ref temporal) = ds.extras.temporal {
+                        if let (Some(grain), Some(ref dim_name)) = (temporal.grain, &temporal.dimension) {
+                            dim_grains.entry(dim_name.clone()).or_default().push(grain);
+                        }
+                    }
+                }
+            }
+        }
+
+        let dk_name = dk.name().to_string();
+
+        // For temporal dims with empty grains, derive from datasets.
+        for dim_entry in dk.interface_mut().dimensions.values_mut() {
+            if let DimensionEntry::Inline(ref mut dim) = dim_entry {
+                if let DimensionType::Temporal(ref mut td) = dim.dim_type {
+                    if td.grains.is_empty() {
+                        if let Some(dataset_grains) = dim_grains.get(&dim.name) {
+                            let finest = dataset_grains.iter()
+                                .copied()
+                                .min_by_key(|g| g.coarseness());
+                            if let Some(finest_grain) = finest {
+                                let derived: Vec<TemporalGrain> = TemporalGrain::ALL.into_iter()
+                                    .filter(|g| g.coarseness() >= finest_grain.coarseness())
+                                    .collect();
+
+                                diagnostics.push(crate::acceleration::CompileWarning {
+                                    code: "COMP_I001".to_string(),
+                                    message: format!(
+                                        "auto-derived grains [{grains}] for temporal dimension '{dim}' from dataset temporal configs",
+                                        grains = derived.iter().map(|g| format!("{:?}", g)).collect::<Vec<_>>().join(", "),
+                                        dim = dim.name,
+                                    ),
+                                    location: format!("{} '{}'", "kind", dk_name),
+                                });
+
+                                td.grains = derived;
+                            }
+                        }
                     }
                 }
             }
@@ -833,12 +1015,14 @@ pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
 pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileError> {
     let mut errors = Vec::new();
 
-    for kind in &model.kinds {
-        let interface_names: HashSet<String> = collect_interface_names(kind).collect();
+    for dk in model.data_kinds.values() {
+        if dk.is_dataset() { continue; }
+        let dk_name = dk.name();
+        let interface_names: HashSet<String> = collect_interface_names(dk).collect();
 
         // Check each dataset's column_mapping
-        for ds_entry in &kind.datasets {
-            if let KindDatasetEntry::Inline(ds) = ds_entry {
+        for ds_entry in dk.children().unwrap_or(&[]) {
+            if let DataKindEntry::Inline(ds) = ds_entry {
                 let ds_display = dataset_display_name(&ds.name);
 
                 // expand_auto_mappings (step 4.5) must run before this step
@@ -847,9 +1031,9 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
                     ColumnMapping::Explicit(m) => m,
                     _ => {
                         return Err(CompileError::MappingValidation(vec![format!(
-                            "kind '{}', dataset '{}': column_mapping is not Explicit \
+                            "{} '{}', dataset '{}': column_mapping is not Explicit \
                              (expand_auto_mappings must run before validate_mappings)",
-                            kind.name, ds_display
+                            dk.kind_variant(), dk_name, ds_display
                         )]));
                     }
                 };
@@ -861,11 +1045,11 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
                     if let ColumnMappingValue::Anchored(anchors) = value {
                         // Validate reserved names.
                         for anchor_name in anchors.keys() {
-                            if anchor_name == "column" || anchor_name == "literal" {
+                            if anchor_name == "column" || anchor_name == "lit" {
                                 errors.push(format!(
-                                    "kind '{}', dataset '{}': anchor name '{}' is reserved \
+                                    "{} '{}', dataset '{}': anchor name '{}' is reserved \
                                      and cannot be used in Anchored column_mapping",
-                                    kind.name, ds_display, anchor_name
+                                    dk.kind_variant(), dk_name, ds_display, anchor_name
                                 ));
                             }
                             anchor_subnames.insert(anchor_name.clone());
@@ -878,9 +1062,9 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
                 for key in mapping.keys() {
                     if !interface_names.contains(key) && !anchor_subnames.contains(key) {
                         errors.push(format!(
-                            "kind '{}', dataset '{}': column_mapping key '{}' \
+                            "{} '{}', dataset '{}': column_mapping key '{}' \
                              does not match any dimension, measure, or metric in the interface",
-                            kind.name, ds_display, key
+                            dk.kind_variant(), dk_name, ds_display, key
                         ));
                     }
                 }
@@ -891,10 +1075,10 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
         // Union coverage: every mappable interface name must be mapped by at least
         // one dataset. Partial per-dataset mappings are valid — the planner handles
         // coverage at query time via grain groups and UNION ALL.
-        let mappable_names: HashSet<String> = collect_mappable_names(kind).collect();
+        let mappable_names: HashSet<String> = collect_mappable_names(dk).collect();
         let mut all_mapped: HashSet<String> = HashSet::new();
-        for ds_entry in &kind.datasets {
-            if let KindDatasetEntry::Inline(ds) = ds_entry {
+        for ds_entry in dk.children().unwrap_or(&[]) {
+            if let DataKindEntry::Inline(ds) = ds_entry {
                 if let ColumnMapping::Explicit(m) = &ds.extras.column_mapping {
                     for key in m.keys() {
                         all_mapped.insert(key.clone());
@@ -905,8 +1089,8 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
         for iname in &mappable_names {
             if !all_mapped.contains(iname) {
                 errors.push(format!(
-                    "kind '{}': interface name '{}' is not mapped by any dataset",
-                    kind.name, iname
+                    "{} '{}': interface name '{}' is not mapped by any dataset",
+                    dk.kind_variant(), dk_name, iname
                 ));
             }
         }
@@ -933,11 +1117,12 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
 pub(crate) fn validate_grain_compatibility(model: &SemanticModel) -> Result<(), CompileError> {
     let mut errors = Vec::new();
 
-    for kind in &model.kinds {
+    for dk in model.data_kinds.values() {
+        if dk.is_dataset() { continue; }
         // Collect temporal dimensions: name -> allowed grains
-        let temporal_dims: Vec<(&str, &[TemporalGrain])> = kind
-            .dimensions
-            .iter()
+        let temporal_dims: Vec<(&str, &[TemporalGrain])> = dk
+            .interface().dimensions
+            .values()
             .filter_map(|d| match d {
                 DimensionEntry::Inline(dim) => match &dim.dim_type {
                     DimensionType::Temporal(td) => Some((dim.name.as_str(), td.grains.as_slice())),
@@ -951,8 +1136,8 @@ pub(crate) fn validate_grain_compatibility(model: &SemanticModel) -> Result<(), 
             continue;
         }
 
-        for ds_entry in &kind.datasets {
-            if let KindDatasetEntry::Inline(ds) = ds_entry {
+        for ds_entry in dk.children().unwrap_or(&[]) {
+            if let DataKindEntry::Inline(ds) = ds_entry {
                 let ds_display = dataset_display_name(&ds.name);
 
                 for (dim_name, allowed_grains) in &temporal_dims {
@@ -962,10 +1147,10 @@ pub(crate) fn validate_grain_compatibility(model: &SemanticModel) -> Result<(), 
                     {
                         if !allowed_grains.contains(grain) {
                             errors.push(format!(
-                                "kind '{}', dataset '{}': temporal dimension '{}' \
+                                "{} '{}', dataset '{}': temporal dimension '{}' \
                                  has grain '{:?}' which is not in the kind's allowed \
                                  grains {:?}",
-                                kind.name, ds_display, dim_name, grain, allowed_grains
+                                dk.kind_variant(), dk.name(), ds_display, dim_name, grain, allowed_grains
                             ));
                         }
                     }
@@ -1004,25 +1189,13 @@ pub(crate) fn build_metric_graph(
     for m in &model.measures {
         measure_names.insert(m.name.clone());
     }
-    for ds in &model.datasets {
-        for m in &ds.metrics {
+    for dk in model.data_kinds.values() {
+        for m in dk.interface().metrics.values() {
             if let MetricEntry::Inline(met) = m {
                 metric_names.insert(met.name.clone());
             }
         }
-        for m in &ds.measures {
-            if let MeasureEntry::Inline(mea) = m {
-                measure_names.insert(mea.name.clone());
-            }
-        }
-    }
-    for kind in &model.kinds {
-        for m in &kind.metrics {
-            if let MetricEntry::Inline(met) = m {
-                metric_names.insert(met.name.clone());
-            }
-        }
-        for m in &kind.measures {
+        for m in dk.interface().measures.values() {
             if let MeasureEntry::Inline(mea) = m {
                 measure_names.insert(mea.name.clone());
             }
@@ -1048,7 +1221,7 @@ pub(crate) fn build_metric_graph(
     let all_metrics = collect_all_metrics(model);
     for met in &all_metrics {
         if let Some(&src_idx) = name_to_idx.get(met.name.as_str()) {
-            let deps = extract_identifiers_from_expr(&met.expr);
+            let deps = extract_identifiers_from_expr_source(&met.expr);
             for dep in deps {
                 if let Some(&dst_idx) = name_to_idx.get(dep.as_str()) {
                     if src_idx != dst_idx {
@@ -1076,7 +1249,7 @@ pub(crate) fn build_metric_graph(
     while changed {
         changed = false;
         for met in &all_metrics {
-            let deps = extract_identifiers_from_expr(&met.expr);
+            let deps = extract_identifiers_from_expr_source(&met.expr);
             let max_dep_depth = deps
                 .iter()
                 .filter_map(|d| depths.get(d.as_str()))
@@ -1120,8 +1293,8 @@ pub(crate) fn build_rel_graph(
 ) -> Result<HashMap<String, Vec<String>>, CompileError> {
     let mut result: HashMap<String, Vec<String>> = HashMap::new();
 
-    for kind in &model.kinds {
-        if !matches!(kind.kind_type, KindTypeSpec::Joinset(_)) {
+    for dk in model.data_kinds.values() {
+        if !dk.is_joinset() {
             continue;
         }
 
@@ -1129,8 +1302,8 @@ pub(crate) fn build_rel_graph(
         let mut node_map: HashMap<String, petgraph::graph::NodeIndex> = HashMap::new();
 
         // Add nodes for each dataset
-        for entry in &kind.datasets {
-            if let KindDatasetEntry::Inline(ds) = entry {
+        for entry in dk.children().unwrap_or(&[]) {
+            if let DataKindEntry::Inline(ds) = entry {
                 let name = dataset_display_name(&ds.name);
                 if !node_map.contains_key(name) {
                     let owned = name.to_string();
@@ -1141,7 +1314,7 @@ pub(crate) fn build_rel_graph(
         }
 
         // Add edges from relationships
-        for rel in &kind.relationships {
+        for rel in dk.relationships() {
             if let (Some(&from_idx), Some(&to_idx)) =
                 (node_map.get(&rel.from), node_map.get(&rel.to))
             {
@@ -1161,7 +1334,7 @@ pub(crate) fn build_rel_graph(
             .map(|n| graph[n].clone())
             .collect();
 
-        result.insert(kind.name.clone(), anchors);
+        result.insert(dk.name().to_string(), anchors);
     }
 
     Ok(result)
@@ -1177,19 +1350,14 @@ pub(crate) fn emit(
     source_hash: String,
     metric_depths: &HashMap<String, usize>,
     resolution: SourceResolutionResult,
+    extra_warnings: Vec<crate::acceleration::CompileWarning>,
 ) -> Result<CompiledManifest, CompileError> {
-    let mut datasets = IndexMap::new();
-    let mut kinds = IndexMap::new();
+    let mut data_kinds = IndexMap::new();
     let mut relationships = Vec::new();
 
-    for ds in &model.datasets {
-        let compiled = compile_dataset(ds)?;
-        datasets.insert(ds.name.clone(), compiled);
-    }
-
-    for kind in &model.kinds {
-        let compiled = compile_kind(kind, metric_depths, &resolution)?;
-        kinds.insert(kind.name.clone(), compiled);
+    for dk in model.data_kinds.values() {
+        let compiled = compile_to_compiled_data_kind(dk, metric_depths, &resolution)?;
+        data_kinds.insert(dk.name().to_string(), compiled);
     }
 
     for rel in &model.relationships {
@@ -1203,33 +1371,29 @@ pub(crate) fn emit(
         });
     }
 
-    // Build v2 DataKind hierarchy from compiled kinds.
-    let mut data_kinds = IndexMap::new();
-    for (name, kind) in &kinds {
-        let data_kind = crate::acceleration::data_kind_from_compiled_kind(kind);
-        data_kinds.insert(name.clone(), data_kind);
-    }
-
-    // Build global field index from datasets and data_kinds.
-    let field_index = build_field_index(&datasets, &data_kinds);
+    // Build global field index from data_kinds.
+    let field_index = build_field_index(&data_kinds);
 
     // Build global relationship graph with shortest paths.
-    let relationship_graph = build_relationship_graph(&datasets, &relationships);
+    let relationship_graph = build_relationship_graph(&data_kinds, &relationships);
 
-    // Merge resolution diagnostics.
+    // Build unified semantic graph (petgraph).
+    let semantic_graph = build_semantic_graph(&data_kinds, &relationships);
+
+    // Merge resolution + derivation diagnostics.
     let mut diagnostics = crate::acceleration::CompileDiagnostics::default();
     diagnostics.warnings.extend(resolution.warnings);
+    diagnostics.warnings.extend(extra_warnings);
 
     Ok(CompiledManifest {
-        version: 2,
+        version: 3,
         compiled_at: chrono::DateTime::default(), // overwritten by compiler.compile()
         source_hash,
-        datasets,
-        kinds,
         data_kinds,
         relationships,
         relationship_graph,
         field_index,
+        semantic_graph,
         diagnostics,
         catalog_snapshot: resolution.catalog_snapshot,
         model_name: model.name,
@@ -1241,37 +1405,32 @@ pub(crate) fn emit(
 // Step 20-21: Global Graph Structures
 // ============================================================================
 
-/// Build global field index from compiled datasets and data kinds.
+/// Build global field index from compiled data kinds.
 fn build_field_index(
-    datasets: &IndexMap<String, CompiledDataset>,
-    data_kinds: &IndexMap<String, crate::acceleration::DataKind>,
+    data_kinds: &IndexMap<String, crate::acceleration::CompiledDataKind>,
 ) -> crate::acceleration::FieldIndex {
+    use crate::acceleration::CompiledSemanticInterface;
+
     let mut providers: HashMap<String, Vec<String>> = HashMap::new();
     let mut all_dimensions: HashSet<String> = HashSet::new();
     let mut all_measures: HashSet<String> = HashSet::new();
     let mut all_metrics: HashSet<String> = HashSet::new();
 
-    // From datasets
-    for (ds_name, ds) in datasets {
-        for dim_name in ds.dimensions.keys() {
+    for (name, dk) in data_kinds {
+        for dim_name in dk.dimensions().keys() {
             providers
                 .entry(dim_name.clone())
                 .or_default()
-                .push(ds_name.clone());
+                .push(name.clone());
             all_dimensions.insert(dim_name.clone());
         }
-        for measure_name in ds.measures.keys() {
+        for measure_name in dk.measures().keys() {
             providers
                 .entry(measure_name.clone())
                 .or_default()
-                .push(ds_name.clone());
+                .push(name.clone());
             all_measures.insert(measure_name.clone());
         }
-    }
-
-    // From data kinds (for metrics, which are kind-level)
-    for dk in data_kinds.values() {
-        use crate::acceleration::SemanticInterface;
         for metric_name in dk.metrics().keys() {
             all_metrics.insert(metric_name.clone());
         }
@@ -1287,12 +1446,12 @@ fn build_field_index(
 
 /// Build global relationship graph with pre-computed shortest paths.
 fn build_relationship_graph(
-    datasets: &IndexMap<String, CompiledDataset>,
+    data_kinds: &IndexMap<String, crate::acceleration::CompiledDataKind>,
     relationships: &[CompiledRelationship],
 ) -> crate::acceleration::RelationshipGraph {
     use std::collections::VecDeque;
 
-    let dataset_index: HashMap<String, usize> = datasets
+    let dataset_index: HashMap<String, usize> = data_kinds
         .keys()
         .enumerate()
         .map(|(i, name)| (name.clone(), i))
@@ -1320,7 +1479,7 @@ fn build_relationship_graph(
         dataset_index,
     };
 
-    let ds_names: Vec<String> = datasets.keys().cloned().collect();
+    let ds_names: Vec<String> = data_kinds.keys().cloned().collect();
     for source_name in &ds_names {
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<(String, Vec<usize>)> = VecDeque::new();
@@ -1358,20 +1517,59 @@ fn build_relationship_graph(
     rel_graph
 }
 
+/// Build unified semantic graph from compiled data kinds and relationships.
+fn build_semantic_graph(
+    data_kinds: &IndexMap<String, crate::acceleration::CompiledDataKind>,
+    relationships: &[CompiledRelationship],
+) -> crate::acceleration::SemanticGraph {
+    use crate::acceleration::{CompiledSemanticInterface, FieldType, SemanticGraph};
+
+    let mut graph = SemanticGraph::new();
+
+    for (kind_name, dk) in data_kinds {
+        // Add dataset nodes for each binding.
+        for binding in dk.bindings() {
+            graph.add_dataset(&binding.dataset_name, kind_name);
+
+            // Add field edges for dimensions.
+            for dim_name in dk.dimensions().keys() {
+                graph.add_provides_field(&binding.dataset_name, dim_name, FieldType::Dimension);
+            }
+            // Add field edges for measures.
+            for measure_name in dk.measures().keys() {
+                graph.add_provides_field(&binding.dataset_name, measure_name, FieldType::Measure);
+            }
+        }
+        // Add metric nodes (not tied to a specific dataset).
+        for metric_name in dk.metrics().keys() {
+            graph.add_field(metric_name, FieldType::Metric);
+        }
+    }
+
+    // Add join edges from relationships.
+    for (rel_idx, rel) in relationships.iter().enumerate() {
+        graph.add_join(&rel.from, &rel.to, rel_idx);
+    }
+
+    graph
+}
+
 // ============================================================================
 // Internal helpers
 // ============================================================================
 
 /// Collect mappable names (dimensions + measures) from a kind.
 /// Metrics are derived and do not require column mappings.
-fn collect_mappable_names(kind: &Kind) -> impl Iterator<Item = String> + '_ {
-    kind.dimensions
-        .iter()
+fn collect_mappable_names(dk: &DataKind) -> impl Iterator<Item = String> + '_ {
+    dk.interface().dimensions
+        .values()
         .filter_map(|d| match d {
             DimensionEntry::Inline(dim) => {
                 // Metadata dimensions are extracted from source metadata,
                 // not physical columns — they don't need column mapping.
-                if matches!(dim.dim_type, DimensionType::Metadata(_)) {
+                // Computed dimensions derive values from expressions over
+                // other columns — they also don't need their own mapping.
+                if matches!(dim.dim_type, DimensionType::Metadata(_)) || dim.expr.is_some() {
                     None
                 } else {
                     Some(dim.name.clone())
@@ -1379,61 +1577,317 @@ fn collect_mappable_names(kind: &Kind) -> impl Iterator<Item = String> + '_ {
             }
             DimensionEntry::Ref(r) => Some(r.ref_name.clone()),
         })
-        .chain(kind.measures.iter().map(|m| match m {
+        .chain(dk.interface().measures.values().map(|m| match m {
             MeasureEntry::Inline(mea) => mea.name.clone(),
             MeasureEntry::Ref(r) => r.ref_name.clone(),
         }))
 }
 
-/// Collect interface names (dimensions + measures + metrics) from a kind.
-fn collect_interface_names(kind: &Kind) -> impl Iterator<Item = String> + '_ {
-    kind.dimensions
-        .iter()
+/// Collect interface names (dimensions + measures + metrics) from a data kind.
+fn collect_interface_names(dk: &DataKind) -> impl Iterator<Item = String> + '_ {
+    dk.interface().dimensions
+        .values()
         .map(|d| match d {
             DimensionEntry::Inline(dim) => dim.name.clone(),
             DimensionEntry::Ref(r) => r.ref_name.clone(),
         })
-        .chain(kind.measures.iter().map(|m| match m {
+        .chain(dk.interface().measures.values().map(|m| match m {
             MeasureEntry::Inline(mea) => mea.name.clone(),
             MeasureEntry::Ref(r) => r.ref_name.clone(),
         }))
-        .chain(kind.metrics.iter().map(|m| match m {
+        .chain(dk.interface().metrics.values().map(|m| match m {
             MetricEntry::Inline(met) => met.name.clone(),
             MetricEntry::Ref(r) => r.ref_name.clone(),
         }))
 }
 
-fn compile_dimensions(entries: &[DimensionEntry]) -> IndexMap<String, CompiledDimension> {
+/// Derive a dimension's data_type from its expression when not explicitly declared.
+///
+/// Derivation chain:
+/// 1. Declared → use it
+/// 2. Expr is FunctionCall(f) + registry has Fixed(T) → use T
+/// 3. Expr is FunctionCall(f) + registry has SameAsInput → cannot resolve (need declared)
+/// 4. No expr, no declared → error
+fn derive_dimension_data_type(
+    dim_name: &str,
+    declared: &Option<DataType>,
+    compiled_expr: &Option<Expr>,
+    registry: &crate::function_registry::FunctionRegistry,
+) -> Result<semstrait_core::DataType, String> {
+    // 1. Declared type always wins.
+    if let Some(dt) = declared {
+        return Ok(map_data_type(dt));
+    }
+
+    // 2. Try to derive from expression.
+    if let Some(expr) = compiled_expr {
+        if let Some(dt) = derive_type_from_expr(expr, registry) {
+            return Ok(dt);
+        }
+        return Err(format!(
+            "dimension '{}': cannot derive data_type from expression; specify data_type explicitly",
+            dim_name
+        ));
+    }
+
+    // 3. No expr, no declared.
+    Err(format!(
+        "dimension '{}': data_type is required (no expression to derive from)",
+        dim_name
+    ))
+}
+
+/// Derive a measure's data_type from its aggregation and expression when not explicitly declared.
+///
+/// Derivation chain:
+/// 1. Declared → use it
+/// 2. agg = COUNT/CountDistinct → Integer
+/// 3. agg = AVG → Number
+/// 4. agg = SUM/MIN/MAX with declared → input type (needs declared)
+/// 5. Cannot derive → error
+fn derive_measure_data_type(
+    measure_name: &str,
+    declared: &Option<DataType>,
+    agg: semstrait_core::Aggregation,
+) -> Result<semstrait_core::DataType, String> {
+    use semstrait_core::Aggregation;
+
+    // 1. Declared type always wins.
+    if let Some(dt) = declared {
+        return Ok(map_data_type(dt));
+    }
+
+    // 2. Derive from aggregation type.
+    match agg {
+        Aggregation::Count | Aggregation::CountDistinct => Ok(semstrait_core::DataType::Integer),
+        Aggregation::Avg => Ok(semstrait_core::DataType::Number),
+        Aggregation::Sum | Aggregation::Min | Aggregation::Max => {
+            Err(format!(
+                "measure '{}': cannot derive data_type for {}; specify data_type explicitly",
+                measure_name,
+                match agg {
+                    Aggregation::Sum => "sum",
+                    Aggregation::Min => "min",
+                    Aggregation::Max => "max",
+                    _ => unreachable!(),
+                }
+            ))
+        }
+    }
+}
+
+/// Derive a metric's data_type from leaf measures when not explicitly declared.
+fn derive_metric_data_type(
+    metric_name: &str,
+    declared: &Option<DataType>,
+    expr: &Expr,
+    measures: &IndexMap<String, CompiledMeasure>,
+    metrics: &IndexMap<String, CompiledMetric>,
+) -> Result<semstrait_core::DataType, String> {
+    // 1. Declared type always wins.
+    if let Some(dt) = declared {
+        return Ok(map_data_type(dt));
+    }
+
+    // 2. Try to derive from leaf measure types.
+    // Collect all referenced leaf measure/metric types.
+    let mut leaf_types = Vec::new();
+    collect_leaf_types(expr, measures, metrics, &mut leaf_types);
+
+    if leaf_types.len() == 1 {
+        return Ok(leaf_types.into_iter().next().unwrap());
+    }
+
+    // Multiple types or none — can't derive.
+    Err(format!(
+        "metric '{}': cannot derive data_type; specify data_type explicitly",
+        metric_name
+    ))
+}
+
+/// Collect data types from leaf measures/metrics referenced in an expression.
+fn collect_leaf_types(
+    expr: &Expr,
+    measures: &IndexMap<String, CompiledMeasure>,
+    metrics: &IndexMap<String, CompiledMetric>,
+    types: &mut Vec<semstrait_core::DataType>,
+) {
+    match expr {
+        Expr::EntityRef(er) => {
+            if let Some(m) = measures.get(&er.name) {
+                if !types.contains(&m.data_type) {
+                    types.push(m.data_type.clone());
+                }
+            } else if let Some(met) = metrics.get(&er.name) {
+                if !types.contains(&met.data_type) {
+                    types.push(met.data_type.clone());
+                }
+            }
+        }
+        Expr::BinaryOp(b) => {
+            collect_leaf_types(&b.left, measures, metrics, types);
+            collect_leaf_types(&b.right, measures, metrics, types);
+        }
+        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
+            collect_leaf_types(&u.expr, measures, metrics, types);
+        }
+        Expr::Case(c) => {
+            for clause in &c.when_then {
+                collect_leaf_types(&clause.result, measures, metrics, types);
+            }
+            if let Some(e) = &c.else_expr {
+                collect_leaf_types(e, measures, metrics, types);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Try to derive a core DataType from an expression tree using the function registry.
+fn derive_type_from_expr(
+    expr: &Expr,
+    registry: &crate::function_registry::FunctionRegistry,
+) -> Option<semstrait_core::DataType> {
+    use crate::function_registry::ReturnType;
+    match expr {
+        Expr::FunctionCall(fc) => {
+            if let Some(spec) = registry.get(&fc.name) {
+                match &spec.return_type {
+                    ReturnType::Fixed(dt) => Some(dt.clone()),
+                    ReturnType::SameAsInput => {
+                        // Try to derive from first argument recursively.
+                        fc.args.first().and_then(|arg| derive_type_from_expr(arg, registry))
+                    }
+                    ReturnType::Semantic => None, // Requires declared type.
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn compile_dimensions(entries: &BTreeMap<String, DimensionEntry>) -> Result<IndexMap<String, CompiledDimension>, CompileError> {
+    let registry = crate::function_registry::FunctionRegistry::standard();
     let mut dimensions = IndexMap::new();
-    for d in entries {
+    let mut errors = Vec::new();
+
+    for d in entries.values() {
         if let DimensionEntry::Inline(dim) = d {
+            let (compiled_expr, expr_source) = if let Some(ref src) = dim.expr {
+                let expr = resolve_expr_source(src, &dim.name)?;
+
+                // Validate: computed dimensions must not contain aggregation.
+                if contains_aggregation(&expr) {
+                    errors.push(format!(
+                        "dimension '{}': computed expression must not contain aggregation functions",
+                        dim.name
+                    ));
+                    continue;
+                }
+
+                // Validate function calls against registry.
+                errors.extend(validate_function_calls(&expr, &dim.name, registry));
+
+                (Some(expr), Some(src.display_string()))
+            } else {
+                (None, None)
+            };
+
+            // Derive data_type: declared > expression-derived > error.
+            let data_type = match derive_dimension_data_type(&dim.name, &dim.data_type, &compiled_expr, registry) {
+                Ok(dt) => dt,
+                Err(msg) => {
+                    errors.push(msg);
+                    continue;
+                }
+            };
+
             dimensions.insert(
                 dim.name.clone(),
                 CompiledDimension {
                     name: dim.name.clone(),
                     description: dim.description.clone(),
-                    data_type: map_data_type(&dim.data_type),
+                    data_type,
                     dim_type: dim.dim_type.clone(),
+                    expr: compiled_expr,
+                    expr_source,
                 },
             );
         }
     }
-    dimensions
+
+    if !errors.is_empty() {
+        return Err(CompileError::ExprCompilation(errors));
+    }
+    Ok(dimensions)
 }
 
-/// Map model-layer DataType to core DataType (Arrow-aligned).
+/// SR-5a: Validate that all column references in expressions refer to names
+/// exposed in the same interface (dimensions + measures + metrics).
+fn validate_expr_scope(
+    dimensions: &IndexMap<String, CompiledDimension>,
+    measures: &IndexMap<String, CompiledMeasure>,
+    metrics: &IndexMap<String, CompiledMetric>,
+    kind_name: &str,
+) -> Result<(), CompileError> {
+    use std::collections::HashSet;
+
+    // Build the allowed name set from the interface.
+    let mut allowed: HashSet<&str> = HashSet::new();
+    for name in dimensions.keys() { allowed.insert(name.as_str()); }
+    for name in measures.keys() { allowed.insert(name.as_str()); }
+    for name in metrics.keys() { allowed.insert(name.as_str()); }
+
+    let mut errors = Vec::new();
+
+    // Check computed dimension expressions.
+    for dim in dimensions.values() {
+        if let Some(ref expr) = dim.expr {
+            for col_ref in expr.column_refs() {
+                if !allowed.contains(col_ref.as_str()) {
+                    errors.push(format!(
+                        "dimension '{}' in '{}': expression references '{}' which is not exposed in the interface",
+                        dim.name, kind_name, col_ref
+                    ));
+                }
+            }
+        }
+    }
+
+    // Note: measure base expressions (e.g. "amount") reference physical columns,
+    // not semantic names — scope validation does not apply to them.
+
+    // Check metric expressions (metrics reference measures/dimensions by name).
+    for metric in metrics.values() {
+        for col_ref in metric.expr.column_refs() {
+            if !allowed.contains(col_ref.as_str()) {
+                errors.push(format!(
+                    "metric '{}' in '{}': expression references '{}' which is not exposed in the interface",
+                    metric.name, kind_name, col_ref
+                ));
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(CompileError::ExprCompilation(errors));
+    }
+    Ok(())
+}
+
+/// Map model-layer DataType to core DataType (ANSI logical).
 fn map_data_type(dt: &DataType) -> semstrait_core::DataType {
     match dt {
-        DataType::I8 => semstrait_core::DataType::Int8,
-        DataType::I16 => semstrait_core::DataType::Int16,
-        DataType::I32 => semstrait_core::DataType::Int32,
-        DataType::I64 => semstrait_core::DataType::Int64,
-        DataType::F32 => semstrait_core::DataType::Float32,
-        DataType::F64 => semstrait_core::DataType::Float64,
+        DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 => {
+            semstrait_core::DataType::Integer
+        }
+        DataType::F32 | DataType::F64 => semstrait_core::DataType::Number,
         DataType::Bool => semstrait_core::DataType::Boolean,
-        DataType::String => semstrait_core::DataType::Utf8,
-        DataType::Date => semstrait_core::DataType::Date32,
-        DataType::Timestamp => semstrait_core::DataType::TimestampMillisecond,
+        DataType::String => semstrait_core::DataType::String,
+        DataType::Date => semstrait_core::DataType::Date,
+        DataType::Timestamp => semstrait_core::DataType::Timestamp { precision: 6 },
         DataType::Decimal { precision, scale } => semstrait_core::DataType::Decimal {
             precision: *precision,
             scale: *scale as i8,
@@ -1478,6 +1932,7 @@ fn contains_aggregation(expr: &Expr) -> bool {
         }
         Expr::DateTrunc(d) => contains_aggregation(&d.expr),
         Expr::FunctionCall(f) => f.args.iter().any(contains_aggregation),
+        Expr::Cast(c) => contains_aggregation(&c.expr),
         Expr::InList(il) => {
             contains_aggregation(&il.expr) || il.list.iter().any(contains_aggregation)
         }
@@ -1486,30 +1941,40 @@ fn contains_aggregation(expr: &Expr) -> bool {
                 || contains_aggregation(&b.low)
                 || contains_aggregation(&b.high)
         }
-        Expr::Like(l) => contains_aggregation(&l.expr),
+        Expr::Like(l) => contains_aggregation(&l.expr) || contains_aggregation(&l.pattern),
+        Expr::ILike(l) => contains_aggregation(&l.expr) || contains_aggregation(&l.pattern),
+        Expr::RegexpMatch(re) => {
+            contains_aggregation(&re.expr) || contains_aggregation(&re.pattern)
+        }
+        Expr::RegexpExtract(re) => {
+            contains_aggregation(&re.expr) || contains_aggregation(&re.pattern)
+        }
         // Leaf nodes: no children to recurse into.
         Expr::Column(_) | Expr::Literal(_) | Expr::EntityRef(_) => false,
     }
 }
 
 fn compile_measures(
-    entries: &[MeasureEntry],
+    entries: &BTreeMap<String, MeasureEntry>,
 ) -> Result<IndexMap<String, CompiledMeasure>, CompileError> {
+    let registry = crate::function_registry::FunctionRegistry::standard();
     let mut measures = IndexMap::new();
     let mut errors = Vec::new();
 
-    for m in entries {
+    for m in entries.values() {
         if let MeasureEntry::Inline(mea) = m {
             let filters = compile_measure_filters(&mea.filters)?;
 
             let (compiled_agg, compiled_expr, expr_source) = if let Some(ref agg) = mea.agg {
                 // Declarative path: agg tag present.
                 let core_agg = map_aggregation_type(agg);
-                let expr_source = mea.expr.as_deref().unwrap_or(&mea.name).to_string();
+                let expr_source = mea.expr.as_ref()
+                    .map(|e| e.display_string())
+                    .unwrap_or_else(|| mea.name.clone());
 
-                if let Some(ref expr_str) = mea.expr {
-                    // Parse horizontal expr, validate no aggregation.
-                    let parsed = parse_expr(expr_str, &mea.name)?;
+                if let Some(ref expr_src) = mea.expr {
+                    // Parse/convert expr, validate no aggregation.
+                    let parsed = resolve_expr_source(expr_src, &mea.name)?;
                     if contains_aggregation(&parsed) {
                         errors.push(format!(
                             "measure '{}': expr must not contain aggregation functions \
@@ -1518,22 +1983,50 @@ fn compile_measures(
                         ));
                         continue;
                     }
-                    (Some(core_agg), parsed, expr_source)
+                    (core_agg, parsed, expr_source)
                 } else {
                     // No expr — the column is resolved from mapping by name.
-                    (Some(core_agg), Expr::entity_ref(&mea.name), expr_source)
+                    (core_agg, Expr::entity_ref(&mea.name), expr_source)
                 }
-            } else if let Some(ref expr_str) = mea.expr {
-                // Legacy path: no agg tag, expr contains aggregation.
-                let parsed = parse_expr(expr_str, &mea.name)?;
-                (None, parsed, expr_str.clone())
+            } else if let Some(ref expr_src) = mea.expr {
+                // Legacy auto-upgrade: extract aggregation from expr string.
+                let parsed = resolve_expr_source(expr_src, &mea.name)?;
+                let display = expr_src.display_string();
+                if let Some((agg, inner_expr)) = try_extract_aggregation_from_expr(&parsed) {
+                    (agg, inner_expr, display)
+                } else {
+                    // Expr has no recognizable aggregation — error.
+                    errors.push(format!(
+                        "measure '{}': 'agg' must be specified; expr does not contain \
+                         a recognized aggregation function (SUM, COUNT, AVG, MIN, MAX, COUNT_DISTINCT)",
+                        mea.name
+                    ));
+                    continue;
+                }
             } else {
                 // Neither agg nor expr specified — error.
                 errors.push(format!(
-                    "measure '{}': either 'agg' or 'expr' must be specified",
+                    "measure '{}': 'agg' must be specified",
                     mea.name
                 ));
                 continue;
+            };
+
+            // Validate function calls against registry.
+            errors.extend(validate_function_calls(&compiled_expr, &mea.name, registry));
+
+            // Derive additivity from agg when not explicitly specified.
+            let additivity = mea.additivity.clone().or_else(|| {
+                Some(crate::compiled::derive_additivity(compiled_agg))
+            });
+
+            // Derive data_type: declared > aggregation-derived > error.
+            let data_type = match derive_measure_data_type(&mea.name, &mea.data_type, compiled_agg) {
+                Ok(dt) => dt,
+                Err(msg) => {
+                    errors.push(msg);
+                    continue;
+                }
             };
 
             measures.insert(
@@ -1541,11 +2034,11 @@ fn compile_measures(
                 CompiledMeasure {
                     name: mea.name.clone(),
                     description: mea.description.clone(),
-                    data_type: map_data_type(&mea.data_type),
+                    data_type,
                     agg: compiled_agg,
                     expr: compiled_expr,
                     expr_source,
-                    additivity: mea.additivity.clone(),
+                    additivity,
                     constraints: mea.constraints.clone(),
                     filters,
                 },
@@ -1560,26 +2053,54 @@ fn compile_measures(
 }
 
 fn compile_metrics(
-    entries: &[MetricEntry],
+    entries: &BTreeMap<String, MetricEntry>,
     metric_depths: &HashMap<String, usize>,
+    measures: &IndexMap<String, CompiledMeasure>,
 ) -> Result<IndexMap<String, CompiledMetric>, CompileError> {
+    let registry = crate::function_registry::FunctionRegistry::standard();
+    let mut errors = Vec::new();
     let mut metrics = IndexMap::new();
-    for m in entries {
+    for m in entries.values() {
         if let MetricEntry::Inline(met) = m {
-            let expr = parse_expr(&met.expr, &met.name)?;
+            let expr = resolve_expr_source(&met.expr, &met.name)?;
+
+            // Validate function calls against registry.
+            errors.extend(validate_function_calls(&expr, &met.name, registry));
             let depth = metric_depths.get(&met.name).copied().unwrap_or(0);
             let filters = compile_measure_filters(&met.filters)?;
             let compiled_agg = met.agg.as_ref().map(map_aggregation_type);
+            let metric_type = MetricType::infer(&expr);
+
+            // Derive effective additivity from transitive leaf measures.
+            let additivity = met.additivity.clone().or_else(|| {
+                let leaf_additivity = collect_leaf_measure_additivity(&expr, measures, &metrics);
+                if leaf_additivity.is_empty() {
+                    None
+                } else {
+                    Some(crate::compiled::worst_case_additivity(leaf_additivity.iter()))
+                }
+            });
+
+            // Derive data_type: declared > leaf-measure-derived > error.
+            let data_type = match derive_metric_data_type(&met.name, &met.data_type, &expr, measures, &metrics) {
+                Ok(dt) => dt,
+                Err(msg) => {
+                    errors.push(msg);
+                    continue;
+                }
+            };
+
             metrics.insert(
                 met.name.clone(),
                 CompiledMetric {
                     name: met.name.clone(),
                     description: met.description.clone(),
-                    data_type: map_data_type(&met.data_type),
+                    data_type,
+                    metric_type,
                     agg: compiled_agg,
                     expr,
-                    expr_source: met.expr.clone(),
-                    additivity: met.additivity.clone(),
+                    expr_source: met.expr.display_string(),
+                    additivity,
                     constraints: met.constraints.clone(),
                     filters,
                     depth,
@@ -1587,122 +2108,284 @@ fn compile_metrics(
             );
         }
     }
+    if !errors.is_empty() {
+        return Err(CompileError::ExprCompilation(errors));
+    }
     Ok(metrics)
 }
 
-fn compile_dataset(ds: &Dataset) -> Result<CompiledDataset, CompileError> {
-    let no_depths = HashMap::new();
-    Ok(CompiledDataset {
-        name: ds.name.clone(),
-        description: ds.description.clone(),
-        domain: ds.domain.as_ref().map(|d| d.0.clone()),
-        keys: ds.keys.clone(),
-        dimensions: compile_dimensions(&ds.dimensions),
-        measures: compile_measures(&ds.measures)?,
-        metrics: compile_metrics(&ds.metrics, &no_depths)?,
-        compiled_schema: None,
-    })
-}
-
-fn compile_kind(
-    kind: &Kind,
+/// Compile a model DataKind directly into a CompiledDataKind (acceleration type).
+///
+/// For standalone datasets: builds identity column mapping, single DatasetBinding.
+/// For kinds (grainset/unionset/joinset): builds DatasetBindings from children,
+/// acceleration structures (CoverageIndex, DimensionIndex, etc.).
+fn compile_to_compiled_data_kind(
+    dk: &DataKind,
     metric_depths: &HashMap<String, usize>,
     resolution: &SourceResolutionResult,
-) -> Result<CompiledKind, CompileError> {
-    // Compile kind datasets — use resolved sources from SourceResolutionResult
-    let compiled_datasets: Vec<CompiledKindDataset> = kind
-        .datasets
+) -> Result<crate::acceleration::CompiledDataKind, CompileError> {
+    use crate::acceleration::*;
+
+    let iface = dk.interface();
+    let measures = compile_measures(&iface.measures)?;
+    let metrics = compile_metrics(&iface.metrics, metric_depths, &measures)?;
+    let dimensions = compile_dimensions(&iface.dimensions)?;
+    let filters = compile_measure_filters(&iface.filters.values().cloned().collect::<Vec<_>>())?;
+
+    // Validate: measures with agg must not reference other measures (D-042).
+    validate_measure_references(&measures)?;
+
+    // SR-5a: Validate that computed dimension and metric expressions only
+    // reference names exposed in the same interface.
+    validate_expr_scope(&dimensions, &measures, &metrics, dk.name())?;
+
+    // Build CompiledInterface (shared across all variants).
+    let build_compiled_interface = |temporal_dim: Option<String>| -> CompiledInterface {
+        CompiledInterface {
+            name: dk.name().to_string(),
+            description: iface.description.clone(),
+            dimensions: dimensions.clone(),
+            measures: measures.clone(),
+            metrics: metrics.clone(),
+            keys: iface.keys.clone(),
+            filters: filters.clone(),
+            temporal_dim,
+        }
+    };
+
+    match dk {
+        DataKind::Dataset(dsk) => {
+            // Standalone dataset: identity column mapping.
+            let interface_names: Vec<&String> = dimensions.keys().chain(measures.keys()).collect();
+            let mapping: HashMap<String, semstrait_model::ColumnMappingValue> = interface_names
+                .iter()
+                .map(|name| {
+                    (
+                        (*name).clone(),
+                        semstrait_model::ColumnMappingValue::Simple((*name).clone()),
+                    )
+                })
+                .collect();
+
+            // Resolve sources from extras.storage if present.
+            let resolved_sources = resolve_dataset_sources(&dsk.name, &dsk.extras, resolution);
+
+            let binding = DatasetBinding {
+                dataset_name: dsk.name.clone(),
+                column_mapping: ResolvedColumnMapping::from_column_mapping(
+                    &semstrait_model::ColumnMapping::Explicit(mapping),
+                ),
+                resolved_sources,
+            };
+
+            let temporal_dim = dimensions
+                .iter()
+                .find(|(_, d)| matches!(d.dim_type, semstrait_model::DimensionType::Temporal(_)))
+                .map(|(name, _)| name.clone());
+
+            let interface = build_compiled_interface(temporal_dim);
+            Ok(CompiledDataKind::Dataset(Box::new(CompiledDatasetKind {
+                interface,
+                binding,
+            })))
+        }
+        _ => {
+            // Multi-dataset kinds: build bindings from children.
+            let bindings = compile_dataset_bindings(dk, resolution);
+
+            // Compile relationships (only relevant for joinsets, but harmless to collect for all).
+            let compiled_rels: Vec<CompiledRelationship> = dk
+                .relationships()
+                .iter()
+                .map(|rel| CompiledRelationship {
+                    name: rel.name.clone(),
+                    from: rel.from.clone(),
+                    to: rel.to.clone(),
+                    join_type: rel.join_type,
+                    columns: rel.columns.clone(),
+                    cardinality: rel.cardinality,
+                })
+                .collect();
+
+            // Infer temporal_dim from children's temporal config, falling back to dimension scan.
+            let temporal_dim = dk
+                .children()
+                .unwrap_or(&[])
+                .iter()
+                .find_map(|ds_entry| {
+                    if let DataKindEntry::Inline(ds) = ds_entry {
+                        ds.extras.temporal.as_ref()?.dimension.clone()
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    dimensions
+                        .iter()
+                        .find(|(_, d)| matches!(d.dim_type, semstrait_model::DimensionType::Temporal(_)))
+                        .map(|(name, _)| name.clone())
+                });
+
+            let interface = build_compiled_interface(temporal_dim);
+
+            // Single-dataset kinds → Dataset fast path.
+            // A kind with 1 dataset is functionally a dataset for query purposes —
+            // no grain routing, union, or join logic needed. The dataset planner
+            // handles computed dimensions and simpler plans correctly.
+            if bindings.len() == 1 {
+                let binding = bindings.into_iter().next().unwrap();
+                return Ok(CompiledDataKind::Dataset(Box::new(CompiledDatasetKind {
+                    interface,
+                    binding,
+                })));
+            }
+
+            // Build acceleration structures.
+            let metric_order = MetricOrder::build(&metrics, &measures);
+            let coverage_index = CoverageIndex::build(&dimensions, &measures, &bindings);
+            let dimension_index = DimensionIndex::build(&dimensions, &bindings);
+
+            match dk {
+                DataKind::Grainset(_) => {
+                    let grain_map = interface
+                        .temporal_dim
+                        .as_deref()
+                        .map(|td| GrainMap::build(td, &bindings));
+
+                    Ok(CompiledDataKind::Grainset(Box::new(CompiledGrainsetKind {
+                        interface,
+                        bindings,
+                        coverage_index,
+                        dimension_index,
+                        metric_order,
+                        grain_map,
+                    })))
+                }
+                DataKind::Unionset(u) => {
+                    Ok(CompiledDataKind::Unionset(Box::new(CompiledUnionsetKind {
+                        interface,
+                        mode: u.mode,
+                        bindings,
+                        coverage_index,
+                        dimension_index,
+                        metric_order,
+                    })))
+                }
+                DataKind::Joinset(j) => {
+                    let adjacency_index = AdjacencyIndex::build(&bindings, &compiled_rels);
+                    Ok(CompiledDataKind::Joinset(Box::new(CompiledJoinsetKind {
+                        interface,
+                        associativity: j.associativity,
+                        bindings,
+                        relationships: compiled_rels,
+                        coverage_index,
+                        dimension_index,
+                        metric_order,
+                        adjacency_index,
+                    })))
+                }
+                DataKind::Dataset(_) => unreachable!("handled above"),
+            }
+        }
+    }
+}
+
+/// Build DatasetBindings from a DataKind's children.
+fn compile_dataset_bindings(
+    dk: &DataKind,
+    resolution: &SourceResolutionResult,
+) -> Vec<crate::acceleration::DatasetBinding> {
+    dk.children()
+        .unwrap_or(&[])
         .iter()
         .filter_map(|ds_entry| {
-            if let KindDatasetEntry::Inline(ds) = ds_entry {
+            if let DataKindEntry::Inline(ds) = ds_entry {
                 let ds_name = dataset_display_name(&ds.name).to_string();
-
-                // Use pre-resolved sources if available, otherwise build from storage config.
-                // Key invariant: both sides use dataset_display_name() — see SourceResolutionResult.
-                let resolved_sources = if let Some(sources) = resolution.resolved.get(&ds_name) {
-                    sources.clone()
-                } else {
-                    debug_assert!(
-                        ds.extras.storage.as_ref().is_none_or(|s| s.paths.is_empty() && s.tables.is_empty()),
-                        "dataset '{}' has storage config but no entry in SourceResolutionResult — \
-                         key mismatch between resolve_sources and compile_kind?",
-                        ds_name
+                let resolved_sources = resolve_child_dataset_sources(&ds_name, ds, resolution);
+                let column_mapping =
+                    crate::acceleration::ResolvedColumnMapping::from_column_mapping(
+                        &ds.extras.column_mapping,
                     );
-                    // Fallback: build from raw storage config (no resolution happened)
-                    ds.extras.storage.as_ref()
-                        .map(|storage| {
-                            let mut result = Vec::new();
-                            for p in &storage.paths {
-                                result.push(crate::acceleration::ResolvedSource {
-                                    reference: p.clone(),
-                                    source_type: crate::acceleration::SourceType::Path,
-                                    table_fqn: None,
-                                    location: None,
-                                    format: storage.format,
-                                    catalog_alias: None,
-                                    schema: None,
-                                });
-                            }
-                            for t in &storage.tables {
-                                result.push(crate::acceleration::ResolvedSource {
-                                    reference: t.clone(),
-                                    source_type: crate::acceleration::SourceType::Table,
-                                    table_fqn: None,
-                                    location: None,
-                                    format: None,
-                                    catalog_alias: None,
-                                    schema: None,
-                                });
-                            }
-                            result
-                        })
-                        .unwrap_or_default()
-                };
-
-                Some(CompiledKindDataset {
-                    name: ds_name,
-                    extras: ds.extras.clone(),
+                Some(crate::acceleration::DatasetBinding {
+                    dataset_name: ds_name,
+                    column_mapping,
                     resolved_sources,
                 })
             } else {
                 None
             }
         })
-        .collect();
+        .collect()
+}
 
-    // Compile kind relationships
-    let compiled_rels: Vec<CompiledRelationship> = kind
-        .relationships
-        .iter()
-        .map(|rel| CompiledRelationship {
-            name: rel.name.clone(),
-            from: rel.from.clone(),
-            to: rel.to.clone(),
-            join_type: rel.join_type,
-            columns: rel.columns.clone(),
-            cardinality: rel.cardinality,
-        })
-        .collect();
+/// Resolve sources for a standalone dataset from its extras.
+fn resolve_dataset_sources(
+    name: &str,
+    extras: &Option<DatasetExtras>,
+    resolution: &SourceResolutionResult,
+) -> Vec<crate::acceleration::ResolvedSource> {
+    if let Some(sources) = resolution.resolved.get(name) {
+        return sources.clone();
+    }
+    extras
+        .as_ref()
+        .and_then(|e| e.storage.as_ref())
+        .map(build_fallback_sources)
+        .unwrap_or_default()
+}
 
-    let measures = compile_measures(&kind.measures)?;
-    let metrics = compile_metrics(&kind.metrics, metric_depths)?;
+/// Resolve sources for a kind's child dataset.
+fn resolve_child_dataset_sources(
+    ds_name: &str,
+    ds: &DataKindBinding,
+    resolution: &SourceResolutionResult,
+) -> Vec<crate::acceleration::ResolvedSource> {
+    if let Some(sources) = resolution.resolved.get(ds_name) {
+        return sources.clone();
+    }
+    debug_assert!(
+        ds.extras
+            .storage
+            .as_ref()
+            .is_none_or(|s| s.paths.is_empty() && s.tables.is_empty()),
+        "dataset '{}' has storage config but no entry in SourceResolutionResult",
+        ds_name
+    );
+    ds.extras
+        .storage
+        .as_ref()
+        .map(build_fallback_sources)
+        .unwrap_or_default()
+}
 
-    // Validate: measures with agg must not reference other measures (D-042).
-    validate_measure_references(&measures)?;
-
-    Ok(CompiledKind {
-        name: kind.name.clone(),
-        description: kind.description.clone(),
-        dimensions: compile_dimensions(&kind.dimensions),
-        measures,
-        metrics,
-        keys: kind.keys.clone(),
-        kind_type: CompiledKindType::from(&kind.kind_type),
-        datasets: compiled_datasets,
-        relationships: compiled_rels,
-        domain: kind.domain.as_ref().map(|d| d.0.clone()),
-        filters: compile_measure_filters(&kind.filters)?,
-    })
+/// Build fallback ResolvedSources from raw StorageConfig (when no provider resolved them).
+fn build_fallback_sources(
+    storage: &StorageConfig,
+) -> Vec<crate::acceleration::ResolvedSource> {
+    let mut result = Vec::new();
+    for p in &storage.paths {
+        result.push(crate::acceleration::ResolvedSource {
+            reference: p.clone(),
+            source_type: crate::acceleration::SourceType::Path,
+            table_fqn: None,
+            location: None,
+            format: storage.format,
+            catalog_alias: None,
+            schema: None,
+        });
+    }
+    for t in &storage.tables {
+        result.push(crate::acceleration::ResolvedSource {
+            reference: t.clone(),
+            source_type: crate::acceleration::SourceType::Table,
+            table_fqn: None,
+            location: None,
+            format: None,
+            catalog_alias: None,
+            schema: None,
+        });
+    }
+    result
 }
 
 /// Validate that measures with aggregation do not reference other measures.
@@ -1716,17 +2399,15 @@ fn validate_measure_references(
     let measure_names: HashSet<&str> = measures.keys().map(|k| k.as_str()).collect();
 
     for (name, measure) in measures {
-        if measure.agg.is_some() {
-            let refs = collect_expr_column_refs(&measure.expr);
-            for ref_name in &refs {
-                // Self-reference is fine (measure referencing its own name = physical column).
-                if ref_name != name && measure_names.contains(ref_name.as_str()) {
-                    errors.push(format!(
-                        "measure '{}': references measure '{}' but has aggregation; \
-                         use a metric to derive from other measures",
-                        name, ref_name
-                    ));
-                }
+        let refs = collect_expr_column_refs(&measure.expr);
+        for ref_name in &refs {
+            // Self-reference is fine (measure referencing its own name = physical column).
+            if ref_name != name && measure_names.contains(ref_name.as_str()) {
+                errors.push(format!(
+                    "measure '{}': references measure '{}' but has aggregation; \
+                     use a metric to derive from other measures",
+                    name, ref_name
+                ));
             }
         }
     }
@@ -1767,6 +2448,7 @@ fn collect_expr_refs_inner(expr: &Expr, refs: &mut Vec<String>) {
                 collect_expr_refs_inner(arg, refs);
             }
         }
+        Expr::Cast(c) => collect_expr_refs_inner(&c.expr, refs),
         Expr::Aggregate(agg) => collect_expr_refs_inner(&agg.expr, refs),
         Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
             collect_expr_refs_inner(&u.expr, refs);
@@ -1800,6 +2482,18 @@ fn collect_expr_refs_inner(expr: &Expr, refs: &mut Vec<String>) {
             collect_expr_refs_inner(&lk.expr, refs);
             collect_expr_refs_inner(&lk.pattern, refs);
         }
+        Expr::ILike(lk) => {
+            collect_expr_refs_inner(&lk.expr, refs);
+            collect_expr_refs_inner(&lk.pattern, refs);
+        }
+        Expr::RegexpMatch(re) => {
+            collect_expr_refs_inner(&re.expr, refs);
+            collect_expr_refs_inner(&re.pattern, refs);
+        }
+        Expr::RegexpExtract(re) => {
+            collect_expr_refs_inner(&re.expr, refs);
+            collect_expr_refs_inner(&re.pattern, refs);
+        }
         Expr::Literal(_) => {}
     }
 }
@@ -1809,7 +2503,7 @@ fn compile_measure_filters(
 ) -> Result<Vec<CompiledFilter>, CompileError> {
     let mut compiled = Vec::new();
     for mf in filters {
-        let expr = parse_expr(&mf.expr, &mf.name)?;
+        let expr = resolve_expr_source(&mf.expr, &mf.name)?;
         compiled.push(CompiledFilter::from_measure_filter(mf, expr));
     }
     Ok(compiled)
@@ -1880,7 +2574,104 @@ const SQL_KEYWORDS: &[&str] = &[
 
 fn looks_like_raw_sql(expr: &str) -> bool {
     let upper = expr.to_uppercase();
-    SQL_KEYWORDS.iter().any(|kw| upper.contains(kw))
+    // Use word-boundary matching: keyword must be preceded/followed by a non-alphanumeric
+    // character (or be at the start/end of the string). This avoids false positives like
+    // "deleted" matching "DELETE" or "updated_at" matching "UPDATE".
+    SQL_KEYWORDS.iter().any(|kw| {
+        let mut start = 0;
+        while let Some(pos) = upper[start..].find(kw) {
+            let abs_pos = start + pos;
+            let end_pos = abs_pos + kw.len();
+            let before_ok = abs_pos == 0
+                || !upper.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+            let after_ok = end_pos == upper.len()
+                || !upper.as_bytes()[end_pos].is_ascii_alphanumeric();
+            if before_ok && after_ok {
+                return true;
+            }
+            start = abs_pos + 1;
+        }
+        false
+    })
+}
+
+/// Extract aggregation function and inner expression from a legacy parsed Expr.
+///
+/// Given a parsed Expr like `Aggregate(Sum, Column("amount"))`, returns
+/// `(Aggregation::Sum, Column("amount"))`. Used for auto-upgrading legacy
+/// measures that embed aggregation in `expr` instead of using `agg:`.
+fn try_extract_aggregation_from_expr(expr: &Expr) -> Option<(semstrait_core::Aggregation, Expr)> {
+    match expr {
+        Expr::Aggregate(agg_expr) => {
+            Some((agg_expr.function, *agg_expr.expr.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// Collect transitive leaf measure additivity values from a metric expression.
+///
+/// Walks the expression tree, resolving EntityRef/Column names against measures
+/// (and recursively against already-compiled metrics). Returns the set of
+/// AdditivityType values from all leaf measures reached.
+fn collect_leaf_measure_additivity(
+    expr: &Expr,
+    measures: &IndexMap<String, CompiledMeasure>,
+    metrics: &IndexMap<String, CompiledMetric>,
+) -> Vec<AdditivityType> {
+    let mut result = Vec::new();
+    collect_leaf_additivity_inner(expr, measures, metrics, &mut result);
+    result
+}
+
+fn collect_leaf_additivity_inner(
+    expr: &Expr,
+    measures: &IndexMap<String, CompiledMeasure>,
+    metrics: &IndexMap<String, CompiledMetric>,
+    result: &mut Vec<AdditivityType>,
+) {
+    match expr {
+        Expr::Column(col) => {
+            if let Some(m) = measures.get(&col.name) {
+                if let Some(ref a) = m.additivity {
+                    result.push(a.clone());
+                }
+            } else if let Some(met) = metrics.get(&col.name) {
+                if let Some(ref a) = met.additivity {
+                    result.push(a.clone());
+                } else {
+                    collect_leaf_additivity_inner(&met.expr, measures, metrics, result);
+                }
+            }
+        }
+        Expr::EntityRef(er) => {
+            if let Some(m) = measures.get(&er.name) {
+                if let Some(ref a) = m.additivity {
+                    result.push(a.clone());
+                }
+            } else if let Some(met) = metrics.get(&er.name) {
+                if let Some(ref a) = met.additivity {
+                    result.push(a.clone());
+                } else {
+                    collect_leaf_additivity_inner(&met.expr, measures, metrics, result);
+                }
+            }
+        }
+        Expr::BinaryOp(bin) => {
+            collect_leaf_additivity_inner(&bin.left, measures, metrics, result);
+            collect_leaf_additivity_inner(&bin.right, measures, metrics, result);
+        }
+        Expr::Case(case) => {
+            for wt in &case.when_then {
+                collect_leaf_additivity_inner(&wt.condition, measures, metrics, result);
+                collect_leaf_additivity_inner(&wt.result, measures, metrics, result);
+            }
+            if let Some(ref e) = case.else_expr {
+                collect_leaf_additivity_inner(e, measures, metrics, result);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn try_parse_aggregation(expr: &str) -> Option<Expr> {
@@ -2007,16 +2798,8 @@ fn collect_all_metrics(model: &SemanticModel) -> Vec<&Metric> {
     let mut all = Vec::new();
     all.extend(model.metrics.iter());
 
-    for ds in &model.datasets {
-        for m in &ds.metrics {
-            if let MetricEntry::Inline(met) = m {
-                all.push(met);
-            }
-        }
-    }
-
-    for kind in &model.kinds {
-        for m in &kind.metrics {
+    for dk in model.data_kinds.values() {
+        for m in dk.interface().metrics.values() {
             if let MetricEntry::Inline(met) = m {
                 all.push(met);
             }
@@ -2047,6 +2830,221 @@ fn extract_identifiers_from_expr(expr: &str) -> Vec<String> {
         .filter(|s| s.parse::<f64>().is_err())
         .map(String::from)
         .collect()
+}
+
+/// Validate all `FunctionCall` nodes in an Expr tree against the registry.
+///
+/// Returns a list of validation error messages. Unknown functions are ignored
+/// (they may be engine-specific); only arity mismatches are errors.
+fn validate_function_calls(
+    expr: &Expr,
+    entity_name: &str,
+    registry: &crate::function_registry::FunctionRegistry,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    validate_function_calls_inner(expr, entity_name, registry, &mut errors);
+    errors
+}
+
+fn validate_function_calls_inner(
+    expr: &Expr,
+    entity_name: &str,
+    registry: &crate::function_registry::FunctionRegistry,
+    errors: &mut Vec<String>,
+) {
+    match expr {
+        Expr::FunctionCall(fc) => {
+            if let Err(msg) = registry.validate(&fc.name, fc.args.len()) {
+                errors.push(format!("'{}': {}", entity_name, msg));
+            }
+            for arg in &fc.args {
+                validate_function_calls_inner(arg, entity_name, registry, errors);
+            }
+        }
+        // Walk all other variants' children
+        Expr::EntityRef(_) | Expr::Column(_) | Expr::Literal(_) => {}
+        Expr::Aggregate(agg) => validate_function_calls_inner(&agg.expr, entity_name, registry, errors),
+        Expr::BinaryOp(bin) => {
+            validate_function_calls_inner(&bin.left, entity_name, registry, errors);
+            validate_function_calls_inner(&bin.right, entity_name, registry, errors);
+        }
+        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
+            validate_function_calls_inner(&u.expr, entity_name, registry, errors);
+        }
+        Expr::Case(c) => {
+            for wc in &c.when_then {
+                validate_function_calls_inner(&wc.condition, entity_name, registry, errors);
+                validate_function_calls_inner(&wc.result, entity_name, registry, errors);
+            }
+            if let Some(e) = &c.else_expr {
+                validate_function_calls_inner(e, entity_name, registry, errors);
+            }
+        }
+        Expr::InList(il) => {
+            validate_function_calls_inner(&il.expr, entity_name, registry, errors);
+            for item in &il.list {
+                validate_function_calls_inner(item, entity_name, registry, errors);
+            }
+        }
+        Expr::Between(b) => {
+            validate_function_calls_inner(&b.expr, entity_name, registry, errors);
+            validate_function_calls_inner(&b.low, entity_name, registry, errors);
+            validate_function_calls_inner(&b.high, entity_name, registry, errors);
+        }
+        Expr::Like(l) => {
+            validate_function_calls_inner(&l.expr, entity_name, registry, errors);
+            validate_function_calls_inner(&l.pattern, entity_name, registry, errors);
+        }
+        Expr::ILike(l) => {
+            validate_function_calls_inner(&l.expr, entity_name, registry, errors);
+            validate_function_calls_inner(&l.pattern, entity_name, registry, errors);
+        }
+        Expr::RegexpMatch(re) => {
+            validate_function_calls_inner(&re.expr, entity_name, registry, errors);
+            validate_function_calls_inner(&re.pattern, entity_name, registry, errors);
+        }
+        Expr::RegexpExtract(re) => {
+            validate_function_calls_inner(&re.expr, entity_name, registry, errors);
+            validate_function_calls_inner(&re.pattern, entity_name, registry, errors);
+        }
+        Expr::Coalesce(c) => {
+            for e in &c.exprs {
+                validate_function_calls_inner(e, entity_name, registry, errors);
+            }
+        }
+        Expr::NullIf(n) => {
+            validate_function_calls_inner(&n.expr, entity_name, registry, errors);
+            validate_function_calls_inner(&n.null_expr, entity_name, registry, errors);
+        }
+        Expr::DateTrunc(dt) => {
+            validate_function_calls_inner(&dt.expr, entity_name, registry, errors);
+        }
+        Expr::Cast(c) => {
+            validate_function_calls_inner(&c.expr, entity_name, registry, errors);
+        }
+        Expr::Guard(g) => {
+            validate_function_calls_inner(&g.condition, entity_name, registry, errors);
+            validate_function_calls_inner(&g.expr, entity_name, registry, errors);
+        }
+    }
+}
+
+/// Extract identifiers from an `ExprSource`.
+///
+/// For inline DSL strings, delegates to `extract_identifiers_from_expr`.
+/// For declarative blocks, collects entity refs from the converted Expr tree.
+fn extract_identifiers_from_expr_source(source: &semstrait_model::expr_block::ExprSource) -> Vec<String> {
+    match source {
+        semstrait_model::expr_block::ExprSource::Inline(s) => extract_identifiers_from_expr(s),
+        semstrait_model::expr_block::ExprSource::Declarative(block) => {
+            // Convert to Expr and collect EntityRef names.
+            // Column references in declarative blocks may also be entity refs
+            // in metric context — collect both.
+            match block.to_expr() {
+                Ok(expr) => collect_identifiers_from_expr(&expr),
+                Err(_) => vec![],
+            }
+        }
+    }
+}
+
+/// Collect identifier names from a compiled Expr tree (for metric dependency graph).
+fn collect_identifiers_from_expr(expr: &Expr) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_identifiers_inner(expr, &mut names);
+    names
+}
+
+fn collect_identifiers_inner(expr: &Expr, names: &mut Vec<String>) {
+    match expr {
+        Expr::EntityRef(e) => names.push(e.name.clone()),
+        Expr::Column(c) => names.push(c.name.clone()),
+        Expr::Literal(_) => {}
+        Expr::Aggregate(agg) => collect_identifiers_inner(&agg.expr, names),
+        Expr::BinaryOp(bin) => {
+            collect_identifiers_inner(&bin.left, names);
+            collect_identifiers_inner(&bin.right, names);
+        }
+        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
+            collect_identifiers_inner(&u.expr, names);
+        }
+        Expr::Case(c) => {
+            for wc in &c.when_then {
+                collect_identifiers_inner(&wc.condition, names);
+                collect_identifiers_inner(&wc.result, names);
+            }
+            if let Some(else_expr) = &c.else_expr {
+                collect_identifiers_inner(else_expr, names);
+            }
+        }
+        Expr::InList(il) => {
+            collect_identifiers_inner(&il.expr, names);
+            for item in &il.list {
+                collect_identifiers_inner(item, names);
+            }
+        }
+        Expr::Between(b) => {
+            collect_identifiers_inner(&b.expr, names);
+            collect_identifiers_inner(&b.low, names);
+            collect_identifiers_inner(&b.high, names);
+        }
+        Expr::Like(l) => {
+            collect_identifiers_inner(&l.expr, names);
+            collect_identifiers_inner(&l.pattern, names);
+        }
+        Expr::ILike(l) => {
+            collect_identifiers_inner(&l.expr, names);
+            collect_identifiers_inner(&l.pattern, names);
+        }
+        Expr::RegexpMatch(re) => {
+            collect_identifiers_inner(&re.expr, names);
+            collect_identifiers_inner(&re.pattern, names);
+        }
+        Expr::RegexpExtract(re) => {
+            collect_identifiers_inner(&re.expr, names);
+            collect_identifiers_inner(&re.pattern, names);
+        }
+        Expr::Coalesce(c) => {
+            for e in &c.exprs {
+                collect_identifiers_inner(e, names);
+            }
+        }
+        Expr::NullIf(n) => {
+            collect_identifiers_inner(&n.expr, names);
+            collect_identifiers_inner(&n.null_expr, names);
+        }
+        Expr::DateTrunc(dt) => {
+            collect_identifiers_inner(&dt.expr, names);
+        }
+        Expr::FunctionCall(fc) => {
+            for arg in &fc.args {
+                collect_identifiers_inner(arg, names);
+            }
+        }
+        Expr::Cast(c) => collect_identifiers_inner(&c.expr, names),
+        Expr::Guard(g) => {
+            collect_identifiers_inner(&g.condition, names);
+            collect_identifiers_inner(&g.expr, names);
+        }
+    }
+}
+
+/// Resolve an `ExprSource` to a core `Expr`.
+///
+/// Inline strings are parsed via the DSL parser.
+/// Declarative blocks are converted directly via `ExprBlock::to_expr()`.
+fn resolve_expr_source(
+    source: &semstrait_model::expr_block::ExprSource,
+    context_name: &str,
+) -> Result<Expr, CompileError> {
+    match source {
+        semstrait_model::expr_block::ExprSource::Inline(s) => parse_expr(s, context_name),
+        semstrait_model::expr_block::ExprSource::Declarative(block) => {
+            block.to_expr().map_err(|e| {
+                CompileError::ExprCompilation(vec![format!("'{}': {}", context_name, e)])
+            })
+        }
+    }
 }
 
 /// Parse a table FQN string into a TableRef.
@@ -2170,31 +3168,18 @@ mod tests {
             ai_context: None,
             labels: vec![],
             namespace: None,
-            datasets: vec![
-                Dataset {
+            data_kinds: BTreeMap::from([
+                ("orders".to_string(), DataKind::Dataset(DatasetKind {
                     name: "orders".to_string(),
-                    description: None,
-                    domain: None,
-                    keys: None,
-                    dimensions: vec![],
-                    measures: vec![],
-                    metrics: vec![],
-                    filters: vec![],
+                    interface: SemanticInterface::default(),
                     extras: None,
-                },
-                Dataset {
+                })),
+                ("orders_dup".to_string(), DataKind::Dataset(DatasetKind {
                     name: "orders".to_string(),
-                    description: None,
-                    domain: None,
-                    keys: None,
-                    dimensions: vec![],
-                    measures: vec![],
-                    metrics: vec![],
-                    filters: vec![],
+                    interface: SemanticInterface::default(),
                     extras: None,
-                },
-            ],
-            kinds: vec![],
+                })),
+            ]),
             relationships: vec![],
             dimensions: vec![],
             measures: vec![],
@@ -2213,21 +3198,14 @@ mod tests {
             ai_context: None,
             labels: vec![],
             namespace: None,
-            datasets: vec![],
-            kinds: vec![Kind {
-                name: "empty_kind".to_string(),
-                description: None,
-                kind_type: KindTypeSpec::Grainset,
-                domain: None,
-                keys: None,
-                dimensions: vec![],
-                measures: vec![],
-                metrics: vec![],
-                datasets: vec![],
-                relationships: vec![],
-                filters: vec![],
-                extras: None,
-            }],
+            data_kinds: BTreeMap::from([
+                ("empty_kind".to_string(), DataKind::Grainset(GrainsetKind {
+                    name: "empty_kind".to_string(),
+                    interface: SemanticInterface::default(),
+                    datasets: vec![],
+                    extras: None,
+                })),
+            ]),
             relationships: vec![],
             dimensions: vec![],
             measures: vec![],
@@ -2302,5 +3280,63 @@ mod tests {
         let r = parse_table_ref("ns1.ns2.orders", "default");
         assert_eq!(r.namespace, "ns1.ns2");
         assert_eq!(r.name, "orders");
+    }
+
+    /// SR-5a: Expression referencing name not in interface → error.
+    #[test]
+    fn test_validate_expr_scope_unknown_ref() {
+        use indexmap::IndexMap;
+        use semstrait_core::expr::Expr;
+        use crate::compiled::CompiledDimension;
+
+        let mut dimensions = IndexMap::new();
+        dimensions.insert("country".to_string(), CompiledDimension {
+            name: "country".to_string(),
+            description: None,
+            data_type: semstrait_core::DataType::String,
+            dim_type: semstrait_model::DimensionType::Categorical(semstrait_model::CategoricalDimension { enum_values: None }),
+            expr: Some(Expr::column("nonexistent_col")), // references unknown name
+            expr_source: Some("nonexistent_col".to_string()),
+        });
+
+        let measures = IndexMap::new();
+        let metrics = IndexMap::new();
+
+        let result = super::validate_expr_scope(&dimensions, &measures, &metrics, "test_kind");
+        assert!(result.is_err());
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(err.contains("nonexistent_col"), "error: {}", err);
+    }
+
+    /// SR-5a: Expression referencing valid interface name → OK.
+    #[test]
+    fn test_validate_expr_scope_valid_ref() {
+        use indexmap::IndexMap;
+        use semstrait_core::expr::Expr;
+        use crate::compiled::CompiledDimension;
+
+        let mut dimensions = IndexMap::new();
+        dimensions.insert("raw_name".to_string(), CompiledDimension {
+            name: "raw_name".to_string(),
+            description: None,
+            data_type: semstrait_core::DataType::String,
+            dim_type: semstrait_model::DimensionType::Categorical(semstrait_model::CategoricalDimension { enum_values: None }),
+            expr: None,
+            expr_source: None,
+        });
+        dimensions.insert("name_upper".to_string(), CompiledDimension {
+            name: "name_upper".to_string(),
+            description: None,
+            data_type: semstrait_core::DataType::String,
+            dim_type: semstrait_model::DimensionType::Categorical(semstrait_model::CategoricalDimension { enum_values: None }),
+            expr: Some(Expr::column("raw_name")), // references valid dim
+            expr_source: Some("UPPER(raw_name)".to_string()),
+        });
+
+        let measures = IndexMap::new();
+        let metrics = IndexMap::new();
+
+        let result = super::validate_expr_scope(&dimensions, &measures, &metrics, "test_kind");
+        assert!(result.is_ok());
     }
 }

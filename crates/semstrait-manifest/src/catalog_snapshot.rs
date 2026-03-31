@@ -170,14 +170,14 @@ mod tests {
                         columns: vec![
                             ResolvedColumn {
                                 name: "id".to_string(),
-                                data_type: DataType::Int64,
+                                data_type: DataType::Integer,
                                 nullable: false,
                                 comment: None,
                                 field_id: Some(1),
                             },
                             ResolvedColumn {
                                 name: "amount".to_string(),
-                                data_type: DataType::Float64,
+                                data_type: DataType::Number,
                                 nullable: true,
                                 comment: Some("Order amount".to_string()),
                                 field_id: Some(2),

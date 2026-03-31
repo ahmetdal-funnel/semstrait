@@ -1,0 +1,1045 @@
+# =============================================================================
+# SEMSTRAIT E2E FULL COVERAGE TEST — Semantic Model
+# =============================================================================
+#
+# This model exercises every feature at least once:
+#
+#   Data kinds:          Dataset, Grainset, Unionset (all + unique), Joinset
+#   Kind nesting:        unionset -> grainset ref, joinset -> unionset ref
+#   Dimension types:     Temporal, Categorical, Binary, Bucketed, Metadata (path + partition), Geo
+#   Data types:          i8, i16, i32, i64, f32, f64, bool, string, date, timestamp, decimal
+#   Aggregation:         sum, avg, count, count_distinct, min, max
+#   Additivity:          Full (explicit), Semi (latest + earliest), Non (derived)
+#   Measure features:    Filters, Constraints (one_of, none_of, all, allowed, prohibited)
+#   Metric types:        Simple, Ratio (safe-divide), Derived, Nested (depth > 0)
+#   Column mapping:      Simple, WithGrain, Literal, Auto
+#   Expressions:         Inline string, Declarative ExprBlock (all function categories)
+#   Computed dimensions: UPPER, CASE, CONCAT, SUBSTRING, COALESCE, ROUND, etc.
+#   Temporal configs:    Timeseries, Snapshot, Events, SCD type 1, SCD type 2
+#   Join types:          Inner, Left, Right, Full
+#   Union modes:         All, Unique
+#   Relationships:       2-hop, 3-way, multi-column, all cardinalities
+#   Storage:             Paths (parquet, csv), Tables (iceberg)
+#   Partition:           Range, List
+#   Kind-level filters:  Domain filtering
+#   Dataset-level filters: Pre-filters with ExprSource
+#
+# =============================================================================
+
+semantic_model:
+  name: e2e_full_coverage
+  description: "End-to-end test model covering every semstrait feature"
+  ai_context:
+    description: "Test model for validating full feature coverage"
+    entity: "e2e_test"
+    synonyms:
+      - full coverage test
+      - comprehensive test
+  labels:
+    - test
+    - e2e
+    - full_coverage
+
+  # ===========================================================================
+  # Shared top-level definitions
+  # ===========================================================================
+
+  dimensions:
+    - name: event_date
+      description: "Event timestamp (finest grain)"
+      data_type: date
+      type:
+        temporal:
+          grains: [day, week, month, quarter, year]
+
+    - name: country
+      description: "Country code"
+      data_type: string
+      type:
+        categorical:
+          enum:
+            - US
+            - UK
+            - DE
+            - JP
+
+  measures:
+    - name: revenue
+      description: "Total revenue"
+      data_type: f64
+      agg: sum
+      additivity:
+        full: {}
+
+    - name: quantity
+      description: "Total quantity"
+      data_type: i32
+      agg: sum
+
+    - name: order_count
+      description: "Number of orders"
+      data_type: i64
+      agg: count
+
+  metrics:
+    - name: avg_order_value
+      description: "Revenue per order (ratio metric)"
+      data_type: f64
+      expr: "revenue / order_count"
+
+  # ===========================================================================
+  # DATASETS — standalone queryable entities
+  # ===========================================================================
+  datasets:
+    # --- Transactions: all numeric data types, timeseries, parquet paths ---
+    - name: transactions
+      description: "Financial transactions with all numeric data types"
+      ai_context:
+        description: "Core transactional data with varied numeric precision"
+        entity: "transaction"
+
+      keys:
+        primary:
+          - txn_id
+        foreign:
+          - columns: [account_id]
+            reference: accounts
+            cardinality: many_to_one
+
+      dimensions:
+        - ref: event_date
+        - ref: country
+
+        # Categorical with enum
+        - name: txn_type
+          data_type: string
+          type:
+            categorical:
+              enum:
+                - purchase
+                - refund
+                - chargeback
+
+        # Binary dimension
+        - name: is_fraud
+          data_type: bool
+          type:
+            binary:
+              type: boolean
+
+        # Bucketed dimension
+        - name: amount_tier
+          data_type: string
+          type:
+            bucketed:
+              column: amount
+              buckets:
+                - name: micro
+                  start: 0
+                  end: 10
+                - name: small
+                  start: 10
+                  end: 100
+                - name: medium
+                  start: 100
+                  end: 1000
+                - name: large
+                  start: 1000
+                  end: 1000000
+
+        # Geo dimension
+        - name: location
+          data_type: string
+          type:
+            geo:
+              lat: latitude
+              lon: longitude
+
+        # Metadata dimension — path extraction
+        - name: source_year
+          description: "Year extracted from S3 path token"
+          data_type: string
+          type:
+            metadata:
+              path:
+                token: 4
+
+        # Metadata dimension — partition extraction
+        - name: partition_region
+          description: "Region extracted from Hive partition"
+          data_type: string
+          type:
+            metadata:
+              partition:
+                level: 1
+
+        # Computed dimension — declarative upper
+        - name: txn_type_upper
+          description: "Uppercased transaction type"
+          data_type: string
+          expr:
+            upper: txn_type
+
+        # Computed dimension — declarative CASE
+        - name: fraud_label
+          description: "Human-readable fraud label"
+          data_type: string
+          expr:
+            case:
+              when:
+                - condition: {eq: [is_fraud, true]}
+                  then: {lit: "Fraud"}
+              else: {lit: "Clean"}
+
+        # Computed dimension — declarative CONCAT
+        - name: country_type
+          description: "Country and type concatenated"
+          data_type: string
+          expr:
+            concat:
+              - country
+              - {lit: "-"}
+              - txn_type
+
+        # Computed dimension — declarative SUBSTRING
+        - name: txn_prefix
+          description: "First 3 chars of txn_type"
+          data_type: string
+          expr:
+            substr:
+              col: txn_type
+              start: 1
+              length: 3
+
+      measures:
+        - ref: revenue
+        - ref: quantity
+        - ref: order_count
+
+        # i8 data type
+        - name: priority_level
+          description: "Priority (1-5)"
+          data_type: i8
+          agg: max
+
+        # i16 data type
+        - name: item_count
+          description: "Number of line items"
+          data_type: i16
+          agg: sum
+
+        # f32 data type
+        - name: discount_rate
+          description: "Discount percentage"
+          data_type: f32
+          agg: avg
+
+        # decimal data type
+        - name: precise_amount
+          description: "Amount with fixed precision"
+          data_type: "decimal(18,4)"
+          agg: sum
+
+        # count_distinct
+        - name: unique_accounts
+          description: "Distinct account count"
+          data_type: i64
+          agg: count_distinct
+
+        # min
+        - name: min_amount
+          description: "Smallest transaction"
+          data_type: f64
+          agg: min
+
+        # max
+        - name: max_amount
+          description: "Largest transaction"
+          data_type: f64
+          agg: max
+
+        # avg
+        - name: avg_amount
+          description: "Average transaction value"
+          data_type: f64
+          agg: avg
+
+        # Measure with filter (declarative ExprBlock)
+        - name: purchase_revenue
+          description: "Revenue from purchases only"
+          data_type: f64
+          agg: sum
+          filters:
+            - name: purchases_only
+              expr:
+                eq: [txn_type, {lit: "purchase"}]
+
+        # Measure with constraints
+        - name: constrained_revenue
+          description: "Revenue requiring date dimension"
+          data_type: f64
+          agg: sum
+          constraints:
+            dimensions:
+              all:
+                - event_date
+              one_of:
+                - country
+                - txn_type
+              none_of:
+                - is_fraud
+            aggregations:
+              allowed:
+                - SUM
+                - COUNT
+              prohibited:
+                - AVG
+
+      metrics:
+        - ref: avg_order_value
+
+        # Simple metric
+        - name: refund_ratio
+          description: "Refund amount vs total revenue"
+          data_type: f64
+          expr: "purchase_revenue / revenue"
+
+        # Nested metric (depth > 0)
+        - name: net_efficiency
+          description: "Net efficiency = refund_ratio adjusted"
+          data_type: f64
+          expr: "1 - refund_ratio"
+
+      filters:
+        - name: exclude_test
+          expr:
+            not_eq: [txn_type, {lit: "test"}]
+
+      extras:
+        temporal:
+          type:
+            timeseries:
+              occurred_at: created_at
+        storage:
+          format: parquet
+          paths:
+            - s3://data/transactions/
+
+    # --- Accounts: SCD type 2, parquet ---
+    - name: accounts
+      description: "Customer accounts with SCD type 2 history"
+
+      keys:
+        primary:
+          - account_id
+      dimensions:
+        - name: account_name
+          data_type: string
+          type:
+            categorical:
+        - name: account_status
+          data_type: string
+          type:
+            categorical:
+              enum:
+                - active
+                - suspended
+                - closed
+        - name: account_created
+          data_type: date
+          type:
+            temporal:
+              grains: [day, month, year]
+      measures:
+        - name: account_count
+          data_type: i64
+          agg: count
+      extras:
+        temporal:
+          type:
+            scd:
+              type_2:
+                valid_from: effective_from
+                valid_to: effective_to
+        storage:
+          format: parquet
+          paths:
+            - s3://data/accounts/
+
+    # --- Account changelog: SCD type 1 ---
+    - name: account_changelog
+      description: "Account change log (SCD type 1 — overwrites)"
+
+      dimensions:
+        - name: account_id
+          data_type: string
+          type:
+            categorical:
+        - name: changed_field
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: change_count
+          data_type: i64
+          agg: count
+      extras:
+        temporal:
+          type:
+            scd:
+              type_1: {}
+        storage:
+          format: csv
+          paths:
+            - s3://data/account_changelog/
+
+    # --- Sensor readings: Events temporal, timestamp data type ---
+    - name: sensor_readings
+      description: "IoT sensor readings (event stream)"
+
+      dimensions:
+        - name: reading_ts
+          description: "Timestamp of reading"
+          data_type: timestamp
+          type:
+            temporal:
+              grains: [minute, hour, day]
+        - name: sensor_id
+          data_type: string
+          type:
+            categorical:
+        - name: sensor_type
+          data_type: string
+          type:
+            categorical:
+              enum:
+                - temperature
+                - humidity
+                - pressure
+      measures:
+        - name: reading_value
+          data_type: f64
+          agg: avg
+        - name: reading_count
+          data_type: i64
+          agg: count
+        - name: min_reading
+          data_type: f64
+          agg: min
+        - name: max_reading
+          data_type: f64
+          agg: max
+      extras:
+        temporal:
+          type:
+            events:
+              occurred_at: event_timestamp
+        storage:
+          format: parquet
+          paths:
+            - s3://data/sensors/readings/
+
+    # --- Inventory: Snapshot temporal ---
+    - name: inventory_snapshots
+      description: "Daily inventory snapshots"
+
+      dimensions:
+        - name: snap_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day, month]
+        - name: warehouse
+          data_type: string
+          type:
+            categorical:
+        - name: sku
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: stock_balance
+          description: "Stock on hand (semi-additive: latest)"
+          data_type: i64
+          agg: sum
+          additivity:
+            semi:
+              non_additive_dimensions:
+                - snap_date
+              resolution_strategy: latest
+        - name: stock_received
+          data_type: i64
+          agg: sum
+        - name: stock_shipped
+          data_type: i64
+          agg: sum
+          additivity:
+            semi:
+              non_additive_dimensions:
+                - snap_date
+              resolution_strategy: earliest
+      extras:
+        temporal:
+          type:
+            snapshot:
+              snapshotted_at: snapshot_date
+        storage:
+          format: parquet
+          paths:
+            - s3://data/inventory/snapshots/
+
+    # --- Products: table-based storage (iceberg) ---
+    - name: products
+      description: "Product catalog stored in Iceberg tables"
+
+      keys:
+        primary:
+          - product_id
+      dimensions:
+        - name: product_name
+          data_type: string
+          type:
+            categorical:
+        - name: category
+          data_type: string
+          type:
+            categorical:
+        - name: brand
+          data_type: string
+          type:
+            categorical:
+        - name: launch_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day, month, year]
+      measures:
+        - name: product_count
+          data_type: i64
+          agg: count
+        - name: unit_price
+          data_type: "decimal(10,2)"
+          agg: avg
+      extras:
+        storage:
+          tables:
+            - catalog.products
+
+    # --- Regions: table-based with auto mapping ---
+    - name: regions
+      description: "Region reference data with auto column mapping"
+
+      keys:
+        primary:
+          - region_id
+      dimensions:
+        - name: region_name
+          data_type: string
+          type:
+            categorical:
+        - name: continent
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: region_count
+          data_type: i64
+          agg: count
+      extras:
+        storage:
+          tables:
+            - catalog.regions
+
+    # --- Txn daily agg: monthly pre-aggregated ---
+    - name: txn_monthly_agg
+      description: "Monthly pre-aggregated transactions"
+
+      dimensions:
+        - ref: event_date
+        - ref: country
+      measures:
+        - ref: revenue
+        - ref: order_count
+      extras:
+        storage:
+          format: parquet
+          paths:
+            - s3://data/transactions/monthly/
+
+  # ===========================================================================
+  # GRAINSETS
+  # ===========================================================================
+
+  grainsets:
+    # Grain-aware routing: daily vs monthly
+    - name: txn_by_grain
+      description: "Transaction metrics with grain-aware routing"
+
+      dimensions:
+        - ref: event_date
+        - ref: country
+        - name: txn_type
+          data_type: string
+          type:
+            categorical:
+        # Computed dimension with declarative ExprBlock
+        - name: country_lower
+          data_type: string
+          expr:
+            lower: country
+
+      measures:
+        - ref: revenue
+        - ref: order_count
+        - name: quantity
+          data_type: i32
+          agg: sum
+
+      metrics:
+        - ref: avg_order_value
+        - name: revenue_per_unit
+          data_type: f64
+          expr: "revenue / quantity"
+
+      filters:
+        - name: exclude_chargebacks
+          expr:
+            not_eq: [txn_type, {lit: "chargeback"}]
+
+      datasets:
+        - name: transactions
+          extras:
+            column_mapping:
+              event_date: created_at
+              country: country_code
+              txn_type: transaction_type
+              revenue: amount
+              order_count: txn_id
+              quantity: qty
+            storage:
+              format: parquet
+              paths:
+                - s3://data/transactions/
+
+        - name: txn_monthly_agg
+          extras:
+            column_mapping:
+              event_date:
+                column: month_start
+                grain: month
+              country: country_code
+              revenue: total_revenue
+              order_count: total_orders
+            storage:
+              format: parquet
+              paths:
+                - s3://data/transactions/monthly/
+
+    # Sensor grainset: minute vs hourly vs daily
+    - name: sensor_analytics
+      description: "Sensor analytics with temporal grain routing"
+
+      dimensions:
+        - name: reading_ts
+          data_type: timestamp
+          type:
+            temporal:
+              grains: [minute, hour, day]
+        - name: sensor_id
+          data_type: string
+          type:
+            categorical:
+      measures:
+        - name: avg_reading
+          data_type: f64
+          agg: avg
+        - name: reading_count
+          data_type: i64
+          agg: count
+      datasets:
+        - name: sensor_readings
+          extras:
+            column_mapping:
+              reading_ts: event_timestamp
+              sensor_id: device_id
+              avg_reading: reading_value
+              reading_count: reading_id
+            storage:
+              format: parquet
+              paths:
+                - s3://data/sensors/readings/
+
+  # ===========================================================================
+  # UNIONSETS
+  # ===========================================================================
+
+  unionsets:
+    # Union ALL — standard
+    - name: all_transactions
+      description: "All transactions unified across purchase and refund streams"
+      mode: all
+
+      dimensions:
+        - ref: event_date
+        - ref: country
+        - name: stream
+          description: "Source stream (literal per dataset)"
+          data_type: string
+          type:
+            categorical:
+
+      measures:
+        - name: amount
+          data_type: f64
+          agg: sum
+        - name: txn_count
+          data_type: i64
+          agg: count
+
+      datasets:
+        - name: transactions
+          extras:
+            column_mapping:
+              event_date: created_at
+              country: country_code
+              stream:
+                lit: purchase
+              amount: amount
+              txn_count: txn_id
+            storage:
+              format: parquet
+              paths:
+                - s3://data/transactions/
+
+        - name: account_changelog
+          extras:
+            column_mapping:
+              event_date: change_date
+              country: region_code
+              stream:
+                lit: changelog
+              txn_count: change_id
+            storage:
+              format: csv
+              paths:
+                - s3://data/account_changelog/
+
+    # Union UNIQUE (distinct) — dedup across sources
+    - name: unique_events
+      description: "Deduplicated events across sensor types"
+      mode: unique
+
+      dimensions:
+        - name: event_ts
+          data_type: timestamp
+          type:
+            temporal:
+              grains: [hour, day]
+        - name: device_type
+          data_type: string
+          type:
+            categorical:
+
+      measures:
+        - name: event_count
+          data_type: i64
+          agg: count
+
+      datasets:
+        - name: sensor_readings
+          extras:
+            column_mapping:
+              event_ts: event_timestamp
+              device_type: sensor_type
+              event_count: reading_id
+            storage:
+              format: parquet
+              paths:
+                - s3://data/sensors/readings/
+
+    # Unionset with kind nesting: ref to grainset
+    - name: unified_analytics
+      description: "Unified analytics referencing grainset via nested kind ref"
+      mode: all
+
+      dimensions:
+        - ref: event_date
+        - ref: country
+
+      measures:
+        - ref: revenue
+        - ref: order_count
+
+      datasets:
+        - ref: txn_by_grain
+        - name: txn_monthly_agg
+          extras:
+            column_mapping:
+              event_date: month_start
+              country: country_code
+              revenue: total_revenue
+              order_count: total_orders
+            storage:
+              format: parquet
+              paths:
+                - s3://data/transactions/monthly/
+
+  # ===========================================================================
+  # JOINSETS
+  # ===========================================================================
+
+  joinsets:
+    # 3-way join: transactions -> accounts -> regions
+    - name: txn_details
+      description: "Transaction details with account and region lookups (3-way BFS)"
+      associativity: left
+
+      dimensions:
+        - ref: event_date
+        - name: account_name
+          data_type: string
+          type:
+            categorical:
+        - name: account_status
+          data_type: string
+          type:
+            categorical:
+        - name: region_name
+          data_type: string
+          type:
+            categorical:
+        - name: continent
+          data_type: string
+          type:
+            categorical:
+        - name: txn_type
+          data_type: string
+          type:
+            categorical:
+
+      measures:
+        - ref: revenue
+        - ref: order_count
+        - name: account_count
+          data_type: i64
+          agg: count
+
+      metrics:
+        - ref: avg_order_value
+
+      datasets:
+        - name: transactions
+          extras:
+            column_mapping:
+              event_date: created_at
+              txn_type: transaction_type
+              revenue: amount
+              order_count: txn_id
+            storage:
+              format: parquet
+              paths:
+                - s3://data/transactions/
+
+        - name: accounts
+          extras:
+            column_mapping:
+              account_name: name
+              account_status: status
+              account_count: account_id
+            storage:
+              format: parquet
+              paths:
+                - s3://data/accounts/
+
+        - name: regions
+          extras:
+            column_mapping:
+              region_name: region_name
+              continent: continent
+            storage:
+              tables:
+                - catalog.regions
+
+      relationships:
+        # Left join: transactions -> accounts
+        - name: txn_to_account
+          from: transactions
+          to: accounts
+          type: left
+          columns:
+            - from: account_id
+              to: account_id
+          cardinality: many_to_one
+
+        # Inner join: accounts -> regions
+        - name: account_to_region
+          from: accounts
+          to: regions
+          type: inner
+          columns:
+            - from: region_id
+              to: region_id
+          cardinality: many_to_one
+
+    # Joinset with RIGHT join and multi-column key
+    - name: product_inventory
+      description: "Products joined with inventory (right join, multi-column key)"
+      associativity: right
+
+      dimensions:
+        - name: product_name
+          data_type: string
+          type:
+            categorical:
+        - name: category
+          data_type: string
+          type:
+            categorical:
+        - name: warehouse
+          data_type: string
+          type:
+            categorical:
+        - name: snap_date
+          data_type: date
+          type:
+            temporal:
+              grains: [day, month]
+
+      measures:
+        - name: stock_balance
+          data_type: i64
+          agg: sum
+        - name: unit_price
+          data_type: "decimal(10,2)"
+          agg: avg
+        - name: product_count
+          data_type: i64
+          agg: count
+
+      metrics:
+        - name: inventory_value
+          description: "Stock balance * unit price"
+          data_type: f64
+          expr: "stock_balance * unit_price"
+
+      datasets:
+        - name: products
+          extras:
+            column_mapping:
+              product_name: name
+              category: category
+              unit_price: price
+              product_count: product_id
+            storage:
+              tables:
+                - catalog.products
+
+        - name: inventory_snapshots
+          extras:
+            column_mapping:
+              warehouse: warehouse
+              snap_date: snapshot_date
+              stock_balance: qty_on_hand
+            storage:
+              format: parquet
+              paths:
+                - s3://data/inventory/snapshots/
+
+      relationships:
+        # Right join with multi-column key
+        - name: product_to_inventory
+          from: products
+          to: inventory_snapshots
+          type: right
+          columns:
+            - from: product_id
+              to: product_sku
+            - from: warehouse_code
+              to: warehouse_id
+          cardinality: one_to_many
+
+    # Joinset with FULL join
+    - name: account_sensor_full
+      description: "Full outer join between accounts and sensor readings"
+      associativity: left
+
+      dimensions:
+        - name: account_name
+          data_type: string
+          type:
+            categorical:
+        - name: sensor_id
+          data_type: string
+          type:
+            categorical:
+
+      measures:
+        - name: account_count
+          data_type: i64
+          agg: count
+        - name: reading_count
+          data_type: i64
+          agg: count
+
+      datasets:
+        - name: accounts
+          extras:
+            column_mapping:
+              account_name: name
+              account_count: account_id
+            storage:
+              format: parquet
+              paths:
+                - s3://data/accounts/
+
+        - name: sensor_readings
+          extras:
+            column_mapping:
+              sensor_id: device_id
+              reading_count: reading_id
+            storage:
+              format: parquet
+              paths:
+                - s3://data/sensors/readings/
+
+      relationships:
+        - name: account_sensor_link
+          from: accounts
+          to: sensor_readings
+          type: full
+          columns:
+            - from: device_id
+              to: device_id
+          cardinality: many_to_many
+
+  # ===========================================================================
+  # Top-level relationships (ad-hoc join resolution)
+  # ===========================================================================
+
+  relationships:
+    - name: txn_to_accounts
+      from: transactions
+      to: accounts
+      type: left
+      columns:
+        - from: account_id
+          to: account_id
+      cardinality: many_to_one
+
+    - name: txn_to_products
+      from: transactions
+      to: products
+      type: left
+      columns:
+        - from: product_id
+          to: product_id
+      cardinality: many_to_one
+
+    - name: accounts_to_regions
+      from: accounts
+      to: regions
+      type: inner
+      columns:
+        - from: region_id
+          to: region_id
+      cardinality: many_to_one

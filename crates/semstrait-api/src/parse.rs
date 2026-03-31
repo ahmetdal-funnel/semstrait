@@ -2,7 +2,7 @@
 
 use crate::error::ParseError;
 use crate::types::RawQueryRequest;
-use semstrait_manifest::{CompiledManifest, KindInterface};
+use semstrait_manifest::{CompiledManifest, CompiledInterface};
 use semstrait_planner::request::{
     OrderByClause, ResolvedQueryRequest, SortDirection,
 };
@@ -46,7 +46,7 @@ impl RequestParser {
         // Basic validation.
         let _ = Self::parse(raw)?;
 
-        // Resolve entity via DataKind.
+        // Resolve entity via CompiledDataKind.
         let data_kind = manifest
             .resolve(&raw.from)
             .ok_or_else(|| ParseError::EntityNotFound(raw.from.clone()))?;
@@ -88,7 +88,6 @@ impl RequestParser {
             grain: None, // v1: grain conversion deferred
             limit: raw.limit,
             order_by,
-            domain_hint: None,
             session_variables: raw.session.clone(),
         })
     }
@@ -96,7 +95,7 @@ impl RequestParser {
 
 /// Expand `["*"]` into all dimension + measure + metric names from the entity.
 /// If no `*` is present, returns the select list as-is.
-fn expand_select(select: &[String], kind: &KindInterface) -> Vec<String> {
+fn expand_select(select: &[String], kind: &CompiledInterface) -> Vec<String> {
     if select.len() == 1 && select[0] == "*" {
         let mut names: Vec<String> = Vec::new();
         names.extend(kind.dimensions.keys().cloned());
@@ -112,7 +111,7 @@ fn expand_select(select: &[String], kind: &KindInterface) -> Vec<String> {
 /// Returns `(dimensions, measures)` where measures includes both measures and metrics.
 fn classify_select(
     names: &[String],
-    kind: &KindInterface,
+    kind: &CompiledInterface,
     entity_name: &str,
 ) -> Result<(Vec<String>, Vec<String>), ParseError> {
     let mut dimensions = Vec::new();

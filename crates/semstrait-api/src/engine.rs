@@ -8,10 +8,10 @@ use crate::parse::RequestParser;
 use crate::types::{ExplainResult, RawQueryRequest, ValidationResult};
 use semstrait_catalog::{CatalogProvider, TableRef};
 use semstrait_connectors::{ComputeConnector, ComputeResultData};
-use semstrait_ir::{PlanArtifact, PlannerWarning, SubstraitSerializer};
-use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler, SchemaColumn};
+use semstrait_ir::{PlannerWarning, SubstraitSerializer};
+use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
 use semstrait_planner::SemanticPlanner;
-use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
+use semstrait_adapter::sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
 use std::sync::Arc;
 
 /// The central engine that orchestrates semantic query execution.
@@ -50,10 +50,7 @@ impl SemstraitEngine {
         manifest: CompiledManifest,
         connector: Arc<dyn ComputeConnector>,
     ) -> Self {
-        let profile = semstrait_adapter::profile_from_adapter(connector.adapter());
-        let planner = SemanticPlanner::builder()
-            .with_profile(Arc::new(profile))
-            .build();
+        let planner = SemanticPlanner::builder().build();
 
         Self {
             manifest: Some(manifest),
@@ -78,10 +75,7 @@ impl SemstraitEngine {
 
     /// Set a connector on an existing engine.
     pub fn set_connector(&mut self, connector: Arc<dyn ComputeConnector>) {
-        let profile = semstrait_adapter::profile_from_adapter(connector.adapter());
-        self.planner = SemanticPlanner::builder()
-            .with_profile(Arc::new(profile))
-            .build();
+        self.planner = SemanticPlanner::builder().build();
         self.connector = Some(connector);
     }
 
@@ -207,18 +201,10 @@ impl SemstraitEngine {
         let request = RequestParser::to_resolved(raw, manifest)?;
         let plan = self.planner.plan(&request, manifest)?;
 
-        // Use the connector's adapter to produce the artifact.
-        // If the adapter's primary artifact is Substrait but the connector only
-        // handles SQL (pending native Substrait consumption), fall back to a SQL
-        // artifact via adapter.debug_sql().
+        // Use the connector's adapter to produce the engine-native artifact.
+        // Connectors handle both SQL and Substrait artifacts natively.
         let adapter = connector.adapter();
         let artifact = adapter.adapt(&plan)?;
-        let artifact = if artifact.is_sql() {
-            artifact
-        } else {
-            let sql = adapter.debug_sql(&plan)?;
-            PlanArtifact::Sql(sql)
-        };
 
         // Execute the artifact.
         let result = connector.execute(&artifact).await?;
@@ -288,60 +274,53 @@ impl SemstraitEngine {
             None => return warnings,
         };
 
-        for (_, dataset) in &manifest.datasets {
-            let compiled = match &dataset.compiled_schema {
-                Some(s) => s,
-                None => continue,
-            };
+        let snapshot = match &manifest.catalog_snapshot {
+            Some(s) => s,
+            None => return warnings,
+        };
 
-            let table_ref = TableRef::new(namespace, &dataset.name);
+        for (table_name, table_snap) in &snapshot.tables {
+            let table_ref = TableRef::new(namespace, table_name);
             let live_columns = match catalog.get_schema(&table_ref).await {
                 Ok(cols) => cols,
                 Err(_) => continue,
             };
 
-            let live: Vec<SchemaColumn> = live_columns
-                .into_iter()
-                .map(|c| SchemaColumn {
-                    name: c.name,
-                    data_type: format!("{:?}", c.data_type),
-                    nullable: c.nullable,
-                })
-                .collect();
+            let compiled = &table_snap.columns;
+            let mut diffs = Vec::new();
 
-            if compiled != &live {
-                let mut diffs = Vec::new();
-                // Check for missing/added/changed columns.
-                for cc in compiled {
-                    match live.iter().find(|lc| lc.name == cc.name) {
-                        None => diffs.push(format!("column '{}' removed", cc.name)),
-                        Some(lc) if lc.data_type != cc.data_type => {
+            for cc in compiled {
+                match live_columns.iter().find(|lc| lc.name == cc.name) {
+                    None => diffs.push(format!("column '{}' removed", cc.name)),
+                    Some(lc) => {
+                        let live_type = format!("{:?}", lc.data_type);
+                        let compiled_type = format!("{:?}", cc.data_type);
+                        if live_type != compiled_type {
                             diffs.push(format!(
                                 "column '{}' type changed: {} -> {}",
-                                cc.name, cc.data_type, lc.data_type
+                                cc.name, compiled_type, live_type
                             ));
                         }
-                        Some(lc) if lc.nullable != cc.nullable => {
+                        if lc.nullable != cc.nullable {
                             diffs.push(format!(
                                 "column '{}' nullability changed",
                                 cc.name
                             ));
                         }
-                        _ => {}
                     }
                 }
-                for lc in &live {
-                    if !compiled.iter().any(|cc| cc.name == lc.name) {
-                        diffs.push(format!("column '{}' added", lc.name));
-                    }
+            }
+            for lc in &live_columns {
+                if !compiled.iter().any(|cc| cc.name == lc.name) {
+                    diffs.push(format!("column '{}' added", lc.name));
                 }
+            }
 
-                if !diffs.is_empty() {
-                    warnings.push(PlannerWarning::SchemaDrift {
-                        dataset: dataset.name.clone(),
-                        details: diffs.join("; "),
-                    });
-                }
+            if !diffs.is_empty() {
+                warnings.push(PlannerWarning::SchemaDrift {
+                    dataset: table_name.clone(),
+                    details: diffs.join("; "),
+                });
             }
         }
 
@@ -534,47 +513,50 @@ semantic_model:
     #[tokio::test]
     async fn test_schema_drift_detection() {
         use semstrait_catalog::NullCatalogProvider;
-        use semstrait_manifest::CompiledDataset;
+        use semstrait_manifest::{CatalogSnapshot, TableSnapshot, ResolvedColumn};
+        use semstrait_core::DataType;
 
-        // Build a manifest and inject a top-level dataset with a schema snapshot.
         let yaml = load_model("orders_simple");
         let mut engine = SemstraitEngine::with_manifest_yaml(&yaml)
             .await
             .expect("engine should compile manifest");
 
-        // Insert a dataset with a compiled schema snapshot into manifest.datasets.
+        // Inject a catalog snapshot with a table that has known columns.
         if let Some(ref mut manifest) = engine.manifest {
-            manifest.datasets.insert(
+            let mut tables = std::collections::HashMap::new();
+            tables.insert(
                 "orders".to_string(),
-                CompiledDataset {
-                    name: "orders".to_string(),
-                    description: None,
-                    domain: None,
-                    keys: None,
-                    dimensions: Default::default(),
-                    measures: Default::default(),
-                    metrics: Default::default(),
-                    compiled_schema: Some(vec![
-                        SchemaColumn {
+                TableSnapshot {
+                    fqn: "default.orders".to_string(),
+                    columns: vec![
+                        ResolvedColumn {
                             name: "id".to_string(),
-                            data_type: "Int64".to_string(),
+                            data_type: DataType::Integer,
                             nullable: false,
+                            comment: None,
+                            field_id: None,
                         },
-                        SchemaColumn {
+                        ResolvedColumn {
                             name: "amount".to_string(),
-                            data_type: "Float64".to_string(),
+                            data_type: DataType::Number,
                             nullable: true,
+                            comment: None,
+                            field_id: None,
                         },
-                    ]),
+                    ],
+                    iceberg: None,
                 },
             );
+            manifest.catalog_snapshot = Some(CatalogSnapshot {
+                tables,
+                captured_at: chrono::Utc::now(),
+            });
         }
 
         // NullCatalogProvider returns empty schemas, so all compiled columns look "removed".
         let warnings = engine
             .check_schema_drift(&NullCatalogProvider, "default")
             .await;
-        // NullCatalogProvider returns Ok(Vec::new()), so empty schema vs 2 columns = drift
         assert!(!warnings.is_empty());
         assert!(matches!(
             &warnings[0],

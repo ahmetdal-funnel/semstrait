@@ -220,7 +220,7 @@ All types implement `Serialize + Deserialize` for JSON persistence.
 
 ## 6. Source Type Discrimination
 
-`CompiledKindDataset.resolved_sources` changes from `Vec<String>` to `Vec<ResolvedSource>`:
+`DatasetBinding.resolved_sources` uses `Vec<ResolvedSource>`:
 
 ```rust
 pub struct ResolvedSource {

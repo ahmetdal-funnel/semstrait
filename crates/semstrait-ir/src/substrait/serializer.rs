@@ -7,6 +7,7 @@ use crate::schema::{Field, Schema};
 use super::anchors::*;
 use super::expr_converter::ExprConverter;
 use semstrait_core::DataType;
+use std::sync::Arc;
 use substrait::proto::{
     self,
     aggregate_function::AggregationInvocation,
@@ -224,7 +225,7 @@ impl SubstraitSerializer {
         let converter = ExprConverter::new(&input.meta().output_schema);
         let predicate = converter.from_substrait(condition)?;
 
-        let meta = NodeMeta::new(input.meta().output_schema.clone());
+        let meta = NodeMeta::new_shared(Arc::clone(&input.meta().output_schema));
 
         Ok(PlanNode::Filter(FilterNode {
             meta,
@@ -282,7 +283,7 @@ impl SubstraitSerializer {
         let expressions = expressions?;
 
         let fields: Vec<Field> = (0..expressions.len())
-            .map(|i| Field::new(format!("expr_{}", i), DataType::Float64))
+            .map(|i| Field::new(format!("expr_{}", i), DataType::Number))
             .collect();
         let schema = Schema::new(fields);
         let meta = NodeMeta::new(schema);
@@ -360,10 +361,10 @@ impl SubstraitSerializer {
 
         let mut fields = Vec::new();
         for (i, _) in group_by.iter().enumerate() {
-            fields.push(Field::new(format!("group_{}", i), DataType::Utf8));
+            fields.push(Field::new(format!("group_{}", i), DataType::String));
         }
         for (i, _) in aggregates.iter().enumerate() {
-            fields.push(Field::new(format!("agg_{}", i), DataType::Float64));
+            fields.push(Field::new(format!("agg_{}", i), DataType::Number));
         }
 
         let schema = Schema::new(fields);
@@ -451,6 +452,9 @@ impl SubstraitSerializer {
             function,
             expr,
             distinct,
+            // Deserialization path: type not available from Substrait proto,
+            // default to Number. Forward path (planner → Substrait) preserves types.
+            data_type: semstrait_core::DataType::Number,
         })
     }
 
@@ -558,8 +562,7 @@ impl SubstraitSerializer {
             ));
         }
 
-        let schema = inputs[0].meta().output_schema.clone();
-        let meta = NodeMeta::new(schema);
+        let meta = NodeMeta::new_shared(Arc::clone(&inputs[0].meta().output_schema));
 
         let distinct = set.op == proto::set_rel::SetOp::UnionDistinct as i32;
 
@@ -639,7 +642,7 @@ impl SubstraitSerializer {
             .collect();
         let sort_keys = sort_keys?;
 
-        let meta = NodeMeta::new(input.meta().output_schema.clone());
+        let meta = NodeMeta::new_shared(Arc::clone(&input.meta().output_schema));
 
         Ok(PlanNode::Sort(SortNode {
             meta,
@@ -689,7 +692,7 @@ impl SubstraitSerializer {
             _ => None,
         };
 
-        let meta = NodeMeta::new(input.meta().output_schema.clone());
+        let meta = NodeMeta::new_shared(Arc::clone(&input.meta().output_schema));
 
         Ok(PlanNode::Fetch(FetchNode {
             meta,
@@ -716,6 +719,10 @@ impl SubstraitSerializer {
             SimpleExtensionUri {
                 extension_uri_anchor: URI_ARITHMETIC,
                 uri: "/functions_arithmetic.yaml".to_string(),
+            },
+            SimpleExtensionUri {
+                extension_uri_anchor: URI_STRING,
+                uri: "/functions_string.yaml".to_string(),
             },
         ]
     }
@@ -746,6 +753,9 @@ impl SubstraitSerializer {
             Self::make_function_extension(URI_BOOLEAN, FUNC_COALESCE, "coalesce"),
             Self::make_function_extension(URI_BOOLEAN, FUNC_NULLIF, "nullif"),
             Self::make_function_extension(URI_BOOLEAN, FUNC_DATE_TRUNC, "date_trunc"),
+            Self::make_function_extension(URI_STRING, FUNC_ILIKE, "ilike"),
+            Self::make_function_extension(URI_STRING, FUNC_REGEXP_MATCH, "regexp_match"),
+            Self::make_function_extension(URI_STRING, FUNC_REGEXP_EXTRACT, "regexp_extract"),
             Self::make_function_extension(URI_ARITHMETIC, FUNC_ADD, "add"),
             Self::make_function_extension(URI_ARITHMETIC, FUNC_SUBTRACT, "subtract"),
             Self::make_function_extension(URI_ARITHMETIC, FUNC_MULTIPLY, "multiply"),
@@ -771,35 +781,14 @@ impl SubstraitSerializer {
         }
     }
 
+    /// Map logical DataType to Substrait type. 1:1 mapping, zero lossy conversions.
     fn datatype_to_substrait(dt: &DataType) -> proto::Type {
         let kind = match dt {
-            DataType::Int8 => Kind::I8(proto::r#type::I8 {
+            DataType::Integer => Kind::I64(proto::r#type::I64 {
                 type_variation_reference: 0,
                 nullability: Nullability::Nullable as i32,
             }),
-            DataType::Int16 => Kind::I16(proto::r#type::I16 {
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
-            DataType::Int32 => Kind::I32(proto::r#type::I32 {
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
-            DataType::Int64 => Kind::I64(proto::r#type::I64 {
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
-            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
-                Kind::I64(proto::r#type::I64 {
-                    type_variation_reference: 0,
-                    nullability: Nullability::Nullable as i32,
-                })
-            }
-            DataType::Float32 => Kind::Fp32(proto::r#type::Fp32 {
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
-            DataType::Float64 => Kind::Fp64(proto::r#type::Fp64 {
+            DataType::Number => Kind::Fp64(proto::r#type::Fp64 {
                 type_variation_reference: 0,
                 nullability: Nullability::Nullable as i32,
             }),
@@ -807,33 +796,21 @@ impl SubstraitSerializer {
                 type_variation_reference: 0,
                 nullability: Nullability::Nullable as i32,
             }),
-            DataType::Utf8 | DataType::LargeUtf8 => Kind::String(proto::r#type::String {
+            DataType::String => Kind::String(proto::r#type::String {
                 type_variation_reference: 0,
                 nullability: Nullability::Nullable as i32,
             }),
-            DataType::Date32 | DataType::Date64 => Kind::Date(proto::r#type::Date {
+            DataType::Date => Kind::Date(proto::r#type::Date {
                 type_variation_reference: 0,
                 nullability: Nullability::Nullable as i32,
             }),
-            DataType::TimestampSecond
-            | DataType::TimestampMillisecond
-            | DataType::TimestampMicrosecond => {
-                let precision = match dt {
-                    DataType::TimestampSecond => 0,
-                    DataType::TimestampMillisecond => 3,
-                    _ => 6,
-                };
+            DataType::Timestamp { precision } => {
                 Kind::PrecisionTimestamp(proto::r#type::PrecisionTimestamp {
-                    precision,
+                    precision: *precision as i32,
                     type_variation_reference: 0,
                     nullability: Nullability::Nullable as i32,
                 })
             }
-            DataType::Duration => Kind::IntervalDay(proto::r#type::IntervalDay {
-                precision: None,
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
             DataType::Decimal { precision, scale } => {
                 Kind::Decimal(proto::r#type::Decimal {
                     precision: *precision as i32,
@@ -846,38 +823,30 @@ impl SubstraitSerializer {
                 type_variation_reference: 0,
                 nullability: Nullability::Nullable as i32,
             }),
-            DataType::List(_) | DataType::Struct(_) => {
-                Kind::String(proto::r#type::String {
-                    type_variation_reference: 0,
-                    nullability: Nullability::Nullable as i32,
-                })
-            }
         };
 
         proto::Type { kind: Some(kind) }
     }
 
+    /// Map Substrait type back to logical DataType. 1:1 reverse mapping.
     #[allow(deprecated)]
     fn substrait_to_datatype(typ: &proto::Type) -> DataType {
         match &typ.kind {
-            Some(Kind::I8(_)) => DataType::Int8,
-            Some(Kind::I16(_)) => DataType::Int16,
-            Some(Kind::I32(_)) => DataType::Int32,
-            Some(Kind::I64(_)) => DataType::Int64,
-            Some(Kind::Fp32(_)) => DataType::Float32,
-            Some(Kind::Fp64(_)) => DataType::Float64,
+            Some(Kind::I8(_) | Kind::I16(_) | Kind::I32(_) | Kind::I64(_)) => DataType::Integer,
+            Some(Kind::Fp32(_) | Kind::Fp64(_)) => DataType::Number,
             Some(Kind::Bool(_)) => DataType::Boolean,
-            Some(Kind::String(_)) => DataType::Utf8,
-            Some(Kind::Date(_)) => DataType::Date32,
-            Some(Kind::PrecisionTimestamp(_)) | Some(Kind::Timestamp(_)) => {
-                DataType::TimestampMicrosecond
-            }
+            Some(Kind::String(_)) => DataType::String,
+            Some(Kind::Date(_)) => DataType::Date,
+            Some(Kind::PrecisionTimestamp(pt)) => DataType::Timestamp {
+                precision: pt.precision as u8,
+            },
+            Some(Kind::Timestamp(_)) => DataType::Timestamp { precision: 6 },
             Some(Kind::Decimal(d)) => DataType::Decimal {
                 precision: d.precision as u8,
                 scale: d.scale as i8,
             },
             Some(Kind::Binary(_)) => DataType::Binary,
-            _ => DataType::Utf8,
+            _ => DataType::String,
         }
     }
 }
@@ -889,8 +858,8 @@ mod tests {
     #[test]
     fn test_scan_roundtrip() {
         let schema = Schema::new(vec![
-            Field::new("id", DataType::Int64),
-            Field::new("amount", DataType::Float64),
+            Field::new("id", DataType::Integer),
+            Field::new("amount", DataType::Number),
         ]);
 
         let scan = ScanNode {
@@ -914,7 +883,7 @@ mod tests {
 
     #[test]
     fn test_filter_roundtrip() {
-        let schema = Schema::new(vec![Field::new("amount", DataType::Float64)]);
+        let schema = Schema::new(vec![Field::new("amount", DataType::Number)]);
 
         let scan = ScanNode {
             meta: NodeMeta::new(schema.clone()),
@@ -943,8 +912,8 @@ mod tests {
 
     fn make_scan(table: &str) -> PlanNode {
         let schema = Schema::new(vec![
-            Field::new("id", DataType::Int64),
-            Field::new("amount", DataType::Float64),
+            Field::new("id", DataType::Integer),
+            Field::new("amount", DataType::Number),
         ]);
         PlanNode::Scan(ScanNode {
             meta: NodeMeta::new(schema),
@@ -958,8 +927,8 @@ mod tests {
     #[test]
     fn test_union_all_roundtrip() {
         let schema = Schema::new(vec![
-            Field::new("id", DataType::Int64),
-            Field::new("amount", DataType::Float64),
+            Field::new("id", DataType::Integer),
+            Field::new("amount", DataType::Number),
         ]);
         let union_node = UnionNode {
             meta: NodeMeta::new(schema),
@@ -984,8 +953,8 @@ mod tests {
     #[test]
     fn test_union_distinct_roundtrip() {
         let schema = Schema::new(vec![
-            Field::new("id", DataType::Int64),
-            Field::new("amount", DataType::Float64),
+            Field::new("id", DataType::Integer),
+            Field::new("amount", DataType::Number),
         ]);
         let union_node = UnionNode {
             meta: NodeMeta::new(schema),

@@ -15,7 +15,7 @@ pub enum EngineError {
     Plan(#[from] semstrait_planner::PlannerError),
 
     #[error("emit error: {0}")]
-    Emit(#[from] semstrait_sql::EmitError),
+    Emit(#[from] semstrait_adapter::sql::EmitError),
 
     #[error("adapt error: {0}")]
     Adapt(#[from] semstrait_adapter::AdaptError),

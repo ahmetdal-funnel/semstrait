@@ -494,19 +494,17 @@ fn encode_namespace(namespace: &str) -> String {
 fn iceberg_type_to_datatype(type_val: &serde_json::Value) -> DataType {
     match type_val.as_str() {
         Some("boolean") => DataType::Boolean,
-        Some("int") => DataType::Int32,
-        Some("long") => DataType::Int64,
-        Some("float") => DataType::Float32,
-        Some("double") => DataType::Float64,
-        Some("string") => DataType::Utf8,
-        Some("date") => DataType::Date32,
-        Some("timestamp" | "timestamptz") => DataType::TimestampMicrosecond,
+        Some("int" | "long") => DataType::Integer,
+        Some("float" | "double") => DataType::Number,
+        Some("string") => DataType::String,
+        Some("date") => DataType::Date,
+        Some("timestamp" | "timestamptz") => DataType::Timestamp { precision: 6 },
         Some("binary") => DataType::Binary,
-        Some(s) if s.starts_with("decimal") => DataType::Float64, // simplified
+        Some(s) if s.starts_with("decimal") => DataType::Number, // simplified
         Some(s) if s.starts_with("fixed") => DataType::Binary,
         _ => {
-            // Complex types (struct, list, map) → treat as Utf8 for v1.
-            DataType::Utf8
+            // Complex types (struct, list, map) → treat as String for v1.
+            DataType::String
         }
     }
 }
@@ -537,27 +535,27 @@ mod tests {
         );
         assert_eq!(
             iceberg_type_to_datatype(&serde_json::json!("int")),
-            DataType::Int32
+            DataType::Integer
         );
         assert_eq!(
             iceberg_type_to_datatype(&serde_json::json!("long")),
-            DataType::Int64
+            DataType::Integer
         );
         assert_eq!(
             iceberg_type_to_datatype(&serde_json::json!("string")),
-            DataType::Utf8
+            DataType::String
         );
         assert_eq!(
             iceberg_type_to_datatype(&serde_json::json!("double")),
-            DataType::Float64
+            DataType::Number
         );
         assert_eq!(
             iceberg_type_to_datatype(&serde_json::json!("date")),
-            DataType::Date32
+            DataType::Date
         );
         assert_eq!(
             iceberg_type_to_datatype(&serde_json::json!("timestamp")),
-            DataType::TimestampMicrosecond
+            DataType::Timestamp { precision: 6 }
         );
     }
 

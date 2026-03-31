@@ -8,9 +8,9 @@
 //!
 //! ## Key Types
 //!
-//! - [`SemanticModel`] - Root model containing datasets, kinds, and relationships
-//! - [`Dataset`] - A queryable dataset with dimensions, measures, and metrics
-//! - [`Kind`] - A semantic layer abstraction (grainset, unionset, or joinset)
+//! - [`SemanticModel`] - Root model containing data kinds and relationships
+//! - [`DataKind`] - Unified entity enum: Dataset, Grainset, Unionset, Joinset
+//! - [`SemanticInterface`] - Shared interface (dimensions, measures, metrics, filters)
 //! - [`Dimension`], [`Measure`], [`Metric`] - Core semantic definitions
 //!
 //! ## Usage
@@ -24,6 +24,7 @@
 //! ```
 
 mod error;
+pub mod expr_block;
 mod parse;
 mod types;
 pub mod catalogs;

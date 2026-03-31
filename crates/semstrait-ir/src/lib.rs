@@ -14,6 +14,7 @@ pub mod annotation;
 pub mod artifact;
 pub mod error;
 pub mod plan;
+pub mod plan_builder;
 pub mod schema;
 pub mod substrait;
 
@@ -27,4 +28,5 @@ pub use plan::{
 // Re-export unified expression types from core (via plan::node re-exports)
 pub use plan::node::{Aggregation, BinaryOp, Expr};
 pub use schema::{Field, Schema};
+pub use plan_builder::{DefaultPlanBuilder, PlanBuilder};
 pub use substrait::{ExprConverter, SubstraitSerializer};

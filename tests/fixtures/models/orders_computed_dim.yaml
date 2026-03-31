@@ -1,0 +1,43 @@
+semantic_model:
+  name: e2e_computed_dim_model
+  description: E2E test model with computed dimensions
+  datasets:
+    - name: orders_daily
+      dimensions:
+        - name: date
+          data_type: date
+          type:
+            temporal:
+              grains:
+                - day
+        - name: region
+          data_type: string
+          type:
+            categorical:
+        - name: market
+          data_type: string
+          expr:
+            upper: region
+        - name: market_tier
+          data_type: string
+          expr:
+            case:
+              when:
+                - condition:
+                    in:
+                      col: region
+                      list:
+                        - {lit: "US"}
+                        - {lit: "EU"}
+                  then: {lit: "Tier 1"}
+              else: {lit: "Tier 2"}
+      measures:
+        - name: revenue
+          data_type: float64
+          agg: sum
+          expr: amount
+      extras:
+        storage:
+          format: parquet
+          paths:
+            - public.orders_daily

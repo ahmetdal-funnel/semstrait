@@ -171,6 +171,40 @@ impl<'s> ExprConverter<'s> {
                 self.function_call("date_trunc", vec![grain_expr, inner_expr])
             }
 
+            Expr::ILike(lk) => {
+                let args = vec![
+                    self.to_substrait(&lk.expr)?,
+                    self.to_substrait(&lk.pattern)?,
+                ];
+                self.function_call("ilike", args)
+            }
+
+            Expr::RegexpMatch(re) => {
+                let args = vec![
+                    self.to_substrait(&re.expr)?,
+                    self.to_substrait(&re.pattern)?,
+                    literal_bool(re.full_match),
+                ];
+                self.function_call("regexp_match", args)
+            }
+
+            Expr::RegexpExtract(re) => {
+                let args = vec![
+                    self.to_substrait(&re.expr)?,
+                    self.to_substrait(&re.pattern)?,
+                    literal_i64(re.group_idx as i64),
+                ];
+                self.function_call("regexp_extract", args)
+            }
+
+            Expr::Cast(c) => {
+                // Substrait has a native Cast expression, but for simplicity we use
+                // a function call with anchor 214 to represent CAST(expr AS type).
+                let inner = self.to_substrait(&c.expr)?;
+                let type_lit = literal_string(&c.data_type);
+                self.function_call("cast", vec![inner, type_lit])
+            }
+
             Expr::EntityRef(_) => Err(ConvertError::UnsupportedExpression(
                 "EntityRef should be resolved before Substrait conversion".to_string(),
             )),
@@ -261,9 +295,13 @@ impl<'s> ExprConverter<'s> {
             "in" => FUNC_IN,
             "between" => FUNC_BETWEEN,
             "like" => FUNC_LIKE,
+            "ilike" => FUNC_ILIKE,
+            "regexp_match" => FUNC_REGEXP_MATCH,
+            "regexp_extract" => FUNC_REGEXP_EXTRACT,
             "coalesce" => FUNC_COALESCE,
             "nullif" => FUNC_NULLIF,
             "date_trunc" => FUNC_DATE_TRUNC,
+            "cast" => FUNC_CAST,
             "sum" | "avg" | "count" | "min" | "max" => {
                 // Aggregate functions mapped to arithmetic URI for now
                 FUNC_ADD // placeholder — real aggregate handling is in serializer
@@ -400,6 +438,50 @@ impl<'s> ExprConverter<'s> {
                 let pattern = iter.next().unwrap();
                 Ok(Expr::like(expr, pattern))
             }
+            FUNC_ILIKE => {
+                if args.len() != 2 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "ILIKE requires 2 arguments, got {}",
+                        args.len()
+                    )));
+                }
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let pattern = iter.next().unwrap();
+                Ok(Expr::ilike(expr, pattern))
+            }
+            FUNC_REGEXP_MATCH => {
+                if args.len() != 3 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "REGEXP_MATCH requires 3 arguments, got {}",
+                        args.len()
+                    )));
+                }
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let pattern = iter.next().unwrap();
+                let full_match = match &iter.next().unwrap() {
+                    Expr::Literal(Literal::Boolean { value }) => *value,
+                    _ => false,
+                };
+                Ok(Expr::regexp_match(expr, pattern, full_match))
+            }
+            FUNC_REGEXP_EXTRACT => {
+                if args.len() != 3 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "REGEXP_EXTRACT requires 3 arguments, got {}",
+                        args.len()
+                    )));
+                }
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let pattern = iter.next().unwrap();
+                let group_idx = match &iter.next().unwrap() {
+                    Expr::Literal(Literal::Integer { value }) => *value as usize,
+                    _ => 0,
+                };
+                Ok(Expr::regexp_extract(expr, pattern, group_idx))
+            }
             FUNC_COALESCE => Ok(Expr::coalesce(args)),
             FUNC_NULLIF => {
                 if args.len() != 2 {
@@ -433,6 +515,25 @@ impl<'s> ExprConverter<'s> {
                     ConvertError::InvalidExpression(format!("Unknown grain: {}", grain))
                 })?;
                 Ok(Expr::date_trunc(grain_enum, inner))
+            }
+            FUNC_CAST => {
+                if args.len() != 2 {
+                    return Err(ConvertError::InvalidExpression(format!(
+                        "CAST requires 2 arguments, got {}",
+                        args.len()
+                    )));
+                }
+                let mut iter = args.into_iter();
+                let expr = iter.next().unwrap();
+                let data_type = match iter.next().unwrap() {
+                    Expr::Literal(Literal::String { value }) => value,
+                    _ => {
+                        return Err(ConvertError::InvalidExpression(
+                            "CAST second argument must be a string literal (data type)".to_string(),
+                        ))
+                    }
+                };
+                Ok(Expr::cast(expr, data_type))
             }
             _ => Err(ConvertError::FunctionNotFound(format!(
                 "Unknown function reference: {}",
@@ -544,8 +645,8 @@ mod tests {
     #[test]
     fn test_column_reference() {
         let schema = Schema::new(vec![
-            Field::new("id", DataType::Int64),
-            Field::new("amount", DataType::Float64),
+            Field::new("id", DataType::Integer),
+            Field::new("amount", DataType::Number),
         ]);
 
         let converter = ExprConverter::new(&schema);
@@ -600,8 +701,8 @@ mod tests {
     #[test]
     fn test_binary_op() {
         let schema = Schema::new(vec![
-            Field::new("a", DataType::Int64),
-            Field::new("b", DataType::Int64),
+            Field::new("a", DataType::Integer),
+            Field::new("b", DataType::Integer),
         ]);
 
         let converter = ExprConverter::new(&schema);
@@ -628,7 +729,7 @@ mod tests {
 
     #[test]
     fn test_is_null_roundtrip() {
-        let schema = Schema::new(vec![Field::new("value", DataType::Float64)]);
+        let schema = Schema::new(vec![Field::new("value", DataType::Number)]);
         let converter = ExprConverter::new(&schema);
 
         let expr = Expr::is_null(Expr::column("value"));
@@ -641,7 +742,7 @@ mod tests {
 
     #[test]
     fn test_is_not_null_roundtrip() {
-        let schema = Schema::new(vec![Field::new("value", DataType::Float64)]);
+        let schema = Schema::new(vec![Field::new("value", DataType::Number)]);
         let converter = ExprConverter::new(&schema);
 
         let expr = Expr::is_not_null(Expr::column("value"));
@@ -654,7 +755,7 @@ mod tests {
 
     #[test]
     fn test_in_list_roundtrip() {
-        let schema = Schema::new(vec![Field::new("status", DataType::Utf8)]);
+        let schema = Schema::new(vec![Field::new("status", DataType::String)]);
         let converter = ExprConverter::new(&schema);
 
         let expr = Expr::in_list(
@@ -670,7 +771,7 @@ mod tests {
 
     #[test]
     fn test_between_roundtrip() {
-        let schema = Schema::new(vec![Field::new("age", DataType::Int64)]);
+        let schema = Schema::new(vec![Field::new("age", DataType::Integer)]);
         let converter = ExprConverter::new(&schema);
 
         let expr = Expr::between(Expr::column("age"), Expr::int(18), Expr::int(65));
@@ -683,7 +784,7 @@ mod tests {
 
     #[test]
     fn test_like_roundtrip() {
-        let schema = Schema::new(vec![Field::new("name", DataType::Utf8)]);
+        let schema = Schema::new(vec![Field::new("name", DataType::String)]);
         let converter = ExprConverter::new(&schema);
 
         let expr = Expr::like(Expr::column("name"), Expr::string("%smith%"));
@@ -697,8 +798,8 @@ mod tests {
     #[test]
     fn test_coalesce_roundtrip() {
         let schema = Schema::new(vec![
-            Field::new("primary", DataType::Float64),
-            Field::new("fallback", DataType::Float64),
+            Field::new("primary", DataType::Number),
+            Field::new("fallback", DataType::Number),
         ]);
         let converter = ExprConverter::new(&schema);
 
@@ -716,7 +817,7 @@ mod tests {
 
     #[test]
     fn test_nullif_roundtrip() {
-        let schema = Schema::new(vec![Field::new("value", DataType::Float64)]);
+        let schema = Schema::new(vec![Field::new("value", DataType::Number)]);
         let converter = ExprConverter::new(&schema);
 
         let expr = Expr::null_if(Expr::column("value"), Expr::float(0.0));
@@ -730,8 +831,8 @@ mod tests {
     #[test]
     fn test_case_roundtrip() {
         let schema = Schema::new(vec![
-            Field::new("age", DataType::Int64),
-            Field::new("status", DataType::Utf8),
+            Field::new("age", DataType::Integer),
+            Field::new("status", DataType::String),
         ]);
         let converter = ExprConverter::new(&schema);
 
@@ -747,6 +848,66 @@ mod tests {
                 ),
             ],
             Some(Expr::string("adult")),
+        );
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_ilike_roundtrip() {
+        let schema = Schema::new(vec![Field::new("name", DataType::String)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = Expr::ilike(Expr::column("name"), Expr::string("%smith%"));
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_regexp_match_roundtrip() {
+        let schema = Schema::new(vec![Field::new("email", DataType::String)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = Expr::regexp_match(
+            Expr::column("email"),
+            Expr::string("@example\\.com"),
+            false,
+        );
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_cast_roundtrip() {
+        let schema = Schema::new(vec![Field::new("amount", DataType::Number)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = Expr::cast(Expr::column("amount"), "VARCHAR");
+
+        let substrait = converter.to_substrait(&expr).unwrap();
+        let back = converter.from_substrait(&substrait).unwrap();
+
+        assert_eq!(expr, back);
+    }
+
+    #[test]
+    fn test_regexp_extract_roundtrip() {
+        let schema = Schema::new(vec![Field::new("campaign", DataType::String)]);
+        let converter = ExprConverter::new(&schema);
+
+        let expr = Expr::regexp_extract(
+            Expr::column("campaign"),
+            Expr::string("^([A-Z]{2})_"),
+            1,
         );
 
         let substrait = converter.to_substrait(&expr).unwrap();

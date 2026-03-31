@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://json-schema.org/draft-07/schema#
 # =============================================================================
-# Semstrait Semantic Model — JSON Schema v1.6 (YAML encoding)
+# Semstrait Semantic Model — JSON Schema v1.7 (YAML encoding)
 # =============================================================================
 #
 # Canonical machine-validatable schema for semstrait YAML model files.
@@ -37,13 +37,19 @@
 #   - Supports env var substitution via ${VAR} in YAML values (resolved at parse time)
 #
 # Changelog v1.6 vs v1.5:
-#   - Added: ColumnMappingValue.Literal variant — { literal: "value" } for constant injection
+#   - Added: ColumnMappingValue.Literal variant — { lit: "value" } for constant injection
 #   - Added: ColumnMappingValue.Anchored variant — { anchor: column, ... } for composed expressions
 #   - Added: LiteralValue definition (string-only for now, extensible)
+#
+# Changelog v1.7 vs v1.6:
+#   - Added: DimensionDef.expr — computed dimension expression (ExprSource: string or ExprBlock)
+#   - Added: ExprSource definition (oneOf: string | ExprBlock object)
+#   - Added: ExprBlock definition — 60-key declarative expression blocks
+#   - Added: Supporting types: TwoArgs, CaseBlock, WhenBlock, InListBlock, etc.
 # =============================================================================
 
 $schema: https://json-schema.org/draft-07/schema#
-$id: https://semstrait.io/schemas/semantic-model/v1.6.yaml
+$id: https://semstrait.io/schemas/semantic-model/v1.7.yaml
 title: SemanticModel
 description: >
   Semstrait semantic model definition. Defines datasets, kinds (grainset,
@@ -101,9 +107,18 @@ definitions:
       datasets:
         type: array
         items: { $ref: "#/definitions/Dataset" }
-      kinds:
+      grainsets:
         type: array
-        items: { $ref: "#/definitions/Kind" }
+        items: { $ref: "#/definitions/Grainset" }
+        description: Grainset kinds - datasets at different grains.
+      unionsets:
+        type: array
+        items: { $ref: "#/definitions/Unionset" }
+        description: Unionset kinds - datasets combined via UNION.
+      joinsets:
+        type: array
+        items: { $ref: "#/definitions/Joinset" }
+        description: Joinset kinds - datasets joined together.
       relationships:
         type: array
         items: { $ref: "#/definitions/Relationship" }
@@ -140,8 +155,6 @@ definitions:
         type: string
       tags:
         $ref: "#/definitions/Tags"
-      domain:
-        $ref: "#/definitions/Domain"
       ai_context:
         $ref: "#/definitions/AiContext"
       keys:
@@ -163,30 +176,149 @@ definitions:
         $ref: "#/definitions/DatasetExtras"
 
   # ---------------------------------------------------------------------------
-  # Kind
+  # Grainset
   # ---------------------------------------------------------------------------
-  Kind:
+  Grainset:
     type: object
-    required: [name, type, datasets]
+    required: [name, datasets]
     additionalProperties: false
     x-category: entity
     x-since: v1.0
     description: >
-      A semantic abstraction over one or more datasets. Kinds define a
-      queryable interface (dimensions, measures, metrics) and bind to
-      physical datasets via column_mapping.
+      Datasets representing the same entity at different grains.
+      Planner picks the optimal dataset(s) to answer the query.
     properties:
       name:
         type: string
         minLength: 1
       description:
         type: string
-      domain:
-        $ref: "#/definitions/Domain"
       ai_context:
         $ref: "#/definitions/AiContext"
-      type:
-        $ref: "#/definitions/KindType"
+      keys:
+        $ref: "#/definitions/Keys"
+      dimensions:
+        type: array
+        items: { $ref: "#/definitions/DimensionEntry" }
+      measures:
+        type: array
+        items: { $ref: "#/definitions/MeasureEntry" }
+      metrics:
+        type: array
+        items: { $ref: "#/definitions/MetricEntry" }
+      datasets:
+        type: array
+        minItems: 1
+        items: { $ref: "#/definitions/KindDatasetEntry" }
+      filters:
+        type: array
+        items: { $ref: "#/definitions/MeasureFilter" }
+        description: Grainset-level filters applied to all queries.
+        x-since: v1.1
+      extras:
+        $ref: "#/definitions/KindExtras"
+        description: Grainset-level default extras applied to all datasets.
+        x-since: v1.3
+      unionsets:
+        type: array
+        items: { $ref: "#/definitions/Unionset" }
+        description: Nested unionset kinds (flattened to top-level during parse).
+        x-since: v1.4
+      joinsets:
+        type: array
+        items: { $ref: "#/definitions/Joinset" }
+        description: Nested joinset kinds (flattened to top-level during parse).
+        x-since: v1.4
+
+  # ---------------------------------------------------------------------------
+  # Unionset
+  # ---------------------------------------------------------------------------
+  Unionset:
+    type: object
+    required: [name, datasets]
+    additionalProperties: false
+    x-category: entity
+    x-since: v1.0
+    description: >
+      Datasets combined via UNION ALL/DISTINCT. Missing columns are NULL-filled.
+    properties:
+      name:
+        type: string
+        minLength: 1
+      description:
+        type: string
+      mode:
+        type: string
+        enum: [all, distinct]
+        default: all
+        description: UNION ALL (default) or UNION DISTINCT.
+        x-since: v1.2
+      ai_context:
+        $ref: "#/definitions/AiContext"
+      keys:
+        $ref: "#/definitions/Keys"
+      dimensions:
+        type: array
+        items: { $ref: "#/definitions/DimensionEntry" }
+      measures:
+        type: array
+        items: { $ref: "#/definitions/MeasureEntry" }
+      metrics:
+        type: array
+        items: { $ref: "#/definitions/MetricEntry" }
+      datasets:
+        type: array
+        minItems: 1
+        items: { $ref: "#/definitions/KindDatasetEntry" }
+      filters:
+        type: array
+        items: { $ref: "#/definitions/MeasureFilter" }
+        description: Unionset-level filters applied to all queries.
+        x-since: v1.1
+      extras:
+        $ref: "#/definitions/KindExtras"
+        description: Unionset-level default extras applied to all datasets.
+        x-since: v1.3
+      grainsets:
+        type: array
+        items: { $ref: "#/definitions/Grainset" }
+        description: Nested grainset kinds (flattened to top-level during parse).
+        x-since: v1.4
+      unionsets:
+        type: array
+        items: { $ref: "#/definitions/Unionset" }
+        description: Nested unionset kinds (valid but emits COMP_W010 warning).
+        x-since: v1.4
+      joinsets:
+        type: array
+        items: { $ref: "#/definitions/Joinset" }
+        description: Nested joinset kinds (flattened to top-level during parse).
+        x-since: v1.4
+
+  # ---------------------------------------------------------------------------
+  # Joinset
+  # ---------------------------------------------------------------------------
+  Joinset:
+    type: object
+    required: [name, datasets]
+    additionalProperties: false
+    x-category: entity
+    x-since: v1.0
+    description: >
+      Datasets joined together. Unused datasets are pruned from the join tree.
+    properties:
+      name:
+        type: string
+        minLength: 1
+      description:
+        type: string
+      associativity:
+        type: string
+        enum: [left, right, full]
+        default: left
+        description: Default join type for all edges unless overridden per-relationship.
+      ai_context:
+        $ref: "#/definitions/AiContext"
       keys:
         $ref: "#/definitions/Keys"
       dimensions:
@@ -205,54 +337,26 @@ definitions:
       relationships:
         type: array
         items: { $ref: "#/definitions/KindRelationship" }
-        description: Join paths between kind-internal datasets (required for joinset).
+        description: Join paths between kind-internal datasets (REQUIRED for joinset).
       filters:
         type: array
         items: { $ref: "#/definitions/MeasureFilter" }
-        description: Kind-level filters applied to all queries against this kind.
+        description: Joinset-level filters applied to all queries.
         x-since: v1.1
       extras:
         $ref: "#/definitions/KindExtras"
-        description: Kind-level default extras (column_mapping, temporal, catalog, partition_defs) applied to all datasets; overridden per dataset.
+        description: Joinset-level default extras applied to all datasets.
         x-since: v1.3
-
-  KindType:
-    type: object
-    additionalProperties: false
-    minProperties: 1
-    maxProperties: 1
-    description: >
-      Discriminated union: exactly one of grainset, unionset, or joinset.
-    properties:
-      grainset:
-        type: ["object", "null"]
-        additionalProperties: false
-        description: >
-          Datasets representing the same entity at different grains.
-          Planner picks the optimal dataset(s) to answer the query.
-      unionset:
-        type: ["object", "null"]
-        additionalProperties: false
-        description: >
-          Datasets combined via UNION ALL/DISTINCT. Missing columns are NULL-filled.
-        properties:
-          union_mode:
-            type: string
-            enum: [all, distinct]
-            default: all
-            description: UNION ALL (default) or UNION DISTINCT.
-            x-since: v1.2
-      joinset:
-        type: object
-        additionalProperties: false
-        description: >
-          Datasets joined together. Unused datasets are pruned from the join tree.
-        properties:
-          associativity:
-            type: string
-            enum: [left, right, full]
-            default: left
-            description: Default join type for all edges unless overridden per-relationship.
+      grainsets:
+        type: array
+        items: { $ref: "#/definitions/Grainset" }
+        description: Nested grainset kinds (flattened to top-level during parse).
+        x-since: v1.4
+      unionsets:
+        type: array
+        items: { $ref: "#/definitions/Unionset" }
+        description: Nested unionset kinds (flattened to top-level during parse).
+        x-since: v1.4
 
   # ---------------------------------------------------------------------------
   # Kind Dataset Entry
@@ -322,11 +426,11 @@ definitions:
           grain:
             $ref: "#/definitions/TemporalGrain"
       - type: object
-        required: [literal]
+        required: [lit]
         additionalProperties: false
         description: Literal constant value injection.
         properties:
-          literal:
+          lit:
             type: string
             description: The literal string value to inject.
       - type: object
@@ -347,7 +451,7 @@ definitions:
 
   DimensionDef:
     type: object
-    required: [name, data_type]
+    required: [name]
     additionalProperties: false
     x-category: interface
     x-since: v1.0
@@ -359,6 +463,18 @@ definitions:
         type: string
       data_type:
         $ref: "#/definitions/DataType"
+      expr:
+        $ref: "#/definitions/ExprSource"
+        description: >
+          Computed dimension expression. When present, this dimension is derived
+          from an expression over other columns rather than being a direct physical
+          column. Computed dimensions are excluded from column_mapping completeness
+          checks and emitted as post-aggregation ProjectNode expressions.
+          Accepts inline string ("UPPER(region)") or declarative ExprBlock.
+        x-since: v1.7
+        x-examples:
+          - "UPPER(region)"
+          - "CASE WHEN region IN ('US', 'EU') THEN 'Tier 1' ELSE 'Tier 2' END"
       ai_context:
         $ref: "#/definitions/AiContext"
       type:
@@ -479,7 +595,7 @@ definitions:
 
   MeasureDef:
     type: object
-    required: [name, data_type]
+    required: [name]
     additionalProperties: false
     x-category: interface
     x-since: v1.0
@@ -543,7 +659,7 @@ definitions:
 
   MetricDef:
     type: object
-    required: [name, data_type, expr]
+    required: [name, expr]
     additionalProperties: false
     x-category: interface
     x-since: v1.0
@@ -633,9 +749,9 @@ definitions:
         type: string
         minLength: 1
       expr:
-        type: string
-        minLength: 1
-        description: DSL filter expression.
+        $ref: "#/definitions/ExprSource"
+        description: >
+          DSL filter expression. Accepts inline string or declarative ExprBlock.
         x-examples:
           - "status != 'cancelled'"
           - "amount > 0"
@@ -992,18 +1108,43 @@ definitions:
     description: >
       Temporal historization pattern. Orthogonal to grain resolution
       (which lives on dimension.temporal.grains). Both can coexist.
+      grain and dimension fields enable auto-propagation and auto-derivation.
     properties:
+      grain:
+        type: string
+        enum: [minute, hour, day, week, month, quarter, year]
+        description: >
+          Data-level temporal cadence. When set, auto-propagates to
+          column_mapping grain if the physical column matches occurred_at/snapshotted_at.
+      dimension:
+        type: string
+        description: >
+          Links this temporal config to a semantic dimension name.
+          Used to set KindInterface.temporal_dim and enable grain auto-propagation.
       type:
         type: object
         additionalProperties: false
         minProperties: 1
         maxProperties: 1
         properties:
+          events:
+            type: object
+            required: [occurred_at]
+            additionalProperties: false
+            description: >
+              Independent occurrences (transactions, clicks). Fully additive,
+              standard GROUP BY. No window functions needed.
+            properties:
+              occurred_at:
+                type: string
+                description: Physical column name for event timestamp.
           timeseries:
             type: object
             required: [occurred_at]
             additionalProperties: false
-            description: Event data with an event timestamp column.
+            description: >
+              Periodic measurements at regular intervals. Semi-additive,
+              may need LAST_VALUE/window dedup before cross-time aggregation.
             properties:
               occurred_at:
                 type: string
@@ -1200,6 +1341,448 @@ definitions:
         x-since: v1.2
 
   # ---------------------------------------------------------------------------
+  # Expression DSL (ExprSource + ExprBlock)
+  # ---------------------------------------------------------------------------
+  ExprSource:
+    description: >
+      Expression source in YAML. Either an inline DSL string or a declarative
+      ExprBlock map. Serde-discriminated by value type: string → inline parser,
+      object → ExprBlock deserialization.
+    x-category: interface
+    x-since: v1.7
+    oneOf:
+      - type: string
+        minLength: 1
+        description: >
+          Inline DSL string expression. Parsed by the expression parser.
+          References semantic names, resolved at compile time via column_mapping.
+        x-examples:
+          - "UPPER(region)"
+          - "cost / clicks"
+          - "CASE WHEN region IN ('US', 'EU') THEN 'Tier 1' ELSE 'Tier 2' END"
+      - $ref: "#/definitions/ExprBlock"
+
+  ExprBlock:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    maxProperties: 1
+    x-category: interface
+    x-since: v1.7
+    description: >
+      Declarative expression block — single-key YAML map where the key
+      determines the expression type. Maps 1:1 to Expr variants in
+      semstrait-core. 60 keys across leaf, arithmetic, comparison, logical,
+      conditional, predicates, pattern matching, string, math, date,
+      type conversion, and guard categories.
+      Known limitation (DL-049): works in top-level datasets but not inside
+      grainsets/unionsets/joinsets due to serde_yaml nested untagged enum.
+    properties:
+      # ── Leaf nodes ──
+      # Bare string = column ref, bare number/bool/null = literal (via deserializer sugar)
+      lit:
+        $ref: "#/definitions/ExprLiteralValue"
+      # ── Arithmetic (BinaryOp) ──
+      add:
+        $ref: "#/definitions/TwoArgs"
+      subtract:
+        $ref: "#/definitions/TwoArgs"
+      multiply:
+        $ref: "#/definitions/TwoArgs"
+      divide:
+        $ref: "#/definitions/TwoArgs"
+      safe_divide:
+        $ref: "#/definitions/TwoArgs"
+        description: Division with null-guard (CASE WHEN right = 0 THEN NULL ELSE left / right END).
+      # ── Comparison (BinaryOp) ──
+      eq:
+        $ref: "#/definitions/TwoArgs"
+      not_eq:
+        $ref: "#/definitions/TwoArgs"
+      lt:
+        $ref: "#/definitions/TwoArgs"
+      gt:
+        $ref: "#/definitions/TwoArgs"
+      lte:
+        $ref: "#/definitions/TwoArgs"
+      gte:
+        $ref: "#/definitions/TwoArgs"
+      # ── Logical ──
+      and:
+        $ref: "#/definitions/TwoArgs"
+      or:
+        $ref: "#/definitions/TwoArgs"
+      not:
+        $ref: "#/definitions/ExprBlock"
+        description: Logical NOT.
+      negate:
+        $ref: "#/definitions/ExprBlock"
+        description: Arithmetic negation (-expr).
+      # ── Conditional ──
+      case:
+        $ref: "#/definitions/CaseBlock"
+      coalesce:
+        type: array
+        items: { $ref: "#/definitions/ExprBlock" }
+        minItems: 2
+        description: COALESCE(expr1, expr2, ...).
+      nullif:
+        $ref: "#/definitions/NullIfBlock"
+      if:
+        type: array
+        items: { $ref: "#/definitions/ExprBlock" }
+        minItems: 3
+        maxItems: 3
+        description: Desugars to CASE WHEN condition THEN then ELSE else END.
+      greatest:
+        type: array
+        items: { $ref: "#/definitions/ExprBlock" }
+        minItems: 2
+        description: GREATEST(expr1, expr2, ...).
+      least:
+        type: array
+        items: { $ref: "#/definitions/ExprBlock" }
+        minItems: 2
+        description: LEAST(expr1, expr2, ...).
+      # ── Predicates ──
+      in:
+        $ref: "#/definitions/InListBlock"
+      not_in:
+        $ref: "#/definitions/InListBlock"
+        description: NOT IN predicate.
+      between:
+        $ref: "#/definitions/BetweenBlock"
+      like:
+        $ref: "#/definitions/PatternBlock"
+      ilike:
+        $ref: "#/definitions/PatternBlock"
+        description: Case-insensitive LIKE.
+      is_null:
+        $ref: "#/definitions/ExprBlock"
+        description: IS NULL predicate.
+      is_not_null:
+        $ref: "#/definitions/ExprBlock"
+        description: IS NOT NULL predicate.
+      # ── Pattern matching ──
+      regexp_match:
+        $ref: "#/definitions/RegexpMatchBlock"
+      regexp_extract:
+        $ref: "#/definitions/RegexpExtractBlock"
+      # ── String functions ──
+      upper:
+        $ref: "#/definitions/ExprBlock"
+      lower:
+        $ref: "#/definitions/ExprBlock"
+      trim:
+        $ref: "#/definitions/ExprBlock"
+      ltrim:
+        $ref: "#/definitions/ExprBlock"
+      rtrim:
+        $ref: "#/definitions/ExprBlock"
+      length:
+        $ref: "#/definitions/ExprBlock"
+      concat:
+        type: array
+        items: { $ref: "#/definitions/ExprBlock" }
+        minItems: 2
+        description: CONCAT(expr1, expr2, ...).
+      replace:
+        $ref: "#/definitions/ReplaceBlock"
+      substr:
+        $ref: "#/definitions/SubstringBlock"
+      left:
+        $ref: "#/definitions/LeftRightBlock"
+      right:
+        $ref: "#/definitions/LeftRightBlock"
+      lpad:
+        $ref: "#/definitions/PadBlock"
+      rpad:
+        $ref: "#/definitions/PadBlock"
+      # ── Math functions ──
+      abs:
+        $ref: "#/definitions/ExprBlock"
+      ceil:
+        $ref: "#/definitions/ExprBlock"
+      floor:
+        $ref: "#/definitions/ExprBlock"
+      round:
+        $ref: "#/definitions/RoundBlock"
+      power:
+        $ref: "#/definitions/PowerBlock"
+      sqrt:
+        $ref: "#/definitions/ExprBlock"
+      mod:
+        $ref: "#/definitions/TwoArgs"
+      # ── Date functions ──
+      date_trunc:
+        $ref: "#/definitions/DateTruncBlock"
+      current_date:
+        type: object
+        additionalProperties: false
+        description: Nullary — CURRENT_DATE.
+      current_timestamp:
+        type: object
+        additionalProperties: false
+        description: Nullary — CURRENT_TIMESTAMP.
+      date_add:
+        $ref: "#/definitions/DateAddBlock"
+      date_diff:
+        $ref: "#/definitions/DateDiffBlock"
+      extract:
+        $ref: "#/definitions/ExtractBlock"
+      # ── Type conversion ──
+      cast:
+        $ref: "#/definitions/CastBlock"
+      # ── Guard (sugar) ──
+      guard:
+        $ref: "#/definitions/GuardBlock"
+
+  # ── ExprBlock supporting types ──
+
+  ExprLiteralValue:
+    description: Literal value — string, integer, float, boolean, or null.
+    oneOf:
+      - type: string
+      - type: integer
+      - type: number
+      - type: boolean
+      - type: "null"
+
+  TwoArgs:
+    description: >
+      Two-argument expression. Array form [left, right] or map form {left:, right:}.
+    oneOf:
+      - type: array
+        items: { $ref: "#/definitions/ExprBlock" }
+        minItems: 2
+        maxItems: 2
+      - type: object
+        required: [left, right]
+        additionalProperties: false
+        properties:
+          left: { $ref: "#/definitions/ExprBlock" }
+          right: { $ref: "#/definitions/ExprBlock" }
+
+  CaseBlock:
+    type: object
+    required: [when]
+    additionalProperties: false
+    description: CASE WHEN ... THEN ... ELSE ... END.
+    properties:
+      when:
+        type: array
+        items: { $ref: "#/definitions/WhenBlock" }
+        minItems: 1
+      else:
+        $ref: "#/definitions/ExprBlock"
+
+  WhenBlock:
+    type: object
+    required: [condition, then]
+    additionalProperties: false
+    properties:
+      condition: { $ref: "#/definitions/ExprBlock" }
+      then: { $ref: "#/definitions/ExprBlock" }
+
+  NullIfBlock:
+    type: object
+    required: [expr, null_expr]
+    additionalProperties: false
+    description: NULLIF(expr, null_expr).
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      null_expr: { $ref: "#/definitions/ExprBlock" }
+
+  InListBlock:
+    type: object
+    required: [expr, list]
+    additionalProperties: false
+    description: IN / NOT IN predicate.
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      list:
+        type: array
+        items: { $ref: "#/definitions/ExprBlock" }
+        minItems: 1
+
+  BetweenBlock:
+    type: object
+    required: [expr, low, high]
+    additionalProperties: false
+    description: BETWEEN low AND high.
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      low: { $ref: "#/definitions/ExprBlock" }
+      high: { $ref: "#/definitions/ExprBlock" }
+
+  PatternBlock:
+    type: object
+    required: [expr, pattern]
+    additionalProperties: false
+    description: LIKE / ILIKE pattern matching.
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      pattern: { $ref: "#/definitions/ExprBlock" }
+
+  RegexpMatchBlock:
+    type: object
+    required: [expr, pattern]
+    additionalProperties: false
+    description: Regular expression match (REGEXP_LIKE / ~ dialect-specific).
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      pattern: { $ref: "#/definitions/ExprBlock" }
+      full_match:
+        type: boolean
+        default: false
+        description: Whether the pattern must match the entire string.
+
+  RegexpExtractBlock:
+    type: object
+    required: [expr, pattern]
+    additionalProperties: false
+    description: REGEXP_EXTRACT(expr, pattern, group).
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      pattern: { $ref: "#/definitions/ExprBlock" }
+      group:
+        type: integer
+        minimum: 0
+        default: 0
+        description: Capture group index (0 = full match).
+
+  ReplaceBlock:
+    type: object
+    required: [expr, old, new]
+    additionalProperties: false
+    description: REPLACE(expr, old, new).
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      old: { $ref: "#/definitions/ExprBlock" }
+      new: { $ref: "#/definitions/ExprBlock" }
+
+  SubstringBlock:
+    type: object
+    required: [expr, start]
+    additionalProperties: false
+    description: SUBSTRING(expr, start[, length]).
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      start:
+        type: integer
+      length:
+        type: integer
+        description: Optional length. If omitted, returns rest of string.
+
+  LeftRightBlock:
+    type: object
+    required: [expr, length]
+    additionalProperties: false
+    description: LEFT(expr, length) or RIGHT(expr, length).
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      length:
+        type: integer
+
+  PadBlock:
+    type: object
+    required: [expr, length]
+    additionalProperties: false
+    description: LPAD/RPAD(expr, length, fill).
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      length:
+        type: integer
+      fill:
+        type: string
+        default: " "
+        description: Pad character (default space).
+
+  RoundBlock:
+    type: object
+    required: [expr]
+    additionalProperties: false
+    description: ROUND(expr, scale).
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      scale:
+        type: integer
+        default: 0
+        description: Number of decimal places.
+
+  PowerBlock:
+    type: object
+    required: [base, exponent]
+    additionalProperties: false
+    description: POWER(base, exponent).
+    properties:
+      base: { $ref: "#/definitions/ExprBlock" }
+      exponent: { $ref: "#/definitions/ExprBlock" }
+
+  DateTruncBlock:
+    type: object
+    required: [grain, expr]
+    additionalProperties: false
+    description: DATE_TRUNC('grain', expr).
+    properties:
+      grain:
+        type: string
+        enum: [minute, hour, day, week, month, quarter, year]
+      expr: { $ref: "#/definitions/ExprBlock" }
+
+  DateAddBlock:
+    type: object
+    required: [expr, days]
+    additionalProperties: false
+    description: DATE_ADD(expr, days).
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      days:
+        type: integer
+
+  DateDiffBlock:
+    type: object
+    required: [start, end]
+    additionalProperties: false
+    description: DATEDIFF(end, start).
+    properties:
+      start: { $ref: "#/definitions/ExprBlock" }
+      end: { $ref: "#/definitions/ExprBlock" }
+
+  ExtractBlock:
+    type: object
+    required: [part, expr]
+    additionalProperties: false
+    description: EXTRACT(part FROM expr).
+    properties:
+      part:
+        type: string
+        description: Date/time part to extract (year, month, day, etc.).
+      expr: { $ref: "#/definitions/ExprBlock" }
+
+  CastBlock:
+    type: object
+    required: [expr, to]
+    additionalProperties: false
+    description: CAST(expr AS to).
+    properties:
+      expr: { $ref: "#/definitions/ExprBlock" }
+      to:
+        type: string
+        description: Target type name.
+
+  GuardBlock:
+    type: object
+    required: [condition, expr]
+    additionalProperties: false
+    description: >
+      Guard (sugar) — resolves to CASE WHEN condition THEN expr ELSE NULL END.
+      Used for conditional measure/metric activation.
+    properties:
+      condition: { $ref: "#/definitions/ExprBlock" }
+      expr: { $ref: "#/definitions/ExprBlock" }
+
+  # ---------------------------------------------------------------------------
   # Shared enums and references
   # ---------------------------------------------------------------------------
   Tags:
@@ -1243,20 +1826,6 @@ definitions:
         timestamp,
         "decimal(18, 2)",
       ]
-
-  Domain:
-    description: >
-      Semantic data domain. Dot-delimited hierarchy for AI routing
-      and planner branch pruning. Scalar or array.
-    oneOf:
-      - type: string
-        minLength: 1
-      - type: array
-        items: { type: string, minLength: 1 }
-        minItems: 1
-    x-examples:
-      - financial.transactions
-      - [marketing.paid_social.facebook_ads, marketing.paid_social.google_ads]
 
   TemporalGrain:
     type: string

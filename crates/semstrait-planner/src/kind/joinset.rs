@@ -5,68 +5,69 @@
 //! Other datasets are joined in order of the defined relationships.
 
 use crate::error::PlannerError;
-use crate::expr_lower;
-use super::grainset::collect_column_refs;
-use super::shared;
-use super::shared::build_scan_node_binding;
-use super::{extract_metadata_value_binding, partition_dimensions_iface, KindPlanner, PlanFragment, PlannerContext};
+use crate::decomposer::{self, DecomposedMeasure};
+use crate::resolver::PhysicalResolver;
+use super::collect_column_refs;
+use super::plan_builder;
+use super::plan_builder::{build_scan_node_binding, build_semantic_type_map};
+use super::{extract_metadata_value_binding, partition_dimensions_iface, KindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
-use semstrait_core::DataType;
 use semstrait_ir::{
     AggNode, AggregateMeasure, Expr, Field, JoinNode, JoinType as IrJoinType, NodeMeta,
     PlanNode, ProjectNode, Schema,
 };
 use semstrait_manifest::{
-    CompiledRelationship, JoinType as ModelJoinType, KindInterface,
+    CompiledRelationship, JoinType as ModelJoinType, CompiledInterface,
 };
-use semstrait_manifest::acceleration::{AdjacencyIndex, DataKind, DatasetBinding, JoinsetKind};
+use semstrait_manifest::acceleration::{AdjacencyIndex, CompiledDataKind, DatasetBinding, CompiledJoinsetKind};
 use std::collections::{HashSet, VecDeque};
 
 /// Planner for Joinset kinds — BFS-based join chain construction.
 pub struct JoinsetPlanner;
 
 impl KindPlanner for JoinsetPlanner {
-    fn supports(&self, data_kind: &DataKind) -> bool {
-        matches!(data_kind, DataKind::Joinset(_))
+    fn supports(&self, data_kind: &CompiledDataKind) -> bool {
+        matches!(data_kind, CompiledDataKind::Joinset(_))
     }
 
     fn resolve(
         &self,
-        data_kind: &DataKind,
+        pruned: &PrunedView<'_>,
         request: &ResolvedQueryRequest,
         ctx: &PlannerContext<'_>,
     ) -> Result<PlanFragment, PlannerError> {
-        let joinset = match data_kind {
-            DataKind::Joinset(j) => j,
-            _ => return Err(PlannerError::Internal("JoinsetPlanner received non-Joinset DataKind".into())),
+        let joinset = match pruned.data_kind() {
+            CompiledDataKind::Joinset(j) => j,
+            _ => return Err(PlannerError::Internal("JoinsetPlanner received non-Joinset CompiledDataKind".into())),
         };
         let iface = &joinset.interface;
-        let bindings = &joinset.bindings;
+        let active_count = pruned.active_count();
 
-        if bindings.is_empty() {
+        if active_count == 0 {
             return Err(PlannerError::NoCoveringDataset {
                 kind: iface.name.clone(),
                 reason: "joinset kind has no datasets".to_string(),
             });
         }
 
-        if joinset.relationships.is_empty() && bindings.len() > 1 {
+        if joinset.relationships.is_empty() && active_count > 1 {
             return Err(PlannerError::NoCoveringDataset {
                 kind: iface.name.clone(),
                 reason: "joinset kind has multiple datasets but no relationships".to_string(),
             });
         }
 
-        // If single dataset, delegate to simple scan-aggregate-project.
-        if bindings.len() == 1 {
-            return shared::build_binding_plan(iface, &bindings[0], request, ctx, false);
+        // If single active dataset, delegate to simple scan-aggregate-project.
+        let active_bindings = pruned.active_bindings();
+        if active_count == 1 {
+            return plan_builder::build_binding_plan(iface, active_bindings[0], request, ctx, false);
         }
 
-        // Find the anchor dataset (covers most requested fields).
-        let anchor_idx = find_anchor_index(iface, bindings, request)?;
+        // Find the anchor dataset (covers most requested fields) among active bindings.
+        let anchor_idx = find_anchor_index(iface, &joinset.bindings, pruned, request)?;
 
-        // BFS from anchor through relationships to build join order.
-        let join_order = bfs_join_order(anchor_idx, &joinset.adjacency_index);
+        // BFS from anchor through relationships, visiting only active bindings.
+        let join_order = bfs_join_order(anchor_idx, &joinset.adjacency_index, pruned);
 
         // Build the join tree.
         build_join_plan(joinset, request, anchor_idx, &join_order, ctx)
@@ -85,9 +86,11 @@ fn map_join_type(jt: &ModelJoinType) -> IrJoinType {
 
 /// Find the anchor dataset index — the one covering the most requested fields.
 /// Metadata dimensions are excluded — they don't need column mapping coverage.
+/// Only considers active bindings from the pruned view.
 fn find_anchor_index(
-    iface: &KindInterface,
+    iface: &CompiledInterface,
     bindings: &[DatasetBinding],
+    pruned: &PrunedView<'_>,
     request: &ResolvedQueryRequest,
 ) -> Result<usize, PlannerError> {
     let (_, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
@@ -100,6 +103,7 @@ fn find_anchor_index(
     bindings
         .iter()
         .enumerate()
+        .filter(|(i, _)| pruned.is_active(*i))
         .max_by_key(|(_, binding)| {
             needed
                 .iter()
@@ -122,9 +126,11 @@ struct JoinStep {
 }
 
 /// BFS from the anchor dataset through the adjacency index to determine join order.
+/// Only visits active bindings from the pruned view.
 fn bfs_join_order(
     anchor_idx: usize,
     adjacency: &AdjacencyIndex,
+    pruned: &PrunedView<'_>,
 ) -> Vec<JoinStep> {
     let mut visited: HashSet<usize> = HashSet::new();
     visited.insert(anchor_idx);
@@ -137,7 +143,7 @@ fn bfs_join_order(
     while let Some(current) = queue.pop_front() {
         // Forward edges (from -> to).
         for &(neighbor_idx, rel_idx) in &adjacency.forward[current] {
-            if !visited.contains(&neighbor_idx) {
+            if !visited.contains(&neighbor_idx) && pruned.is_active(neighbor_idx) {
                 visited.insert(neighbor_idx);
                 steps.push(JoinStep {
                     binding_idx: neighbor_idx,
@@ -149,7 +155,7 @@ fn bfs_join_order(
         }
         // Reverse edges (to -> from).
         for &(neighbor_idx, rel_idx) in &adjacency.reverse[current] {
-            if !visited.contains(&neighbor_idx) {
+            if !visited.contains(&neighbor_idx) && pruned.is_active(neighbor_idx) {
                 visited.insert(neighbor_idx);
                 steps.push(JoinStep {
                     binding_idx: neighbor_idx,
@@ -170,7 +176,7 @@ fn bfs_join_order(
 /// from all relationships that reference this binding.
 fn build_scan(
     binding: &DatasetBinding,
-    iface: &KindInterface,
+    iface: &CompiledInterface,
     relationships: &[CompiledRelationship],
     request: &ResolvedQueryRequest,
 ) -> Result<PlanNode, PlannerError> {
@@ -191,28 +197,33 @@ fn build_scan(
     }
 
     // Add measure columns this binding covers.
+    let phys_resolver = PhysicalResolver::new(&mapping.physical);
     for measure_name in &request.measures {
         if let Some(measure) = iface.measures.get(measure_name) {
             if mapping.contains_key(measure_name) {
-                let lowered = if let Some(agg) = measure.agg {
-                    expr_lower::lower_measure_declarative_physical(
-                        measure_name,
-                        agg,
-                        &measure.expr,
-                        &mapping.physical,
-                        &measure.filters,
-                    )?
-                } else {
-                    expr_lower::lower_measure_with_filters_physical(
-                        measure_name,
-                        &measure.expr,
-                        &mapping.physical,
-                        &measure.filters,
-                    )?
-                };
+                let lowered = decomposer::decompose_measure(
+                    &phys_resolver,
+                    measure_name,
+                    measure.agg,
+                    &measure.expr,
+                    &measure.filters,
+                    &measure.data_type,
+                )?;
                 for agg in &lowered.aggregates {
                     collect_column_refs(&agg.expr, &mut scan_columns, &mut seen);
                 }
+            }
+        } else if iface.metrics.contains_key(measure_name) {
+            // Metric — collect constituent measure columns from this binding.
+            let lowered = decomposer::decompose_metric(
+                measure_name,
+                iface.metrics.get(measure_name).unwrap(),
+                iface,
+                binding,
+                5,
+            )?;
+            for agg in &lowered.aggregates {
+                collect_column_refs(&agg.expr, &mut scan_columns, &mut seen);
             }
         }
     }
@@ -245,7 +256,8 @@ fn build_scan(
         }
     }
 
-    Ok(build_scan_node_binding(binding, &scan_columns))
+    let sem_types = build_semantic_type_map(iface, &mapping.physical);
+    Ok(build_scan_node_binding(binding, &scan_columns, &sem_types))
 }
 
 /// Build a join condition from a relationship's column pairs.
@@ -285,7 +297,7 @@ fn build_join_condition(
 
 /// Build the full join plan: join tree -> aggregate -> project.
 fn build_join_plan(
-    joinset: &JoinsetKind,
+    joinset: &CompiledJoinsetKind,
     request: &ResolvedQueryRequest,
     anchor_idx: usize,
     join_order: &[JoinStep],
@@ -384,8 +396,8 @@ fn build_join_plan(
         })
         .collect();
 
-    // Lower measures.
-    let mut lowered_measures: Vec<(String, expr_lower::LoweredMeasure)> = Vec::new();
+    // Lower measures and metrics.
+    let mut lowered_measures: Vec<(String, DecomposedMeasure)> = Vec::new();
     for measure_name in &request.measures {
         if let Some(measure) = iface.measures.get(measure_name) {
             // Find which binding provides this measure.
@@ -401,22 +413,14 @@ fn build_join_plan(
                 });
 
             if let Some(mapping) = binding_mapping {
-                let lowered = if let Some(agg) = measure.agg {
-                    expr_lower::lower_measure_declarative_physical(
-                        measure_name,
-                        agg,
-                        &measure.expr,
-                        &mapping.physical,
-                        &measure.filters,
-                    )?
-                } else {
-                    expr_lower::lower_measure_with_filters_physical(
-                        measure_name,
-                        &measure.expr,
-                        &mapping.physical,
-                        &measure.filters,
-                    )?
-                };
+                let lowered = decomposer::decompose_measure(
+                    &PhysicalResolver::new(&mapping.physical),
+                    measure_name,
+                    measure.agg,
+                    &measure.expr,
+                    &measure.filters,
+                    &measure.data_type,
+                )?;
                 lowered_measures.push((measure_name.clone(), lowered));
             } else {
                 return Err(PlannerError::MeasureNotFound {
@@ -424,6 +428,18 @@ fn build_join_plan(
                     measure: measure_name.clone(),
                 });
             }
+        } else if let Some(metric) = iface.metrics.get(measure_name) {
+            // Decompose metric into constituent measure aggregates.
+            // Use anchor binding for physical mapping — constituent measures
+            // are resolved against whichever binding covers them.
+            let lowered = decomposer::decompose_metric(
+                measure_name,
+                metric,
+                iface,
+                anchor,
+                5, // max decomposition depth
+            )?;
+            lowered_measures.push((measure_name.clone(), lowered));
         } else {
             return Err(PlannerError::MeasureNotFound {
                 kind: iface.name.clone(),
@@ -446,11 +462,11 @@ fn build_join_plan(
         .collect();
     let mut agg_idx = 0;
     for (semantic, lowered) in &lowered_measures {
-        for (j, _) in lowered.aggregates.iter().enumerate() {
+        for (j, agg_m) in lowered.aggregates.iter().enumerate() {
             if j == 0 {
                 agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
             } else {
-                agg_fields.push(Field::new(format!("__agg_{}", agg_idx), DataType::Float64));
+                agg_fields.push(Field::new(format!("__agg_{}", agg_idx), agg_m.data_type.clone()));
             }
             agg_idx += 1;
         }
@@ -499,20 +515,147 @@ fn build_join_plan(
     })
 }
 
+// ─────────────── field-based join resolution (from join.rs) ──────────────────
+
+use semstrait_manifest::CompiledManifest;
+
+/// Result of field-based entity resolution.
+#[derive(Debug, Clone)]
+pub struct ResolvedFromFields {
+    /// The datasets needed to satisfy the requested fields.
+    pub datasets: Vec<String>,
+    /// The join path (relationship indices) connecting the datasets.
+    /// Empty if only one dataset is needed.
+    pub join_path: Vec<usize>,
+    /// The classified fields: which field comes from which dataset.
+    #[allow(dead_code)] // Used during ad-hoc join plan construction
+    pub field_providers: Vec<(String, String)>,
+}
+
+/// Resolve which datasets and joins are needed to satisfy a set of requested fields.
+///
+/// When `FROM` is omitted in a query, this function uses the pre-computed `FieldIndex`
+/// to find provider datasets for each requested field, then uses the `RelationshipGraph`
+/// to find the shortest join path connecting all needed datasets.
+pub fn resolve_from_fields(
+    requested_fields: &[String],
+    manifest: &CompiledManifest,
+) -> Result<ResolvedFromFields, PlannerError> {
+    let field_index = &manifest.field_index;
+    let rel_graph = &manifest.relationship_graph;
+
+    // Step 1: For each field, find the provider dataset(s).
+    let mut field_providers: Vec<(String, String)> = Vec::new();
+    let mut needed_datasets: Vec<String> = Vec::new();
+    let mut seen_datasets = std::collections::HashSet::new();
+
+    for field in requested_fields {
+        let providers = field_index.providers.get(field);
+
+        match providers {
+            None => {
+                // Check if it's a metric (kind-level, no single provider dataset).
+                if field_index.all_metrics.contains(field) {
+                    continue;
+                }
+                return Err(PlannerError::Internal(format!(
+                    "field '{}' has no provider dataset in the field index",
+                    field
+                )));
+            }
+            Some(ds_list) if ds_list.is_empty() => {
+                return Err(PlannerError::Internal(format!(
+                    "field '{}' has an empty provider list",
+                    field
+                )));
+            }
+            Some(ds_list) => {
+                let provider = &ds_list[0];
+                field_providers.push((field.clone(), provider.clone()));
+                if seen_datasets.insert(provider.clone()) {
+                    needed_datasets.push(provider.clone());
+                }
+            }
+        }
+    }
+
+    if needed_datasets.is_empty() {
+        return Err(PlannerError::Internal(
+            "no datasets needed for the requested fields".to_string(),
+        ));
+    }
+
+    if needed_datasets.len() == 1 {
+        return Ok(ResolvedFromFields {
+            datasets: needed_datasets,
+            join_path: vec![],
+            field_providers,
+        });
+    }
+
+    // Find the join path connecting all needed datasets.
+    let mut connected = vec![needed_datasets[0].clone()];
+    let mut all_join_indices: Vec<usize> = Vec::new();
+
+    for ds in &needed_datasets[1..] {
+        let mut found = false;
+        for connected_ds in &connected {
+            if let Some(path) = rel_graph.shortest_path(connected_ds, ds) {
+                all_join_indices.extend(path);
+                found = true;
+                break;
+            }
+            if let Some(path) = rel_graph.shortest_path(ds, connected_ds) {
+                all_join_indices.extend(path);
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            return Err(PlannerError::NoCoveringDataset {
+                kind: "(ad-hoc)".to_string(),
+                reason: format!(
+                    "no join path between datasets '{}' and '{}'",
+                    connected[0], ds
+                ),
+            });
+        }
+        connected.push(ds.clone());
+    }
+
+    all_join_indices.sort();
+    all_join_indices.dedup();
+
+    Ok(ResolvedFromFields {
+        datasets: needed_datasets,
+        join_path: all_join_indices,
+        field_providers,
+    })
+}
+
+/// Get the relationship at a given index from the manifest's top-level relationships.
+#[allow(dead_code)] // Used during ad-hoc join plan construction
+pub fn get_relationship(
+    manifest: &CompiledManifest,
+    index: usize,
+) -> Option<&CompiledRelationship> {
+    manifest.relationships.get(index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use super::PlannerContext;
-    use crate::test_helpers::*;
+    use crate::tests::helpers::*;
     use indexmap::IndexMap;
     use semstrait_ir::Aggregation;
     use semstrait_manifest::{
-        Cardinality, CompiledDimension, CompiledMeasure, CompiledRelationship,
-        JoinAssociativity, JoinColumnPair, JoinType as ModelJoinType,
+        Cardinality, CompiledDimension, CompiledMeasure, CompiledRelationship, JoinAssociativity, JoinColumnPair, JoinType as ModelJoinType,
     };
     use semstrait_manifest::acceleration::{
         AdjacencyIndex, CoverageIndex, DatasetBinding, DimensionIndex,
-        JoinsetKind, ResolvedColumnMapping,
+        CompiledJoinsetKind, ResolvedColumnMapping,
     };
     use std::collections::HashMap;
 
@@ -540,10 +683,12 @@ mod tests {
             CompiledDimension {
                 name: name.to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Utf8,
+                data_type: semstrait_core::DataType::String,
                 dim_type: semstrait_manifest::DimensionType::Categorical(
                     semstrait_manifest::CategoricalDimension { enum_values: None },
                 ),
+                expr: None,
+                expr_source: None,
             },
         )
     }
@@ -554,8 +699,8 @@ mod tests {
             CompiledMeasure {
                 name: name.to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Float64,
-                agg: Some(Aggregation::Sum),
+                data_type: semstrait_core::DataType::Number,
+                agg: Aggregation::Sum,
                 expr: semstrait_core::Expr::entity_ref(expr_ref),
                 expr_source: format!("SUM({})", expr_ref),
                 additivity: None,
@@ -571,8 +716,8 @@ mod tests {
             CompiledMeasure {
                 name: name.to_string(),
                 description: None,
-                data_type: semstrait_core::DataType::Float64,
-                agg: None,
+                data_type: semstrait_core::DataType::Number,
+                agg: Aggregation::Sum,
                 expr: semstrait_core::Expr::entity_ref(expr_str),
                 expr_source: expr_str.to_string(),
                 additivity: None,
@@ -587,8 +732,6 @@ mod tests {
             version: 1,
             compiled_at: chrono::Utc::now(),
             source_hash: "test".to_string(),
-            datasets: IndexMap::new(),
-            kinds: IndexMap::new(),
             relationships: vec![],
             model_name: "test".to_string(),
             model_description: None,
@@ -596,6 +739,7 @@ mod tests {
             relationship_graph: semstrait_manifest::RelationshipGraph::default(),
             field_index: semstrait_manifest::FieldIndex::default(),
             diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            semantic_graph: semstrait_manifest::SemanticGraph::default(),
             catalog_snapshot: None,
         }
     }
@@ -606,8 +750,8 @@ mod tests {
         measures: IndexMap<String, CompiledMeasure>,
         bindings: Vec<DatasetBinding>,
         relationships: Vec<CompiledRelationship>,
-    ) -> DataKind {
-        let iface = KindInterface {
+    ) -> CompiledDataKind {
+        let iface = CompiledInterface {
             name: name.to_string(),
             description: None,
             dimensions: dimensions.clone(),
@@ -615,14 +759,13 @@ mod tests {
             metrics: IndexMap::new(),
             keys: None,
             filters: vec![],
-            domain: None,
             temporal_dim: None,
         };
         let coverage = CoverageIndex::build(&dimensions, &measures, &bindings);
         let dimension_index = DimensionIndex::build(&dimensions, &bindings);
         let adjacency_index = AdjacencyIndex::build(&bindings, &relationships);
 
-        DataKind::Joinset(Box::new(JoinsetKind {
+        CompiledDataKind::Joinset(Box::new(CompiledJoinsetKind {
             interface: iface,
             associativity: JoinAssociativity::Left,
             bindings,
@@ -679,17 +822,18 @@ mod tests {
 
         let request = make_test_request("order_details", vec!["order_date", "customer_name"], vec!["revenue"]);
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = JoinsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok(), "joinset resolve should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -743,17 +887,18 @@ mod tests {
 
         let request = make_test_request("order_details", vec!["order_date"], vec!["revenue"]);
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = JoinsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok());
 
         let fragment = result.unwrap();
@@ -808,24 +953,16 @@ mod tests {
         let relationships = vec![relationship];
 
         let request = make_test_request("order_details", vec!["order_date"], vec!["revenue"]);
-        let iface = KindInterface {
-            name: "order_details".to_string(),
-            description: None,
-            dimensions,
-            measures,
-            metrics: IndexMap::new(),
-            keys: None,
-            filters: vec![],
-            domain: None,
-            temporal_dim: None,
-        };
+        let data_kind = make_joinset("order_details", dimensions, measures, bindings.clone(), relationships.clone());
+        let pruned = super::PrunedView::all(&data_kind);
+        let iface = data_kind.interface();
 
-        let anchor_idx = find_anchor_index(&iface, &bindings, &request).unwrap();
+        let anchor_idx = find_anchor_index(iface, &bindings, &pruned, &request).unwrap();
         assert_eq!(anchor_idx, 0); // orders covers order_date + revenue
         assert_eq!(bindings[anchor_idx].dataset_name, "orders");
 
         let adjacency = AdjacencyIndex::build(&bindings, &relationships);
-        let steps = bfs_join_order(anchor_idx, &adjacency);
+        let steps = bfs_join_order(anchor_idx, &adjacency, &pruned);
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].binding_idx, 1); // customers
         assert!(!steps[0].reversed);
@@ -842,17 +979,18 @@ mod tests {
         let data_kind = make_joinset("broken", dimensions, measures, vec![ds_a, ds_b], vec![]);
         let request = make_test_request("broken", vec![], vec![]);
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = JoinsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_err());
     }
 
@@ -909,17 +1047,18 @@ mod tests {
 
         let request = make_test_request("order_region", vec!["order_date", "region_name"], vec!["revenue"]);
         let manifest = empty_manifest();
-        let profile = semstrait_core::ConsumerProfile::default();
         let session = HashMap::new();
+        let plan_builder = semstrait_ir::DefaultPlanBuilder;
         let ctx = PlannerContext {
             manifest: &manifest,
-            profile: &profile,
             catalog: None,
             session: &session,
+            plan_builder: &plan_builder,
         };
 
         let planner = JoinsetPlanner;
-        let result = planner.resolve(&data_kind, &request, &ctx);
+        let pruned = super::PrunedView::all(&data_kind);
+        let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok(), "multi-hop join should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
@@ -947,5 +1086,114 @@ mod tests {
             }
             _ => panic!("expected Project as root"),
         }
+    }
+
+    // ── Tests from join.rs (field-based resolution) ──────────────────────
+
+    fn make_manifest_with_field_index() -> CompiledManifest {
+        let mut providers: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        providers.insert("date".to_string(), vec!["orders".to_string()]);
+        providers.insert("region".to_string(), vec!["orders".to_string()]);
+        providers.insert("revenue".to_string(), vec!["orders".to_string()]);
+        providers.insert("customer_name".to_string(), vec!["customers".to_string()]);
+
+        let all_dimensions: std::collections::HashSet<String> =
+            ["date", "region", "customer_name"].iter().map(|s| s.to_string()).collect();
+        let all_measures: std::collections::HashSet<String> = ["revenue"].iter().map(|s| s.to_string()).collect();
+
+        let field_index = semstrait_manifest::FieldIndex {
+            providers,
+            all_dimensions,
+            all_measures,
+            all_metrics: std::collections::HashSet::new(),
+        };
+
+        let mut rel_graph = semstrait_manifest::RelationshipGraph::default();
+        rel_graph
+            .forward
+            .insert("orders".to_string(), vec![("customers".to_string(), 0)]);
+        rel_graph
+            .reverse
+            .insert("customers".to_string(), vec![("orders".to_string(), 0)]);
+        rel_graph.set_shortest_path("orders", "customers", vec![0]);
+
+        let relationships = vec![CompiledRelationship {
+            name: "orders_customers".to_string(),
+            from: "orders".to_string(),
+            to: "customers".to_string(),
+            join_type: ModelJoinType::Left,
+            columns: vec![JoinColumnPair {
+                from: "customer_id".to_string(),
+                to: "id".to_string(),
+            }],
+            cardinality: Cardinality::ManyToOne,
+        }];
+
+        CompiledManifest {
+            version: 3,
+            compiled_at: chrono::Utc::now(),
+            source_hash: "test_join".to_string(),
+            data_kinds: IndexMap::new(),
+            relationships,
+            relationship_graph: rel_graph,
+            field_index,
+            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
+            semantic_graph: semstrait_manifest::SemanticGraph::default(),
+            model_name: "test_join".to_string(),
+            model_description: None,
+            catalog_snapshot: None,
+        }
+    }
+
+    #[test]
+    fn test_resolve_single_dataset() {
+        let manifest = make_manifest_with_field_index();
+        let fields = vec!["date".to_string(), "revenue".to_string()];
+
+        let result = resolve_from_fields(&fields, &manifest);
+        assert!(result.is_ok(), "{:?}", result.err());
+
+        let resolved = result.unwrap();
+        assert_eq!(resolved.datasets, vec!["orders"]);
+        assert!(resolved.join_path.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_cross_dataset_join() {
+        let manifest = make_manifest_with_field_index();
+        let fields = vec![
+            "date".to_string(),
+            "revenue".to_string(),
+            "customer_name".to_string(),
+        ];
+
+        let result = resolve_from_fields(&fields, &manifest);
+        assert!(result.is_ok(), "{:?}", result.err());
+
+        let resolved = result.unwrap();
+        assert_eq!(resolved.datasets.len(), 2);
+        assert!(resolved.datasets.contains(&"orders".to_string()));
+        assert!(resolved.datasets.contains(&"customers".to_string()));
+        assert_eq!(resolved.join_path, vec![0]);
+    }
+
+    #[test]
+    fn test_resolve_unknown_field() {
+        let manifest = make_manifest_with_field_index();
+        let fields = vec!["nonexistent_field".to_string()];
+
+        let result = resolve_from_fields(&fields, &manifest);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_no_join_path() {
+        let mut manifest = make_manifest_with_field_index();
+        manifest.relationship_graph = semstrait_manifest::RelationshipGraph::default();
+
+        let fields = vec!["date".to_string(), "customer_name".to_string()];
+
+        let result = resolve_from_fields(&fields, &manifest);
+        assert!(result.is_err());
     }
 }

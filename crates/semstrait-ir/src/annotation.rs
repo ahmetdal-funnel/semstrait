@@ -16,8 +16,6 @@ pub enum SemAnnotation {
     Additivity(AdditivityAnnotation),
     /// Reference to the Kind being queried
     KindRef(String),
-    /// Domain hint for dataset selection
-    DomainHint(String),
 }
 
 /// Role of an aggregate in the additivity resolution strategy

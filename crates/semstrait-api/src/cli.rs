@@ -461,7 +461,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             filters,
             register,
         } => {
-            let compiled = compile_from_file(&model).await?;
+            let compiled = compile_from_file(&model, None).await?;
 
             let connector = semstrait_connectors::datafusion::DataFusionConnector::new();
             for pair in &register {
@@ -487,7 +487,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             register,
             db,
         } => {
-            let compiled = compile_from_file(&model).await?;
+            let compiled = compile_from_file(&model, None).await?;
 
             let connector = match db {
                 Some(path) => semstrait_connectors::duckdb::DuckDbConnector::with_path(
@@ -521,7 +521,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             trino_user,
             trino_token,
         } => {
-            let compiled = compile_from_file(&model).await?;
+            let compiled = compile_from_file(&model, None).await?;
 
             let mut connector =
                 semstrait_connectors::trino::TrinoConnector::new(trino_url, trino_catalog, trino_schema)

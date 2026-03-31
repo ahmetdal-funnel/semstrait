@@ -8,11 +8,11 @@ No I/O. No network. No engine dependencies. Pure type definitions and shared pri
 
 ## Key Types
 
-- **`DataType`** — Arrow-aligned data type system (Int64, Float64, String, Date, Timestamp, Decimal, etc.)
+- **`DataType`** — ANSI SQL logical type system (Integer, Number, String, Boolean, Date, Timestamp, Decimal, Binary). Adapter layer maps to engine-specific physical types.
 - **`Schema`**, **`SchemaColumn`** — ordinal-based column schema for plan nodes
-- **`ConsumerProfile`** — capability flags shared by planner and connectors (e.g., `SemiAdditiveStrategy`)
-- **`Grain`** — temporal granularity levels (Day, Month, Quarter, Year)
-- **`Expr`** — unified expression tree (aggregations, arithmetic, CASE, DATE_TRUNC, etc.)
+- **`DataFormat`** — data format enum (Iceberg, Parquet, Csv)
+- **`Grain`** — temporal granularity levels (Minute, Hour, Day, Week, Month, Quarter, Year)
+- **`Expr`** — unified expression tree (aggregations, arithmetic, CASE, DATE_TRUNC, ILIKE, REGEXP_MATCH, REGEXP_EXTRACT, FunctionCall, etc.)
 - **`GlobPattern`** — glob pattern matching for catalog table names (`*`, `?`)
 - **Constraint types** — `MeasureConstraints`, `DimensionConstraints`, `AggregationConstraints`
 
@@ -23,10 +23,9 @@ No I/O. No network. No engine dependencies. Pure type definitions and shared pri
 ```
 semstrait-core/src/
 ├── lib.rs                  Public API surface and re-exports
-├── data_type.rs            DataType enum, StructField
+├── data_type.rs            DataType enum (8 ANSI SQL logical types)
 ├── schema.rs               Schema, SchemaColumn
-├── consumer_profile.rs     ConsumerProfile, SemiAdditiveStrategy
-├── grain.rs                Grain enum (Day, Month, Quarter, Year)
+├── grain.rs                Grain enum (Minute, Hour, Day, Week, Month, Quarter, Year)
 ├── expr.rs                 Unified Expr AST (Aggregate, BinaryOp, Case, DateTrunc, etc.)
 ├── constraints.rs          Measure/dimension/aggregation constraint types
 ├── types.rs                GlobPattern with glob_match()

@@ -86,9 +86,9 @@ mod tests {
     #[test]
     fn test_schema_ordinal_lookup() {
         let schema = Schema::new(vec![
-            Field::new("a", DataType::Int64),
-            Field::new("b", DataType::Float64),
-            Field::new("c", DataType::Utf8),
+            Field::new("a", DataType::Integer),
+            Field::new("b", DataType::Number),
+            Field::new("c", DataType::String),
         ]);
         assert_eq!(schema.ordinal("a"), Some(0));
         assert_eq!(schema.ordinal("b"), Some(1));
@@ -107,12 +107,12 @@ mod tests {
     #[test]
     fn test_schema_equality() {
         let schema1 = Schema::new(vec![
-            Field::new("a", DataType::Int64),
-            Field::new("b", DataType::Float64),
+            Field::new("a", DataType::Integer),
+            Field::new("b", DataType::Number),
         ]);
         let schema2 = Schema::new(vec![
-            Field::new("a", DataType::Int64),
-            Field::new("b", DataType::Float64),
+            Field::new("a", DataType::Integer),
+            Field::new("b", DataType::Number),
         ]);
         assert_eq!(schema1, schema2);
     }
@@ -120,8 +120,8 @@ mod tests {
     #[test]
     fn test_schema_clone_preserves_index() {
         let schema1 = Schema::new(vec![
-            Field::new("x", DataType::Int32),
-            Field::new("y", DataType::Utf8),
+            Field::new("x", DataType::Integer),
+            Field::new("y", DataType::String),
         ]);
         let schema2 = schema1.clone();
         assert_eq!(schema2.ordinal("x"), Some(0));

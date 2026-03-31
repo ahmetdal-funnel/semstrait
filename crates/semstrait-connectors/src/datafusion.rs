@@ -122,54 +122,48 @@ impl DataFusionConnector {
         &self,
         manifest: &semstrait_manifest::CompiledManifest,
     ) -> Result<Vec<String>, ConnectorError> {
-        use semstrait_manifest::SourceType;
-
         let mut registered = Vec::new();
 
         for data_kind in manifest.data_kinds.values() {
             for binding in data_kind.bindings() {
-                for source in &binding.resolved_sources {
-                    let table_name = &binding.dataset_name;
-                    match source.source_type {
-                        SourceType::Path => {
-                            match self.register_file(table_name, &source.reference).await {
-                                Ok(()) => registered.push(table_name.clone()),
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "failed to register path source '{}' for dataset '{}': {}",
-                                        source.reference,
-                                        table_name,
-                                        e
-                                    );
-                                }
+                if binding.resolved_sources.len() <= 1 {
+                    // Single source: use same name priority as planner's
+                    // build_scan_node_binding() — table_fqn > reference > dataset_name.
+                    let source = binding.resolved_sources.first();
+                    let table_name = source
+                        .and_then(|s| s.table_fqn.as_deref())
+                        .or_else(|| source.map(|s| s.reference.as_str()))
+                        .unwrap_or(&binding.dataset_name);
+
+                    if let Some(source) = source {
+                        match self.register_source(table_name, source, manifest).await {
+                            Ok(()) => registered.push(table_name.to_string()),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to register source for dataset '{}': {}",
+                                    binding.dataset_name,
+                                    e
+                                );
                             }
                         }
-                        SourceType::Table => {
-                            // Look up table location from catalog snapshot.
-                            let location = manifest
-                                .catalog_snapshot
-                                .as_ref()
-                                .and_then(|snap| snap.tables.get(&source.reference))
-                                .and_then(|ts| ts.iceberg.as_ref())
-                                .and_then(|ice| ice.location.as_deref());
+                    }
+                } else {
+                    // Multi-source: each source gets its own registration using
+                    // table_fqn > reference (matching planner's union scan logic).
+                    for source in &binding.resolved_sources {
+                        let table_name = source
+                            .table_fqn
+                            .as_deref()
+                            .unwrap_or(&source.reference);
 
-                            if let Some(loc) = location {
-                                match self.register_parquet(table_name, loc).await {
-                                    Ok(()) => registered.push(table_name.clone()),
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "failed to register table source '{}' at '{}' for dataset '{}': {}",
-                                            source.reference,
-                                            loc,
-                                            table_name,
-                                            e
-                                        );
-                                    }
-                                }
-                            } else {
-                                tracing::debug!(
-                                    "no location found for table source '{}' — skipping registration",
-                                    source.reference
+                        match self.register_source(table_name, source, manifest).await {
+                            Ok(()) => registered.push(table_name.to_string()),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to register source '{}' for dataset '{}': {}",
+                                    source.reference,
+                                    binding.dataset_name,
+                                    e
                                 );
                             }
                         }
@@ -194,6 +188,40 @@ impl DataFusionConnector {
             )))
         }
     }
+
+    /// Register a single resolved source, dispatching by source type.
+    async fn register_source(
+        &self,
+        table_name: &str,
+        source: &semstrait_manifest::ResolvedSource,
+        manifest: &semstrait_manifest::CompiledManifest,
+    ) -> Result<(), ConnectorError> {
+        use semstrait_manifest::SourceType;
+
+        match source.source_type {
+            SourceType::Path => {
+                self.register_file(table_name, &source.reference).await
+            }
+            SourceType::Table => {
+                let location = manifest
+                    .catalog_snapshot
+                    .as_ref()
+                    .and_then(|snap| snap.tables.get(&source.reference))
+                    .and_then(|ts| ts.iceberg.as_ref())
+                    .and_then(|ice| ice.location.as_deref());
+
+                if let Some(loc) = location {
+                    self.register_parquet(table_name, loc).await
+                } else {
+                    tracing::debug!(
+                        "no location found for table source '{}' — skipping registration",
+                        source.reference
+                    );
+                    Ok(())
+                }
+            }
+        }
+    }
 }
 
 impl Default for DataFusionConnector {
@@ -209,25 +237,38 @@ impl ComputeConnector for DataFusionConnector {
     }
 
     async fn execute(&self, artifact: &PlanArtifact) -> Result<ComputeResult, ConnectorError> {
-        let sql = artifact.as_sql().ok_or_else(|| {
-            ConnectorError::Execution(
-                "DataFusion connector requires SQL artifact; use adapter.debug_sql() \
-                 to produce a SQL fallback before calling execute()".to_string(),
-            )
-        })?;
-
         let start = Instant::now();
 
-        let df = self
-            .ctx
-            .sql(sql)
-            .await
-            .map_err(|e| ConnectorError::Execution(e.to_string()))?;
-
-        let batches = df
-            .collect()
-            .await
-            .map_err(|e| ConnectorError::Execution(e.to_string()))?;
+        let batches = match artifact {
+            PlanArtifact::Sql(sql) => {
+                self.ctx
+                    .sql(sql)
+                    .await
+                    .map_err(|e| ConnectorError::Execution(e.to_string()))?
+                    .collect()
+                    .await
+                    .map_err(|e| ConnectorError::Execution(e.to_string()))?
+            }
+            PlanArtifact::Substrait(plan) => {
+                use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+                let state = self.ctx.state();
+                let df_logical = from_substrait_plan(&state, plan)
+                    .await
+                    .map_err(|e| {
+                        ConnectorError::Execution(format!(
+                            "Substrait plan consumption failed: {}",
+                            e
+                        ))
+                    })?;
+                self.ctx
+                    .execute_logical_plan(df_logical)
+                    .await
+                    .map_err(|e| ConnectorError::Execution(e.to_string()))?
+                    .collect()
+                    .await
+                    .map_err(|e| ConnectorError::Execution(e.to_string()))?
+            }
+        };
 
         let elapsed = start.elapsed();
         let rows_returned: u64 = batches.iter().map(|b: &RecordBatch| b.num_rows() as u64).sum();
@@ -351,5 +392,117 @@ mod tests {
         let connector = DataFusionConnector::new();
         let adapter = connector.adapter();
         assert_eq!(adapter.name(), "datafusion");
+    }
+
+    #[tokio::test]
+    async fn test_execute_substrait_simple_query() {
+        use datafusion_substrait::logical_plan::producer::to_substrait_plan;
+
+        let connector = setup_connector().await;
+
+        // Build a DataFusion LogicalPlan via SQL, then convert to Substrait.
+        let df = connector.ctx.sql(
+            "SELECT region, SUM(amount) as total FROM orders GROUP BY region ORDER BY region"
+        ).await.unwrap();
+        let logical_plan = df.logical_plan().clone();
+        let state = connector.ctx.state();
+        let substrait_plan = to_substrait_plan(&logical_plan, &state).unwrap();
+
+        // Execute via the Substrait path.
+        let artifact = PlanArtifact::Substrait(substrait_plan);
+        let result = connector.execute(&artifact).await.unwrap();
+
+        assert!(result.complete);
+        assert_eq!(result.stats.rows_returned, 2); // US, EU
+
+        match &result.data {
+            ComputeResultData::Json(rows) => {
+                assert_eq!(rows.len(), 2, "should have 2 JSON rows");
+                assert!(rows[0].is_object(), "each row should be a JSON object");
+            }
+            other => panic!("expected Json result data, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_substrait_with_filter() {
+        use datafusion_substrait::logical_plan::producer::to_substrait_plan;
+
+        let connector = setup_connector().await;
+
+        let df = connector.ctx.sql(
+            "SELECT region, amount FROM orders WHERE region = 'US'"
+        ).await.unwrap();
+        let logical_plan = df.logical_plan().clone();
+        let state = connector.ctx.state();
+        let substrait_plan = to_substrait_plan(&logical_plan, &state).unwrap();
+
+        let artifact = PlanArtifact::Substrait(substrait_plan);
+        let result = connector.execute(&artifact).await.unwrap();
+
+        assert_eq!(result.stats.rows_returned, 2); // Two US rows
+    }
+
+    #[tokio::test]
+    async fn test_execute_substrait_rejects_invalid_plan() {
+        use datafusion_substrait::logical_plan::producer::to_substrait_plan;
+
+        let connector = DataFusionConnector::new();
+
+        // Build a plan referencing a nonexistent table — consumption should fail.
+        // We create a valid Substrait plan structure but the table won't exist
+        // in the session context.
+        let df = connector.ctx.sql("SELECT 1 AS x").await.unwrap();
+        let logical_plan = df.logical_plan().clone();
+        let state = connector.ctx.state();
+        let mut substrait_plan = to_substrait_plan(&logical_plan, &state).unwrap();
+
+        // Corrupt the plan to make it invalid.
+        substrait_plan.relations.clear();
+
+        let artifact = PlanArtifact::Substrait(substrait_plan);
+        let result = connector.execute(&artifact).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            ConnectorError::Execution(msg) => {
+                assert!(
+                    msg.contains("Substrait plan consumption failed"),
+                    "error should mention Substrait: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Execution error, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sql_vs_substrait_produce_same_results() {
+        use datafusion_substrait::logical_plan::producer::to_substrait_plan;
+
+        let connector = setup_connector().await;
+        let query = "SELECT region, SUM(amount) as total FROM orders GROUP BY region ORDER BY region";
+
+        // SQL path
+        let sql_artifact = PlanArtifact::Sql(query.to_string());
+        let sql_result = connector.execute(&sql_artifact).await.unwrap();
+
+        // Substrait path
+        let df = connector.ctx.sql(query).await.unwrap();
+        let logical_plan = df.logical_plan().clone();
+        let state = connector.ctx.state();
+        let substrait_plan = to_substrait_plan(&logical_plan, &state).unwrap();
+        let substrait_artifact = PlanArtifact::Substrait(substrait_plan);
+        let substrait_result = connector.execute(&substrait_artifact).await.unwrap();
+
+        // Both paths should produce identical results.
+        assert_eq!(sql_result.stats.rows_returned, substrait_result.stats.rows_returned);
+        match (&sql_result.data, &substrait_result.data) {
+            (ComputeResultData::Json(sql_rows), ComputeResultData::Json(sub_rows)) => {
+                assert_eq!(sql_rows, sub_rows, "SQL and Substrait should produce identical JSON rows");
+            }
+            _ => panic!("expected Json data from both paths"),
+        }
     }
 }

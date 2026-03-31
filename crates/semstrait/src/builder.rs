@@ -4,7 +4,7 @@ use semstrait_catalog::{CatalogProvider, NullCatalogProvider};
 use semstrait_connectors::{ComputeConnector, ComputeResult};
 use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
 use semstrait_planner::SemanticPlanner;
-use semstrait_sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
+use semstrait_adapter::sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -25,7 +25,7 @@ pub enum BuildError {
     Plan(#[from] semstrait_planner::PlannerError),
 
     #[error("emit error: {0}")]
-    Emit(#[from] semstrait_sql::EmitError),
+    Emit(#[from] semstrait_adapter::sql::EmitError),
 
     #[error("adapt error: {0}")]
     Adapt(#[from] semstrait_adapter::AdaptError),
@@ -99,15 +99,7 @@ impl SemstraitBuilder {
             .compile(CompileSource::Yaml(yaml.clone()))
             .await?;
 
-        // Build planner with profile from connector if available
-        let planner = if let Some(ref connector) = self.connector {
-            let profile = semstrait_adapter::profile_from_adapter(connector.adapter());
-            SemanticPlanner::builder()
-                .with_profile(Arc::new(profile))
-                .build()
-        } else {
-            SemanticPlanner::builder().build()
-        };
+        let planner = SemanticPlanner::builder().build();
 
         Ok(SemstraitInstance {
             manifest_yaml: yaml,
