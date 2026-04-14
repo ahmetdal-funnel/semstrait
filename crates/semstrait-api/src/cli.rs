@@ -416,12 +416,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
+                println!("--- Plan ---\n{}\n", result.plan_text);
                 if let Some(sql) = &result.sql {
                     println!("--- SQL ---\n{}\n", sql);
-                }
-                println!("--- Plan ---\n{}\n", result.plan_text);
-                if let Some(substrait) = &result.substrait_json {
-                    println!("--- Substrait JSON ---\n{}\n", substrait);
                 }
             }
             Ok(())

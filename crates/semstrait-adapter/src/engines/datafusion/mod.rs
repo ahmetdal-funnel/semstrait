@@ -1,7 +1,11 @@
 //! DataFusion adapter — produces Substrait plans.
 
-use semstrait_ir::{LogicalPlan, PlanArtifact, SubstraitSerializer};
+use semstrait_ir::{
+    DefaultPlanBuilder, FunctionRegistry, LogicalPlan, PlanArtifact, PlanBuilder,
+    SubstraitSerializer,
+};
 
+use crate::sql::{AnsiSqlEmitter, DataFusionDialect, SqlEmitter};
 use crate::{AdaptError, EngineAdapter};
 
 /// DataFusion adapter — produces Substrait plans.
@@ -15,12 +19,24 @@ impl EngineAdapter for DataFusionAdapter {
         "datafusion"
     }
 
+    fn plan_builder(&self) -> Option<Box<dyn PlanBuilder>> {
+        // V1: identity behavior. Future: engine-specific node shaping
+        // (catalog-qualified table names, DataFusion hints, etc.)
+        Some(Box::new(DefaultPlanBuilder))
+    }
+
     fn adapt(&self, plan: &LogicalPlan) -> Result<PlanArtifact, AdaptError> {
-        let substrait_plan = SubstraitSerializer::to_substrait(plan)
+        let registry = FunctionRegistry::datafusion();
+        let substrait_plan = SubstraitSerializer::to_substrait(plan, &registry)
             .map_err(|e| AdaptError::SubstraitSerialization(e.to_string()))?;
         Ok(PlanArtifact::Substrait(Box::new(substrait_plan)))
     }
-    // debug_sql() uses default ANSI SQL implementation
+    fn debug_sql(&self, plan: &LogicalPlan) -> Result<String, AdaptError> {
+        let emitter = AnsiSqlEmitter::new(DataFusionDialect);
+        emitter
+            .emit(plan)
+            .map_err(|e| AdaptError::SqlEmission(e.to_string()))
+    }
 }
 
 #[cfg(test)]

@@ -62,9 +62,7 @@ fn default_asc() -> String {
 pub struct ExplainResult {
     /// SQL string (if SQL emitter was used)
     pub sql: Option<String>,
-    /// Substrait plan as JSON
-    pub substrait_json: Option<String>,
-    /// Human-readable plan tree
+    /// Human-readable plan tree (indented, similar to DataFusion EXPLAIN)
     pub plan_text: String,
 }
 

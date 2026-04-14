@@ -107,6 +107,48 @@ impl SqlDialect for AnsiDialect {
 }
 
 // =============================================================================
+// DataFusionDialect — LIMIT syntax, native ILIKE, standard DATE_TRUNC
+// =============================================================================
+
+/// DataFusion SQL dialect. LIMIT (not FETCH FIRST), native ILIKE.
+#[cfg(feature = "datafusion")]
+pub struct DataFusionDialect;
+
+#[cfg(feature = "datafusion")]
+impl SqlDialect for DataFusionDialect {
+    fn date_trunc(&self, grain: &Grain, expr: &str) -> String {
+        format!("date_trunc('{}', {})", grain, expr)
+    }
+
+    fn current_timestamp(&self) -> String {
+        "now()".to_string()
+    }
+
+    fn limit_clause(&self, count: Option<i64>, offset: i64) -> String {
+        match (count, offset) {
+            (Some(c), 0) => format!("LIMIT {c}"),
+            (Some(c), o) => format!("LIMIT {c} OFFSET {o}"),
+            (None, o) if o > 0 => format!("OFFSET {o}"),
+            _ => String::new(),
+        }
+    }
+
+    /// DataFusion supports ILIKE natively.
+    fn ilike(&self, expr: &str, pattern: &str) -> String {
+        format!("{expr} ILIKE {pattern}")
+    }
+
+    /// DataFusion `regexp_match` — returns array, check IS NOT NULL for predicate.
+    fn regexp_match(&self, expr: &str, pattern: &str, full_match: bool) -> String {
+        if full_match {
+            format!("regexp_match({expr}, CONCAT('^', {pattern}, '$')) IS NOT NULL")
+        } else {
+            format!("regexp_match({expr}, {pattern}) IS NOT NULL")
+        }
+    }
+}
+
+// =============================================================================
 // DuckDbDialect — double-quoted identifiers (ANSI), DuckDB-specific date_trunc
 // =============================================================================
 

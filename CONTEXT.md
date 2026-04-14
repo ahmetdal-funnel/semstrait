@@ -839,7 +839,7 @@ impl<'s> ExprConverter<'s> {
 | `Not(UnaryExpr)` | `ScalarFunction { fn_anchor: 205 }` |
 | `IsNull(UnaryExpr)` | `ScalarFunction { fn_anchor: 202 }` |
 | `IsNotNull(UnaryExpr)` | `ScalarFunction { fn_anchor: 203 }` |
-| `InList(InListExpr)` | `ScalarFunction { fn_anchor: 206, args: [expr, list..] }` |
+| `InList(InListExpr)` | `SingularOrList { value: expr, options: [list..] }` |
 | `Between(BetweenExpr)` | `ScalarFunction { fn_anchor: 207, args: [expr, low, high] }` |
 | `Like(LikeExpr)` | `ScalarFunction { fn_anchor: 208 }` |
 | `ILike(ILikeExpr)` | `ScalarFunction { fn_anchor: 211 }` |
@@ -848,6 +848,7 @@ impl<'s> ExprConverter<'s> {
 | `Coalesce(CoalesceExpr)` | `ScalarFunction { fn_anchor: 204 }` |
 | `NullIf(NullIfExpr)` | `ScalarFunction { fn_anchor: 209 }` |
 | `DateTrunc(DateTruncExpr { grain, expr })` | `ScalarFunction { fn_anchor: 210, args: [grain_lit, expr] }` |
+| `Cast(CastExpr { expr, data_type })` | `Cast { type: data_type, input: expr }` (native, not ScalarFunction) |
 | Aggregation (Sum/Avg/...) | Used inside `AggregateRel.measures[i].function` |
 
 #### SubstraitSerializer
@@ -856,14 +857,24 @@ impl<'s> ExprConverter<'s> {
 pub struct SubstraitSerializer;
 impl SubstraitSerializer {
     /// Serialize a LogicalPlan to substrait::proto::Plan.
+    /// FunctionRegistry provides engine-specific function name mappings.
     /// SemAnnotations are encoded in AdvancedExtension.detail per node.
-    pub fn to_substrait(plan: &LogicalPlan)
+    pub fn to_substrait(plan: &LogicalPlan, registry: &FunctionRegistry)
         -> Result<substrait::proto::Plan, SerializeError>;
 
     /// Deserialize a substrait::proto::Plan back to LogicalPlan.
     /// SemAnnotations are decoded from AdvancedExtension.detail if present.
     pub fn from_substrait(plan: &substrait::proto::Plan)
         -> Result<LogicalPlan, DeserializeError>;
+}
+
+/// Anchor → engine-specific function name mappings.
+/// Adapters provide engine-specific registries. The serializer uses the
+/// registry to emit SimpleExtensionDeclaration entries in the Substrait plan.
+pub struct FunctionRegistry { entries: Vec<FunctionEntry> }
+pub struct FunctionEntry { pub anchor: u32, pub name: String }
+impl FunctionRegistry {
+    pub fn datafusion() -> Self; // DataFusion-compatible names (28 functions)
 }
 ```
 
@@ -1229,7 +1240,7 @@ semstrait-adapter/
 │   ├── traits.rs           EngineAdapter trait
 │   ├── sql/
 │   │   ├── mod.rs          SqlEmitter, SqlDialect, AnsiSqlEmitter, ExprSqlRenderer
-│   │   ├── dialect.rs      AnsiDialect, DuckDbDialect (feature), SparkDialect (feature)
+│   │   ├── dialect.rs      AnsiDialect, DataFusionDialect (feature), DuckDbDialect (feature), SparkDialect (feature)
 │   │   ├── expr_renderer.rs Expr → SQL string rendering
 │   │   ├── tests.rs        SQL emission tests (dialect-gated)
 │   │   └── polyglot/       PolyglotEmitter (feature-gated: duckdb | spark)
@@ -1275,9 +1286,9 @@ pub trait EngineAdapter: Send + Sync {
 
 | Adapter | Output | Notes |
 |---|---|---|
-| `DataFusionAdapter` | `Substrait` | Serializes via `SubstraitSerializer`. No polyglot needed. |
-| `DuckDbAdapter` | `Sql` | DuckDB dialect (LIMIT, lowercase). Uses polyglot-sql for transpilation. |
-| `SparkAdapter` | `Sql` | Spark dialect. Uses polyglot-sql for transpilation. |
+| `DataFusionAdapter` | `Substrait` | Serializes via `SubstraitSerializer(FunctionRegistry::datafusion())`. Debug SQL via `DataFusionDialect`. |
+| `DuckDbAdapter` | — | **V1 unsupported.** Returns `AdaptError::UnsupportedFeature`. SQL dialect infrastructure exists. |
+| `SparkAdapter` | — | **V1 unsupported.** Returns `AdaptError::UnsupportedFeature`. SQL dialect infrastructure exists. |
 
 **External deps:** `semstrait-core`, `semstrait-ir`, `polyglot-sql` (optional, activated by `duckdb`/`spark` features)
 
@@ -1665,6 +1676,13 @@ let result = sem.query(&request).await?;  // ComputeResult
 - **DL-062:** Expression scope validation (SR-5a). `validate_expr_scope()` in `steps.rs` checks that all `Expr::Column` references in computed dimension and metric expressions refer to names exposed in the same interface. Measure base expressions are exempt (reference physical columns).
 - **DL-063:** Parse-time uniqueness enforcement (SR-1/SR-3). `vec_to_btreemap_unique()` in `common.rs` detects duplicate dimension/measure/metric/filter names at parse time.
 - **DL-064:** `DataKindBinding` + `DataKindBindingExtras` use `#[serde(deny_unknown_fields)]` (SR-4). Prevents semantic fields on dataset bindings within complex kinds.
+- **DL-065:** PlanBuilder activated — planner uses `plan_builder.*()` for all 24 node construction sites. `DefaultPlanBuilder` produces identical nodes (zero behavioral change). `#[allow(dead_code)]` removed from `PlannerContext.plan_builder`.
+- **DL-066:** DataFusionPlanBuilder + facade wiring. `SemstraitBuilder::with_adapter()` extracts `adapter.plan_builder()` and wires to `SemanticPlanner::builder().with_plan_builder(pb)`. V1: identity (DefaultPlanBuilder). Future: engine-specific node shaping.
+- **DL-067:** FunctionRegistry — adapter provides engine-specific function name→anchor mappings to `SubstraitSerializer::to_substrait(plan, &registry)`. IR no longer hardcodes engine-specific function names. Extension URIs removed entirely (no function YAML files behind them).
+- **DL-068:** Native Substrait Cast. `Expr::Cast` emits `expression::RexType::Cast` instead of `ScalarFunction` with anchor 214. DataFusion expects native Cast form. `FUNC_CAST` anchor removed from registry.
+- **DL-069:** DataFusionDialect for debug SQL. `LIMIT` (not `FETCH FIRST`), native `ILIKE`, `now()`, `regexp_match(...) IS NOT NULL`. `DataFusionAdapter::debug_sql()` uses `AnsiSqlEmitter::new(DataFusionDialect)`.
+- **DL-070:** DuckDB/Spark adapters return `AdaptError::UnsupportedFeature` in V1. SQL dialect infrastructure preserved. DataFusion is the primary V1 compute engine.
+- **DL-071:** Function name audit — `InList` emits native Substrait `SingularOrList` (not ScalarFunction). `regexp_extract` removed from DataFusion registry (no DF UDF). All 28 remaining names verified resolvable by DataFusion's Substrait consumer.
 
 **Feature flags:**
 ```toml

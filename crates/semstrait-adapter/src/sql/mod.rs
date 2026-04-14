@@ -22,6 +22,8 @@ mod polyglot;
 mod polyglot_emitter;
 
 pub use dialect::{AnsiDialect, SqlDialect, TargetDialect};
+#[cfg(feature = "datafusion")]
+pub use dialect::DataFusionDialect;
 #[cfg(feature = "duckdb")]
 pub use dialect::DuckDbDialect;
 #[cfg(feature = "spark")]

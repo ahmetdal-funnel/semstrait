@@ -13,8 +13,8 @@ use super::plan_builder::{build_scan_node_binding, build_semantic_type_map};
 use super::{extract_metadata_value_binding, partition_dimensions_iface, KindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
 use semstrait_ir::{
-    AggNode, AggregateMeasure, Expr, Field, JoinNode, JoinType as IrJoinType, NodeMeta,
-    PlanNode, ProjectNode, Schema,
+    AggregateMeasure, Expr, Field, JoinType as IrJoinType,
+    PlanBuilder, PlanNode, Schema,
 };
 use semstrait_manifest::{
     CompiledRelationship, JoinType as ModelJoinType, CompiledInterface,
@@ -179,6 +179,7 @@ fn build_scan(
     iface: &CompiledInterface,
     relationships: &[CompiledRelationship],
     request: &ResolvedQueryRequest,
+    pb: &dyn PlanBuilder,
 ) -> Result<PlanNode, PlannerError> {
     let mapping = &binding.column_mapping;
     let mut scan_columns: Vec<String> = Vec::new();
@@ -257,7 +258,7 @@ fn build_scan(
     }
 
     let sem_types = build_semantic_type_map(iface, &mapping.physical);
-    Ok(build_scan_node_binding(binding, &scan_columns, &sem_types))
+    Ok(build_scan_node_binding(binding, &scan_columns, &sem_types, pb))
 }
 
 /// Build a join condition from a relationship's column pairs.
@@ -301,7 +302,7 @@ fn build_join_plan(
     request: &ResolvedQueryRequest,
     anchor_idx: usize,
     join_order: &[JoinStep],
-    _ctx: &PlannerContext<'_>,
+    ctx: &PlannerContext<'_>,
 ) -> Result<PlanFragment, PlannerError> {
     let iface = &joinset.interface;
     let bindings = &joinset.bindings;
@@ -309,7 +310,8 @@ fn build_join_plan(
     let anchor = &bindings[anchor_idx];
 
     // Build the anchor scan.
-    let mut current_plan = build_scan(anchor, iface, relationships, request)?;
+    let pb = ctx.plan_builder;
+    let mut current_plan = build_scan(anchor, iface, relationships, request, pb)?;
 
     // Track all binding indices in the join tree for schema building.
     let mut joined_indices: Vec<usize> = vec![anchor_idx];
@@ -317,7 +319,7 @@ fn build_join_plan(
     // Join each step.
     for step in join_order {
         let right_binding = &bindings[step.binding_idx];
-        let right_scan = build_scan(right_binding, iface, relationships, request)?;
+        let right_scan = build_scan(right_binding, iface, relationships, request, pb)?;
         joined_indices.push(step.binding_idx);
 
         let rel = &relationships[step.relationship_idx];
@@ -339,13 +341,7 @@ fn build_join_plan(
         join_fields.extend(right_scan.meta().output_schema.fields.iter().cloned());
         let join_schema = Schema::new(join_fields);
 
-        current_plan = PlanNode::Join(JoinNode {
-            meta: NodeMeta::new(join_schema),
-            left: Box::new(current_plan),
-            right: Box::new(right_scan),
-            join_type,
-            condition,
-        });
+        current_plan = ctx.plan_builder.build_join(join_schema, current_plan, right_scan, join_type, condition);
     }
 
     // Now build Aggregate -> Project over the joined result.
@@ -473,12 +469,8 @@ fn build_join_plan(
     }
     let agg_schema = Schema::new(agg_fields);
 
-    let agg = PlanNode::Aggregate(AggNode {
-        meta: NodeMeta::new(agg_schema),
-        input: Box::new(current_plan),
-        group_by,
-        aggregates,
-    });
+    let pb = ctx.plan_builder;
+    let agg = pb.build_aggregate(agg_schema, current_plan, group_by, aggregates);
 
     // Project node — maps to semantic names.
     let mut project_exprs: Vec<Expr> = Vec::new();
@@ -502,11 +494,7 @@ fn build_join_plan(
     );
     let project_schema = Schema::new(project_fields);
 
-    let project = PlanNode::Project(ProjectNode {
-        meta: NodeMeta::new(project_schema.clone()),
-        input: Box::new(agg),
-        expressions: project_exprs,
-    });
+    let project = pb.build_project(project_schema.clone(), agg, project_exprs);
 
     Ok(PlanFragment {
         root: project,

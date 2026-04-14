@@ -1,14 +1,18 @@
 //! Spark adapter — produces SQL with Spark dialect.
+//!
+//! V1: Spark adapter is not yet supported. The SQL dialect and emitter
+//! infrastructure exists but has not been validated against a live Spark
+//! engine. Use DataFusion as the primary compute engine in V1.
 
 use semstrait_ir::{LogicalPlan, PlanArtifact};
-use crate::sql::{AnsiSqlEmitter, SparkDialect, SqlEmitter};
 
 use crate::{AdaptError, EngineAdapter};
 
 /// Spark adapter — produces SQL with Spark dialect.
 ///
-/// Spark SQL uses LIMIT syntax and `current_timestamp()` function form.
-/// This adapter uses the SparkDialect for SQL generation.
+/// **V1 status: unsupported.** The Spark SQL dialect exists but the
+/// adapter has not been validated against a live Spark engine.
+/// Use `DataFusionAdapter` as the primary compute engine in V1.
 pub struct SparkAdapter;
 
 impl EngineAdapter for SparkAdapter {
@@ -16,19 +20,16 @@ impl EngineAdapter for SparkAdapter {
         "spark"
     }
 
-    fn adapt(&self, plan: &LogicalPlan) -> Result<PlanArtifact, AdaptError> {
-        let emitter = AnsiSqlEmitter::new(SparkDialect);
-        let sql = emitter
-            .emit(plan)
-            .map_err(|e| AdaptError::SqlEmission(e.to_string()))?;
-        Ok(PlanArtifact::Sql(sql))
+    fn adapt(&self, _plan: &LogicalPlan) -> Result<PlanArtifact, AdaptError> {
+        Err(AdaptError::UnsupportedFeature(
+            "Spark adapter is not supported in V1. Use DataFusion.".to_string(),
+        ))
     }
 
-    fn debug_sql(&self, plan: &LogicalPlan) -> Result<String, AdaptError> {
-        let emitter = AnsiSqlEmitter::new(SparkDialect);
-        emitter
-            .emit(plan)
-            .map_err(|e| AdaptError::SqlEmission(e.to_string()))
+    fn debug_sql(&self, _plan: &LogicalPlan) -> Result<String, AdaptError> {
+        Err(AdaptError::UnsupportedFeature(
+            "Spark adapter is not supported in V1. Use DataFusion.".to_string(),
+        ))
     }
 }
 
@@ -37,8 +38,8 @@ mod tests {
     use super::*;
     use semstrait_core::DataType;
     use semstrait_ir::{
-        AggNode, AggregateMeasure, Aggregation, Expr, FetchNode, Field, LogicalPlan, NodeMeta,
-        PlanNode, ScanNode, Schema,
+        AggNode, AggregateMeasure, Aggregation, Expr, Field, LogicalPlan, NodeMeta, PlanNode,
+        ScanNode, Schema,
     };
 
     fn make_test_plan() -> LogicalPlan {
@@ -76,49 +77,28 @@ mod tests {
     }
 
     #[test]
-    fn test_spark_adapter_produces_sql() {
+    fn test_spark_adapt_unsupported() {
         let adapter = SparkAdapter;
         let plan = make_test_plan();
-        let artifact = adapter.adapt(&plan).unwrap();
-        assert!(artifact.is_sql(), "Spark adapter should produce SQL");
-        let sql = artifact.as_sql().unwrap();
-        assert!(sql.contains("SELECT"), "SQL should contain SELECT: {sql}");
+        let result = adapter.adapt(&plan);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not supported in V1"),
+            "Expected V1 unsupported error, got: {err}"
+        );
     }
 
     #[test]
-    fn test_spark_sql_uses_limit() {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Integer),
-            Field::new("amount", DataType::Number),
-        ]);
-
-        let scan = PlanNode::Scan(ScanNode {
-            meta: NodeMeta::new(schema.clone()),
-            table_name: "orders".to_string(),
-            location: None,
-            format: None,
-            projection: vec!["id".to_string(), "amount".to_string()],
-        });
-
-        let fetch = PlanNode::Fetch(FetchNode {
-            meta: NodeMeta::new(schema),
-            input: Box::new(scan),
-            count: Some(10),
-            offset: 0,
-        });
-
-        let plan = LogicalPlan::new(fetch, vec!["id".to_string(), "amount".to_string()]);
-
+    fn test_spark_debug_sql_unsupported() {
         let adapter = SparkAdapter;
-        let artifact = adapter.adapt(&plan).unwrap();
-        let sql = artifact.as_sql().unwrap();
+        let plan = make_test_plan();
+        let result = adapter.debug_sql(&plan);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
         assert!(
-            sql.contains("LIMIT"),
-            "Spark SQL should use LIMIT, got: {sql}"
-        );
-        assert!(
-            !sql.contains("FETCH FIRST"),
-            "Spark SQL should NOT use FETCH FIRST, got: {sql}"
+            err.contains("not supported in V1"),
+            "Expected V1 unsupported error, got: {err}"
         );
     }
 

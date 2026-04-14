@@ -97,7 +97,7 @@ impl SemstraitService for SemstraitGrpcService {
         Ok(tonic::Response::new(ExplainResponse {
             plan_text: result.plan_text,
             sql: result.sql,
-            substrait_json: result.substrait_json,
+            substrait_json: None,
         }))
     }
 

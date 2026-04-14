@@ -14,8 +14,8 @@ use super::plan_builder::{build_scan_node_binding, build_semantic_type_map, infe
 use super::{extract_metadata_value_binding, partition_dimensions_iface, KindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
 use semstrait_ir::{
-    AggNode, AggregateMeasure, Expr, Field, NodeMeta, PlanNode, ProjectNode,
-    Schema, UnionNode,
+    AggregateMeasure, Expr, Field, PlanNode,
+    Schema,
 };
 use semstrait_manifest::{CompiledInterface, UnionMode};
 use semstrait_manifest::acceleration::{CompiledDataKind, DatasetBinding};
@@ -61,6 +61,8 @@ impl KindPlanner for UnionsetPlanner {
         // Validate type consistency across branches before UNION.
         plan_builder::validate_union_types(&branches)?;
 
+        let pb = ctx.plan_builder;
+
         // If only one branch, skip the UNION node.
         let union_input = if branches.len() == 1 {
             // Safe: we just verified len == 1.
@@ -68,11 +70,7 @@ impl KindPlanner for UnionsetPlanner {
         } else {
             // All branches share the same output schema (the unified schema).
             let schema = Arc::clone(&branches[0].meta().output_schema);
-            PlanNode::Union(UnionNode {
-                meta: NodeMeta::new_shared(schema),
-                inputs: branches,
-                distinct,
-            })
+            pb.build_union((*schema).clone(), branches, distinct)
         };
 
         // Re-aggregate across all branches.
@@ -95,12 +93,7 @@ impl KindPlanner for UnionsetPlanner {
             })
             .collect();
 
-        let agg = PlanNode::Aggregate(AggNode {
-            meta: NodeMeta::new(unified_schema.clone()),
-            input: Box::new(union_input),
-            group_by,
-            aggregates,
-        });
+        let agg = pb.build_aggregate(unified_schema.clone(), union_input, group_by, aggregates);
 
         Ok(PlanFragment {
             root: agg,
@@ -134,7 +127,7 @@ fn build_union_branch(
     iface: &CompiledInterface,
     request: &ResolvedQueryRequest,
     binding: &DatasetBinding,
-    _ctx: &PlannerContext<'_>,
+    ctx: &PlannerContext<'_>,
 ) -> Result<PlanNode, PlannerError> {
     let mapping = &binding.column_mapping;
 
@@ -219,7 +212,8 @@ fn build_union_branch(
 
     // Build Scan node (multi-source aware).
     let sem_types = build_semantic_type_map(iface, &mapping.physical);
-    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types);
+    let pb = ctx.plan_builder;
+    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
 
     // Build Aggregate node (only physical dimensions in group_by).
     let group_by: Vec<Expr> = dim_sources
@@ -260,12 +254,7 @@ fn build_union_branch(
     }
     let agg_schema = Schema::new(agg_fields);
 
-    let agg = PlanNode::Aggregate(AggNode {
-        meta: NodeMeta::new(agg_schema),
-        input: Box::new(scan),
-        group_by,
-        aggregates,
-    });
+    let agg = pb.build_aggregate(agg_schema, scan, group_by, aggregates);
 
     // Build Project node — outputs the unified schema.
     // Uncovered dimensions/measures are NULL-filled.
@@ -287,11 +276,7 @@ fn build_union_branch(
         );
     }
 
-    let project = PlanNode::Project(ProjectNode {
-        meta: NodeMeta::new(unified_schema),
-        input: Box::new(agg),
-        expressions: project_exprs,
-    });
+    let project = pb.build_project(unified_schema, agg, project_exprs);
 
     Ok(project)
 }

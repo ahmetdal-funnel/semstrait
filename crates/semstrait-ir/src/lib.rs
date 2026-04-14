@@ -26,7 +26,7 @@ pub use plan::{
     PlanNode, PlannerWarning, ProjectNode, ScanNode, SortDirection, SortKey, SortNode, UnionNode,
 };
 // Re-export unified expression types from core (via plan::node re-exports)
-pub use plan::node::{Aggregation, BinaryOp, Expr};
+pub use plan::node::{Aggregation, BinaryOp, DataType, Expr};
 pub use schema::{Field, Schema};
 pub use plan_builder::{DefaultPlanBuilder, PlanBuilder};
-pub use substrait::{ExprConverter, SubstraitSerializer};
+pub use substrait::{ExprConverter, FunctionRegistry, SubstraitSerializer};

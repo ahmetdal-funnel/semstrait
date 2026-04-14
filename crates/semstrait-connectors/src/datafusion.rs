@@ -505,4 +505,245 @@ mod tests {
             _ => panic!("expected Json data from both paths"),
         }
     }
+
+    // =========================================================================
+    // Semstrait Substrait → DataFusion consumption tests
+    //
+    // These tests verify that the Substrait plans produced by semstrait's
+    // SubstraitSerializer + FunctionRegistry are structurally valid and
+    // consumable by DataFusion's Substrait consumer (`from_substrait_plan`).
+    //
+    // This is the critical integration boundary: our IR → DataFusion.
+    // =========================================================================
+
+    /// Build a semstrait LogicalPlan (Scan + Aggregate) and verify that
+    /// DataFusion's consumer can parse the resulting Substrait plan.
+    #[tokio::test]
+    async fn test_semstrait_substrait_consumed_by_datafusion() {
+        use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+        use semstrait_adapter::DataFusionAdapter;
+        use semstrait_adapter::EngineAdapter;
+
+        let connector = setup_connector().await;
+
+        // Build a semstrait plan: SELECT region, SUM(amount) FROM orders GROUP BY region
+        let plan = make_semstrait_plan();
+
+        // Serialize to Substrait via the DataFusion adapter.
+        let adapter = DataFusionAdapter;
+        let artifact = adapter.adapt(&plan).expect("adapt should succeed");
+        let substrait_plan = artifact.as_substrait().expect("should be Substrait");
+
+        // Feed into DataFusion's consumer — this validates structure + function refs.
+        let state = connector.ctx.state();
+        let df_logical = from_substrait_plan(&state, substrait_plan).await;
+
+        assert!(
+            df_logical.is_ok(),
+            "DataFusion should accept semstrait's Substrait plan: {:?}",
+            df_logical.err()
+        );
+    }
+
+    /// Full execution: semstrait plan → Substrait → DataFusion → results.
+    #[tokio::test]
+    async fn test_semstrait_substrait_execution() {
+        use semstrait_adapter::DataFusionAdapter;
+        use semstrait_adapter::EngineAdapter;
+
+        let connector = setup_connector().await;
+
+        let plan = make_semstrait_plan();
+        let adapter = DataFusionAdapter;
+        let artifact = adapter.adapt(&plan).expect("adapt should succeed");
+
+        // Execute through the connector's Substrait path.
+        let result = connector.execute(&artifact).await;
+        assert!(
+            result.is_ok(),
+            "Substrait execution should succeed: {:?}",
+            result.err()
+        );
+
+        let result = result.unwrap();
+        assert!(result.complete);
+        assert_eq!(result.stats.rows_returned, 2, "should have 2 rows (US, EU)");
+
+        match &result.data {
+            ComputeResultData::Json(rows) => {
+                assert_eq!(rows.len(), 2);
+                for row in rows {
+                    assert!(row.is_object(), "each row should be a JSON object");
+                }
+            }
+            other => panic!("expected Json result, got: {:?}", other),
+        }
+    }
+
+    /// Verify FunctionRegistry extensions appear in the Substrait plan
+    /// and that DataFusion resolves all function anchors.
+    #[tokio::test]
+    async fn test_semstrait_substrait_function_registry() {
+        use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+        use semstrait_adapter::DataFusionAdapter;
+        use semstrait_adapter::EngineAdapter;
+
+        let connector = setup_connector().await;
+        let plan = make_semstrait_plan();
+
+        let adapter = DataFusionAdapter;
+        let artifact = adapter.adapt(&plan).expect("adapt should succeed");
+        let substrait_plan = artifact.as_substrait().expect("should be Substrait");
+
+        // Extension declarations from FunctionRegistry should be present.
+        assert!(
+            !substrait_plan.extensions.is_empty(),
+            "plan should have function extension declarations"
+        );
+        assert!(
+            substrait_plan.extension_uris.is_empty(),
+            "plan should have no extension URIs (removed in Phase 3)"
+        );
+
+        // All function refs must resolve in DataFusion.
+        let state = connector.ctx.state();
+        let df_logical = from_substrait_plan(&state, substrait_plan)
+            .await
+            .expect("all function references should resolve");
+
+        // Verify the DataFusion plan is non-trivial (has children).
+        let plan_str = format!("{:?}", df_logical);
+        assert!(
+            plan_str.contains("Aggregate") || plan_str.contains("aggregate"),
+            "DataFusion plan should contain aggregate: {}",
+            plan_str
+        );
+    }
+
+    /// Verify that a plan with a filter (WHERE clause) produces valid Substrait.
+    #[tokio::test]
+    async fn test_semstrait_substrait_with_filter() {
+        use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+        use semstrait_adapter::DataFusionAdapter;
+        use semstrait_adapter::EngineAdapter;
+        use semstrait_ir::{
+            AggNode, AggregateMeasure, Aggregation, BinaryOp, Expr, Field, FilterNode,
+            LogicalPlan, NodeMeta, PlanNode, ScanNode, Schema,
+        };
+        use semstrait_ir::plan::node::DataType;
+
+        let connector = setup_connector().await;
+
+        // Build plan with filter: WHERE region = 'US'
+        let scan_schema = Schema::new(vec![
+            Field::new("region", DataType::String),
+            Field::new("amount", DataType::Number),
+            Field::new("order_id", DataType::Integer),
+        ]);
+
+        let scan = PlanNode::Scan(ScanNode {
+            meta: NodeMeta::new(scan_schema.clone()),
+            table_name: "orders".to_string(),
+            location: None,
+            format: None,
+            projection: vec!["region".to_string(), "amount".to_string(), "order_id".to_string()],
+        });
+
+        let filter = PlanNode::Filter(FilterNode {
+            meta: NodeMeta::new(scan_schema.clone()),
+            input: Box::new(scan),
+            predicate: Expr::binary(
+                Expr::column("region"),
+                BinaryOp::Eq,
+                Expr::string("US"),
+            ),
+        });
+
+        let agg_schema = Schema::new(vec![
+            Field::new("region", DataType::String),
+            Field::new("total", DataType::Number),
+        ]);
+
+        let agg = PlanNode::Aggregate(AggNode {
+            meta: NodeMeta::new(agg_schema),
+            input: Box::new(filter),
+            group_by: vec![Expr::column("region")],
+            aggregates: vec![AggregateMeasure {
+                function: Aggregation::Sum,
+                expr: Expr::column("amount"),
+                distinct: false,
+                data_type: DataType::Number,
+            }],
+        });
+
+        let plan = LogicalPlan::new(
+            agg,
+            vec!["region".to_string(), "total".to_string()],
+        );
+
+        let adapter = DataFusionAdapter;
+        let artifact = adapter.adapt(&plan).expect("adapt should succeed");
+        let substrait_plan = artifact.as_substrait().expect("should be Substrait");
+
+        // DataFusion should accept the filtered plan.
+        let state = connector.ctx.state();
+        let df_logical = from_substrait_plan(&state, substrait_plan)
+            .await
+            .expect("filtered plan should be consumable");
+
+        let plan_str = format!("{:?}", df_logical);
+        assert!(
+            plan_str.contains("Filter") || plan_str.contains("filter"),
+            "DataFusion plan should contain filter: {}",
+            plan_str
+        );
+
+        // Execute and verify results.
+        let result = connector.execute(&artifact).await.expect("execution should succeed");
+        assert_eq!(result.stats.rows_returned, 1, "only US rows after filter");
+    }
+
+    /// Helper: build a semstrait LogicalPlan for the test table.
+    ///
+    /// Plan: SELECT region, SUM(amount) AS total FROM orders GROUP BY region
+    fn make_semstrait_plan() -> semstrait_ir::LogicalPlan {
+        use semstrait_ir::plan::node::DataType;
+        use semstrait_ir::{
+            AggNode, AggregateMeasure, Aggregation, Expr, Field,
+            LogicalPlan, NodeMeta, PlanNode, ScanNode, Schema,
+        };
+
+        let agg_schema = Schema::new(vec![
+            Field::new("region", DataType::String),
+            Field::new("total", DataType::Number),
+        ]);
+
+        let scan_schema = Schema::new(vec![
+            Field::new("region", DataType::String),
+            Field::new("amount", DataType::Number),
+            Field::new("order_id", DataType::Integer),
+        ]);
+
+        let scan = PlanNode::Scan(ScanNode {
+            meta: NodeMeta::new(scan_schema),
+            table_name: "orders".to_string(),
+            location: None,
+            format: None,
+            projection: vec!["region".to_string(), "amount".to_string(), "order_id".to_string()],
+        });
+
+        let agg = PlanNode::Aggregate(AggNode {
+            meta: NodeMeta::new(agg_schema),
+            input: Box::new(scan),
+            group_by: vec![Expr::column("region")],
+            aggregates: vec![AggregateMeasure {
+                function: Aggregation::Sum,
+                expr: Expr::column("amount"),
+                distinct: false,
+                data_type: DataType::Number,
+            }],
+        });
+
+        LogicalPlan::new(agg, vec!["region".to_string(), "total".to_string()])
+    }
 }

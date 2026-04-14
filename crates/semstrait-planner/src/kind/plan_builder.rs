@@ -7,8 +7,8 @@ use super::{extract_metadata_value_binding, partition_dimensions_iface, PlanFrag
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::DataType;
 use semstrait_ir::{
-    AggNode, Aggregation, AggregateMeasure, Expr, Field, NodeMeta, PlanNode, ProjectNode,
-    ScanNode, Schema, UnionNode,
+    Aggregation, AggregateMeasure, Expr, Field, PlanBuilder, PlanNode,
+    Schema,
 };
 use indexmap::IndexMap;
 use semstrait_manifest::{DatasetBinding, CompiledDatasetKind, CompiledInterface};
@@ -72,6 +72,7 @@ pub(crate) fn build_scan_node_binding(
     binding: &DatasetBinding,
     scan_columns: &[String],
     semantic_types: &HashMap<String, DataType>,
+    pb: &dyn PlanBuilder,
 ) -> PlanNode {
     let scan_schema = Schema::new(
         scan_columns
@@ -86,33 +87,29 @@ pub(crate) fn build_scan_node_binding(
             .and_then(|s| s.table_fqn.as_deref())
             .or_else(|| first_source.map(|s| s.reference.as_str()))
             .unwrap_or(&binding.dataset_name);
-        PlanNode::Scan(ScanNode {
-            meta: NodeMeta::new(scan_schema),
-            table_name: table_name.to_string(),
-            location: first_source.and_then(|s| s.location.clone()),
-            format: first_source.and_then(|s| s.format),
-            projection: scan_columns.to_vec(),
-        })
+        pb.build_scan(
+            scan_schema,
+            table_name.to_string(),
+            first_source.and_then(|s| s.location.clone()),
+            first_source.and_then(|s| s.format),
+            scan_columns.to_vec(),
+        )
     } else {
         let inputs: Vec<PlanNode> = binding.resolved_sources
             .iter()
             .map(|source| {
                 let table_name = source.table_fqn.as_deref()
                     .unwrap_or(&source.reference);
-                PlanNode::Scan(ScanNode {
-                    meta: NodeMeta::new(scan_schema.clone()),
-                    table_name: table_name.to_string(),
-                    location: source.location.clone(),
-                    format: source.format,
-                    projection: scan_columns.to_vec(),
-                })
+                pb.build_scan(
+                    scan_schema.clone(),
+                    table_name.to_string(),
+                    source.location.clone(),
+                    source.format,
+                    scan_columns.to_vec(),
+                )
             })
             .collect();
-        PlanNode::Union(UnionNode {
-            meta: NodeMeta::new(scan_schema),
-            inputs,
-            distinct: false,
-        })
+        pb.build_union(scan_schema, inputs, false)
     }
 }
 
@@ -159,7 +156,7 @@ pub(crate) fn infer_aggregation_iface(iface: &CompiledInterface, measure_name: &
 pub(crate) fn build_dataset_kind_plan(
     dk: &CompiledDatasetKind,
     request: &ResolvedQueryRequest,
-    _ctx: &PlannerContext<'_>,
+    ctx: &PlannerContext<'_>,
 ) -> Result<PlanFragment, PlannerError> {
     let iface = &dk.interface;
     let binding = &dk.binding;
@@ -243,8 +240,9 @@ pub(crate) fn build_dataset_kind_plan(
     }
 
     // Build Scan node.
+    let pb = ctx.plan_builder;
     let sem_types = build_semantic_type_map(iface, &mapping.physical);
-    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types);
+    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
 
     // Build Aggregate node.
     let group_by: Vec<Expr> = dim_physical
@@ -274,12 +272,7 @@ pub(crate) fn build_dataset_kind_plan(
     }
     let agg_schema = Schema::new(agg_fields);
 
-    let agg = PlanNode::Aggregate(AggNode {
-        meta: NodeMeta::new(agg_schema),
-        input: Box::new(scan),
-        group_by,
-        aggregates,
-    });
+    let agg = pb.build_aggregate(agg_schema, scan, group_by, aggregates);
 
     // Build Project node.
     let mut project_exprs: Vec<Expr> = Vec::new();
@@ -305,11 +298,7 @@ pub(crate) fn build_dataset_kind_plan(
     );
     let project_schema = Schema::new(project_fields);
 
-    let project = PlanNode::Project(ProjectNode {
-        meta: NodeMeta::new(project_schema.clone()),
-        input: Box::new(agg),
-        expressions: project_exprs,
-    });
+    let project = pb.build_project(project_schema.clone(), agg, project_exprs);
 
     Ok(PlanFragment {
         root: project,
@@ -327,7 +316,7 @@ pub(crate) fn build_binding_plan(
     iface: &CompiledInterface,
     binding: &DatasetBinding,
     request: &ResolvedQueryRequest,
-    _ctx: &PlannerContext<'_>,
+    ctx: &PlannerContext<'_>,
     handle_metrics: bool,
 ) -> Result<PlanFragment, PlannerError> {
     let mapping = &binding.column_mapping;
@@ -418,8 +407,9 @@ pub(crate) fn build_binding_plan(
     }
 
     // Build Scan node.
+    let pb = ctx.plan_builder;
     let sem_types = build_semantic_type_map(iface, &mapping.physical);
-    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types);
+    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
 
     // Build Aggregate node.
     let group_by: Vec<Expr> = dim_physical
@@ -449,12 +439,7 @@ pub(crate) fn build_binding_plan(
     }
     let agg_schema = Schema::new(agg_fields);
 
-    let agg = PlanNode::Aggregate(AggNode {
-        meta: NodeMeta::new(agg_schema),
-        input: Box::new(scan),
-        group_by,
-        aggregates,
-    });
+    let agg = pb.build_aggregate(agg_schema, scan, group_by, aggregates);
 
     // Build Project node.
     let mut project_exprs: Vec<Expr> = Vec::new();
@@ -480,11 +465,7 @@ pub(crate) fn build_binding_plan(
     );
     let project_schema = Schema::new(project_fields);
 
-    let project = PlanNode::Project(ProjectNode {
-        meta: NodeMeta::new(project_schema.clone()),
-        input: Box::new(agg),
-        expressions: project_exprs,
-    });
+    let project = pb.build_project(project_schema.clone(), agg, project_exprs);
 
     Ok(PlanFragment {
         root: project,

@@ -320,17 +320,9 @@ async fn test_explain_includes_substrait() {
 
     assert!(result.sql.is_some(), "should have SQL");
     assert!(
-        result.substrait_json.is_some(),
-        "should have Substrait JSON"
-    );
-
-    let substrait = result.substrait_json.unwrap();
-    // Substrait JSON should be valid JSON containing plan structure
-    let parsed: serde_json::Value =
-        serde_json::from_str(&substrait).expect("Substrait output should be valid JSON");
-    assert!(
-        parsed.is_object(),
-        "Substrait JSON should be an object"
+        result.plan_text.contains("TableScan:"),
+        "plan_text should contain TableScan: {}",
+        result.plan_text
     );
 }
 
@@ -1387,10 +1379,10 @@ async fn test_fc_filters_order_limit() {
     );
 }
 
-// -- 53: Substrait JSON + SQL via SemstraitEngine::explain() --------------------
+// -- 53: SQL + plan tree via SemstraitEngine::explain() -------------------------
 
 #[tokio::test]
-async fn test_fc_substrait_json() {
+async fn test_fc_explain_plan_tree() {
     let yaml = load_model("e2e_full_coverage");
     let engine = SemstraitEngine::with_manifest_yaml(&yaml)
         .await
@@ -1414,12 +1406,17 @@ async fn test_fc_substrait_json() {
     let sql = result.sql.unwrap();
     assert!(sql.contains("SELECT"), "SQL should contain SELECT: {}", sql);
 
-    // Substrait JSON is best-effort (some node types may not serialize)
-    if let Some(substrait) = result.substrait_json {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&substrait).expect("Substrait output should be valid JSON");
-        assert!(parsed.is_object(), "Substrait JSON should be an object");
-    }
+    // Plan text should be a human-readable tree
+    assert!(
+        result.plan_text.contains("TableScan:"),
+        "plan_text should contain TableScan: {}",
+        result.plan_text
+    );
+    assert!(
+        result.plan_text.contains("Aggregate:"),
+        "plan_text should contain Aggregate: {}",
+        result.plan_text
+    );
 }
 
 // -- 54: Semi-additive — snapshot with latest resolution ------------------------
@@ -1801,7 +1798,6 @@ mod datafusion_tests {
             grain: None,
             limit: None,
             order_by: vec![],
-            domain_hint: None,
             session_variables: HashMap::new(),
         };
 
@@ -1824,6 +1820,110 @@ mod datafusion_tests {
         // debug_sql() should still work as fallback.
         let debug = adapter.debug_sql(&plan).expect("debug_sql should succeed");
         assert!(!debug.is_empty(), "debug SQL should be non-empty");
+
+        // debug_sql() should use DataFusion dialect (LIMIT, not FETCH FIRST).
+        assert!(
+            !debug.contains("FETCH FIRST"),
+            "DataFusion debug SQL should NOT use FETCH FIRST: {}",
+            debug
+        );
+    }
+
+    /// Full facade pipeline: SemstraitBuilder → with_adapter() → plan_builder wiring → explain.
+    ///
+    /// This tests that the adapter's plan_builder() is wired into the planner,
+    /// and that explain() uses the adapter's debug_sql() (DataFusion dialect).
+    #[tokio::test]
+    async fn test_facade_adapter_wiring() {
+        let yaml = load_model("orders_3dim");
+
+        let adapter: Arc<dyn EngineAdapter> = Arc::new(DataFusionAdapter);
+        let instance = semstrait::SemstraitInstance::builder()
+            .with_manifest_yaml(yaml)
+            .with_adapter(adapter)
+            .build()
+            .await
+            .expect("facade build should succeed");
+
+        // explain() should use DataFusion dialect via adapter.
+        let request = ResolvedQueryRequest {
+            entity_name: "orders".to_string(),
+            dimensions: vec!["date".to_string(), "region".to_string()],
+            measures: vec!["revenue".to_string()],
+            filters: vec![],
+            grain: None,
+            limit: Some(10),
+            order_by: vec![],
+            session_variables: HashMap::new(),
+        };
+
+        let sql = instance.explain(&request).expect("explain should succeed");
+
+        assert!(sql.contains("SELECT"), "SQL should contain SELECT: {}", sql);
+        assert!(sql.contains("GROUP BY"), "SQL should contain GROUP BY: {}", sql);
+        // DataFusion dialect uses LIMIT, not FETCH FIRST.
+        assert!(
+            sql.contains("LIMIT"),
+            "DataFusion dialect should use LIMIT: {}",
+            sql
+        );
+        assert!(
+            !sql.contains("FETCH FIRST"),
+            "DataFusion dialect should NOT use FETCH FIRST: {}",
+            sql
+        );
+    }
+
+    /// Full adapter pipeline: compile → plan → adapt → Substrait.
+    /// Verifies adapter produces valid Substrait with FunctionRegistry and
+    /// that InList uses SingularOrList (not ScalarFunction).
+    #[tokio::test]
+    async fn test_datafusion_substrait_with_registry() {
+        let yaml = load_model("orders_3dim");
+
+        let compiler = ManifestCompiler::new();
+        let manifest = compiler
+            .compile(CompileSource::Yaml(yaml))
+            .await
+            .expect("compilation should succeed");
+
+        // Plan with adapter's PlanBuilder wired in.
+        let adapter = DataFusionAdapter;
+        let mut planner_builder = SemanticPlanner::builder();
+        if let Some(pb) = adapter.plan_builder() {
+            planner_builder = planner_builder.with_plan_builder(pb);
+        }
+        let planner = planner_builder.build();
+
+        let request = ResolvedQueryRequest {
+            entity_name: "orders".to_string(),
+            dimensions: vec!["date".to_string(), "region".to_string()],
+            measures: vec!["revenue".to_string()],
+            filters: vec![],
+            grain: None,
+            limit: None,
+            order_by: vec![],
+            session_variables: HashMap::new(),
+        };
+
+        let plan = planner.plan(&request, &manifest).expect("planning should succeed");
+
+        // Adapt to Substrait.
+        let artifact = adapter.adapt(&plan).expect("adapt should succeed");
+        assert!(artifact.is_substrait(), "should produce Substrait");
+
+        // Verify Substrait JSON is well-formed.
+        let substrait_plan = artifact.as_substrait().expect("should have Substrait");
+        // Plan should have extension declarations from FunctionRegistry.
+        assert!(
+            !substrait_plan.extensions.is_empty(),
+            "Substrait plan should have function extension declarations"
+        );
+        // No extension URIs (Phase 3: removed).
+        assert!(
+            substrait_plan.extension_uris.is_empty(),
+            "Substrait plan should have no extension URIs"
+        );
     }
 
     #[tokio::test]

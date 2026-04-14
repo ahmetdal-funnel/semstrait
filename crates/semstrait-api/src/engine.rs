@@ -8,7 +8,7 @@ use crate::parse::RequestParser;
 use crate::types::{ExplainResult, RawQueryRequest, ValidationResult};
 use semstrait_catalog::{CatalogProvider, TableRef};
 use semstrait_connectors::{ComputeConnector, ComputeResultData};
-use semstrait_ir::{PlannerWarning, SubstraitSerializer};
+use semstrait_ir::PlannerWarning;
 use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
 use semstrait_planner::SemanticPlanner;
 use semstrait_adapter::sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
@@ -122,7 +122,7 @@ impl SemstraitEngine {
         }
     }
 
-    /// Explain a query: compile, plan, emit SQL + Substrait JSON — without executing.
+    /// Explain a query: compile, plan, emit SQL + human-readable plan tree.
     pub async fn explain(
         &self,
         raw: &RawQueryRequest,
@@ -138,46 +138,19 @@ impl SemstraitEngine {
         // Plan.
         let plan = self.planner.plan(&request, manifest)?;
 
-        // If we have a connector, use its adapter for SQL and Substrait.
-        // Otherwise fall back to ANSI SQL + direct Substrait serialization.
-        let (sql, substrait_json) = if let Some(connector) = &self.connector {
+        // Emit SQL via connector adapter or ANSI fallback.
+        let sql = if let Some(connector) = &self.connector {
             let adapter = connector.adapter();
-            let artifact = adapter.adapt(&plan)?;
-            let debug_sql = adapter.debug_sql(&plan)?;
-
-            let substrait_json = artifact.to_json();
-            (Some(debug_sql), substrait_json)
+            Some(adapter.debug_sql(&plan)?)
         } else {
-            // No connector — emit ANSI SQL and Substrait JSON directly.
-            let sql = Self::emit_ansi_sql(&plan)?;
-
-            let substrait_json = match SubstraitSerializer::to_substrait(&plan) {
-                Ok(proto_plan) => match serde_json::to_string_pretty(&proto_plan) {
-                    Ok(json) => Some(json),
-                    Err(e) => {
-                        tracing::warn!("Substrait JSON serialization failed: {}", e);
-                        None
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("Substrait plan conversion failed: {}", e);
-                    None
-                }
-            };
-
-            (Some(sql), substrait_json)
+            Some(Self::emit_ansi_sql(&plan)?)
         };
 
-        // Build plan text summary.
-        let plan_text = format!(
-            "LogicalPlan: {} output columns [{}]",
-            plan.output_names.len(),
-            plan.output_names.join(", ")
-        );
+        // Human-readable plan tree (Display impl on LogicalPlan).
+        let plan_text = plan.to_string();
 
         Ok(ExplainResult {
             sql,
-            substrait_json,
             plan_text,
         })
     }
@@ -417,8 +390,9 @@ mod tests {
             sql
         );
         assert!(
-            explain.substrait_json.is_some(),
-            "should have Substrait JSON"
+            explain.plan_text.contains("TableScan:"),
+            "plan_text should contain TableScan: {}",
+            explain.plan_text
         );
     }
 

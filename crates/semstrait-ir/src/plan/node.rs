@@ -4,6 +4,7 @@
 
 use super::meta::NodeMeta;
 pub use semstrait_core::expr::{Aggregation, BinaryOp, Expr};
+pub use semstrait_core::DataType;
 
 /// A node in the logical plan tree.
 #[derive(Debug, Clone)]

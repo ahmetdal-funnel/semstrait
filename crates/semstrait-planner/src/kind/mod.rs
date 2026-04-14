@@ -41,7 +41,6 @@ pub struct PlannerContext<'a> {
     #[allow(dead_code)] // Used in future phases (session-aware planning)
     pub session: &'a SessionVariables,
     /// Engine-specific plan node builder. DefaultPlanBuilder when no adapter is configured.
-    #[allow(dead_code)] // Used when adapters override node construction
     pub plan_builder: &'a dyn PlanBuilder,
 }
 

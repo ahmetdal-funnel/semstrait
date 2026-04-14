@@ -290,6 +290,77 @@ pub struct GuardExpr {
     pub expr: Box<Expr>,
 }
 
+// ─── Display ────────────────────────────────────────────────────────
+
+impl std::fmt::Display for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expr::Column(c) => {
+                if let Some(q) = &c.qualifier {
+                    write!(f, "{}.{}", q, c.name)
+                } else {
+                    write!(f, "{}", c.name)
+                }
+            }
+            Expr::Literal(lit) => match lit {
+                Literal::Integer { value } => write!(f, "{}", value),
+                Literal::Float { value } => write!(f, "{}", value),
+                Literal::String { value } => write!(f, "'{}'", value),
+                Literal::Boolean { value } => write!(f, "{}", value),
+                Literal::Null => write!(f, "NULL"),
+            },
+            Expr::EntityRef(e) => write!(f, "@{}", e.name),
+            Expr::Aggregate(a) => {
+                let prefix = if a.distinct { "DISTINCT " } else { "" };
+                write!(f, "{}({}{})", a.function.sql_name(), prefix, a.expr)
+            }
+            Expr::BinaryOp(b) => write!(f, "{} {} {}", b.left, b.op.as_str(), b.right),
+            Expr::Negate(u) => write!(f, "-{}", u.expr),
+            Expr::Not(u) => write!(f, "NOT {}", u.expr),
+            Expr::IsNull(u) => write!(f, "{} IS NULL", u.expr),
+            Expr::IsNotNull(u) => write!(f, "{} IS NOT NULL", u.expr),
+            Expr::Case(c) => {
+                write!(f, "CASE")?;
+                for wc in &c.when_then {
+                    write!(f, " WHEN {} THEN {}", wc.condition, wc.result)?;
+                }
+                if let Some(e) = &c.else_expr {
+                    write!(f, " ELSE {}", e)?;
+                }
+                write!(f, " END")
+            }
+            Expr::InList(il) => {
+                let not = if il.negated { " NOT" } else { "" };
+                let items: Vec<String> = il.list.iter().map(|e| e.to_string()).collect();
+                write!(f, "{}{} IN ({})", il.expr, not, items.join(", "))
+            }
+            Expr::Between(b) => {
+                let not = if b.negated { " NOT" } else { "" };
+                write!(f, "{}{} BETWEEN {} AND {}", b.expr, not, b.low, b.high)
+            }
+            Expr::Like(l) => write!(f, "{} LIKE {}", l.expr, l.pattern),
+            Expr::ILike(l) => write!(f, "{} ILIKE {}", l.expr, l.pattern),
+            Expr::RegexpMatch(r) => write!(f, "REGEXP_MATCH({}, {})", r.expr, r.pattern),
+            Expr::RegexpExtract(r) => {
+                write!(f, "REGEXP_EXTRACT({}, {}, {})", r.expr, r.pattern, r.group_idx)
+            }
+            Expr::Coalesce(c) => {
+                let args: Vec<String> = c.exprs.iter().map(|e| e.to_string()).collect();
+                write!(f, "COALESCE({})", args.join(", "))
+            }
+            Expr::NullIf(n) => write!(f, "NULLIF({}, {})", n.expr, n.null_expr),
+            Expr::DateTrunc(d) => write!(f, "DATE_TRUNC('{}', {})", d.grain, d.expr),
+            Expr::FunctionCall(fc) => {
+                let args: Vec<String> = fc.args.iter().map(|a| a.to_string()).collect();
+                let distinct = if fc.distinct { "DISTINCT " } else { "" };
+                write!(f, "{}({}{})", fc.name, distinct, args.join(", "))
+            }
+            Expr::Cast(c) => write!(f, "CAST({} AS {})", c.expr, c.data_type),
+            Expr::Guard(g) => write!(f, "GUARD({} => {})", g.condition, g.expr),
+        }
+    }
+}
+
 // ─── Convenience constructors ────────────────────────────────────────
 
 #[allow(clippy::should_implement_trait)]

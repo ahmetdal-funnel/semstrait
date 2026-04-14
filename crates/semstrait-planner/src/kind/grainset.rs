@@ -18,8 +18,8 @@ use super::plan_builder;
 use super::plan_builder::{build_scan_node_binding, build_semantic_type_map, infer_aggregation_iface};
 use crate::request::ResolvedQueryRequest;
 use semstrait_ir::{
-    AggNode, AggregateMeasure, Expr, Field, NodeMeta, PlanNode, ProjectNode,
-    Schema, UnionNode,
+    AggregateMeasure, Expr, Field, PlanNode,
+    Schema,
 };
 use semstrait_manifest::{
     CompiledInterface, TemporalGrain,
@@ -423,7 +423,7 @@ fn build_single_dataset_with_rollup(
     iface: &CompiledInterface,
     request: &ResolvedQueryRequest,
     binding: &DatasetBinding,
-    _ctx: &PlannerContext<'_>,
+    ctx: &PlannerContext<'_>,
     temporal_dim_name: &str,
     request_grain: TemporalGrain,
 ) -> Result<PlanFragment, PlannerError> {
@@ -491,8 +491,9 @@ fn build_single_dataset_with_rollup(
     }
 
     // Build Scan (multi-source aware).
+    let pb = ctx.plan_builder;
     let sem_types = build_semantic_type_map(iface, &binding.column_mapping.physical);
-    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types);
+    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
 
     // Build Aggregate with DATE_TRUNC in GROUP BY.
     let group_by: Vec<Expr> = dim_physical
@@ -527,12 +528,7 @@ fn build_single_dataset_with_rollup(
     }
     let agg_schema = Schema::new(agg_fields);
 
-    let agg = PlanNode::Aggregate(AggNode {
-        meta: NodeMeta::new(agg_schema),
-        input: Box::new(scan),
-        group_by,
-        aggregates,
-    });
+    let agg = pb.build_aggregate(agg_schema, scan, group_by, aggregates);
 
     // Build Project.
     let mut project_exprs: Vec<Expr> = Vec::new();
@@ -556,11 +552,7 @@ fn build_single_dataset_with_rollup(
     );
     let project_schema = Schema::new(project_fields);
 
-    let project = PlanNode::Project(ProjectNode {
-        meta: NodeMeta::new(project_schema.clone()),
-        input: Box::new(agg),
-        expressions: project_exprs,
-    });
+    let project = pb.build_project(project_schema.clone(), agg, project_exprs);
 
     Ok(PlanFragment {
         root: project,
@@ -580,7 +572,7 @@ fn build_union_plan(
     iface: &CompiledInterface,
     request: &ResolvedQueryRequest,
     assignments: &[DatasetAssignment<'_>],
-    _ctx: &PlannerContext<'_>,
+    ctx: &PlannerContext<'_>,
     temporal_dim: Option<&str>,
     request_grain: Option<TemporalGrain>,
 ) -> Result<PlanFragment, PlannerError> {
@@ -604,6 +596,7 @@ fn build_union_plan(
                 &unified_schema,
                 temporal_dim,
                 request_grain,
+                ctx,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -611,15 +604,13 @@ fn build_union_plan(
     // Validate type consistency across branches before UNION.
     plan_builder::validate_union_types(&branches)?;
 
+    let pb = ctx.plan_builder;
+
     // UNION ALL.
     let union_input = if branches.len() == 1 {
         branches.into_iter().next().unwrap()
     } else {
-        PlanNode::Union(UnionNode {
-            meta: NodeMeta::new(unified_schema.clone()),
-            inputs: branches,
-            distinct: false,
-        })
+        pb.build_union(unified_schema.clone(), branches, false)
     };
 
     // Re-aggregate.
@@ -640,12 +631,7 @@ fn build_union_plan(
         })
         .collect();
 
-    let agg = PlanNode::Aggregate(AggNode {
-        meta: NodeMeta::new(unified_schema.clone()),
-        input: Box::new(union_input),
-        group_by,
-        aggregates,
-    });
+    let agg = pb.build_aggregate(unified_schema.clone(), union_input, group_by, aggregates);
 
     Ok(PlanFragment {
         root: agg,
@@ -666,6 +652,7 @@ fn build_union_branch(
     unified_schema: &Schema,
     temporal_dim: Option<&str>,
     request_grain: Option<TemporalGrain>,
+    ctx: &PlannerContext<'_>,
 ) -> Result<PlanNode, PlannerError> {
     let binding = assignment.binding;
     let mapping = &binding.column_mapping;
@@ -739,8 +726,9 @@ fn build_union_branch(
     }
 
     // Build Scan (multi-source aware).
+    let pb = ctx.plan_builder;
     let sem_types = build_semantic_type_map(iface, &mapping.physical);
-    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types);
+    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
 
     // Build Aggregate node.
     let group_by: Vec<Expr> = dim_sources
@@ -789,12 +777,7 @@ fn build_union_branch(
     }
     let agg_schema = Schema::new(agg_fields);
 
-    let agg = PlanNode::Aggregate(AggNode {
-        meta: NodeMeta::new(agg_schema),
-        input: Box::new(scan),
-        group_by,
-        aggregates,
-    });
+    let agg = pb.build_aggregate(agg_schema, scan, group_by, aggregates);
 
     // Build Project — outputs unified schema, NULL-filling unmapped fields.
     let mut project_exprs: Vec<Expr> = Vec::new();
@@ -821,11 +804,7 @@ fn build_union_branch(
         );
     }
 
-    let project = PlanNode::Project(ProjectNode {
-        meta: NodeMeta::new(unified_schema.clone()),
-        input: Box::new(agg),
-        expressions: project_exprs,
-    });
+    let project = pb.build_project(unified_schema.clone(), agg, project_exprs);
 
     Ok(project)
 }

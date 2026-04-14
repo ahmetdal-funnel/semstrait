@@ -11,6 +11,7 @@ use substrait::proto::{
         self, reference_segment::ReferenceType, ReferenceSegment,
     },
     function_argument::ArgType,
+    r#type::{Kind, Nullability},
 };
 
 /// Converts Expr to/from Substrait Expression
@@ -127,11 +128,17 @@ impl<'s> ExprConverter<'s> {
             }
 
             Expr::InList(il) => {
-                let mut args = vec![self.to_substrait(&il.expr)?];
-                for item in &il.list {
-                    args.push(self.to_substrait(item)?);
-                }
-                self.function_call("in", args)
+                let value = self.to_substrait(&il.expr)?;
+                let options: Result<Vec<_>, _> =
+                    il.list.iter().map(|e| self.to_substrait(e)).collect();
+                Ok(proto::Expression {
+                    rex_type: Some(expression::RexType::SingularOrList(Box::new(
+                        expression::SingularOrList {
+                            value: Some(Box::new(value)),
+                            options: options?,
+                        },
+                    ))),
+                })
             }
 
             Expr::Between(bt) => {
@@ -198,11 +205,15 @@ impl<'s> ExprConverter<'s> {
             }
 
             Expr::Cast(c) => {
-                // Substrait has a native Cast expression, but for simplicity we use
-                // a function call with anchor 214 to represent CAST(expr AS type).
                 let inner = self.to_substrait(&c.expr)?;
-                let type_lit = literal_string(&c.data_type);
-                self.function_call("cast", vec![inner, type_lit])
+                let target_type = string_to_substrait_type(&c.data_type);
+                Ok(proto::Expression {
+                    rex_type: Some(expression::RexType::Cast(Box::new(expression::Cast {
+                        r#type: Some(target_type),
+                        input: Some(Box::new(inner)),
+                        failure_behavior: expression::cast::FailureBehavior::ReturnNull as i32,
+                    }))),
+                })
             }
 
             Expr::EntityRef(_) => Err(ConvertError::UnsupportedExpression(
@@ -229,6 +240,8 @@ impl<'s> ExprConverter<'s> {
                 self.from_scalar_function(func)
             }
             Some(expression::RexType::IfThen(if_then)) => self.from_if_then(if_then),
+            Some(expression::RexType::Cast(cast)) => self.from_cast(cast),
+            Some(expression::RexType::SingularOrList(sol)) => self.from_singular_or_list(sol),
             _ => Err(ConvertError::UnsupportedExpression(format!(
                 "Unsupported expression type: {:?}",
                 expr.rex_type
@@ -593,6 +606,98 @@ impl<'s> ExprConverter<'s> {
         };
 
         Ok(Expr::case(when_then?, else_expr))
+    }
+
+    fn from_cast(
+        &self,
+        cast: &expression::Cast,
+    ) -> Result<Expr, ConvertError> {
+        let input = cast
+            .input
+            .as_ref()
+            .ok_or_else(|| ConvertError::MissingField("cast input".to_string()))?;
+        let inner = self.from_substrait(input)?;
+
+        let type_name = cast
+            .r#type
+            .as_ref()
+            .map(substrait_type_to_string)
+            .unwrap_or_else(|| "VARCHAR".to_string());
+
+        Ok(Expr::cast(inner, type_name))
+    }
+
+    fn from_singular_or_list(
+        &self,
+        sol: &expression::SingularOrList,
+    ) -> Result<Expr, ConvertError> {
+        let value = sol
+            .value
+            .as_ref()
+            .ok_or_else(|| ConvertError::MissingField("SingularOrList value".to_string()))?;
+        let expr = self.from_substrait(value)?;
+        let list: Result<Vec<_>, _> = sol.options.iter().map(|e| self.from_substrait(e)).collect();
+        Ok(Expr::in_list(expr, list?))
+    }
+}
+
+/// Map a SQL type name string to a Substrait proto::Type.
+fn string_to_substrait_type(type_name: &str) -> proto::Type {
+    let upper = type_name.to_uppercase();
+    let kind = match upper.as_str() {
+        "INT" | "INTEGER" | "INT32" | "I32" => Kind::I32(proto::r#type::I32 {
+            type_variation_reference: 0,
+            nullability: Nullability::Nullable as i32,
+        }),
+        "BIGINT" | "INT64" | "I64" => Kind::I64(proto::r#type::I64 {
+            type_variation_reference: 0,
+            nullability: Nullability::Nullable as i32,
+        }),
+        "FLOAT" | "FLOAT32" | "REAL" => Kind::Fp32(proto::r#type::Fp32 {
+            type_variation_reference: 0,
+            nullability: Nullability::Nullable as i32,
+        }),
+        "DOUBLE" | "FLOAT64" => Kind::Fp64(proto::r#type::Fp64 {
+            type_variation_reference: 0,
+            nullability: Nullability::Nullable as i32,
+        }),
+        "BOOLEAN" | "BOOL" => Kind::Bool(proto::r#type::Boolean {
+            type_variation_reference: 0,
+            nullability: Nullability::Nullable as i32,
+        }),
+        "DATE" => Kind::Date(proto::r#type::Date {
+            type_variation_reference: 0,
+            nullability: Nullability::Nullable as i32,
+        }),
+        "TIMESTAMP" => Kind::PrecisionTimestamp(proto::r#type::PrecisionTimestamp {
+            precision: 6,
+            type_variation_reference: 0,
+            nullability: Nullability::Nullable as i32,
+        }),
+        // Default: treat as string (VARCHAR, TEXT, STRING, etc.)
+        _ => Kind::String(proto::r#type::String {
+            type_variation_reference: 0,
+            nullability: Nullability::Nullable as i32,
+        }),
+    };
+    proto::Type { kind: Some(kind) }
+}
+
+/// Map a Substrait proto::Type back to a SQL type name string.
+#[allow(deprecated)]
+fn substrait_type_to_string(typ: &proto::Type) -> String {
+    match &typ.kind {
+        Some(Kind::I32(_)) => "INTEGER".to_string(),
+        Some(Kind::I64(_)) => "BIGINT".to_string(),
+        Some(Kind::Fp32(_)) => "FLOAT".to_string(),
+        Some(Kind::Fp64(_)) => "DOUBLE".to_string(),
+        Some(Kind::Bool(_)) => "BOOLEAN".to_string(),
+        Some(Kind::String(_)) => "VARCHAR".to_string(),
+        Some(Kind::Date(_)) => "DATE".to_string(),
+        Some(Kind::PrecisionTimestamp(_) | Kind::Timestamp(_)) => "TIMESTAMP".to_string(),
+        Some(Kind::Decimal(d)) => format!("DECIMAL({}, {})", d.precision, d.scale),
+        Some(Kind::Binary(_)) => "BINARY".to_string(),
+        _ => "VARCHAR".to_string(),
     }
 }
 

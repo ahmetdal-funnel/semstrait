@@ -13,7 +13,7 @@ use substrait::proto::{
     aggregate_function::AggregationInvocation,
     aggregate_rel::{Grouping, Measure},
     extensions::{
-        simple_extension_declaration::MappingType, SimpleExtensionDeclaration, SimpleExtensionUri,
+        simple_extension_declaration::MappingType, SimpleExtensionDeclaration,
     },
     function_argument::ArgType,
     plan_rel::RelType as PlanRelType,
@@ -28,9 +28,15 @@ use substrait::proto::{
 pub struct SubstraitSerializer;
 
 impl SubstraitSerializer {
-    /// Serialize a LogicalPlan to Substrait Plan
+    /// Serialize a LogicalPlan to Substrait Plan.
+    ///
+    /// The `registry` provides engine-specific function name mappings.
+    /// Extension URIs are omitted — semstrait has no function definition YAML files.
     #[allow(deprecated)]
-    pub fn to_substrait(plan: &LogicalPlan) -> Result<proto::Plan, SerializeError> {
+    pub fn to_substrait(
+        plan: &LogicalPlan,
+        registry: &FunctionRegistry,
+    ) -> Result<proto::Plan, SerializeError> {
         let root_rel = Self::node_to_rel(&plan.root)?;
 
         Ok(proto::Plan {
@@ -41,8 +47,8 @@ impl SubstraitSerializer {
                 git_hash: String::new(),
                 producer: String::new(),
             }),
-            extension_uris: Self::build_extension_uris(),
-            extensions: Self::build_extensions(),
+            extension_uris: vec![],
+            extensions: Self::extensions_from_registry(registry),
             extension_urns: vec![],
             relations: vec![proto::PlanRel {
                 rel_type: Some(PlanRelType::Root(proto::RelRoot {
@@ -702,83 +708,23 @@ impl SubstraitSerializer {
         }))
     }
 
-    fn build_extension_uris() -> Vec<SimpleExtensionUri> {
-        vec![
-            SimpleExtensionUri {
-                extension_uri_anchor: URI_AGGREGATE,
-                uri: "/functions_aggregate_generic.yaml".to_string(),
-            },
-            SimpleExtensionUri {
-                extension_uri_anchor: URI_COMPARISON,
-                uri: "/functions_comparison.yaml".to_string(),
-            },
-            SimpleExtensionUri {
-                extension_uri_anchor: URI_BOOLEAN,
-                uri: "/functions_boolean.yaml".to_string(),
-            },
-            SimpleExtensionUri {
-                extension_uri_anchor: URI_ARITHMETIC,
-                uri: "/functions_arithmetic.yaml".to_string(),
-            },
-            SimpleExtensionUri {
-                extension_uri_anchor: URI_STRING,
-                uri: "/functions_string.yaml".to_string(),
-            },
-        ]
-    }
-
+    /// Build Substrait extension declarations from a FunctionRegistry.
     #[allow(deprecated)]
-    fn build_extensions() -> Vec<SimpleExtensionDeclaration> {
-        vec![
-            Self::make_function_extension(URI_AGGREGATE, FUNC_SUM, "sum"),
-            Self::make_function_extension(URI_AGGREGATE, FUNC_AVG, "avg"),
-            Self::make_function_extension(URI_AGGREGATE, FUNC_COUNT, "count"),
-            Self::make_function_extension(URI_AGGREGATE, FUNC_COUNT_DISTINCT, "count"),
-            Self::make_function_extension(URI_AGGREGATE, FUNC_MIN, "min"),
-            Self::make_function_extension(URI_AGGREGATE, FUNC_MAX, "max"),
-            Self::make_function_extension(URI_COMPARISON, FUNC_EQUAL, "equal"),
-            Self::make_function_extension(URI_COMPARISON, FUNC_NOT_EQUAL, "not_equal"),
-            Self::make_function_extension(URI_COMPARISON, FUNC_LT, "lt"),
-            Self::make_function_extension(URI_COMPARISON, FUNC_LTE, "lte"),
-            Self::make_function_extension(URI_COMPARISON, FUNC_GT, "gt"),
-            Self::make_function_extension(URI_COMPARISON, FUNC_GTE, "gte"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_AND, "and"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_OR, "or"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_NOT, "not"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_IS_NULL, "is_null"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_IS_NOT_NULL, "is_not_null"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_IN, "in"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_BETWEEN, "between"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_LIKE, "like"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_COALESCE, "coalesce"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_NULLIF, "nullif"),
-            Self::make_function_extension(URI_BOOLEAN, FUNC_DATE_TRUNC, "date_trunc"),
-            Self::make_function_extension(URI_STRING, FUNC_ILIKE, "ilike"),
-            Self::make_function_extension(URI_STRING, FUNC_REGEXP_MATCH, "regexp_match"),
-            Self::make_function_extension(URI_STRING, FUNC_REGEXP_EXTRACT, "regexp_extract"),
-            Self::make_function_extension(URI_ARITHMETIC, FUNC_ADD, "add"),
-            Self::make_function_extension(URI_ARITHMETIC, FUNC_SUBTRACT, "subtract"),
-            Self::make_function_extension(URI_ARITHMETIC, FUNC_MULTIPLY, "multiply"),
-            Self::make_function_extension(URI_ARITHMETIC, FUNC_DIVIDE, "divide"),
-        ]
-    }
-
-    #[allow(deprecated)]
-    fn make_function_extension(
-        uri_ref: u32,
-        anchor: u32,
-        name: &str,
-    ) -> SimpleExtensionDeclaration {
-        SimpleExtensionDeclaration {
-            mapping_type: Some(MappingType::ExtensionFunction(
-                proto::extensions::simple_extension_declaration::ExtensionFunction {
-                    extension_uri_reference: uri_ref,
-                    extension_urn_reference: uri_ref,
-                    function_anchor: anchor,
-                    name: name.to_string(),
-                },
-            )),
-        }
+    fn extensions_from_registry(registry: &FunctionRegistry) -> Vec<SimpleExtensionDeclaration> {
+        registry
+            .entries()
+            .iter()
+            .map(|entry| SimpleExtensionDeclaration {
+                mapping_type: Some(MappingType::ExtensionFunction(
+                    proto::extensions::simple_extension_declaration::ExtensionFunction {
+                        extension_uri_reference: 0,
+                        extension_urn_reference: 0,
+                        function_anchor: entry.anchor,
+                        name: entry.name.clone(),
+                    },
+                )),
+            })
+            .collect()
     }
 
     /// Map logical DataType to Substrait type. 1:1 mapping, zero lossy conversions.
@@ -875,7 +821,7 @@ mod tests {
             vec!["id".to_string(), "amount".to_string()],
         );
 
-        let substrait = SubstraitSerializer::to_substrait(&plan).unwrap();
+        let substrait = SubstraitSerializer::to_substrait(&plan, &FunctionRegistry::datafusion()).unwrap();
         let back = SubstraitSerializer::from_substrait(&substrait).unwrap();
 
         assert_eq!(plan.output_names, back.output_names);
@@ -904,7 +850,7 @@ mod tests {
             vec!["amount".to_string()],
         );
 
-        let substrait = SubstraitSerializer::to_substrait(&plan).unwrap();
+        let substrait = SubstraitSerializer::to_substrait(&plan, &FunctionRegistry::datafusion()).unwrap();
         let back = SubstraitSerializer::from_substrait(&substrait).unwrap();
 
         assert_eq!(plan.output_names, back.output_names);
@@ -941,7 +887,7 @@ mod tests {
             vec!["id".to_string(), "amount".to_string()],
         );
 
-        let substrait = SubstraitSerializer::to_substrait(&plan).unwrap();
+        let substrait = SubstraitSerializer::to_substrait(&plan, &FunctionRegistry::datafusion()).unwrap();
         let back = SubstraitSerializer::from_substrait(&substrait).unwrap();
 
         match &back.root {
@@ -967,7 +913,7 @@ mod tests {
             vec!["id".to_string(), "amount".to_string()],
         );
 
-        let substrait = SubstraitSerializer::to_substrait(&plan).unwrap();
+        let substrait = SubstraitSerializer::to_substrait(&plan, &FunctionRegistry::datafusion()).unwrap();
         let back = SubstraitSerializer::from_substrait(&substrait).unwrap();
 
         match &back.root {

@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use semstrait_catalog::CatalogProvider;
 use semstrait_ir::{
-    BinaryOp, DefaultPlanBuilder, Expr, FetchNode, FilterNode, LogicalPlan, NodeMeta, PlanBuilder,
-    PlanNode, SortKey, SortNode,
+    BinaryOp, DefaultPlanBuilder, Expr, LogicalPlan, PlanBuilder,
+    PlanNode, SortKey,
 };
 use semstrait_manifest::CompiledManifest;
 
@@ -77,17 +77,19 @@ impl SemanticPlanner {
         // Step 8: Inject filters.
         let mut root = fragment.root;
 
+        let pb = self.plan_builder.as_ref();
+
         // 8d: Inject entity-level filters (applied to all queries against this entity).
-        root = inject_entity_filters(root, &entity_filters)?;
+        root = inject_entity_filters(root, &entity_filters, pb)?;
 
         // 8e: Inject user filters from the request.
-        root = inject_user_filters(root, request)?;
+        root = inject_user_filters(root, request, pb)?;
 
         // Step 9: Apply ORDER BY.
-        root = apply_order_by(root, request)?;
+        root = apply_order_by(root, request, pb)?;
 
         // Step 10: Apply LIMIT.
-        root = apply_limit(root, request)?;
+        root = apply_limit(root, request, pb)?;
 
         // Step 11: Build LogicalPlan.
         let output_names: Vec<String> = request
@@ -199,13 +201,14 @@ impl SemanticPlanner {
             }
 
             // Filter injection.
+            let pb = self.plan_builder.as_ref();
             let mut root = fragment.root;
-            root = inject_entity_filters(root, &entity_filters)?;
-            root = inject_user_filters(root, request)?;
+            root = inject_entity_filters(root, &entity_filters, pb)?;
+            root = inject_user_filters(root, request, pb)?;
 
             // ORDER BY + LIMIT.
-            root = apply_order_by(root, request)?;
-            root = apply_limit(root, request)?;
+            root = apply_order_by(root, request, pb)?;
+            root = apply_limit(root, request, pb)?;
 
             // Build LogicalPlan.
             let output_names: Vec<String> = request
@@ -261,8 +264,8 @@ impl SemanticPlannerBuilder {
     }
 
     /// Set the engine-specific plan builder.
-    pub fn with_plan_builder(mut self, builder: impl PlanBuilder + 'static) -> Self {
-        self.plan_builder = Box::new(builder);
+    pub fn with_plan_builder(mut self, builder: Box<dyn PlanBuilder>) -> Self {
+        self.plan_builder = builder;
         self
     }
 
@@ -294,18 +297,15 @@ impl Default for SemanticPlannerBuilder {
 fn inject_entity_filters(
     mut root: PlanNode,
     filters: &[semstrait_manifest::CompiledFilter],
+    plan_builder: &dyn PlanBuilder,
 ) -> Result<PlanNode, PlannerError> {
     let empty_mapping = std::collections::HashMap::new();
     let resolver = crate::resolver::MappingResolver::new(&empty_mapping);
     for filter in filters {
         let predicate = resolver.resolve_expr(&filter.expr)?;
 
-        let schema = Arc::clone(&root.meta().output_schema);
-        root = PlanNode::Filter(FilterNode {
-            meta: NodeMeta::new_shared(schema),
-            input: Box::new(root),
-            predicate,
-        });
+        let schema = (*root.meta().output_schema).clone();
+        root = plan_builder.build_filter(schema, root, predicate);
     }
     Ok(root)
 }
@@ -314,15 +314,12 @@ fn inject_entity_filters(
 fn inject_user_filters(
     mut root: PlanNode,
     request: &ResolvedQueryRequest,
+    plan_builder: &dyn PlanBuilder,
 ) -> Result<PlanNode, PlannerError> {
     for filter in &request.filters {
         let predicate = query_filter_to_expr(filter)?;
-        let schema = Arc::clone(&root.meta().output_schema);
-        root = PlanNode::Filter(FilterNode {
-            meta: NodeMeta::new_shared(schema),
-            input: Box::new(root),
-            predicate,
-        });
+        let schema = (*root.meta().output_schema).clone();
+        root = plan_builder.build_filter(schema, root, predicate);
     }
     Ok(root)
 }
@@ -421,6 +418,7 @@ fn filter_value_to_expr(value: &FilterValue) -> Result<Expr, PlannerError> {
 fn apply_order_by(
     root: PlanNode,
     request: &ResolvedQueryRequest,
+    plan_builder: &dyn PlanBuilder,
 ) -> Result<PlanNode, PlannerError> {
     if request.order_by.is_empty() {
         return Ok(root);
@@ -438,26 +436,21 @@ fn apply_order_by(
         })
         .collect();
 
-    let schema = Arc::clone(&root.meta().output_schema);
-    Ok(PlanNode::Sort(SortNode {
-        meta: NodeMeta::new_shared(schema),
-        input: Box::new(root),
-        sort_keys,
-    }))
+    let schema = (*root.meta().output_schema).clone();
+    Ok(plan_builder.build_sort(schema, root, sort_keys))
 }
 
 /// Apply LIMIT from the request.
-fn apply_limit(root: PlanNode, request: &ResolvedQueryRequest) -> Result<PlanNode, PlannerError> {
+fn apply_limit(
+    root: PlanNode,
+    request: &ResolvedQueryRequest,
+    plan_builder: &dyn PlanBuilder,
+) -> Result<PlanNode, PlannerError> {
     match request.limit {
         None => Ok(root),
         Some(limit) => {
-            let schema = Arc::clone(&root.meta().output_schema);
-            Ok(PlanNode::Fetch(FetchNode {
-                meta: NodeMeta::new_shared(schema),
-                input: Box::new(root),
-                count: Some(limit as i64),
-                offset: 0,
-            }))
+            let schema = (*root.meta().output_schema).clone();
+            Ok(plan_builder.build_fetch(schema, root, Some(limit as i64), 0))
         }
     }
 }

@@ -9,12 +9,77 @@ use substrait::proto::{
     r#type::{Kind, Nullability},
 };
 
-// ── Extension URI anchors ───────────────────────────────────────────────────
+// ── FunctionRegistry ────────────────────────────────────────────────────────
 
-pub const URI_AGGREGATE: u32 = 1;
-pub const URI_COMPARISON: u32 = 2;
-pub const URI_BOOLEAN: u32 = 3;
-pub const URI_ARITHMETIC: u32 = 4;
+/// An entry in the function registry: anchor + engine-specific name.
+#[derive(Debug, Clone)]
+pub struct FunctionEntry {
+    pub anchor: u32,
+    pub name: String,
+}
+
+/// Registry of function anchor → name mappings.
+///
+/// Adapters provide engine-specific registries. The serializer uses the
+/// registry to emit `SimpleExtensionDeclaration` entries in the Substrait plan.
+#[derive(Debug, Clone)]
+pub struct FunctionRegistry {
+    entries: Vec<FunctionEntry>,
+}
+
+impl FunctionRegistry {
+    pub fn new(entries: Vec<FunctionEntry>) -> Self {
+        Self { entries }
+    }
+
+    pub fn entries(&self) -> &[FunctionEntry] {
+        &self.entries
+    }
+
+    /// DataFusion-compatible function name mappings.
+    ///
+    /// Names match what DataFusion's Substrait consumer resolves:
+    /// `name_to_op`, `BuiltinExprBuilder`, and registered UDFs.
+    pub fn datafusion() -> Self {
+        Self::new(vec![
+            // Aggregates
+            FunctionEntry { anchor: FUNC_SUM, name: "sum".into() },
+            FunctionEntry { anchor: FUNC_AVG, name: "avg".into() },
+            FunctionEntry { anchor: FUNC_COUNT, name: "count".into() },
+            FunctionEntry { anchor: FUNC_COUNT_DISTINCT, name: "count".into() },
+            FunctionEntry { anchor: FUNC_MIN, name: "min".into() },
+            FunctionEntry { anchor: FUNC_MAX, name: "max".into() },
+            // Comparison
+            FunctionEntry { anchor: FUNC_EQUAL, name: "equal".into() },
+            FunctionEntry { anchor: FUNC_NOT_EQUAL, name: "not_equal".into() },
+            FunctionEntry { anchor: FUNC_LT, name: "lt".into() },
+            FunctionEntry { anchor: FUNC_LTE, name: "lte".into() },
+            FunctionEntry { anchor: FUNC_GT, name: "gt".into() },
+            FunctionEntry { anchor: FUNC_GTE, name: "gte".into() },
+            // Boolean / misc
+            FunctionEntry { anchor: FUNC_AND, name: "and".into() },
+            FunctionEntry { anchor: FUNC_OR, name: "or".into() },
+            FunctionEntry { anchor: FUNC_NOT, name: "not".into() },
+            FunctionEntry { anchor: FUNC_IS_NULL, name: "is_null".into() },
+            FunctionEntry { anchor: FUNC_IS_NOT_NULL, name: "is_not_null".into() },
+            // IN emitted as native SingularOrList, not a scalar function
+            FunctionEntry { anchor: FUNC_BETWEEN, name: "between".into() },
+            FunctionEntry { anchor: FUNC_LIKE, name: "like".into() },
+            FunctionEntry { anchor: FUNC_COALESCE, name: "coalesce".into() },
+            FunctionEntry { anchor: FUNC_NULLIF, name: "nullif".into() },
+            FunctionEntry { anchor: FUNC_DATE_TRUNC, name: "date_trunc".into() },
+            // String
+            FunctionEntry { anchor: FUNC_ILIKE, name: "ilike".into() },
+            FunctionEntry { anchor: FUNC_REGEXP_MATCH, name: "regexp_match".into() },
+            // regexp_extract: DataFusion has no such UDF; omitted from registry
+            // Arithmetic
+            FunctionEntry { anchor: FUNC_ADD, name: "add".into() },
+            FunctionEntry { anchor: FUNC_SUBTRACT, name: "subtract".into() },
+            FunctionEntry { anchor: FUNC_MULTIPLY, name: "multiply".into() },
+            FunctionEntry { anchor: FUNC_DIVIDE, name: "divide".into() },
+        ])
+    }
+}
 
 // ── Aggregate function anchors ──────────────────────────────────────────────
 
@@ -51,10 +116,6 @@ pub const FUNC_ILIKE: u32 = 211;
 pub const FUNC_REGEXP_MATCH: u32 = 212;
 pub const FUNC_REGEXP_EXTRACT: u32 = 213;
 pub const FUNC_CAST: u32 = 214;
-
-// ── String function anchors ───────────────────────────────────────────────
-
-pub const URI_STRING: u32 = 5;
 
 // ── Arithmetic function anchors ─────────────────────────────────────────────
 
