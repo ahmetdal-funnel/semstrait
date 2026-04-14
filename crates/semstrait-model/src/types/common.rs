@@ -11,6 +11,7 @@ use super::keys::Keys;
 use super::measure::MeasureEntry;
 use super::metric::MetricEntry;
 use super::relationship::Relationship;
+#[allow(unused_imports)]
 use super::temporal::TemporalGrain;
 
 // =============================================================================
@@ -171,7 +172,7 @@ impl ColumnMapping {
         matches!(self, ColumnMapping::Inherited)
     }
 
-    /// Default value for `DataKindBindingExtras.column_mapping` when the field is absent.
+    /// Default value for `InlineDatasetExtras.column_mapping` when the field is absent.
     /// Used by `#[serde(default = "ColumnMapping::default_inherited")]`.
     pub fn default_inherited() -> Self {
         ColumnMapping::Inherited
@@ -419,7 +420,7 @@ pub fn vec_to_btreemap_unique<T>(
 ///
 /// Kinds are represented as three implicit-type arrays in YAML:
 /// `grainsets:`, `unionsets:`, `joinsets:`. After parsing, they are merged
-/// into `data_kinds: BTreeMap<String, DataKind>` for the rest of the pipeline.
+/// into `entities: BTreeMap<String, DataKind>` for the rest of the pipeline.
 #[derive(Debug, Clone, Serialize)]
 pub struct SemanticModel {
     pub name: String,
@@ -434,9 +435,10 @@ pub struct SemanticModel {
     pub namespace: Option<String>,
 
     /// All entities (datasets, grainsets, unionsets, joinsets) in a single map.
-    /// Key is the entity name.
+    /// Key is the entity name. Only top-level entities are queryable —
+    /// inline datasets within complex entities are hidden implementation details.
     #[serde(skip)]
-    pub data_kinds: BTreeMap<String, super::data_kind::DataKind>,
+    pub entities: BTreeMap<String, super::data_kind::DataKind>,
 
     // Top-level relationships between datasets and/or kinds
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

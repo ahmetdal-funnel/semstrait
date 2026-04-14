@@ -139,7 +139,7 @@ mod tests {
             relationships: Vec::new(),
             model_name: name.to_string(),
             model_description: None,
-            data_kinds: IndexMap::new(),
+            entities: IndexMap::new(),
             relationship_graph: crate::acceleration::RelationshipGraph::default(),
             field_index: crate::acceleration::FieldIndex::default(),
             semantic_graph: crate::acceleration::SemanticGraph::default(),

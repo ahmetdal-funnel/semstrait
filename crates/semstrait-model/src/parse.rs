@@ -67,7 +67,7 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
     }
 
     /// Intermediate YAML dataset with Vec fields (for array deserialization).
-    /// Converted to Dataset with BTreeMap-based SemanticInterface after parse.
+    /// Converted to SimpleDataKind with BTreeMap-based SemanticInterface after parse.
     #[derive(serde::Deserialize)]
     struct YamlDataset {
         name: String,
@@ -121,13 +121,13 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
     let root: YamlRoot = serde_yaml::from_str(yaml)?;
     let m = root.semantic_model;
 
-    // Build unified data_kinds map from datasets + grainsets + unionsets + joinsets.
-    let mut data_kinds = BTreeMap::new();
+    // Build unified entities map from datasets + grainsets + unionsets + joinsets.
+    let mut entities = BTreeMap::new();
 
-    // Convert YAML datasets to DataKind::Dataset with BTreeMap-based SemanticInterface.
+    // Convert YAML datasets to DataKind::Simple with BTreeMap-based SemanticInterface.
     for yd in m.datasets {
         let name = yd.name.clone();
-        let dk = DataKind::Dataset(DatasetKind {
+        let dk = DataKind::Simple(SimpleDataKind {
             name: yd.name,
             interface: build_semantic_interface(
                 &name,
@@ -141,20 +141,20 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
             )?,
             extras: yd.extras,
         });
-        insert_unique_kind(&mut data_kinds, name, dk)?;
+        insert_unique_entity(&mut entities, name, dk)?;
     }
 
-    // Convert grainsets/unionsets/joinsets to DataKind variants.
+    // Convert grainsets/unionsets/joinsets to DataKind::Complex variants.
     // Nested kind blocks are flattened: extracted as top-level entries with
-    // DataKindEntry::Ref added to the parent's datasets.
+    // ChildEntry::Ref added to the parent's children.
     for g in m.grainsets {
-        flatten_grainset(&mut data_kinds, g)?;
+        flatten_grainset(&mut entities, g)?;
     }
     for u in m.unionsets {
-        flatten_unionset(&mut data_kinds, u)?;
+        flatten_unionset(&mut entities, u)?;
     }
     for j in m.joinsets {
-        flatten_joinset(&mut data_kinds, j)?;
+        flatten_joinset(&mut entities, j)?;
     }
 
     Ok(SemanticModel {
@@ -163,7 +163,7 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
         ai_context: m.ai_context,
         labels: m.labels,
         namespace: m.namespace,
-        data_kinds,
+        entities,
         relationships: m.relationships,
         dimensions: m.dimensions,
         measures: m.measures,
@@ -175,12 +175,12 @@ pub fn parse(yaml: &str) -> Result<SemanticModel, ModelError> {
 // Nested kind flattening
 // =============================================================================
 // Nested kind blocks (e.g., `unionsets:` inside a grainset) are syntactic sugar.
-// Each nested kind is extracted as a standalone top-level entry in `data_kinds`
-// and a `DataKindEntry::Ref` is added to the parent's `datasets` array.
+// Each nested kind is extracted as a standalone top-level entry in `entities`
+// and a `ChildEntry::Ref` is added to the parent's `children` array.
 // The nesting matrix restricts which combinations are valid (enforced in
 // validate_structure, step 4).
 
-fn insert_unique_kind(
+fn insert_unique_entity(
     map: &mut BTreeMap<String, DataKind>,
     name: String,
     dk: DataKind,
@@ -196,63 +196,63 @@ fn insert_unique_kind(
 }
 
 fn flatten_grainset(
-    data_kinds: &mut BTreeMap<String, DataKind>,
+    entities: &mut BTreeMap<String, DataKind>,
     mut g: YamlGrainset,
 ) -> Result<(), ModelError> {
     // Extract nested kinds, flatten recursively, add refs to parent.
     for u in std::mem::take(&mut g.unionsets) {
         let ref_name = u.name.clone();
-        flatten_unionset(data_kinds, u)?;
-        g.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Unionset)));
+        flatten_unionset(entities, u)?;
+        g.datasets.push(ChildEntry::Ref(ChildRef::new(ref_name, DataKindVariant::Unionset)));
     }
     for j in std::mem::take(&mut g.joinsets) {
         let ref_name = j.name.clone();
-        flatten_joinset(data_kinds, j)?;
-        g.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Joinset)));
+        flatten_joinset(entities, j)?;
+        g.datasets.push(ChildEntry::Ref(ChildRef::new(ref_name, DataKindVariant::Joinset)));
     }
     let name = g.name.clone();
-    insert_unique_kind(data_kinds, name, DataKind::try_from(g)?)
+    insert_unique_entity(entities, name, DataKind::try_from(g)?)
 }
 
 fn flatten_unionset(
-    data_kinds: &mut BTreeMap<String, DataKind>,
+    entities: &mut BTreeMap<String, DataKind>,
     mut u: YamlUnionset,
 ) -> Result<(), ModelError> {
     for g in std::mem::take(&mut u.grainsets) {
         let ref_name = g.name.clone();
-        flatten_grainset(data_kinds, g)?;
-        u.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Grainset)));
+        flatten_grainset(entities, g)?;
+        u.datasets.push(ChildEntry::Ref(ChildRef::new(ref_name, DataKindVariant::Grainset)));
     }
     for nested_u in std::mem::take(&mut u.unionsets) {
         let ref_name = nested_u.name.clone();
-        flatten_unionset(data_kinds, nested_u)?;
-        u.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Unionset)));
+        flatten_unionset(entities, nested_u)?;
+        u.datasets.push(ChildEntry::Ref(ChildRef::new(ref_name, DataKindVariant::Unionset)));
     }
     for j in std::mem::take(&mut u.joinsets) {
         let ref_name = j.name.clone();
-        flatten_joinset(data_kinds, j)?;
-        u.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Joinset)));
+        flatten_joinset(entities, j)?;
+        u.datasets.push(ChildEntry::Ref(ChildRef::new(ref_name, DataKindVariant::Joinset)));
     }
     let name = u.name.clone();
-    insert_unique_kind(data_kinds, name, DataKind::try_from(u)?)
+    insert_unique_entity(entities, name, DataKind::try_from(u)?)
 }
 
 fn flatten_joinset(
-    data_kinds: &mut BTreeMap<String, DataKind>,
+    entities: &mut BTreeMap<String, DataKind>,
     mut j: YamlJoinset,
 ) -> Result<(), ModelError> {
     for g in std::mem::take(&mut j.grainsets) {
         let ref_name = g.name.clone();
-        flatten_grainset(data_kinds, g)?;
-        j.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Grainset)));
+        flatten_grainset(entities, g)?;
+        j.datasets.push(ChildEntry::Ref(ChildRef::new(ref_name, DataKindVariant::Grainset)));
     }
     for u in std::mem::take(&mut j.unionsets) {
         let ref_name = u.name.clone();
-        flatten_unionset(data_kinds, u)?;
-        j.datasets.push(DataKindEntry::Ref(DataKindRef::new(ref_name, KindVariant::Unionset)));
+        flatten_unionset(entities, u)?;
+        j.datasets.push(ChildEntry::Ref(ChildRef::new(ref_name, DataKindVariant::Unionset)));
     }
     let name = j.name.clone();
-    insert_unique_kind(data_kinds, name, DataKind::try_from(j)?)
+    insert_unique_entity(entities, name, DataKind::try_from(j)?)
 }
 
 /// Resolve all `ref:` entries in the model.
@@ -288,8 +288,8 @@ pub fn resolve_refs(mut model: SemanticModel) -> Result<SemanticModel, ModelErro
         .map(|m| (m.name.as_str(), m))
         .collect();
 
-    // Resolve refs in all data kinds (datasets + grainsets + unionsets + joinsets)
-    for dk in model.data_kinds.values_mut() {
+    // Resolve refs in all entities (datasets + grainsets + unionsets + joinsets)
+    for dk in model.entities.values_mut() {
         let iface = dk.interface_mut();
         resolve_dimension_entries(&mut iface.dimensions, &dim_map)?;
         resolve_measure_entries(&mut iface.measures, &measure_map)?;
@@ -372,8 +372,8 @@ semantic_model:
 "#;
         let model = parse(yaml).unwrap();
         assert_eq!(model.name, "test_model");
-        assert_eq!(model.data_kinds.len(), 1);
-        assert_eq!(model.data_kinds.get("orders").unwrap().name(), "orders");
+        assert_eq!(model.entities.len(), 1);
+        assert_eq!(model.entities.get("orders").unwrap().name(), "orders");
     }
 
     #[test]
@@ -405,8 +405,8 @@ semantic_model:
                 - warehouse.orders_daily
 "#;
         let model = parse(yaml).unwrap();
-        let sales = model.data_kinds.get("sales").unwrap();
-        assert!(matches!(sales, DataKind::Grainset(_)));
+        let sales = model.entities.get("sales").unwrap();
+        assert!(matches!(sales, DataKind::Complex(ComplexDataKind::Grainset(_))));
         assert_eq!(sales.children().unwrap().len(), 1);
     }
 
@@ -434,7 +434,7 @@ semantic_model:
         let model = parse(yaml).unwrap();
         let resolved = resolve_refs(model).unwrap();
 
-        let orders = resolved.data_kinds.get("orders").unwrap();
+        let orders = resolved.entities.get("orders").unwrap();
         assert_eq!(orders.interface().dimensions.len(), 1);
 
         match orders.interface().dimensions.values().next().unwrap() {
@@ -467,7 +467,7 @@ semantic_model:
         let model = parse(yaml).unwrap();
         let resolved = resolve_refs(model).unwrap();
 
-        let orders = resolved.data_kinds.get("orders").unwrap();
+        let orders = resolved.entities.get("orders").unwrap();
         match orders.interface().measures.values().next().unwrap() {
             MeasureEntry::Inline(m) => assert_eq!(m.name, "revenue"),
             MeasureEntry::Ref(_) => panic!("expected ref to be resolved"),
@@ -529,11 +529,11 @@ semantic_model:
                 - warehouse.orders_daily
 "#;
         let model = parse(yaml).unwrap();
-        let sales = model.data_kinds.get("sales").unwrap();
+        let sales = model.entities.get("sales").unwrap();
         let children = sales.children().unwrap();
 
         match &children[0] {
-            DataKindEntry::Inline(ds) => {
+            ChildEntry::Inline(ds) => {
                 let mapping = &ds.extras.column_mapping;
                 assert!(mapping.contains_key("order_date"));
                 assert!(mapping.contains_key("revenue"));
@@ -579,11 +579,11 @@ semantic_model:
                 - warehouse.orders_monthly
 "#;
         let model = parse(yaml).unwrap();
-        let sales = model.data_kinds.get("sales").unwrap();
+        let sales = model.entities.get("sales").unwrap();
         let children = sales.children().unwrap();
 
         match &children[0] {
-            DataKindEntry::Inline(ds) => {
+            ChildEntry::Inline(ds) => {
                 let mapping = &ds.extras.column_mapping;
 
                 match mapping.get("order_date").unwrap() {
@@ -627,11 +627,11 @@ semantic_model:
                 - warehouse.orders
 "#;
         let model = parse(yaml).unwrap();
-        let sales = model.data_kinds.get("sales").unwrap();
+        let sales = model.entities.get("sales").unwrap();
         let children = sales.children().unwrap();
 
         match &children[0] {
-            DataKindEntry::Inline(ds) => {
+            ChildEntry::Inline(ds) => {
                 match &ds.name {
                     DatasetName::Glob(pattern) => {
                         assert_eq!(pattern.0, "orders_*");
@@ -661,7 +661,7 @@ semantic_model:
               resolution_strategy: latest
 "#;
         let model = parse(yaml).unwrap();
-        let dataset = model.data_kinds.get("accounts").unwrap();
+        let dataset = model.entities.get("accounts").unwrap();
 
         match dataset.interface().measures.values().next().unwrap() {
             MeasureEntry::Inline(m) => {
@@ -826,10 +826,10 @@ semantic_model:
           cardinality: many_to_one
 "#;
         let model = parse(yaml).unwrap();
-        let dk = model.data_kinds.get("order_details").unwrap();
+        let dk = model.entities.get("order_details").unwrap();
 
         match dk {
-            DataKind::Joinset(j) => {
+            DataKind::Complex(ComplexDataKind::Joinset(j)) => {
                 assert_eq!(j.associativity, JoinAssociativity::Left);
                 assert_eq!(j.relationships.len(), 1);
             }
@@ -876,8 +876,8 @@ semantic_model:
                 - s3://data/orders/
 "#;
         let model = parse(yaml).unwrap();
-        let sales = model.data_kinds.get("sales").unwrap();
-        assert!(matches!(sales, DataKind::Grainset(_)));
+        let sales = model.entities.get("sales").unwrap();
+        assert!(matches!(sales, DataKind::Complex(ComplexDataKind::Grainset(_))));
 
         // Verify declarative expr parsed on the kind-level dimension
         let iface = sales.interface();

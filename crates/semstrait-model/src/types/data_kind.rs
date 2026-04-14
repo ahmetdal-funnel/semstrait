@@ -1,4 +1,4 @@
-//! DataKind types — the unified 4-variant entity enum and supporting types.
+//! DataKind types — the unified Simple/Complex entity enum and supporting types.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +9,7 @@ use super::dimension::DimensionEntry;
 use super::keys::Keys;
 use super::measure::MeasureEntry;
 use super::metric::MetricEntry;
-use super::relationship::DataKindRelationship;
+use super::relationship::JoinRelationship;
 use super::storage::{CatalogRef, StorageConfig};
 use super::temporal::TemporalConfig;
 
@@ -34,11 +34,11 @@ pub struct YamlGrainset {
     pub measures: Vec<MeasureEntry>,
     #[serde(default)]
     pub metrics: Vec<MetricEntry>,
-    pub datasets: Vec<DataKindEntry>,
+    pub datasets: Vec<ChildEntry>,
     #[serde(default)]
     pub filters: Vec<MeasureFilter>,
     #[serde(default)]
-    pub extras: Option<DataKindExtras>,
+    pub extras: Option<ComplexExtras>,
     /// Nested unionset kinds (flattened to top-level during parse).
     #[serde(default)]
     pub unionsets: Vec<YamlUnionset>,
@@ -66,11 +66,11 @@ pub struct YamlUnionset {
     pub measures: Vec<MeasureEntry>,
     #[serde(default)]
     pub metrics: Vec<MetricEntry>,
-    pub datasets: Vec<DataKindEntry>,
+    pub datasets: Vec<ChildEntry>,
     #[serde(default)]
     pub filters: Vec<MeasureFilter>,
     #[serde(default)]
-    pub extras: Option<DataKindExtras>,
+    pub extras: Option<ComplexExtras>,
     /// Nested grainset kinds (flattened to top-level during parse).
     #[serde(default)]
     pub grainsets: Vec<YamlGrainset>,
@@ -101,13 +101,13 @@ pub struct YamlJoinset {
     pub measures: Vec<MeasureEntry>,
     #[serde(default)]
     pub metrics: Vec<MetricEntry>,
-    pub datasets: Vec<DataKindEntry>,
+    pub datasets: Vec<ChildEntry>,
     #[serde(default)]
-    pub relationships: Vec<DataKindRelationship>,
+    pub relationships: Vec<JoinRelationship>,
     #[serde(default)]
     pub filters: Vec<MeasureFilter>,
     #[serde(default)]
-    pub extras: Option<DataKindExtras>,
+    pub extras: Option<ComplexExtras>,
     /// Nested grainset kinds (flattened to top-level during parse).
     #[serde(default)]
     pub grainsets: Vec<YamlGrainset>,
@@ -119,68 +119,70 @@ pub struct YamlJoinset {
 impl TryFrom<YamlGrainset> for DataKind {
     type Error = crate::ModelError;
     fn try_from(g: YamlGrainset) -> Result<Self, Self::Error> {
-        Ok(DataKind::Grainset(GrainsetKind {
+        Ok(DataKind::Complex(ComplexDataKind::Grainset(GrainsetSpec {
             name: g.name.clone(),
             interface: build_semantic_interface(
                 &g.name, g.description, g.ai_context, g.keys, g.dimensions, g.measures, g.metrics, g.filters,
             )?,
-            datasets: g.datasets,
+            children: g.datasets,
             extras: g.extras,
-        }))
+        })))
     }
 }
 
 impl TryFrom<YamlUnionset> for DataKind {
     type Error = crate::ModelError;
     fn try_from(u: YamlUnionset) -> Result<Self, Self::Error> {
-        Ok(DataKind::Unionset(UnionsetKind {
+        Ok(DataKind::Complex(ComplexDataKind::Unionset(UnionsetSpec {
             name: u.name.clone(),
             interface: build_semantic_interface(
                 &u.name, u.description, u.ai_context, u.keys, u.dimensions, u.measures, u.metrics, u.filters,
             )?,
             mode: u.mode,
-            datasets: u.datasets,
+            children: u.datasets,
             extras: u.extras,
-        }))
+        })))
     }
 }
 
 impl TryFrom<YamlJoinset> for DataKind {
     type Error = crate::ModelError;
     fn try_from(j: YamlJoinset) -> Result<Self, Self::Error> {
-        Ok(DataKind::Joinset(JoinsetKind {
+        Ok(DataKind::Complex(ComplexDataKind::Joinset(JoinsetSpec {
             name: j.name.clone(),
             interface: build_semantic_interface(
                 &j.name, j.description, j.ai_context, j.keys, j.dimensions, j.measures, j.metrics, j.filters,
             )?,
             associativity: j.associativity,
-            datasets: j.datasets,
+            children: j.datasets,
             relationships: j.relationships,
             extras: j.extras,
-        }))
+        })))
     }
 }
 
 // =============================================================================
-// DataKind — unified 4-variant enum for all entity types
+// DataKind — unified Simple/Complex entity enum
 // =============================================================================
 
 /// Unified entity type in the semantic model.
 ///
-/// Each variant carries its own struct with `name`, `interface`, and
-/// variant-specific fields.
+/// `Simple` is the fundamental leaf building block — a singular queryable unit
+/// (collection of files/tables sharing the same semantic structure).
+/// `Complex` composes multiple children (Simple or other Complex) via strategy
+/// (grain partitioning, union, join).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "data_kind")]
 pub enum DataKind {
-    Dataset(DatasetKind),
-    Grainset(GrainsetKind),
-    Unionset(UnionsetKind),
-    Joinset(JoinsetKind),
+    Simple(SimpleDataKind),
+    Complex(ComplexDataKind),
 }
 
-/// A standalone queryable dataset with dimensions, measures, and metrics.
+/// A standalone queryable dataset — the fundamental leaf building block.
+/// A singular queryable unit: collection of files/tables sharing the same
+/// semantic structure. Can be safely UNION ALL'd. No nesting, no children.
 #[derive(Debug, Clone, Serialize)]
-pub struct DatasetKind {
+pub struct SimpleDataKind {
     pub name: String,
     #[serde(flatten)]
     pub interface: SemanticInterface,
@@ -188,136 +190,210 @@ pub struct DatasetKind {
     pub extras: Option<DatasetExtras>,
 }
 
-/// A grain-partitioned kind: each child dataset covers a different temporal grain.
+/// Composite entity that composes children via a specific strategy.
 #[derive(Debug, Clone, Serialize)]
-pub struct GrainsetKind {
+#[serde(tag = "complex_kind")]
+pub enum ComplexDataKind {
+    Grainset(GrainsetSpec),
+    Unionset(UnionsetSpec),
+    Joinset(JoinsetSpec),
+}
+
+/// A grain-partitioned entity: each child covers a different temporal grain.
+#[derive(Debug, Clone, Serialize)]
+pub struct GrainsetSpec {
     pub name: String,
     #[serde(flatten)]
     pub interface: SemanticInterface,
-    pub datasets: Vec<DataKindEntry>,
+    pub children: Vec<ChildEntry>,
     #[serde(default)]
-    pub extras: Option<DataKindExtras>,
+    pub extras: Option<ComplexExtras>,
 }
 
-/// A union kind: child datasets are combined via UNION ALL or UNION DISTINCT.
+/// A union entity: children are combined via UNION ALL or UNION DISTINCT.
 #[derive(Debug, Clone, Serialize)]
-pub struct UnionsetKind {
+pub struct UnionsetSpec {
     pub name: String,
     #[serde(flatten)]
     pub interface: SemanticInterface,
     #[serde(default)]
     pub mode: UnionMode,
-    pub datasets: Vec<DataKindEntry>,
+    pub children: Vec<ChildEntry>,
     #[serde(default)]
-    pub extras: Option<DataKindExtras>,
+    pub extras: Option<ComplexExtras>,
 }
 
-/// A join kind: child datasets are joined via relationships.
+/// A join entity: children are joined via relationships.
 #[derive(Debug, Clone, Serialize)]
-pub struct JoinsetKind {
+pub struct JoinsetSpec {
     pub name: String,
     #[serde(flatten)]
     pub interface: SemanticInterface,
     #[serde(default = "default_join_associativity")]
     pub associativity: JoinAssociativity,
-    pub datasets: Vec<DataKindEntry>,
-    pub relationships: Vec<DataKindRelationship>,
+    pub children: Vec<ChildEntry>,
+    pub relationships: Vec<JoinRelationship>,
     #[serde(default)]
-    pub extras: Option<DataKindExtras>,
+    pub extras: Option<ComplexExtras>,
 }
 
-impl DataKind {
+impl ComplexDataKind {
     /// Entity name.
     pub fn name(&self) -> &str {
         match self {
-            DataKind::Dataset(d) => &d.name,
-            DataKind::Grainset(g) => &g.name,
-            DataKind::Unionset(u) => &u.name,
-            DataKind::Joinset(j) => &j.name,
+            ComplexDataKind::Grainset(g) => &g.name,
+            ComplexDataKind::Unionset(u) => &u.name,
+            ComplexDataKind::Joinset(j) => &j.name,
         }
     }
 
-    /// Shared semantic interface (dimensions, measures, metrics, filters, keys).
+    /// Shared semantic interface.
     pub fn interface(&self) -> &SemanticInterface {
         match self {
-            DataKind::Dataset(d) => &d.interface,
-            DataKind::Grainset(g) => &g.interface,
-            DataKind::Unionset(u) => &u.interface,
-            DataKind::Joinset(j) => &j.interface,
+            ComplexDataKind::Grainset(g) => &g.interface,
+            ComplexDataKind::Unionset(u) => &u.interface,
+            ComplexDataKind::Joinset(j) => &j.interface,
         }
     }
 
     /// Mutable access to the semantic interface.
     pub fn interface_mut(&mut self) -> &mut SemanticInterface {
         match self {
-            DataKind::Dataset(d) => &mut d.interface,
-            DataKind::Grainset(g) => &mut g.interface,
-            DataKind::Unionset(u) => &mut u.interface,
-            DataKind::Joinset(j) => &mut j.interface,
+            ComplexDataKind::Grainset(g) => &mut g.interface,
+            ComplexDataKind::Unionset(u) => &mut u.interface,
+            ComplexDataKind::Joinset(j) => &mut j.interface,
         }
     }
 
-    /// Child datasets (None for standalone DatasetKind).
-    pub fn children(&self) -> Option<&[DataKindEntry]> {
+    /// Child entries (inline datasets and refs).
+    pub fn children(&self) -> &[ChildEntry] {
         match self {
-            DataKind::Dataset(_) => None,
-            DataKind::Grainset(g) => Some(&g.datasets),
-            DataKind::Unionset(u) => Some(&u.datasets),
-            DataKind::Joinset(j) => Some(&j.datasets),
+            ComplexDataKind::Grainset(g) => &g.children,
+            ComplexDataKind::Unionset(u) => &u.children,
+            ComplexDataKind::Joinset(j) => &j.children,
         }
     }
 
-    /// Mutable child datasets (None for standalone DatasetKind).
-    pub fn children_mut(&mut self) -> Option<&mut Vec<DataKindEntry>> {
+    /// Mutable child entries.
+    pub fn children_mut(&mut self) -> &mut Vec<ChildEntry> {
         match self {
-            DataKind::Dataset(_) => None,
-            DataKind::Grainset(g) => Some(&mut g.datasets),
-            DataKind::Unionset(u) => Some(&mut u.datasets),
-            DataKind::Joinset(j) => Some(&mut j.datasets),
+            ComplexDataKind::Grainset(g) => &mut g.children,
+            ComplexDataKind::Unionset(u) => &mut u.children,
+            ComplexDataKind::Joinset(j) => &mut j.children,
         }
     }
 
-    /// Relationships (only JoinsetKind has non-empty; others return empty slice).
-    pub fn relationships(&self) -> &[DataKindRelationship] {
+    /// Complex-level extras.
+    pub fn extras(&self) -> Option<&ComplexExtras> {
         match self {
-            DataKind::Joinset(j) => &j.relationships,
+            ComplexDataKind::Grainset(g) => g.extras.as_ref(),
+            ComplexDataKind::Unionset(u) => u.extras.as_ref(),
+            ComplexDataKind::Joinset(j) => j.extras.as_ref(),
+        }
+    }
+
+    /// Relationships (only JoinsetSpec has non-empty; others return empty slice).
+    pub fn relationships(&self) -> &[JoinRelationship] {
+        match self {
+            ComplexDataKind::Joinset(j) => &j.relationships,
             _ => &[],
         }
     }
 
-    /// Kind-level extras (None for DatasetKind).
-    pub fn kind_extras(&self) -> Option<&DataKindExtras> {
+    /// Variant discriminant.
+    pub fn variant(&self) -> DataKindVariant {
         match self {
-            DataKind::Dataset(_) => None,
-            DataKind::Grainset(g) => g.extras.as_ref(),
-            DataKind::Unionset(u) => u.extras.as_ref(),
-            DataKind::Joinset(j) => j.extras.as_ref(),
+            ComplexDataKind::Grainset(_) => DataKindVariant::Grainset,
+            ComplexDataKind::Unionset(_) => DataKindVariant::Unionset,
+            ComplexDataKind::Joinset(_) => DataKindVariant::Joinset,
+        }
+    }
+}
+
+impl DataKind {
+    /// Entity name.
+    pub fn name(&self) -> &str {
+        match self {
+            DataKind::Simple(d) => &d.name,
+            DataKind::Complex(c) => c.name(),
         }
     }
 
-    /// True if this is a standalone dataset (no children).
-    pub fn is_dataset(&self) -> bool {
-        matches!(self, DataKind::Dataset(_))
+    /// Shared semantic interface (dimensions, measures, metrics, filters, keys).
+    pub fn interface(&self) -> &SemanticInterface {
+        match self {
+            DataKind::Simple(d) => &d.interface,
+            DataKind::Complex(c) => c.interface(),
+        }
+    }
+
+    /// Mutable access to the semantic interface.
+    pub fn interface_mut(&mut self) -> &mut SemanticInterface {
+        match self {
+            DataKind::Simple(d) => &mut d.interface,
+            DataKind::Complex(c) => c.interface_mut(),
+        }
+    }
+
+    /// Child entries (None for Simple).
+    pub fn children(&self) -> Option<&[ChildEntry]> {
+        match self {
+            DataKind::Simple(_) => None,
+            DataKind::Complex(c) => Some(c.children()),
+        }
+    }
+
+    /// Mutable child entries (None for Simple).
+    pub fn children_mut(&mut self) -> Option<&mut Vec<ChildEntry>> {
+        match self {
+            DataKind::Simple(_) => None,
+            DataKind::Complex(c) => Some(c.children_mut()),
+        }
+    }
+
+    /// Relationships (only JoinsetSpec has non-empty; others return empty slice).
+    pub fn relationships(&self) -> &[JoinRelationship] {
+        match self {
+            DataKind::Complex(c) => c.relationships(),
+            _ => &[],
+        }
+    }
+
+    /// Complex-level extras (None for Simple).
+    pub fn complex_extras(&self) -> Option<&ComplexExtras> {
+        match self {
+            DataKind::Simple(_) => None,
+            DataKind::Complex(c) => c.extras(),
+        }
+    }
+
+    /// True if this is a standalone simple dataset (no children).
+    pub fn is_simple(&self) -> bool {
+        matches!(self, DataKind::Simple(_))
+    }
+
+    /// True if this is a complex composite entity.
+    pub fn is_complex(&self) -> bool {
+        matches!(self, DataKind::Complex(_))
     }
 
     /// True if this is a joinset.
     pub fn is_joinset(&self) -> bool {
-        matches!(self, DataKind::Joinset(_))
+        matches!(self, DataKind::Complex(ComplexDataKind::Joinset(_)))
     }
 
-    /// Kind variant name for error messages.
-    pub fn kind_variant(&self) -> &'static str {
-        self.kind_variant_enum().as_str()
+    /// Variant name for error messages.
+    pub fn variant(&self) -> &'static str {
+        self.variant_enum().as_str()
     }
 
-    pub fn kind_variant_enum(&self) -> KindVariant {
+    pub fn variant_enum(&self) -> DataKindVariant {
         match self {
-            DataKind::Dataset(_) => KindVariant::Dataset,
-            DataKind::Grainset(_) => KindVariant::Grainset,
-            DataKind::Unionset(_) => KindVariant::Unionset,
-            DataKind::Joinset(_) => KindVariant::Joinset,
+            DataKind::Simple(_) => DataKindVariant::Simple,
+            DataKind::Complex(c) => c.variant(),
         }
     }
+
 }
 
 fn default_join_associativity() -> JoinAssociativity {
@@ -342,28 +418,29 @@ pub enum UnionMode {
 }
 
 // =============================================================================
-// Kind Dataset Entry
+// Child Entry
 // =============================================================================
 
-/// A dataset reference in a kind: either inline definition or ref to another kind.
+/// A child entry in a complex kind: either inline definition or ref to another entity.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 #[allow(clippy::large_enum_variant)]
-pub enum DataKindEntry {
-    Ref(DataKindRef),
-    Inline(DataKindBinding),
+pub enum ChildEntry {
+    Ref(ChildRef),
+    Inline(InlineDataset),
 }
 
-/// Dataset binding within a kind (SR-4: physical only — no semantic fields allowed).
+/// Physical-only dataset nested in a complex kind (SR-4 enforced by deny_unknown_fields).
+/// Has NO interface — inherits from parent complex kind.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct DataKindBinding {
+pub struct InlineDataset {
     pub name: DatasetName,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
     pub ai_context: Option<AiContext>,
-    pub extras: DataKindBindingExtras,
+    pub extras: InlineDatasetExtras,
 }
 
 /// Dataset name: either a literal string or a glob pattern.
@@ -394,7 +471,7 @@ pub struct GlobPattern(pub String);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct DataKindBindingExtras {
+pub struct InlineDatasetExtras {
     #[serde(default = "ColumnMapping::default_inherited")]
     pub column_mapping: ColumnMapping,
     #[serde(default)]
@@ -405,10 +482,10 @@ pub struct DataKindBindingExtras {
     pub catalog: Option<CatalogRef>,
 }
 
-/// Kind-level default extras applied to all datasets in this kind.
-/// Per-dataset extras (DataKindBinding.extras) override these defaults field by field.
+/// Complex-level default extras applied to all children in this entity.
+/// Per-child extras (InlineDataset.extras) override these defaults field by field.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DataKindExtras {
+pub struct ComplexExtras {
     #[serde(default)]
     pub column_mapping: Option<ColumnMapping>,
     #[serde(default)]
@@ -419,7 +496,7 @@ pub struct DataKindExtras {
     pub partition_defs: Option<Vec<super::storage::PartitionDef>>,
 }
 
-/// Extras for standalone datasets (no kind-level defaults).
+/// Extras for standalone SimpleDataKind (no complex-level defaults).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatasetExtras {
     #[serde(default)]
@@ -431,47 +508,47 @@ pub struct DatasetExtras {
 }
 
 // =============================================================================
-// DataKindRef / KindVariant
+// ChildRef / DataKindVariant
 // =============================================================================
 
-/// Typed reference to a nested kind (Grainset, Unionset, or Joinset).
+/// Typed reference to another top-level entity.
 ///
-/// Unlike `RefEntry` (used for dimension/measure/metric refs), `DataKindRef`
-/// carries the variant of the referenced kind, eliminating string-based
+/// Unlike `RefEntry` (used for dimension/measure/metric refs), `ChildRef`
+/// carries the variant of the referenced entity, eliminating string-based
 /// lookups during nesting validation.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DataKindRef {
+pub struct ChildRef {
     #[serde(rename = "ref")]
     pub ref_name: String,
-    /// The kind variant of the referenced target.
+    /// The variant of the referenced target.
     /// Set programmatically during `flatten_*` in parse.rs.
     #[serde(skip)]
-    pub variant: KindVariant,
+    pub variant: DataKindVariant,
 }
 
-/// The kind variant carried by a `DataKindRef`.
+/// The variant discriminant for DataKind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum KindVariant {
+pub enum DataKindVariant {
     #[default]
-    Dataset,
+    Simple,
     Grainset,
     Unionset,
     Joinset,
 }
 
-impl KindVariant {
+impl DataKindVariant {
     pub fn as_str(&self) -> &'static str {
         match self {
-            KindVariant::Dataset => "dataset",
-            KindVariant::Grainset => "grainset",
-            KindVariant::Unionset => "unionset",
-            KindVariant::Joinset => "joinset",
+            DataKindVariant::Simple => "dataset",
+            DataKindVariant::Grainset => "grainset",
+            DataKindVariant::Unionset => "unionset",
+            DataKindVariant::Joinset => "joinset",
         }
     }
 }
 
-impl DataKindRef {
-    pub fn new(ref_name: String, variant: KindVariant) -> Self {
+impl ChildRef {
+    pub fn new(ref_name: String, variant: DataKindVariant) -> Self {
         Self { ref_name, variant }
     }
 
@@ -485,41 +562,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_kind_ref_carries_variant() {
-        let r = DataKindRef::new("my_unionset".to_string(), KindVariant::Unionset);
+    fn test_child_ref_carries_variant() {
+        let r = ChildRef::new("my_unionset".to_string(), DataKindVariant::Unionset);
         assert_eq!(r.name(), "my_unionset");
-        assert_eq!(r.variant, KindVariant::Unionset);
+        assert_eq!(r.variant, DataKindVariant::Unionset);
     }
 
     #[test]
-    fn test_kind_ref_name_accessor() {
-        let r = DataKindRef::new("sales_grain".to_string(), KindVariant::Grainset);
+    fn test_child_ref_name_accessor() {
+        let r = ChildRef::new("sales_grain".to_string(), DataKindVariant::Grainset);
         assert_eq!(r.name(), "sales_grain");
     }
 
     #[test]
-    fn test_kind_variant_as_str() {
-        assert_eq!(KindVariant::Dataset.as_str(), "dataset");
-        assert_eq!(KindVariant::Grainset.as_str(), "grainset");
-        assert_eq!(KindVariant::Unionset.as_str(), "unionset");
-        assert_eq!(KindVariant::Joinset.as_str(), "joinset");
+    fn test_variant_as_str() {
+        assert_eq!(DataKindVariant::Simple.as_str(), "dataset");
+        assert_eq!(DataKindVariant::Grainset.as_str(), "grainset");
+        assert_eq!(DataKindVariant::Unionset.as_str(), "unionset");
+        assert_eq!(DataKindVariant::Joinset.as_str(), "joinset");
     }
 
     #[test]
-    fn test_kind_variant_default_is_dataset() {
-        assert_eq!(KindVariant::default(), KindVariant::Dataset);
+    fn test_variant_default_is_simple() {
+        assert_eq!(DataKindVariant::default(), DataKindVariant::Simple);
     }
 
     #[test]
-    fn test_kind_ref_serde_roundtrip() {
-        // Use serde_yaml since it's already a dependency of this crate.
-        let r = DataKindRef::new("test_kind".to_string(), KindVariant::Joinset);
+    fn test_child_ref_serde_roundtrip() {
+        let r = ChildRef::new("test_kind".to_string(), DataKindVariant::Joinset);
         let yaml = serde_yaml::to_string(&r).unwrap();
         assert!(yaml.contains("test_kind"));
 
-        let deserialized: DataKindRef = serde_yaml::from_str(&yaml).unwrap();
+        let deserialized: ChildRef = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(deserialized.ref_name, "test_kind");
-        // Variant defaults to Dataset after deserialization (serde skip)
-        assert_eq!(deserialized.variant, KindVariant::Dataset);
+        // Variant defaults to Simple after deserialization (serde skip)
+        assert_eq!(deserialized.variant, DataKindVariant::Simple);
     }
 }

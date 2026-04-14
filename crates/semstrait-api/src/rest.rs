@@ -71,7 +71,7 @@ async fn schema(State(engine): State<SharedEngine>) -> impl IntoResponse {
     match engine.manifest() {
         Some(manifest) => {
             let mut kinds = serde_json::Map::new();
-            for (name, data_kind) in &manifest.data_kinds {
+            for (name, data_kind) in &manifest.entities {
                 let iface = data_kind.interface();
                 let dims: Vec<&str> = iface.dimensions.keys().map(|s| s.as_str()).collect();
                 let measures: Vec<&str> = iface.measures.keys().map(|s| s.as_str()).collect();
@@ -89,7 +89,7 @@ async fn schema(State(engine): State<SharedEngine>) -> impl IntoResponse {
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "model_name": manifest.model_name,
-                    "data_kinds": kinds,
+                    "entities": kinds,
                 })),
             )
         }

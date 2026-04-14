@@ -71,7 +71,7 @@ semstrait/                       Cargo workspace root
 ├── semstrait-catalog/           CatalogProvider trait + implementations (Iceberg/Polaris, Unity)
 ├── semstrait-manifest/          ManifestCompiler + Repository (InMemory v1)
 ├── semstrait-ir/                PlanNode IR + Substrait bridge + PlanArtifact + PlanBuilder trait
-├── semstrait-planner/           SemanticPlanner + KindPlanners + Optimizer
+├── semstrait-planner/           SemanticPlanner + EntityPlanners + Optimizer
 ├── semstrait-adapter/           EngineAdapter trait + SqlEmitter + dialect impls (includes former semstrait-sql)
 ├── semstrait-connectors/        ComputeConnector — optional execution (feature-gated)
 ├── semstrait-api/               gRPC + REST + CLI (submodules, feature-gated)
@@ -668,33 +668,40 @@ pub struct InMemoryRepository(Arc<RwLock<Option<Arc<CompiledManifest>>>>);
 #### CompiledManifest
 
 ```rust
-/// CompiledManifest v3 — single unified `data_kinds` map (Phase J consolidation).
-/// All entity types (datasets, grainsets, unionsets, joinsets) live in one map.
-/// Single-dataset kinds compile as CompiledDataKind::Dataset (fast path).
+/// CompiledManifest v3 — single unified `entities` map.
+/// All entity types (Simple datasets, Complex grainsets/unionsets/joinsets) live in one map.
+/// Single-dataset kinds compile as CompiledDataKind::Simple (fast path).
 #[derive(Serialize, Deserialize)]
 pub struct CompiledManifest {
     pub version:          u32,                                   // 3
     pub compiled_at:      DateTime<Utc>,
     pub source_hash:      String,                                // SHA-256 of YAML input
-    pub data_kinds:       IndexMap<String, CompiledDataKind>,    // unified entity map
+    pub entities:         IndexMap<String, CompiledDataKind>,    // unified entity map
     pub relationships:    Vec<CompiledRelationship>,
     pub diagnostics:      Vec<Diagnostic>,
     pub catalog_snapshot: Option<CatalogSnapshot>,               // schema drift data
 }
 
-/// Compiled data kind — 4 variants, each with CompiledInterface + DatasetBinding(s).
-/// Single-dataset kinds (declared as grainset/unionset/joinset with 1 dataset)
-/// are compiled as Dataset (no routing overhead needed).
+/// Compiled data kind — two-level hierarchy: Simple (leaf) vs Complex (composite).
+/// Simple = standalone queryable dataset with interface + binding.
+/// Complex = composite entity (Grainset/Unionset/Joinset) with multiple bindings.
 pub enum CompiledDataKind {
-    Dataset(Box<CompiledDatasetKind>),
-    Grainset(Box<CompiledGrainsetKind>),
-    Unionset(Box<CompiledUnionsetKind>),
-    Joinset(Box<CompiledJoinsetKind>),
+    Simple(Box<CompiledDatasetKind>),      // leaf dataset
+    Complex(Box<CompiledComplex>),         // composite (Grainset/Unionset/Joinset)
+}
+
+/// Complex compiled entity — 3 composite variants.
+pub enum CompiledComplex {
+    Grainset(CompiledGrainsetKind),
+    Unionset(CompiledUnionsetKind),
+    Joinset(CompiledJoinsetKind),
 }
 
 impl CompiledDataKind {
     pub fn interface(&self) -> &CompiledInterface;
     pub fn bindings(&self) -> &[DatasetBinding];
+    pub fn is_simple(&self) -> bool;
+    pub fn is_complex(&self) -> bool;
 }
 
 /// Shared interface across all data kind variants.
@@ -919,7 +926,7 @@ impl PlanBuilder for DefaultPlanBuilder {}
 
 ### 5.6 `semstrait-planner`
 
-**Role:** Build `LogicalPlan` from `QueryRequest` + `CompiledManifest`. Dispatch to kind-specific planners. Evaluate constraints, additivity, filters. Apply optimizer internally.
+**Role:** Build `LogicalPlan` from `QueryRequest` + `CompiledManifest`. Dispatch to entity-specific planners. Evaluate constraints, additivity, filters. Apply optimizer internally.
 
 #### SemanticPlanner
 
@@ -927,7 +934,7 @@ impl PlanBuilder for DefaultPlanBuilder {}
 pub struct SemanticPlanner {
     catalog:      Option<Arc<dyn CatalogProvider>>,
     optimizer:    Optimizer,       // empty in v1; configured at construction
-    planners:     KindPlannerRegistry,
+    planners:     EntityPlannerRegistry,
     plan_builder: Box<dyn PlanBuilder>, // engine-specific node construction (from IR)
 }
 
@@ -958,23 +965,23 @@ impl SemanticPlanner {
 
 **`plan()` internal steps:**
 ```
-1. ConstraintValidator::check(request, manifest)    → Err if violated
-2. KindPlannerRegistry::dispatch(kind_type)         → KindPlanner
-3. KindPlanner::resolve(kind, request, ctx)         → PlanFragment
+1. ConstraintValidator::check(request, manifest)       → Err if violated
+2. EntityPlannerRegistry::dispatch(entity_type)        → EntityPlanner
+3. EntityPlanner::resolve(entity, request, ctx)        → PlanFragment
    - dimensions partitioned: metadata → computed → physical (expr/mod.rs)
    - expression resolution via ExprResolver trait (resolver.rs)
    - measure decomposition via decompose_measure() (decomposer.rs)
    - computed dims emitted as ProjectNode expressions (post-aggregation)
 5. AdditivityResolver::resolve(fragment, measure, ..)
-6. inject dataset filter (v1: skipped — handled inside KindPlanner)
+6. inject dataset filter (v1: skipped — handled inside EntityPlanner)
 7. inject measure filter         (CASE WHEN in AggNode — DL-008)
-8. inject metric filter          (handled inside KindPlanner in v1)
+8. inject metric filter          (handled inside EntityPlanner in v1)
 9. inject user filter            (FilterNode, source = UserFilter)
 10. ORDER BY + LIMIT/FETCH       (SortNode + FetchNode)
 11. Optimizer::apply(plan)       → LogicalPlan  (identity in v1)
 ```
 **Note:** In v1, steps 6 and 8 (dataset/metric filters) are applied inside the
-KindPlanner's resolve() method rather than as separate post-processing steps.
+EntityPlanner's resolve() method rather than as separate post-processing steps.
 
 #### ConstraintValidator
 
@@ -1030,19 +1037,19 @@ pub struct DecomposedMeasure {
 pub fn decompose_measure(resolver: &dyn ExprResolver, name: &str, agg: Aggregation,
     expr: &Expr, filters: &[CompiledFilter]) -> Result<DecomposedMeasure, PlannerError>;
 
-/// Recursive metric decomposition via KindInterface + DatasetBinding.
-pub fn decompose_metric(name: &str, metric: &CompiledMetric, iface: &KindInterface,
+/// Recursive metric decomposition via CompiledInterface + DatasetBinding.
+pub fn decompose_metric(name: &str, metric: &CompiledMetric, iface: &CompiledInterface,
     binding: &DatasetBinding, max_depth: usize) -> Result<DecomposedMeasure, PlannerError>;
 ```
 
-#### KindPlanner — Strategy Pattern
+#### EntityPlanner — Strategy Pattern
 
 ```rust
-pub trait KindPlanner: Send + Sync {
-    fn supports(&self, data_kind: &DataKind) -> bool;
+pub trait EntityPlanner: Send + Sync {
+    fn supports(&self, entity: &CompiledDataKind) -> bool;
     fn resolve(
         &self,
-        data_kind: &DataKind,
+        pruned: &PrunedView<'_>,
         request: &ResolvedQueryRequest,
         ctx: &PlannerContext,
     ) -> Result<PlanFragment, PlannerError>;
@@ -1062,14 +1069,14 @@ pub struct PlanFragment {
 }
 ```
 
-**KindPlanner implementations:**
+**EntityPlanner implementations:**
 
-| Impl | DataKind | Resolution |
+| Impl | CompiledDataKind | Resolution |
 |---|---|---|
-| `DatasetPlanner` | `Dataset` | Single-dataset fast path: Scan → Agg → Project |
-| `GrainsetPlanner` | `Grainset` | Route to cheapest covering dataset; FULL OUTER join if no single covers all |
-| `UnionsetPlanner` | `Unionset` | Build UNION ALL branches; NULL-fill unmapped columns; prune NULL-excluding branches |
-| `JoinsetPlanner` | `Joinset` | BFS from anchor dataset; join pruning; temporal filter injection per dataset |
+| `DatasetPlanner` | `Simple` | Single-dataset fast path: Scan → Agg → Project |
+| `GrainsetPlanner` | `Complex::Grainset` | Route to cheapest covering dataset; FULL OUTER join if no single covers all |
+| `UnionsetPlanner` | `Complex::Unionset` | Build UNION ALL branches; NULL-fill unmapped columns; prune NULL-excluding branches |
+| `JoinsetPlanner` | `Complex::Joinset` | BFS from anchor dataset; join pruning; temporal filter injection per dataset |
 
 #### AdditivityResolver
 
@@ -1675,7 +1682,7 @@ let result = sem.query(&request).await?;  // ComputeResult
 - **DL-061:** `ExprSource` custom Deserialize (fixes DL-049). Replaced `#[serde(untagged)]` with manual `impl Deserialize` that routes `String` → `Inline`, `Mapping` → `Declarative(ExprBlock)`. Enables declarative expressions at Tier 2 (kind-level dimensions).
 - **DL-062:** Expression scope validation (SR-5a). `validate_expr_scope()` in `steps.rs` checks that all `Expr::Column` references in computed dimension and metric expressions refer to names exposed in the same interface. Measure base expressions are exempt (reference physical columns).
 - **DL-063:** Parse-time uniqueness enforcement (SR-1/SR-3). `vec_to_btreemap_unique()` in `common.rs` detects duplicate dimension/measure/metric/filter names at parse time.
-- **DL-064:** `DataKindBinding` + `DataKindBindingExtras` use `#[serde(deny_unknown_fields)]` (SR-4). Prevents semantic fields on dataset bindings within complex kinds.
+- **DL-064:** `InlineDataset` + `InlineDatasetExtras` use `#[serde(deny_unknown_fields)]` (SR-4). Prevents semantic fields on dataset bindings within complex kinds.
 - **DL-065:** PlanBuilder activated — planner uses `plan_builder.*()` for all 24 node construction sites. `DefaultPlanBuilder` produces identical nodes (zero behavioral change). `#[allow(dead_code)]` removed from `PlannerContext.plan_builder`.
 - **DL-066:** DataFusionPlanBuilder + facade wiring. `SemstraitBuilder::with_adapter()` extracts `adapter.plan_builder()` and wires to `SemanticPlanner::builder().with_plan_builder(pb)`. V1: identity (DefaultPlanBuilder). Future: engine-specific node shaping.
 - **DL-067:** FunctionRegistry — adapter provides engine-specific function name→anchor mappings to `SubstraitSerializer::to_substrait(plan, &registry)`. IR no longer hardcodes engine-specific function names. Extension URIs removed entirely (no function YAML files behind them).
@@ -1763,7 +1770,7 @@ This table records every cross-crate type reference and confirms no cycle is int
 | `SubstraitSerializer` | `ir` | `adapter` (DataFusionAdapter) | ✓ ir → core; adapter → ir |
 | `SemAnnotation` | `ir` | `planner` (sets annotations), `adapter` (reads for Explain) | ✓ annotation type defined in ir, set by planner |
 | `ResolvedQueryRequest` | `planner` | `planner` internally, `api` (calls planner) | ✓ lives in planner; api → planner |
-| `KindPlanner` trait | `planner` | `planner` (registry) | ✓ internal to planner crate |
+| `EntityPlanner` trait | `planner` | `planner` (registry) | ✓ internal to planner crate |
 | `Optimizer`, `OptimizerPass` | `planner` | `planner` (internal), `facade` (configuration) | ✓ no external crate depends on these for execution |
 | `SqlEmitter`, `SqlDialect` | `adapter` (internal) | `adapter` (SQL adapters use emitter) | ✓ internal to adapter crate |
 | `EngineAdapter` trait | `adapter` | `connectors`, `api`, `facade` | ✓ adapter → core, ir, sql; downstream is one-way |

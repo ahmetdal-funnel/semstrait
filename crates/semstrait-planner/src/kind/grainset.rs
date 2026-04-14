@@ -998,7 +998,7 @@ mod tests {
             relationships: vec![],
             model_name: "test".to_string(),
             model_description: None,
-            data_kinds: IndexMap::new(),
+            entities: IndexMap::new(),
             relationship_graph: semstrait_manifest::RelationshipGraph::default(),
             field_index: semstrait_manifest::FieldIndex::default(),
             diagnostics: semstrait_manifest::CompileDiagnostics::default(),

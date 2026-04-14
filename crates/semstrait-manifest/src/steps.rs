@@ -58,10 +58,10 @@ pub(crate) async fn resolve_sources(
     let mut table_snapshots: HashMap<String, crate::catalog_snapshot::TableSnapshot> =
         HashMap::new();
 
-    // Resolve sources for all data kinds
-    for dk in model.data_kinds.values() {
+    // Resolve sources for all entities
+    for dk in model.entities.values() {
         match dk {
-            DataKind::Dataset(dsk) => {
+            DataKind::Simple(dsk) => {
                 // Standalone dataset with storage config
                 if let Some(extras) = &dsk.extras {
                     if let Some(storage_config) = &extras.storage {
@@ -88,7 +88,7 @@ pub(crate) async fn resolve_sources(
                 if let Some(children) = dk.children() {
                     for entry in children {
                         match entry {
-                            DataKindEntry::Inline(ds) => {
+                            ChildEntry::Inline(ds) => {
                                 let ds_name = dataset_display_name(&ds.name).to_string();
                                 if let Some(storage_config) = &ds.extras.storage {
                                     let sources = resolve_dataset_storage(
@@ -108,7 +108,7 @@ pub(crate) async fn resolve_sources(
                                     }
                                 }
                             }
-                            DataKindEntry::Ref(_) => {
+                            ChildEntry::Ref(_) => {
                                 // Nested kind reference — compiled separately as its own
                                 // CompiledDataKind entry. No storage resolution needed here.
                             }
@@ -414,9 +414,9 @@ fn contains_glob_chars(s: &str) -> bool {
 pub(crate) fn validate_structure(model: &SemanticModel) -> Result<(), CompileError> {
     let mut errors = Vec::new();
 
-    // Check entity name uniqueness (all data_kinds share a namespace)
+    // Check entity name uniqueness (all entities share a namespace)
     let mut seen_names = HashSet::new();
-    for dk in model.data_kinds.values() {
+    for dk in model.entities.values() {
         let name = dk.name();
         if !seen_names.insert(name.to_string()) {
             errors.push(format!("duplicate entity name: '{}'", name));
@@ -427,7 +427,7 @@ pub(crate) fn validate_structure(model: &SemanticModel) -> Result<(), CompileErr
             if children.is_empty() {
                 errors.push(format!(
                     "{} '{}' must have at least one dataset",
-                    dk.kind_variant(), name
+                    dk.variant(), name
                 ));
             }
         }
@@ -445,22 +445,22 @@ pub(crate) fn validate_structure(model: &SemanticModel) -> Result<(), CompileErr
         check_measure_uniqueness(&dk.interface().measures, name, &mut errors);
         check_metric_uniqueness(&dk.interface().metrics, name, &mut errors);
 
-        // Nesting matrix validation: check that DataKindEntry::Ref targets
+        // Nesting matrix validation: check that ChildEntry::Ref targets
         // are allowed child kinds for this parent kind.
         if let Some(children) = dk.children() {
-            let parent_variant = dk.kind_variant_enum();
+            let parent_variant = dk.variant_enum();
             for child_entry in children {
-                if let DataKindEntry::Ref(r) = child_entry {
-                    use semstrait_model::KindVariant;
+                if let ChildEntry::Ref(r) = child_entry {
+                    use semstrait_model::DataKindVariant;
                     match (parent_variant, r.variant) {
-                        (KindVariant::Grainset, KindVariant::Grainset) => {
+                        (DataKindVariant::Grainset, DataKindVariant::Grainset) => {
                             errors.push(format!(
                                 "grainset '{}' cannot nest grainset '{}' \
                                  (prohibited: flatten to a single grainset)",
                                 name, r.ref_name
                             ));
                         }
-                        (KindVariant::Joinset, KindVariant::Joinset) => {
+                        (DataKindVariant::Joinset, DataKindVariant::Joinset) => {
                             errors.push(format!(
                                 "joinset '{}' cannot nest joinset '{}' \
                                  (prohibited: creates ambiguous join graph)",
@@ -477,13 +477,13 @@ pub(crate) fn validate_structure(model: &SemanticModel) -> Result<(), CompileErr
     }
 
     // Nesting depth limit: max 2 levels in v1.
-    for dk in model.data_kinds.values() {
+    for dk in model.entities.values() {
         if dk.children().is_some() {
-            let depth = measure_nesting_depth(&model.data_kinds, dk.name(), 0);
+            let depth = measure_nesting_depth(&model.entities, dk.name(), 0);
             if depth > 2 {
                 errors.push(format!(
                     "{} '{}' exceeds maximum nesting depth of 2 (found {})",
-                    dk.kind_variant(), dk.name(), depth
+                    dk.variant(), dk.name(), depth
                 ));
             }
         }
@@ -507,7 +507,7 @@ fn measure_nesting_depth(
 
     let mut max_depth = current;
     for child in children {
-        if let DataKindEntry::Ref(r) = child {
+        if let ChildEntry::Ref(r) = child {
             max_depth = max_depth.max(
                 measure_nesting_depth(data_kinds, &r.ref_name, current + 1)
             );
@@ -570,11 +570,11 @@ fn check_metric_uniqueness(entries: &BTreeMap<String, MetricEntry>, container: &
 pub(crate) fn validate_temporal_equivalence(
     model: &SemanticModel,
 ) -> Result<(), CompileError> {
-    for dk in model.data_kinds.values() {
-        if dk.is_dataset() { continue; }
+    for dk in model.entities.values() {
+        if dk.is_simple() { continue; }
 
         let kind_temporal = dk
-            .kind_extras()
+            .complex_extras()
             .and_then(|e| e.temporal.as_ref());
 
         let kind_temporal = match kind_temporal {
@@ -583,7 +583,7 @@ pub(crate) fn validate_temporal_equivalence(
         };
 
         for ds_entry in dk.children().unwrap_or(&[]) {
-            if let DataKindEntry::Inline(ds) = ds_entry {
+            if let ChildEntry::Inline(ds) = ds_entry {
                 if let Some(ds_temporal) = &ds.extras.temporal {
                     let kind_variant = kind_temporal.temporal_type.variant_name();
                     let ds_variant = ds_temporal.temporal_type.variant_name();
@@ -616,11 +616,11 @@ pub(crate) fn validate_temporal_equivalence(
 pub(crate) fn validate_temporal_dimension_consistency(
     model: &SemanticModel,
 ) -> Result<(), CompileError> {
-    for dk in model.data_kinds.values() {
-        if dk.is_dataset() { continue; }
+    for dk in model.entities.values() {
+        if dk.is_simple() { continue; }
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for ds_entry in dk.children().unwrap_or(&[]) {
-            if let DataKindEntry::Inline(ds) = ds_entry {
+            if let ChildEntry::Inline(ds) = ds_entry {
                 if let Some(ref temporal) = ds.extras.temporal {
                     if let Some(ref dim_name) = temporal.dimension {
                         seen.insert(dim_name.clone());
@@ -647,9 +647,9 @@ pub(crate) fn validate_temporal_dimension_consistency(
 pub(crate) fn validate_storage(model: &SemanticModel) -> Result<(), CompileError> {
     let mut errors = Vec::new();
 
-    for dk in model.data_kinds.values() {
+    for dk in model.entities.values() {
         match dk {
-            DataKind::Dataset(dsk) => {
+            DataKind::Simple(dsk) => {
                 if let Some(ref extras) = dsk.extras {
                     if let Some(ref storage) = extras.storage {
                         let ctx = format!("dataset '{}'", dsk.name);
@@ -659,9 +659,9 @@ pub(crate) fn validate_storage(model: &SemanticModel) -> Result<(), CompileError
             }
             _ => {
                 for ds_entry in dk.children().unwrap_or(&[]) {
-                    if let DataKindEntry::Inline(ds) = ds_entry {
+                    if let ChildEntry::Inline(ds) = ds_entry {
                         if let Some(ref storage) = ds.extras.storage {
-                            let ctx = format!("{} '{}', dataset '{}'", dk.kind_variant(), dk.name(), dataset_display_name(&ds.name));
+                            let ctx = format!("{} '{}', dataset '{}'", dk.variant(), dk.name(), dataset_display_name(&ds.name));
                             validate_storage_config(storage, &ctx, &mut errors);
                         }
                     }
@@ -712,15 +712,15 @@ fn validate_storage_config(
 pub(crate) fn validate_metadata_dimensions(model: &SemanticModel) -> Result<(), CompileError> {
     let mut errors = Vec::new();
 
-    for dk in model.data_kinds.values() {
-        if dk.is_dataset() { continue; }
+    for dk in model.entities.values() {
+        if dk.is_simple() { continue; }
         // Collect kind-level dimensions that are metadata type.
         for dim in dk.interface().dimensions.values() {
             if let DimensionEntry::Inline(dim_def) = dim {
                 if let DimensionType::Metadata(ref meta) = dim_def.dim_type {
                     // Check each dataset for metadata dimension preconditions.
                     for ds_entry in dk.children().unwrap_or(&[]) {
-                        if let DataKindEntry::Inline(ds) = ds_entry {
+                        if let ChildEntry::Inline(ds) = ds_entry {
                             let ds_display = dataset_display_name(&ds.name);
                             validate_metadata_for_dataset(
                                 dk.name(),
@@ -749,7 +749,7 @@ fn validate_metadata_for_dataset(
     ds_display: &str,
     dim_name: &str,
     meta: &MetadataDimension,
-    extras: &DataKindBindingExtras,
+    extras: &InlineDatasetExtras,
     errors: &mut Vec<String>,
 ) {
     if let Some(ref path_ext) = meta.path {
@@ -827,15 +827,15 @@ fn validate_metadata_for_dataset(
 /// After this step every dataset has `ColumnMapping::Explicit`. `temporal` and
 /// `catalog` defaults from `kind.extras` are also propagated (dataset value wins).
 pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
-    for dk in model.data_kinds.values_mut() {
-        if dk.is_dataset() { continue; }
+    for dk in model.entities.values_mut() {
+        if dk.is_simple() { continue; }
         // Use mappable names (excludes metadata dimensions and metrics)
         // since those entities don't require physical column mapping.
         let interface_names: Vec<String> = collect_mappable_names(dk).collect();
 
         // Resolve the kind-level default mapping once per kind.
         let kind_default: Option<HashMap<String, ColumnMappingValue>> =
-            dk.kind_extras().and_then(|e| e.column_mapping.as_ref()).map(|cm| {
+            dk.complex_extras().and_then(|e| e.column_mapping.as_ref()).map(|cm| {
                 match cm {
                     ColumnMapping::Auto | ColumnMapping::Inherited => interface_names
                         .iter()
@@ -846,11 +846,11 @@ pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
             });
 
         // Clone kind extras before mutable borrow of children.
-        let kind_extras_temporal = dk.kind_extras().and_then(|e| e.temporal.clone());
-        let kind_extras_catalog = dk.kind_extras().and_then(|e| e.catalog.clone());
+        let kind_extras_temporal = dk.complex_extras().and_then(|e| e.temporal.clone());
+        let kind_extras_catalog = dk.complex_extras().and_then(|e| e.catalog.clone());
 
         for ds_entry in dk.children_mut().unwrap() {
-            if let DataKindEntry::Inline(ds) = ds_entry {
+            if let ChildEntry::Inline(ds) = ds_entry {
                 let effective: HashMap<String, ColumnMappingValue> = match &ds.extras.column_mapping {
                     ColumnMapping::Auto => {
                         // Identity map — same behaviour as before.
@@ -953,14 +953,14 @@ pub(crate) fn derive_dimension_grains(
     model: &mut SemanticModel,
     diagnostics: &mut Vec<crate::acceleration::CompileWarning>,
 ) {
-    for dk in model.data_kinds.values_mut() {
-        if dk.is_dataset() { continue; }
+    for dk in model.entities.values_mut() {
+        if dk.is_simple() { continue; }
 
         // Collect dataset grains keyed by temporal.dimension name.
         let mut dim_grains: HashMap<String, Vec<TemporalGrain>> = HashMap::new();
         if let Some(children) = dk.children() {
             for ds_entry in children {
-                if let DataKindEntry::Inline(ds) = ds_entry {
+                if let ChildEntry::Inline(ds) = ds_entry {
                     if let Some(ref temporal) = ds.extras.temporal {
                         if let (Some(grain), Some(ref dim_name)) = (temporal.grain, &temporal.dimension) {
                             dim_grains.entry(dim_name.clone()).or_default().push(grain);
@@ -1015,14 +1015,14 @@ pub(crate) fn derive_dimension_grains(
 pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileError> {
     let mut errors = Vec::new();
 
-    for dk in model.data_kinds.values() {
-        if dk.is_dataset() { continue; }
+    for dk in model.entities.values() {
+        if dk.is_simple() { continue; }
         let dk_name = dk.name();
         let interface_names: HashSet<String> = collect_interface_names(dk).collect();
 
         // Check each dataset's column_mapping
         for ds_entry in dk.children().unwrap_or(&[]) {
-            if let DataKindEntry::Inline(ds) = ds_entry {
+            if let ChildEntry::Inline(ds) = ds_entry {
                 let ds_display = dataset_display_name(&ds.name);
 
                 // expand_auto_mappings (step 4.5) must run before this step
@@ -1033,7 +1033,7 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
                         return Err(CompileError::MappingValidation(vec![format!(
                             "{} '{}', dataset '{}': column_mapping is not Explicit \
                              (expand_auto_mappings must run before validate_mappings)",
-                            dk.kind_variant(), dk_name, ds_display
+                            dk.variant(), dk_name, ds_display
                         )]));
                     }
                 };
@@ -1049,7 +1049,7 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
                                 errors.push(format!(
                                     "{} '{}', dataset '{}': anchor name '{}' is reserved \
                                      and cannot be used in Anchored column_mapping",
-                                    dk.kind_variant(), dk_name, ds_display, anchor_name
+                                    dk.variant(), dk_name, ds_display, anchor_name
                                 ));
                             }
                             anchor_subnames.insert(anchor_name.clone());
@@ -1064,7 +1064,7 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
                         errors.push(format!(
                             "{} '{}', dataset '{}': column_mapping key '{}' \
                              does not match any dimension, measure, or metric in the interface",
-                            dk.kind_variant(), dk_name, ds_display, key
+                            dk.variant(), dk_name, ds_display, key
                         ));
                     }
                 }
@@ -1078,7 +1078,7 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
         let mappable_names: HashSet<String> = collect_mappable_names(dk).collect();
         let mut all_mapped: HashSet<String> = HashSet::new();
         for ds_entry in dk.children().unwrap_or(&[]) {
-            if let DataKindEntry::Inline(ds) = ds_entry {
+            if let ChildEntry::Inline(ds) = ds_entry {
                 if let ColumnMapping::Explicit(m) = &ds.extras.column_mapping {
                     for key in m.keys() {
                         all_mapped.insert(key.clone());
@@ -1090,7 +1090,7 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
             if !all_mapped.contains(iname) {
                 errors.push(format!(
                     "{} '{}': interface name '{}' is not mapped by any dataset",
-                    dk.kind_variant(), dk_name, iname
+                    dk.variant(), dk_name, iname
                 ));
             }
         }
@@ -1117,8 +1117,8 @@ pub(crate) fn validate_mappings(model: &SemanticModel) -> Result<(), CompileErro
 pub(crate) fn validate_grain_compatibility(model: &SemanticModel) -> Result<(), CompileError> {
     let mut errors = Vec::new();
 
-    for dk in model.data_kinds.values() {
-        if dk.is_dataset() { continue; }
+    for dk in model.entities.values() {
+        if dk.is_simple() { continue; }
         // Collect temporal dimensions: name -> allowed grains
         let temporal_dims: Vec<(&str, &[TemporalGrain])> = dk
             .interface().dimensions
@@ -1137,7 +1137,7 @@ pub(crate) fn validate_grain_compatibility(model: &SemanticModel) -> Result<(), 
         }
 
         for ds_entry in dk.children().unwrap_or(&[]) {
-            if let DataKindEntry::Inline(ds) = ds_entry {
+            if let ChildEntry::Inline(ds) = ds_entry {
                 let ds_display = dataset_display_name(&ds.name);
 
                 for (dim_name, allowed_grains) in &temporal_dims {
@@ -1150,7 +1150,7 @@ pub(crate) fn validate_grain_compatibility(model: &SemanticModel) -> Result<(), 
                                 "{} '{}', dataset '{}': temporal dimension '{}' \
                                  has grain '{:?}' which is not in the kind's allowed \
                                  grains {:?}",
-                                dk.kind_variant(), dk.name(), ds_display, dim_name, grain, allowed_grains
+                                dk.variant(), dk.name(), ds_display, dim_name, grain, allowed_grains
                             ));
                         }
                     }
@@ -1189,7 +1189,7 @@ pub(crate) fn build_metric_graph(
     for m in &model.measures {
         measure_names.insert(m.name.clone());
     }
-    for dk in model.data_kinds.values() {
+    for dk in model.entities.values() {
         for m in dk.interface().metrics.values() {
             if let MetricEntry::Inline(met) = m {
                 metric_names.insert(met.name.clone());
@@ -1293,7 +1293,7 @@ pub(crate) fn build_rel_graph(
 ) -> Result<HashMap<String, Vec<String>>, CompileError> {
     let mut result: HashMap<String, Vec<String>> = HashMap::new();
 
-    for dk in model.data_kinds.values() {
+    for dk in model.entities.values() {
         if !dk.is_joinset() {
             continue;
         }
@@ -1303,7 +1303,7 @@ pub(crate) fn build_rel_graph(
 
         // Add nodes for each dataset
         for entry in dk.children().unwrap_or(&[]) {
-            if let DataKindEntry::Inline(ds) = entry {
+            if let ChildEntry::Inline(ds) = entry {
                 let name = dataset_display_name(&ds.name);
                 if !node_map.contains_key(name) {
                     let owned = name.to_string();
@@ -1352,12 +1352,12 @@ pub(crate) fn emit(
     resolution: SourceResolutionResult,
     extra_warnings: Vec<crate::acceleration::CompileWarning>,
 ) -> Result<CompiledManifest, CompileError> {
-    let mut data_kinds = IndexMap::new();
+    let mut entities = IndexMap::new();
     let mut relationships = Vec::new();
 
-    for dk in model.data_kinds.values() {
+    for dk in model.entities.values() {
         let compiled = compile_to_compiled_data_kind(dk, metric_depths, &resolution)?;
-        data_kinds.insert(dk.name().to_string(), compiled);
+        entities.insert(dk.name().to_string(), compiled);
     }
 
     for rel in &model.relationships {
@@ -1371,14 +1371,14 @@ pub(crate) fn emit(
         });
     }
 
-    // Build global field index from data_kinds.
-    let field_index = build_field_index(&data_kinds);
+    // Build global field index from entities.
+    let field_index = build_field_index(&entities);
 
     // Build global relationship graph with shortest paths.
-    let relationship_graph = build_relationship_graph(&data_kinds, &relationships);
+    let relationship_graph = build_relationship_graph(&entities, &relationships);
 
     // Build unified semantic graph (petgraph).
-    let semantic_graph = build_semantic_graph(&data_kinds, &relationships);
+    let semantic_graph = build_semantic_graph(&entities, &relationships);
 
     // Merge resolution + derivation diagnostics.
     let mut diagnostics = crate::acceleration::CompileDiagnostics::default();
@@ -1389,7 +1389,7 @@ pub(crate) fn emit(
         version: 3,
         compiled_at: chrono::DateTime::default(), // overwritten by compiler.compile()
         source_hash,
-        data_kinds,
+        entities,
         relationships,
         relationship_graph,
         field_index,
@@ -2154,7 +2154,7 @@ fn compile_to_compiled_data_kind(
     };
 
     match dk {
-        DataKind::Dataset(dsk) => {
+        DataKind::Simple(dsk) => {
             // Standalone dataset: identity column mapping.
             let interface_names: Vec<&String> = dimensions.keys().chain(measures.keys()).collect();
             let mapping: HashMap<String, semstrait_model::ColumnMappingValue> = interface_names
@@ -2213,7 +2213,7 @@ fn compile_to_compiled_data_kind(
                 .unwrap_or(&[])
                 .iter()
                 .find_map(|ds_entry| {
-                    if let DataKindEntry::Inline(ds) = ds_entry {
+                    if let ChildEntry::Inline(ds) = ds_entry {
                         ds.extras.temporal.as_ref()?.dimension.clone()
                     } else {
                         None
@@ -2246,7 +2246,7 @@ fn compile_to_compiled_data_kind(
             let dimension_index = DimensionIndex::build(&dimensions, &bindings);
 
             match dk {
-                DataKind::Grainset(_) => {
+                DataKind::Complex(ComplexDataKind::Grainset(_)) => {
                     let grain_map = interface
                         .temporal_dim
                         .as_deref()
@@ -2261,7 +2261,7 @@ fn compile_to_compiled_data_kind(
                         grain_map,
                     })))
                 }
-                DataKind::Unionset(u) => {
+                DataKind::Complex(ComplexDataKind::Unionset(u)) => {
                     Ok(CompiledDataKind::Unionset(Box::new(CompiledUnionsetKind {
                         interface,
                         mode: u.mode,
@@ -2271,7 +2271,7 @@ fn compile_to_compiled_data_kind(
                         metric_order,
                     })))
                 }
-                DataKind::Joinset(j) => {
+                DataKind::Complex(ComplexDataKind::Joinset(j)) => {
                     let adjacency_index = AdjacencyIndex::build(&bindings, &compiled_rels);
                     Ok(CompiledDataKind::Joinset(Box::new(CompiledJoinsetKind {
                         interface,
@@ -2284,7 +2284,7 @@ fn compile_to_compiled_data_kind(
                         adjacency_index,
                     })))
                 }
-                DataKind::Dataset(_) => unreachable!("handled above"),
+                DataKind::Simple(_) => unreachable!("handled above"),
             }
         }
     }
@@ -2299,7 +2299,7 @@ fn compile_dataset_bindings(
         .unwrap_or(&[])
         .iter()
         .filter_map(|ds_entry| {
-            if let DataKindEntry::Inline(ds) = ds_entry {
+            if let ChildEntry::Inline(ds) = ds_entry {
                 let ds_name = dataset_display_name(&ds.name).to_string();
                 let resolved_sources = resolve_child_dataset_sources(&ds_name, ds, resolution);
                 let column_mapping =
@@ -2337,7 +2337,7 @@ fn resolve_dataset_sources(
 /// Resolve sources for a kind's child dataset.
 fn resolve_child_dataset_sources(
     ds_name: &str,
-    ds: &DataKindBinding,
+    ds: &InlineDataset,
     resolution: &SourceResolutionResult,
 ) -> Vec<crate::acceleration::ResolvedSource> {
     if let Some(sources) = resolution.resolved.get(ds_name) {
@@ -2798,7 +2798,7 @@ fn collect_all_metrics(model: &SemanticModel) -> Vec<&Metric> {
     let mut all = Vec::new();
     all.extend(model.metrics.iter());
 
-    for dk in model.data_kinds.values() {
+    for dk in model.entities.values() {
         for m in dk.interface().metrics.values() {
             if let MetricEntry::Inline(met) = m {
                 all.push(met);
@@ -3168,13 +3168,13 @@ mod tests {
             ai_context: None,
             labels: vec![],
             namespace: None,
-            data_kinds: BTreeMap::from([
-                ("orders".to_string(), DataKind::Dataset(DatasetKind {
+            entities: BTreeMap::from([
+                ("orders".to_string(), DataKind::Simple(SimpleDataKind {
                     name: "orders".to_string(),
                     interface: SemanticInterface::default(),
                     extras: None,
                 })),
-                ("orders_dup".to_string(), DataKind::Dataset(DatasetKind {
+                ("orders_dup".to_string(), DataKind::Simple(SimpleDataKind {
                     name: "orders".to_string(),
                     interface: SemanticInterface::default(),
                     extras: None,
@@ -3198,13 +3198,13 @@ mod tests {
             ai_context: None,
             labels: vec![],
             namespace: None,
-            data_kinds: BTreeMap::from([
-                ("empty_kind".to_string(), DataKind::Grainset(GrainsetKind {
+            entities: BTreeMap::from([
+                ("empty_kind".to_string(), DataKind::Complex(ComplexDataKind::Grainset(GrainsetSpec {
                     name: "empty_kind".to_string(),
                     interface: SemanticInterface::default(),
-                    datasets: vec![],
+                    children: vec![],
                     extras: None,
-                })),
+                }))),
             ]),
             relationships: vec![],
             dimensions: vec![],

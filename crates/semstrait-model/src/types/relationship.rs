@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::keys::Cardinality;
 
-/// Top-level relationship (joins between datasets and/or kinds).
+/// Top-level relationship (joins between datasets and/or entities).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Relationship {
     pub name: String,
@@ -16,9 +16,9 @@ pub struct Relationship {
     pub cardinality: Cardinality,
 }
 
-/// Kind-internal relationship (used for joinset join paths).
+/// Entity-internal relationship (used for joinset join paths).
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DataKindRelationship {
+pub struct JoinRelationship {
     pub name: String,
     pub from: String,
     pub to: String,
@@ -27,6 +27,9 @@ pub struct DataKindRelationship {
     pub columns: Vec<JoinColumnPair>,
     pub cardinality: Cardinality,
 }
+
+/// Backward-compat alias: `DataKindRelationship` → `JoinRelationship`
+pub type DataKindRelationship = JoinRelationship;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

@@ -53,8 +53,8 @@ async fn e2e_compile_plan_sql() {
         .expect("compilation should succeed");
 
     assert_eq!(manifest.model_name, "e2e_test");
-    assert_eq!(manifest.data_kinds.len(), 1);
-    assert!(manifest.data_kinds.contains_key("orders"));
+    assert_eq!(manifest.entities.len(), 1);
+    assert!(manifest.entities.contains_key("orders"));
 
     // Step 2: Plan a query
     let planner = SemanticPlanner::builder().build();

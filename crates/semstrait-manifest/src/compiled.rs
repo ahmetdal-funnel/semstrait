@@ -19,8 +19,10 @@ use serde::{Deserialize, Serialize};
 
 /// The versioned, JSON-serializable output of `ManifestCompiler::compile()`.
 ///
-/// v3 schema: single `data_kinds` map containing all compiled entities
+/// v3 schema: single `entities` map containing all compiled entities
 /// (datasets, grainsets, unionsets, joinsets) with acceleration structures.
+/// Only top-level entities are queryable — inline datasets within complex
+/// entities are hidden implementation details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledManifest {
     /// Schema version for forward compatibility.
@@ -30,7 +32,9 @@ pub struct CompiledManifest {
     /// SHA-256 hash of the YAML source input.
     pub source_hash: String,
     /// All queryable semantic entities with acceleration structures.
-    pub data_kinds: IndexMap<String, crate::acceleration::CompiledDataKind>,
+    /// Only top-level entities appear here — inline datasets are hidden.
+    #[serde(alias = "data_kinds")]
+    pub entities: IndexMap<String, crate::acceleration::CompiledDataKind>,
     /// Top-level compiled relationships.
     pub relationships: Vec<CompiledRelationship>,
     /// Global relationship graph for ad-hoc join resolution.
@@ -222,11 +226,12 @@ pub struct CompiledRelationship {
 // ============================================================================
 
 impl CompiledManifest {
-    /// Resolve a queryable entity by name from the `data_kinds` map.
+    /// Resolve a queryable entity by name from the `entities` map.
     ///
-    /// This is the primary resolution method. Returns `None` if not found.
+    /// This is the ONLY entry point for entity lookup. Inline datasets within
+    /// complex entities are unreachable — only top-level entities are queryable.
     pub fn resolve(&self, name: &str) -> Option<&crate::acceleration::CompiledDataKind> {
-        self.data_kinds.get(name)
+        self.entities.get(name)
     }
 }
 

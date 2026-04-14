@@ -136,8 +136,8 @@ pub fn make_test_manifest_with_constraints(
     // Single dataset → CompiledDataKind::Dataset (fast path).
     let data_kind = CompiledDataKind::Dataset(Box::new(CompiledDatasetKind { interface, binding }));
 
-    let mut data_kinds = IndexMap::new();
-    data_kinds.insert("orders".to_string(), data_kind);
+    let mut entities = IndexMap::new();
+    entities.insert("orders".to_string(), data_kind);
 
     CompiledManifest {
         version: 3,
@@ -146,7 +146,7 @@ pub fn make_test_manifest_with_constraints(
         relationships: vec![],
         model_name: "test_model".to_string(),
         model_description: None,
-        data_kinds,
+        entities,
         relationship_graph: semstrait_manifest::RelationshipGraph::default(),
         field_index: semstrait_manifest::FieldIndex::default(),
         semantic_graph: semstrait_manifest::SemanticGraph::default(),
@@ -243,8 +243,8 @@ pub fn make_computed_dim_manifest() -> CompiledManifest {
 
     let data_kind = CompiledDataKind::Dataset(Box::new(CompiledDatasetKind { interface, binding }));
 
-    let mut data_kinds = IndexMap::new();
-    data_kinds.insert("orders".to_string(), data_kind);
+    let mut entities = IndexMap::new();
+    entities.insert("orders".to_string(), data_kind);
 
     CompiledManifest {
         version: 3,
@@ -253,7 +253,7 @@ pub fn make_computed_dim_manifest() -> CompiledManifest {
         relationships: vec![],
         model_name: "test_model".to_string(),
         model_description: None,
-        data_kinds,
+        entities,
         relationship_graph: semstrait_manifest::RelationshipGraph::default(),
         field_index: semstrait_manifest::FieldIndex::default(),
         semantic_graph: semstrait_manifest::SemanticGraph::default(),

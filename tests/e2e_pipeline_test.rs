@@ -30,10 +30,10 @@ async fn test_yaml_compile_plan_sql() {
 
     // Verify manifest structure
     assert_eq!(manifest.model_name, "e2e_test_model");
-    assert_eq!(manifest.data_kinds.len(), 1);
-    assert!(manifest.data_kinds.contains_key("orders"));
+    assert_eq!(manifest.entities.len(), 1);
+    assert!(manifest.entities.contains_key("orders"));
 
-    let iface = manifest.data_kinds["orders"].interface();
+    let iface = manifest.entities["orders"].interface();
     assert_eq!(iface.dimensions.len(), 3);
     assert_eq!(iface.measures.len(), 1);
     assert!(iface.dimensions.contains_key("date"));
@@ -386,21 +386,21 @@ async fn test_ecommerce_compilation_structure() {
 
     assert_eq!(m.model_name, "ecommerce_analytics");
 
-    // 9 standalone datasets + 5 kinds = ≥14 entities in data_kinds
-    assert!(m.data_kinds.len() >= 14, "expected ≥14 data_kinds, got {}", m.data_kinds.len());
+    // 9 standalone datasets + 5 kinds = ≥14 entities in entities
+    assert!(m.entities.len() >= 14, "expected ≥14 entities, got {}", m.entities.len());
 
     // 5 kinds: sales, inventory, all_traffic, order_details, traffic_campaigns
     let expected_kinds = ["sales", "inventory", "all_traffic", "order_details", "traffic_campaigns"];
     for name in &expected_kinds {
         assert!(
-            m.data_kinds.contains_key(*name),
+            m.entities.contains_key(*name),
             "missing data_kind '{}'",
             name
         );
     }
 
     // Verify sales grainset interface
-    let sales = &m.data_kinds["sales"];
+    let sales = &m.entities["sales"];
     let si = sales.interface();
     assert!(si.dimensions.contains_key("order_date"), "sales missing order_date dim");
     assert!(si.dimensions.contains_key("region"), "sales missing region dim");
@@ -412,7 +412,7 @@ async fn test_ecommerce_compilation_structure() {
     assert!(si.metrics.contains_key("roi"), "sales missing roi metric");
 
     // Verify all_traffic unionset interface
-    let traffic = &m.data_kinds["all_traffic"];
+    let traffic = &m.entities["all_traffic"];
     let ti = traffic.interface();
     assert!(ti.dimensions.contains_key("platform"), "all_traffic missing platform dim");
     assert!(ti.measures.contains_key("clicks"), "all_traffic missing clicks");
@@ -421,7 +421,7 @@ async fn test_ecommerce_compilation_structure() {
     assert!(ti.metrics.contains_key("conversion_rate"), "all_traffic missing conversion_rate");
 
     // Verify order_details joinset interface
-    let od = &m.data_kinds["order_details"];
+    let od = &m.entities["order_details"];
     let oi = od.interface();
     assert!(oi.dimensions.contains_key("customer_name"), "order_details missing customer_name");
     assert!(oi.dimensions.contains_key("product_category"), "order_details missing product_category");
@@ -862,7 +862,7 @@ async fn test_computed_dimension_e2e() {
         .await
         .expect("compilation should succeed");
 
-    let iface = manifest.data_kinds["orders_daily"].interface();
+    let iface = manifest.entities["orders_daily"].interface();
     assert!(iface.dimensions.contains_key("market"), "should have computed 'market' dim");
     assert!(iface.dimensions.contains_key("market_tier"), "should have computed 'market_tier' dim");
 
@@ -981,7 +981,7 @@ async fn compile_full_coverage() -> semstrait_manifest::CompiledManifest {
         .expect("e2e_full_coverage model should compile")
 }
 
-// -- 34: Compilation — verify all 16 data_kinds present -------------------------
+// -- 34: Compilation — verify all 16 entities present -------------------------
 
 #[tokio::test]
 async fn test_fc_compilation_structure() {
@@ -1003,14 +1003,14 @@ async fn test_fc_compilation_structure() {
     ];
     for name in &expected {
         assert!(
-            m.data_kinds.contains_key(*name),
+            m.entities.contains_key(*name),
             "missing data_kind '{}'",
             name
         );
     }
 
     // Verify transactions interface has rich field set
-    let txn = &m.data_kinds["transactions"];
+    let txn = &m.entities["transactions"];
     let ti = txn.interface();
     assert!(ti.dimensions.len() >= 12, "transactions should have 12+ dims, got {}", ti.dimensions.len());
     assert!(ti.measures.len() >= 10, "transactions should have 10+ measures, got {}", ti.measures.len());
@@ -1481,11 +1481,11 @@ async fn test_decl_compilation() {
     assert_eq!(m.model_name, "declarative_expressions");
 
     for name in &["string_ops", "math_ops", "conditional_ops", "string_by_grain", "all_ops"] {
-        assert!(m.data_kinds.contains_key(*name), "missing '{}'", name);
+        assert!(m.entities.contains_key(*name), "missing '{}'", name);
     }
 
     // string_ops should have 13 computed dims + 3 physical dims + event_date = 17
-    let si = m.data_kinds["string_ops"].interface();
+    let si = m.entities["string_ops"].interface();
     assert!(si.dimensions.len() >= 16, "string_ops should have 16+ dims, got {}", si.dimensions.len());
 }
 

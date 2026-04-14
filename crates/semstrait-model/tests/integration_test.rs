@@ -1,6 +1,6 @@
 //! Integration tests using actual test_data files.
 
-use semstrait_model::{parse, resolve_refs, DataKind};
+use semstrait_model::{parse, resolve_refs, DataKind, ComplexDataKind};
 use std::fs;
 use std::path::Path;
 
@@ -27,11 +27,11 @@ fn test_parse_comprehensive_ecommerce() {
     let model = load_and_parse("comprehensive_ecommerce.yaml").unwrap();
     assert_eq!(model.name, "ecommerce_analytics");
 
-    // Should have 14 data_kinds (9 datasets + 5 kinds), 2+ relationships
-    let dataset_count = model.data_kinds.values().filter(|dk| dk.is_dataset()).count();
-    let kind_count = model.data_kinds.values().filter(|dk| !dk.is_dataset()).count();
+    // Should have 14 entities (9 datasets + 5 complex), 2+ relationships
+    let dataset_count = model.entities.values().filter(|dk| dk.is_simple()).count();
+    let complex_count = model.entities.values().filter(|dk| dk.is_complex()).count();
     assert!(dataset_count >= 9, "expected ≥9 datasets, got {}", dataset_count);
-    assert!(kind_count >= 5, "expected ≥5 kinds, got {}", kind_count);
+    assert!(complex_count >= 5, "expected ≥5 complex entities, got {}", complex_count);
     assert!(!model.relationships.is_empty(), "expected relationships");
 }
 
@@ -44,16 +44,16 @@ fn test_parse_grainset_with_grain() {
     let model = load_and_parse("comprehensive_ecommerce.yaml").unwrap();
 
     // Find the "sales" grainset
-    let sales = match model.data_kinds.get("sales").expect("sales data_kind") {
-        DataKind::Grainset(g) => g,
-        other => panic!("expected Grainset, got {:?}", other.kind_variant()),
+    let sales = match model.entities.get("sales").expect("sales entity") {
+        DataKind::Complex(ComplexDataKind::Grainset(g)) => g,
+        other => panic!("expected Grainset, got {:?}", other.variant()),
     };
 
-    // Check datasets
-    assert_eq!(sales.datasets.len(), 2, "sales should have 2 datasets");
+    // Check children
+    assert_eq!(sales.children.len(), 2, "sales should have 2 children");
 
-    // Second dataset (orders_monthly) should have WithGrain mapping
-    if let semstrait_model::DataKindEntry::Inline(ds) = &sales.datasets[1] {
+    // Second child (orders_monthly) should have WithGrain mapping
+    if let semstrait_model::ChildEntry::Inline(ds) = &sales.children[1] {
         match ds.extras.column_mapping.get("order_date").unwrap() {
             semstrait_model::ColumnMappingValue::WithGrain { column, grain } => {
                 assert_eq!(column, "month_start");
@@ -74,18 +74,18 @@ fn test_parse_grainset_with_grain() {
 fn test_parse_unionset() {
     let model = load_and_parse("comprehensive_ecommerce.yaml").unwrap();
 
-    let traffic = match model.data_kinds.get("all_traffic").expect("all_traffic data_kind") {
-        DataKind::Unionset(u) => u,
-        other => panic!("expected Unionset, got {:?}", other.kind_variant()),
+    let traffic = match model.entities.get("all_traffic").expect("all_traffic entity") {
+        DataKind::Complex(ComplexDataKind::Unionset(u)) => u,
+        other => panic!("expected Unionset, got {:?}", other.variant()),
     };
 
     assert_eq!(traffic.mode, semstrait_model::UnionMode::All);
 
-    // 3 datasets: web_clicks, mobile_clicks, email_events
-    assert_eq!(traffic.datasets.len(), 3);
+    // 3 children: web_clicks, mobile_clicks, email_events
+    assert_eq!(traffic.children.len(), 3);
 
-    // Check literal column mapping in first dataset (platform = 'web')
-    if let semstrait_model::DataKindEntry::Inline(ds) = &traffic.datasets[0] {
+    // Check literal column mapping in first child (platform = 'web')
+    if let semstrait_model::ChildEntry::Inline(ds) = &traffic.children[0] {
         match ds.extras.column_mapping.get("platform").unwrap() {
             semstrait_model::ColumnMappingValue::Literal(semstrait_model::LiteralValue::String(s)) => {
                 assert_eq!(s, "web");
@@ -103,9 +103,9 @@ fn test_parse_unionset() {
 fn test_parse_joinset() {
     let model = load_and_parse("comprehensive_ecommerce.yaml").unwrap();
 
-    let od = match model.data_kinds.get("order_details").expect("order_details data_kind") {
-        DataKind::Joinset(j) => j,
-        other => panic!("expected Joinset, got {:?}", other.kind_variant()),
+    let od = match model.entities.get("order_details").expect("order_details entity") {
+        DataKind::Complex(ComplexDataKind::Joinset(j)) => j,
+        other => panic!("expected Joinset, got {:?}", other.variant()),
     };
 
     assert_eq!(od.associativity, semstrait_model::JoinAssociativity::Left);
@@ -113,8 +113,8 @@ fn test_parse_joinset() {
     // Should have relationships
     assert!(od.relationships.len() >= 2, "order_details needs ≥2 relationships");
 
-    // 3 datasets: orders_daily, customers, products
-    assert_eq!(od.datasets.len(), 3);
+    // 3 children: orders_daily, customers, products
+    assert_eq!(od.children.len(), 3);
 }
 
 // =============================================================================
@@ -125,7 +125,7 @@ fn test_parse_joinset() {
 fn test_parse_semi_additive() {
     let model = load_and_parse("comprehensive_ecommerce.yaml").unwrap();
 
-    let inv = model.data_kinds.get("inventory").expect("inventory data_kind");
+    let inv = model.entities.get("inventory").expect("inventory entity");
 
     let mut found_semi = false;
     for measure_entry in inv.interface().measures.values() {
@@ -152,7 +152,7 @@ fn test_parse_bucketed_dimension() {
     let model = load_and_parse("comprehensive_ecommerce.yaml").unwrap();
 
     // price_bucket in orders_daily dataset
-    let orders = model.data_kinds.get("orders_daily").expect("orders_daily");
+    let orders = model.entities.get("orders_daily").expect("orders_daily");
     let mut found_bucketed = false;
     for dim_entry in orders.interface().dimensions.values() {
         if let semstrait_model::DimensionEntry::Inline(d) = dim_entry {
@@ -173,7 +173,7 @@ fn test_parse_bucketed_dimension() {
 fn test_parse_metrics() {
     let model = load_and_parse("comprehensive_ecommerce.yaml").unwrap();
 
-    let sales = model.data_kinds.get("sales").expect("sales data_kind");
+    let sales = model.entities.get("sales").expect("sales entity");
     assert!(sales.interface().metrics.len() >= 3, "sales should have ≥3 metrics (avg_order_value, profit, roi)");
 }
 
@@ -229,7 +229,7 @@ fn test_parse_metadata_dimension() {
     let model = load_and_parse("comprehensive_ecommerce.yaml").unwrap();
 
     // web_clicks has source_path metadata dimension with path extraction
-    let web = model.data_kinds.get("web_clicks").expect("web_clicks");
+    let web = model.entities.get("web_clicks").expect("web_clicks");
     let mut found_metadata = false;
     for dim_entry in web.interface().dimensions.values() {
         if let semstrait_model::DimensionEntry::Inline(d) = dim_entry {
@@ -252,8 +252,8 @@ fn test_parse_metadata_dimension() {
 fn test_ref_resolution() {
     let model = load_and_parse("comprehensive_ecommerce.yaml").unwrap();
 
-    // After resolve_refs, the sales kind should have order_date and region as inline dims
-    let sales = model.data_kinds.get("sales").expect("sales data_kind");
+    // After resolve_refs, the sales entity should have order_date and region as inline dims
+    let sales = model.entities.get("sales").expect("sales entity");
     let dim_names: Vec<String> = sales.interface().dimensions.values().map(|d| match d {
         semstrait_model::DimensionEntry::Inline(dim) => dim.name.clone(),
         semstrait_model::DimensionEntry::Ref(r) => r.ref_name.clone(),
@@ -272,35 +272,35 @@ fn test_parse_e2e_full_coverage() {
     let model = load_and_parse("e2e_full_coverage.yaml").unwrap();
     assert_eq!(model.name, "e2e_full_coverage");
 
-    // Should have all 4 kind types represented in data_kinds.
-    let kind_names: Vec<&str> = model.data_kinds.keys().map(|k| k.as_str()).collect();
+    // Should have all entity types represented.
+    let entity_names: Vec<&str> = model.entities.keys().map(|k| k.as_str()).collect();
 
     // Standalone datasets
-    assert!(kind_names.contains(&"transactions"), "missing transactions dataset");
-    assert!(kind_names.contains(&"accounts"), "missing accounts dataset");
-    assert!(kind_names.contains(&"sensor_readings"), "missing sensor_readings dataset");
-    assert!(kind_names.contains(&"products"), "missing products dataset");
-    assert!(kind_names.contains(&"regions"), "missing regions dataset");
+    assert!(entity_names.contains(&"transactions"), "missing transactions dataset");
+    assert!(entity_names.contains(&"accounts"), "missing accounts dataset");
+    assert!(entity_names.contains(&"sensor_readings"), "missing sensor_readings dataset");
+    assert!(entity_names.contains(&"products"), "missing products dataset");
+    assert!(entity_names.contains(&"regions"), "missing regions dataset");
 
     // Grainsets
-    assert!(kind_names.contains(&"txn_by_grain"), "missing txn_by_grain grainset");
-    assert!(kind_names.contains(&"sensor_analytics"), "missing sensor_analytics grainset");
+    assert!(entity_names.contains(&"txn_by_grain"), "missing txn_by_grain grainset");
+    assert!(entity_names.contains(&"sensor_analytics"), "missing sensor_analytics grainset");
 
     // Unionsets
-    assert!(kind_names.contains(&"all_transactions"), "missing all_transactions unionset");
-    assert!(kind_names.contains(&"unique_events"), "missing unique_events unionset");
-    assert!(kind_names.contains(&"unified_analytics"), "missing unified_analytics unionset");
+    assert!(entity_names.contains(&"all_transactions"), "missing all_transactions unionset");
+    assert!(entity_names.contains(&"unique_events"), "missing unique_events unionset");
+    assert!(entity_names.contains(&"unified_analytics"), "missing unified_analytics unionset");
 
     // Joinsets
-    assert!(kind_names.contains(&"txn_details"), "missing txn_details joinset");
-    assert!(kind_names.contains(&"product_inventory"), "missing product_inventory joinset");
-    assert!(kind_names.contains(&"account_sensor_full"), "missing account_sensor_full joinset");
+    assert!(entity_names.contains(&"txn_details"), "missing txn_details joinset");
+    assert!(entity_names.contains(&"product_inventory"), "missing product_inventory joinset");
+    assert!(entity_names.contains(&"account_sensor_full"), "missing account_sensor_full joinset");
 
     // Verify top-level relationships exist
     assert!(!model.relationships.is_empty(), "should have top-level relationships");
 
     // Verify transactions dataset has all dimension types
-    let txn = model.data_kinds.get("transactions").expect("transactions");
+    let txn = model.entities.get("transactions").expect("transactions");
     let txn_iface = txn.interface();
     let dim_count = txn_iface.dimensions.len();
     assert!(dim_count >= 12, "transactions should have 12+ dimensions (all types), got {}", dim_count);
@@ -309,7 +309,7 @@ fn test_parse_e2e_full_coverage() {
 #[test]
 fn test_e2e_full_coverage_data_types() {
     let model = load_and_parse("e2e_full_coverage.yaml").unwrap();
-    let txn = model.data_kinds.get("transactions").expect("transactions");
+    let txn = model.entities.get("transactions").expect("transactions");
     let txn_iface = txn.interface();
 
     // Verify diverse data types across measures
@@ -351,7 +351,7 @@ semantic_model:
     let model = semstrait_model::parse(yaml).unwrap();
     let model = semstrait_model::resolve_refs(model).unwrap();
 
-    let orders = model.data_kinds.get("orders").expect("orders dataset");
+    let orders = model.entities.get("orders").expect("orders dataset");
     let dim = match orders.interface().dimensions.values().next().unwrap() {
         semstrait_model::DimensionEntry::Inline(d) => d,
         _ => panic!("expected inline dimension"),

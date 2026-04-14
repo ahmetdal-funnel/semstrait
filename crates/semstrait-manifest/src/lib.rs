@@ -33,7 +33,8 @@ pub use repository::{FileSystemRepository, InMemoryRepository, Repository};
 pub use semstrait_model::{
     AdditivityType, AggregationConstraints, Cardinality, CategoricalDimension,
     ColumnMapping, ColumnMappingValue, DimensionConstraints, DimensionType, LiteralValue,
-    JoinAssociativity, JoinColumnPair, JoinType, DataKindBindingExtras, DataKindExtras,
+    JoinAssociativity, JoinColumnPair, JoinType,
+    InlineDatasetExtras, ComplexExtras,
     MeasureConstraints, MetadataDimension, PathExtraction, PartitionExtraction,
     TemporalDimension, TemporalGrain, UnionMode,
 };

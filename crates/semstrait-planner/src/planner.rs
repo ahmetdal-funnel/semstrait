@@ -589,7 +589,7 @@ mod tests {
     fn test_plan_with_kind_filter() {
         let mut manifest = make_test_manifest();
         // Add a kind-level filter: region = 'US'.
-        if let Some(dk) = manifest.data_kinds.get_mut("orders") {
+        if let Some(dk) = manifest.entities.get_mut("orders") {
             dk.interface_mut().filters.push(semstrait_manifest::CompiledFilter {
                 name: "us_only".to_string(),
                 expr: semstrait_core::Expr::eq(
@@ -615,7 +615,7 @@ mod tests {
     fn test_plan_kind_filter_combined_with_user_filter() {
         let mut manifest = make_test_manifest();
         // Add a kind-level filter.
-        if let Some(dk) = manifest.data_kinds.get_mut("orders") {
+        if let Some(dk) = manifest.entities.get_mut("orders") {
             dk.interface_mut().filters.push(semstrait_manifest::CompiledFilter {
                 name: "active_only".to_string(),
                 expr: semstrait_core::Expr::eq(
@@ -771,8 +771,8 @@ mod tests {
             grain_map: None,
         }));
 
-        let mut data_kinds = IndexMap::new();
-        data_kinds.insert("multi_source".to_string(), data_kind);
+        let mut entities = IndexMap::new();
+        entities.insert("multi_source".to_string(), data_kind);
 
         let manifest = semstrait_manifest::CompiledManifest {
             version: 3,
@@ -781,7 +781,7 @@ mod tests {
             relationships: vec![],
             model_name: "test_meta_filter".to_string(),
             model_description: None,
-            data_kinds,
+            entities,
             relationship_graph: semstrait_manifest::RelationshipGraph::default(),
             field_index: semstrait_manifest::FieldIndex::default(),
             diagnostics: semstrait_manifest::CompileDiagnostics::default(),
@@ -963,7 +963,7 @@ mod tests {
             temporal_dim: None,
         };
 
-        manifest.data_kinds.insert(
+        manifest.entities.insert(
             "orders_ds".to_string(),
             CompiledDataKind::Dataset(Box::new(CompiledDatasetKind { interface: iface, binding })),
         );

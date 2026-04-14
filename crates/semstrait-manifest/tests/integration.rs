@@ -43,10 +43,10 @@ semantic_model:
         manifest.model_description,
         Some("A test model".to_string())
     );
-    assert_eq!(manifest.data_kinds.len(), 1);
-    assert!(manifest.data_kinds.contains_key("orders"));
+    assert_eq!(manifest.entities.len(), 1);
+    assert!(manifest.entities.contains_key("orders"));
 
-    let orders = manifest.data_kinds["orders"].interface();
+    let orders = manifest.entities["orders"].interface();
     assert_eq!(orders.dimensions.len(), 1);
     assert_eq!(orders.measures.len(), 1);
     assert!(orders.dimensions.contains_key("order_date"));
@@ -92,9 +92,9 @@ semantic_model:
         .await
         .expect("compilation should succeed");
 
-    assert_eq!(manifest.data_kinds.len(), 1);
-    assert!(manifest.data_kinds.contains_key("sales"));
-    let bindings = manifest.data_kinds["sales"].bindings();
+    assert_eq!(manifest.entities.len(), 1);
+    assert!(manifest.entities.contains_key("sales"));
+    let bindings = manifest.entities["sales"].bindings();
     assert_eq!(bindings.len(), 1);
     assert_eq!(bindings[0].dataset_name, "orders_daily");
     assert!(bindings[0].column_mapping.physical.contains_key("order_date"));
@@ -143,7 +143,7 @@ semantic_model:
         .await
         .expect("compilation with auto mapping should succeed");
 
-    let bindings = manifest.data_kinds["orders"].bindings();
+    let bindings = manifest.entities["orders"].bindings();
     let binding = &bindings[0];
 
     // Auto should have expanded to identity mappings for all interface names.
@@ -378,7 +378,7 @@ semantic_model:
         .await
         .expect("no cycle, should compile");
 
-    let iface = manifest.data_kinds["sales"].interface();
+    let iface = manifest.entities["sales"].interface();
 
     // profit references measures only -> depth 1
     assert_eq!(iface.metrics["profit"].depth, 1);
@@ -482,14 +482,14 @@ semantic_model:
     assert_eq!(deserialized.version, manifest.version);
     assert_eq!(deserialized.model_name, manifest.model_name);
     assert_eq!(deserialized.source_hash, manifest.source_hash);
-    assert_eq!(deserialized.data_kinds.len(), manifest.data_kinds.len());
+    assert_eq!(deserialized.entities.len(), manifest.entities.len());
     assert_eq!(
         deserialized.relationships.len(),
         manifest.relationships.len()
     );
 
-    let orig_orders = manifest.data_kinds["orders"].interface();
-    let rt_orders = deserialized.data_kinds["orders"].interface();
+    let orig_orders = manifest.entities["orders"].interface();
+    let rt_orders = deserialized.entities["orders"].interface();
     assert_eq!(orig_orders.dimensions.len(), rt_orders.dimensions.len());
     assert_eq!(orig_orders.measures.len(), rt_orders.measures.len());
     assert_eq!(orig_orders.metrics.len(), rt_orders.metrics.len());
@@ -534,7 +534,7 @@ semantic_model:
 
     assert_eq!(loaded.model_name, "repo_test");
     assert_eq!(loaded.version, 3);
-    assert_eq!(loaded.data_kinds.len(), 1);
+    assert_eq!(loaded.entities.len(), 1);
 }
 
 #[tokio::test]
@@ -601,7 +601,7 @@ semantic_model:
 
     assert!(result.is_ok(), "got: {:?}", result.unwrap_err());
     let manifest = result.unwrap();
-    let binding = &manifest.data_kinds.values().next().unwrap().bindings()[0];
+    let binding = &manifest.entities.values().next().unwrap().bindings()[0];
     assert_eq!(binding.resolved_sources.len(), 1);
     assert_eq!(binding.resolved_sources[0].reference, "warehouse.orders");
 }
@@ -725,7 +725,7 @@ semantic_model:
         .await
         .expect("should compile");
 
-    let orders = manifest.data_kinds["orders"].interface();
+    let orders = manifest.entities["orders"].interface();
 
     // revenue: legacy "SUM(amount)" auto-upgraded → agg: Sum, expr: Column("amount")
     let revenue = &orders.measures["revenue"];
@@ -813,11 +813,11 @@ semantic_model:
 
     // Single-dataset kinds compile as Dataset (fast path — no routing needed).
     assert!(matches!(
-        &manifest.data_kinds["grain_kind"],
+        &manifest.entities["grain_kind"],
         CompiledDataKind::Dataset(_)
     ));
     assert!(matches!(
-        &manifest.data_kinds["union_kind"],
+        &manifest.entities["union_kind"],
         CompiledDataKind::Dataset(_)
     ));
 }
@@ -864,7 +864,7 @@ semantic_model:
         .await
         .expect("compilation with inherited column mapping should succeed");
 
-    let binding = &manifest.data_kinds["sales"].bindings()[0];
+    let binding = &manifest.entities["sales"].bindings()[0];
 
     // Should have inherited the kind-level default mapping.
     assert_eq!(binding.column_mapping.physical["order_date"], "created_at");
@@ -912,7 +912,7 @@ semantic_model:
         .await
         .expect("compilation with override mapping should succeed");
 
-    let binding = &manifest.data_kinds["sales"].bindings()[0];
+    let binding = &manifest.entities["sales"].bindings()[0];
 
     // order_date not set on dataset — should come from kind default.
     assert_eq!(binding.column_mapping.physical["order_date"], "default_date_col");
@@ -965,7 +965,7 @@ semantic_model:
     // Temporal propagation is verified by the fact that compilation succeeds
     // (temporal equivalence validation would catch mismatches).
     // The binding's resolved sources confirm the dataset was compiled.
-    let binding = &manifest.data_kinds["sales"].bindings()[0];
+    let binding = &manifest.entities["sales"].bindings()[0];
     assert_eq!(binding.dataset_name, "orders_daily");
 }
 
@@ -1018,7 +1018,7 @@ semantic_model:
         .await
         .expect("compilation should succeed");
 
-    let binding = &manifest.data_kinds["events"].bindings()[0];
+    let binding = &manifest.entities["events"].bindings()[0];
     // After propagation, column_mapping for event_date should map to created_at with Day grain.
     assert_eq!(binding.column_mapping.physical["event_date"], "created_at");
     let tm = binding.column_mapping.temporal.get("event_date").expect("temporal mapping should exist");
@@ -1069,7 +1069,7 @@ semantic_model:
         .await
         .expect("compilation should succeed");
 
-    let binding = &manifest.data_kinds["events"].bindings()[0];
+    let binding = &manifest.entities["events"].bindings()[0];
     // Different physical column — should remain without grain.
     assert_eq!(binding.column_mapping.physical["event_date"], "order_month");
     assert!(
@@ -1125,7 +1125,7 @@ semantic_model:
         .await
         .expect("compilation should succeed");
 
-    let binding = &manifest.data_kinds["events"].bindings()[0];
+    let binding = &manifest.entities["events"].bindings()[0];
     // Explicit grain=month must NOT be overwritten by temporal.grain=day.
     assert_eq!(binding.column_mapping.physical["event_date"], "created_at");
     let tm = binding.column_mapping.temporal.get("event_date").expect("temporal mapping should exist");
@@ -1178,7 +1178,7 @@ semantic_model:
 
     // Events temporal variant compiles successfully — proves it parsed correctly.
     // Temporal config is consumed during compilation; verify the binding exists.
-    let binding = &manifest.data_kinds["clickstream"].bindings()[0];
+    let binding = &manifest.entities["clickstream"].bindings()[0];
     assert_eq!(binding.dataset_name, "click_events");
     // Grain should have been propagated to the temporal mapping.
     let tm = binding.column_mapping.temporal.get("click_time").expect("temporal mapping should exist");
@@ -1234,7 +1234,7 @@ semantic_model:
         .expect("compilation should succeed");
 
     // Check the compiled dimension has auto-derived grains.
-    let iface = manifest.data_kinds["sales"].interface();
+    let iface = manifest.entities["sales"].interface();
     let dim = &iface.dimensions["order_date"];
     if let semstrait_model::DimensionType::Temporal(td) = &dim.dim_type {
         assert!(
@@ -1310,7 +1310,7 @@ semantic_model:
         .await
         .expect("compilation should succeed");
 
-    let iface = manifest.data_kinds["sales"].interface();
+    let iface = manifest.entities["sales"].interface();
     let dim = &iface.dimensions["order_date"];
     if let semstrait_model::DimensionType::Temporal(td) = &dim.dim_type {
         // Explicit grains should be preserved (not replaced by derived set).
@@ -1371,7 +1371,7 @@ semantic_model:
     // Compilation success proves catalog alias from kind.extras was accepted.
     // For path-type sources, catalog_alias is None (paths are not catalog-managed).
     // Catalog alias only appears on table-type resolved sources.
-    let binding = &manifest.data_kinds["sales"].bindings()[0];
+    let binding = &manifest.entities["sales"].bindings()[0];
     assert!(
         !binding.resolved_sources.is_empty(),
         "resolved sources should be populated"
@@ -1415,7 +1415,7 @@ semantic_model:
         .expect("storage with table field should compile");
 
     // Compilation success is the primary assertion; verify the binding is present.
-    let bindings = manifest.data_kinds["sales"].bindings();
+    let bindings = manifest.entities["sales"].bindings();
     assert_eq!(bindings.len(), 1);
     assert_eq!(bindings[0].dataset_name, "orders_daily");
 
@@ -1465,7 +1465,7 @@ semantic_model:
         .await
         .expect("column_mapping: inherited should compile");
 
-    let binding = &manifest.data_kinds["sales"].bindings()[0];
+    let binding = &manifest.entities["sales"].bindings()[0];
 
     assert_eq!(binding.column_mapping.physical["order_date"], "created_at");
     assert_eq!(binding.column_mapping.physical["revenue"], "amount");
@@ -1516,7 +1516,7 @@ semantic_model:
         .await
         .expect("compilation with default dim type should succeed");
 
-    let iface = manifest.data_kinds["sales"].interface();
+    let iface = manifest.entities["sales"].interface();
 
     // order_date should be Temporal (explicitly set).
     assert!(
@@ -1646,7 +1646,7 @@ semantic_model:
 
     // Same temporal variant with different columns should compile OK.
     // Compilation success proves temporal equivalence validation passed.
-    let binding = &manifest.data_kinds["sales"].bindings()[0];
+    let binding = &manifest.entities["sales"].bindings()[0];
     assert_eq!(binding.dataset_name, "orders_daily");
 }
 
@@ -1740,7 +1740,7 @@ semantic_model:
         .await
         .expect("multi-path storage should compile");
 
-    let binding = &manifest.data_kinds["sales"].bindings()[0];
+    let binding = &manifest.entities["sales"].bindings()[0];
     assert_eq!(binding.resolved_sources.len(), 2);
     assert_eq!(binding.resolved_sources[0].reference, "s3://bucket/orders_2024.parquet");
     assert_eq!(binding.resolved_sources[0].source_type, semstrait_manifest::SourceType::Path);
@@ -1784,7 +1784,7 @@ semantic_model:
         .await
         .expect("multiple paths should compile");
 
-    let binding = &manifest.data_kinds["sales"].bindings()[0];
+    let binding = &manifest.entities["sales"].bindings()[0];
     assert_eq!(binding.resolved_sources.len(), 2);
     assert_eq!(binding.resolved_sources[0].reference, "s3://bucket/orders_main.parquet");
     assert_eq!(binding.resolved_sources[1].reference, "s3://bucket/orders_archive.parquet");
@@ -1873,7 +1873,7 @@ semantic_model:
         .await
         .expect("singular path should compile");
 
-    let binding = &manifest.data_kinds["sales"].bindings()[0];
+    let binding = &manifest.entities["sales"].bindings()[0];
     assert_eq!(binding.resolved_sources.len(), 1);
     assert_eq!(binding.resolved_sources[0].reference, "warehouse.orders");
     assert_eq!(binding.resolved_sources[0].source_type, semstrait_manifest::SourceType::Path);
@@ -1916,7 +1916,7 @@ semantic_model:
         .await
         .expect("declarative agg: sum should compile");
 
-    let measure = &manifest.data_kinds["sales"].interface().measures["revenue"];
+    let measure = &manifest.entities["sales"].interface().measures["revenue"];
     assert_eq!(
         measure.agg,
         semstrait_core::expr::Aggregation::Sum
@@ -1959,7 +1959,7 @@ semantic_model:
         .await
         .expect("declarative agg with horizontal expr should compile");
 
-    let measure = &manifest.data_kinds["sales"].interface().measures["total_value"];
+    let measure = &manifest.entities["sales"].interface().measures["total_value"];
     assert_eq!(
         measure.agg,
         semstrait_core::expr::Aggregation::Sum
@@ -2041,7 +2041,7 @@ semantic_model:
         .await
         .expect("count_distinct should compile");
 
-    let measure = &manifest.data_kinds["sales"].interface().measures["unique_customers"];
+    let measure = &manifest.entities["sales"].interface().measures["unique_customers"];
     assert_eq!(
         measure.agg,
         semstrait_core::expr::Aggregation::CountDistinct
@@ -2081,7 +2081,7 @@ semantic_model:
         .await
         .expect("legacy expr should still compile");
 
-    let measure = &manifest.data_kinds["sales"].interface().measures["revenue"];
+    let measure = &manifest.entities["sales"].interface().measures["revenue"];
     // Legacy `expr: "SUM(amount)"` is now auto-upgraded to declarative agg
     assert_eq!(measure.agg, semstrait_core::expr::Aggregation::Sum, "legacy SUM(amount) should auto-upgrade to Aggregation::Sum");
     assert_eq!(measure.expr_source, "SUM(amount)");
@@ -2165,7 +2165,7 @@ semantic_model:
         .await
         .expect("metric with agg should compile");
 
-    let metric = &manifest.data_kinds["sales"].interface().metrics["avg_daily_revenue"];
+    let metric = &manifest.entities["sales"].interface().metrics["avg_daily_revenue"];
     assert_eq!(
         metric.agg.unwrap(),
         semstrait_core::expr::Aggregation::Avg
@@ -2216,7 +2216,7 @@ semantic_model:
         );
         let manifest = result.unwrap();
         // agg is non-optional — verify it was set (format as debug string to confirm it's populated)
-        let agg = manifest.data_kinds["sales"].interface().measures["m1"].agg;
+        let agg = manifest.entities["sales"].interface().measures["m1"].agg;
         let agg_debug = format!("{:?}", agg);
         assert!(
             !agg_debug.is_empty(),
@@ -2272,7 +2272,7 @@ semantic_model:
         .await
         .expect("metadata dimension with path.token should compile");
 
-    let dim = &manifest.data_kinds["sales"].interface().dimensions["source_partition"];
+    let dim = &manifest.entities["sales"].interface().dimensions["source_partition"];
     match &dim.dim_type {
         semstrait_model::DimensionType::Metadata(m) => {
             assert!(m.path.is_some());
@@ -2330,7 +2330,7 @@ semantic_model:
         .await
         .expect("metadata dimension with partition.level should compile");
 
-    let dim = &manifest.data_kinds["sales"].interface().dimensions["partition_year"];
+    let dim = &manifest.entities["sales"].interface().dimensions["partition_year"];
     match &dim.dim_type {
         semstrait_model::DimensionType::Metadata(m) => {
             assert!(m.partition.is_some());
@@ -2637,7 +2637,7 @@ semantic_model:
         .expect("auto mapping with metadata dimension should compile");
 
     // The auto mapping should include region and revenue but NOT source_partition.
-    let binding = &manifest.data_kinds["sales"].bindings()[0];
+    let binding = &manifest.entities["sales"].bindings()[0];
     assert!(
         binding.column_mapping.physical.contains_key("region"),
         "auto mapping should include non-metadata dimension"
@@ -2702,7 +2702,7 @@ semantic_model:
         .await
         .expect("metadata dim with both path and partition should compile");
 
-    let dim = &manifest.data_kinds["sales"].interface().dimensions["source_info"];
+    let dim = &manifest.entities["sales"].interface().dimensions["source_info"];
     match &dim.dim_type {
         semstrait_model::DimensionType::Metadata(m) => {
             assert!(m.path.is_some(), "path extraction should be present");
@@ -2746,7 +2746,7 @@ semantic_model:
         .await
         .expect("declarative agg with measure filter should compile");
 
-    let measure = &manifest.data_kinds["sales"].interface().measures["domestic_revenue"];
+    let measure = &manifest.entities["sales"].interface().measures["domestic_revenue"];
     assert_eq!(
         measure.agg,
         semstrait_core::expr::Aggregation::Sum
@@ -2788,7 +2788,7 @@ semantic_model:
         .await
         .expect("computed dimension should compile");
 
-    let ds = manifest.data_kinds["campaigns"].interface();
+    let ds = manifest.entities["campaigns"].interface();
     let market = &ds.dimensions["market"];
     assert!(market.expr.is_some(), "market should have a compiled expr");
     assert!(market.expr_source.is_some(), "market should have expr_source");
@@ -2875,7 +2875,7 @@ semantic_model:
         .await
         .expect("CASE dimension should compile");
 
-    let ds = manifest.data_kinds["ads"].interface();
+    let ds = manifest.entities["ads"].interface();
     let channel = &ds.dimensions["channel_group"];
     assert!(channel.expr.is_some(), "channel_group should be computed");
     match channel.expr.as_ref().unwrap() {
@@ -2909,7 +2909,7 @@ semantic_model:
         .await
         .expect("should compile");
 
-    let ds = manifest.data_kinds["orders"].interface();
+    let ds = manifest.entities["orders"].interface();
     let region = &ds.dimensions["region"];
     assert!(region.expr.is_none(), "regular dimension should have no expr");
     assert!(region.expr_source.is_none());

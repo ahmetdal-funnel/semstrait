@@ -124,7 +124,7 @@ impl DataFusionConnector {
     ) -> Result<Vec<String>, ConnectorError> {
         let mut registered = Vec::new();
 
-        for data_kind in manifest.data_kinds.values() {
+        for data_kind in manifest.entities.values() {
             for binding in data_kind.bindings() {
                 if binding.resolved_sources.len() <= 1 {
                     // Single source: use same name priority as planner's
