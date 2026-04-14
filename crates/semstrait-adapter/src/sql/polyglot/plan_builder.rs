@@ -68,10 +68,19 @@ impl PlanBuilder {
         project: &semstrait_ir::ProjectNode,
     ) -> Result<Expression, EmitError> {
         let child = self.build_node(&project.input)?;
+        let schema_fields = &project.meta.output_schema.fields;
         let exprs = project
             .expressions
             .iter()
-            .map(|e| self.expr.build(e))
+            .enumerate()
+            .map(|(i, e)| {
+                let built = self.expr.build(e)?;
+                if let Some(field) = schema_fields.get(i) {
+                    Ok(built.alias(&field.name))
+                } else {
+                    Ok(built)
+                }
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(builder::select(exprs)
             .from_expr(wrap_subquery(child, "_p"))

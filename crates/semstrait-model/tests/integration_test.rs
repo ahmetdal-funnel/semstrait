@@ -364,3 +364,30 @@ semantic_model:
         dim.dim_type
     );
 }
+
+// =============================================================================
+// Alpinestars: computed dim expr at unionset kind level
+// =============================================================================
+
+#[test]
+fn test_alpinestars_measurement_source_has_expr() {
+    let model = load_and_parse("alpinestars_eu_ad_platform_v2.yaml").unwrap();
+
+    let dk = model.entities.get("paid_media_campaign_performance")
+        .expect("paid_media_campaign_performance entity");
+    let iface = dk.interface();
+
+    let entry = iface.dimensions.get("measurement_source")
+        .expect("measurement_source should be in interface");
+    match entry {
+        semstrait_model::DimensionEntry::Inline(d) => {
+            eprintln!("measurement_source.expr = {:?}", d.expr);
+            assert!(d.expr.is_some(),
+                "measurement_source should have expr after ref resolution — \
+                 defined at model level with expr: concat: [measurement_channel, ' - ', traffic_source]");
+        }
+        semstrait_model::DimensionEntry::Ref(r) => {
+            panic!("measurement_source is still a Ref({}) after resolve_refs!", r.ref_name);
+        }
+    }
+}

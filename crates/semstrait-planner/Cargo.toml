@@ -15,5 +15,6 @@ tracing = { workspace = true }
 indexmap = { workspace = true }
 
 [dev-dependencies]
+semstrait-model = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }

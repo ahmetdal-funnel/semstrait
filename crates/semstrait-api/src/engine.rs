@@ -318,7 +318,7 @@ mod tests {
     fn test_validate_valid_request() {
         let engine = SemstraitEngine::new();
         let raw = RawQueryRequest {
-            from: "sales".to_string(),
+            from: Some("sales".to_string()),
             select: vec!["region".to_string(), "revenue".to_string()],
             ..Default::default()
         };
@@ -331,7 +331,7 @@ mod tests {
     fn test_validate_invalid_request() {
         let engine = SemstraitEngine::new();
         let raw = RawQueryRequest {
-            from: "".to_string(),
+            from: None,
             ..Default::default()
         };
 
@@ -344,7 +344,7 @@ mod tests {
     async fn test_explain_no_manifest() {
         let engine = SemstraitEngine::new();
         let raw = RawQueryRequest {
-            from: "sales".to_string(),
+            from: Some("sales".to_string()),
             select: vec!["region".to_string(), "revenue".to_string()],
             ..Default::default()
         };
@@ -372,7 +372,7 @@ mod tests {
             .expect("engine should compile manifest");
 
         let raw = RawQueryRequest {
-            from: "orders".to_string(),
+            from: Some("orders".to_string()),
             select: vec!["date".to_string(), "region".to_string(), "revenue".to_string()],
             ..Default::default()
         };
@@ -406,7 +406,7 @@ mod tests {
 
         // Valid request.
         let raw = RawQueryRequest {
-            from: "orders".to_string(),
+            from: Some("orders".to_string()),
             select: vec!["date".to_string(), "revenue".to_string()],
             ..Default::default()
         };
@@ -415,7 +415,7 @@ mod tests {
 
         // Invalid select name.
         let raw_bad = RawQueryRequest {
-            from: "orders".to_string(),
+            from: Some("orders".to_string()),
             select: vec!["nonexistent".to_string()],
             ..Default::default()
         };
@@ -457,7 +457,7 @@ semantic_model:
             .expect("engine should compile with auto mapping");
 
         let raw = RawQueryRequest {
-            from: "orders".to_string(),
+            from: Some("orders".to_string()),
             select: vec!["order_date".to_string(), "revenue".to_string()],
             ..Default::default()
         };
@@ -475,7 +475,7 @@ semantic_model:
     async fn test_query_not_configured() {
         let engine = SemstraitEngine::new();
         let raw = RawQueryRequest {
-            from: "sales".to_string(),
+            from: Some("sales".to_string()),
             select: vec!["revenue".to_string()],
             ..Default::default()
         };

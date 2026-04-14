@@ -3,7 +3,7 @@
 use crate::error::PlannerError;
 use crate::decomposer::{self, DecomposedMeasure};
 use crate::resolver::{ExprResolver as _, PhysicalResolver};
-use super::{extract_metadata_value_binding, partition_dimensions_iface, PlanFragment, PlannerContext};
+use super::{extract_metadata_value_binding, partition_dimensions_iface, resolve_guards, PlanFragment, PlannerContext};
 use crate::request::ResolvedQueryRequest;
 use semstrait_core::DataType;
 use semstrait_ir::{
@@ -188,18 +188,55 @@ pub(crate) fn build_dataset_kind_plan(
         }
     }
 
-    // Lower computed dimension expressions to physical column names.
+    // Pre-compute metadata dimension values so computed expressions can reference them.
+    let metadata_values: std::collections::HashMap<String, String> = metadata_dims
+        .iter()
+        .map(|(name, meta)| {
+            let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
+            (name.clone(), value)
+        })
+        .collect();
+
+    // Lower computed dimension expressions to collect physical scan columns,
+    // but store the semantic expression (with Guards resolved and literals/metadata inlined).
     let mut lowered_computed: Vec<(String, Expr)> = Vec::new();
+    let mut extra_group_by_cols: Vec<(String, String)> = Vec::new();
     for (dim_name, expr) in &computed_dims {
         let lowered = PhysicalResolver::new(&mapping.physical).resolve_expr(expr)?;
         collect_column_refs(&lowered, &mut scan_columns, &mut scan_seen);
-        lowered_computed.push((dim_name.clone(), lowered));
+        // Resolve Guards and inline literal + metadata values.
+        let resolved = resolve_guards(expr).transform(
+            &|e: &Expr| -> Result<Option<Expr>, std::convert::Infallible> {
+                if let Expr::Column(col) = e {
+                    if let Some(lit_val) = mapping.literals.get(&col.name) {
+                        return Ok(Some(Expr::string(lit_val.clone())));
+                    }
+                    if let Some(meta_val) = metadata_values.get(&col.name) {
+                        return Ok(Some(Expr::string(meta_val.clone())));
+                    }
+                }
+                Ok(None)
+            },
+        ).expect("literal inlining is infallible");
+        // Collect semantic column refs that need to survive aggregation.
+        let mut sem_refs: Vec<String> = Vec::new();
+        let mut sem_seen: HashSet<String> = HashSet::new();
+        collect_column_refs(expr, &mut sem_refs, &mut sem_seen);
+        for sem_ref in &sem_refs {
+            if !dim_physical.iter().any(|(s, _)| s == sem_ref)
+                && !extra_group_by_cols.iter().any(|(s, _)| s == sem_ref)
+            {
+                if let Some(phys) = mapping.physical.get(sem_ref.as_str()) {
+                    extra_group_by_cols.push((sem_ref.clone(), phys.clone()));
+                }
+            }
+        }
+        lowered_computed.push((dim_name.clone(), resolved));
     }
 
     // Extract metadata dimension values as literals.
-    for (dim_name, meta) in &metadata_dims {
-        let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
-        metadata_literals.push((dim_name.clone(), Expr::string(value)));
+    for (dim_name, _meta) in &metadata_dims {
+        metadata_literals.push((dim_name.clone(), Expr::string(metadata_values.get(dim_name).cloned().unwrap_or_default())));
     }
 
     // Lower measures via physical mapping.
@@ -244,9 +281,10 @@ pub(crate) fn build_dataset_kind_plan(
     let sem_types = build_semantic_type_map(iface, &mapping.physical);
     let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
 
-    // Build Aggregate node.
+    // Build Aggregate node — include extra GROUP BY columns for computed dim refs.
     let group_by: Vec<Expr> = dim_physical
         .iter()
+        .chain(extra_group_by_cols.iter())
         .map(|(_, physical)| Expr::column(physical.clone()))
         .collect();
 
@@ -257,6 +295,7 @@ pub(crate) fn build_dataset_kind_plan(
 
     let mut agg_fields: Vec<Field> = dim_physical
         .iter()
+        .chain(extra_group_by_cols.iter())
         .map(|(semantic, _)| Field::new(semantic.clone(), iface.resolve_dim_type(semantic)))
         .collect();
     let mut agg_idx = 0;
@@ -347,18 +386,55 @@ pub(crate) fn build_binding_plan(
         }
     }
 
-    // Lower computed dimension expressions to physical column names.
+    // Pre-compute metadata dimension values so computed expressions can reference them.
+    let metadata_values: std::collections::HashMap<String, String> = metadata_dims
+        .iter()
+        .map(|(name, meta)| {
+            let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
+            (name.clone(), value)
+        })
+        .collect();
+
+    // Lower computed dimension expressions to collect physical scan columns,
+    // but store the semantic expression (with Guards resolved and literals/metadata inlined).
     let mut lowered_computed: Vec<(String, Expr)> = Vec::new();
+    let mut extra_group_by_cols: Vec<(String, String)> = Vec::new();
     for (dim_name, expr) in &computed_dims {
         let lowered = PhysicalResolver::new(&mapping.physical).resolve_expr(expr)?;
         collect_column_refs(&lowered, &mut scan_columns, &mut scan_seen);
-        lowered_computed.push((dim_name.clone(), lowered));
+        // Resolve Guards and inline literal + metadata values.
+        let resolved = resolve_guards(expr).transform(
+            &|e: &Expr| -> Result<Option<Expr>, std::convert::Infallible> {
+                if let Expr::Column(col) = e {
+                    if let Some(lit_val) = mapping.literals.get(&col.name) {
+                        return Ok(Some(Expr::string(lit_val.clone())));
+                    }
+                    if let Some(meta_val) = metadata_values.get(&col.name) {
+                        return Ok(Some(Expr::string(meta_val.clone())));
+                    }
+                }
+                Ok(None)
+            },
+        ).expect("literal inlining is infallible");
+        // Collect semantic column refs that need to survive aggregation.
+        let mut sem_refs: Vec<String> = Vec::new();
+        let mut sem_seen: HashSet<String> = HashSet::new();
+        collect_column_refs(expr, &mut sem_refs, &mut sem_seen);
+        for sem_ref in &sem_refs {
+            if !dim_physical.iter().any(|(s, _)| s == sem_ref)
+                && !extra_group_by_cols.iter().any(|(s, _)| s == sem_ref)
+            {
+                if let Some(phys) = mapping.physical.get(sem_ref.as_str()) {
+                    extra_group_by_cols.push((sem_ref.clone(), phys.clone()));
+                }
+            }
+        }
+        lowered_computed.push((dim_name.clone(), resolved));
     }
 
     // Extract metadata dimension values as literals.
-    for (dim_name, meta) in &metadata_dims {
-        let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
-        metadata_literals.push((dim_name.clone(), Expr::string(value)));
+    for (dim_name, _meta) in &metadata_dims {
+        metadata_literals.push((dim_name.clone(), Expr::string(metadata_values.get(dim_name).cloned().unwrap_or_default())));
     }
 
     // Lower measures via physical mapping.
@@ -411,9 +487,10 @@ pub(crate) fn build_binding_plan(
     let sem_types = build_semantic_type_map(iface, &mapping.physical);
     let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
 
-    // Build Aggregate node.
+    // Build Aggregate node — include extra GROUP BY columns for computed dim refs.
     let group_by: Vec<Expr> = dim_physical
         .iter()
+        .chain(extra_group_by_cols.iter())
         .map(|(_, physical)| Expr::column(physical.clone()))
         .collect();
 
@@ -424,6 +501,7 @@ pub(crate) fn build_binding_plan(
 
     let mut agg_fields: Vec<Field> = dim_physical
         .iter()
+        .chain(extra_group_by_cols.iter())
         .map(|(semantic, _)| Field::new(semantic.clone(), iface.resolve_dim_type(semantic)))
         .collect();
     let mut agg_idx = 0;

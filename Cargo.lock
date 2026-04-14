@@ -4251,6 +4251,7 @@ dependencies = [
  "semstrait-core",
  "semstrait-ir",
  "semstrait-manifest",
+ "semstrait-model",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

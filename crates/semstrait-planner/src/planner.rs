@@ -21,7 +21,6 @@ use crate::additivity::AdditivityResolver;
 use crate::resolver::ExprResolver;
 use crate::validator::ConstraintValidator;
 use crate::error::PlannerError;
-use crate::kind::joinset::resolve_from_fields;
 use crate::kind::{
     KindPlannerRegistry, PlanFragment, PlannerContext, PrunedView,
 };
@@ -46,11 +45,19 @@ impl SemanticPlanner {
     }
 
     /// Plan a query request against the compiled manifest.
+    ///
+    /// If `entity_name` is None, dispatches to ad-hoc resolution which infers
+    /// the target entity from the requested field names.
     pub fn plan(
         &self,
         request: &ResolvedQueryRequest,
         manifest: &CompiledManifest,
     ) -> Result<LogicalPlan, PlannerError> {
+        // If no entity specified, resolve from fields.
+        if request.entity_name.is_empty() {
+            return self.plan_ad_hoc(request, manifest);
+        }
+
         // Step 1: Constraint evaluation (step 0 in CONTEXT.md).
         ConstraintValidator::check(request, manifest)?;
 
@@ -109,11 +116,12 @@ impl SemanticPlanner {
     ///
     /// Returns (fragment, measures_map, filters) where measures_map and filters
     /// are borrowed from the entity for post-resolution processing.
+    /// Used by both `plan()` and `ad_hoc_join` for per-entity planning.
     ///
     /// Unified dispatch through CompiledDataKind. Dataset variants use the fast path;
     /// complex kinds (grainset/unionset/joinset) delegate to KindPlanner registry.
     #[allow(clippy::type_complexity)]
-    fn resolve_entity<'a>(
+    pub(crate) fn resolve_entity<'a>(
         &self,
         request: &ResolvedQueryRequest,
         manifest: &'a CompiledManifest,
@@ -127,9 +135,10 @@ impl SemanticPlanner {
         PlannerError,
     > {
         // Resolve via CompiledDataKind (primary path).
+        let entity_name = request.entity_name.as_str();
         let data_kind = manifest
-            .resolve(&request.entity_name)
-            .ok_or_else(|| PlannerError::KindNotFound(request.entity_name.clone()))?;
+            .resolve(entity_name)
+            .ok_or_else(|| PlannerError::KindNotFound(entity_name.to_string()))?;
         let iface = data_kind.interface();
 
         // Prune bindings by metadata and literal filters (borrow-only, no clone).
@@ -145,21 +154,30 @@ impl SemanticPlanner {
         Ok((fragment, &iface.measures, filters))
     }
 
+    /// Access the plan builder (for ad_hoc_join module).
+    pub(crate) fn plan_builder(&self) -> &dyn PlanBuilder {
+        self.plan_builder.as_ref()
+    }
+
+    /// Run the optimizer on a plan (for ad_hoc_join module).
+    pub(crate) fn optimize(&self, plan: LogicalPlan) -> Result<LogicalPlan, PlannerError> {
+        self.optimizer.apply(plan)
+    }
+
     /// Plan an ad-hoc query where `FROM` is omitted.
     ///
-    /// Uses `resolve_from_fields()` to infer the target entity from the requested
-    /// field names (dimensions + measures). If all fields resolve to a single dataset,
-    /// plans against that dataset. If multiple datasets are needed, returns the
-    /// resolved join path for future join plan construction.
+    /// Uses `entity_resolver::find_covering_entities()` to score all entities and find
+    /// the best covering set. For single-entity resolution, reclassifies the requested
     ///
-    /// Currently supports single-dataset resolution only. Multi-dataset ad-hoc joins
-    /// will be supported in a future phase.
+    /// Multi-entity join synthesis returns an error until Phase 4.
     pub fn plan_ad_hoc(
         &self,
         request: &ResolvedQueryRequest,
         manifest: &CompiledManifest,
     ) -> Result<LogicalPlan, PlannerError> {
-        // Collect all requested field names.
+        use crate::entity_resolver;
+
+        // parse.rs puts ALL select names in request.dimensions for ad-hoc.
         let all_fields: Vec<String> = request
             .dimensions
             .iter()
@@ -167,70 +185,37 @@ impl SemanticPlanner {
             .cloned()
             .collect();
 
-        // Resolve datasets and join path from field names.
-        let resolved = resolve_from_fields(&all_fields, manifest)?;
+        // Find covering entity set via unified resolution API.
+        let match_result = entity_resolver::find_covering_entities(&all_fields, manifest)?;
 
-        if resolved.datasets.len() == 1 {
-            // Single dataset — resolve via the unified CompiledDataKind dispatch path.
-            let ds_name = &resolved.datasets[0];
+        if match_result.is_single() {
+            // Single-entity fast path — reclassify fields and delegate to plan().
+            let matched = &match_result.entities[0];
+            let entity = manifest
+                .resolve(&matched.entity_name)
+                .ok_or_else(|| PlannerError::KindNotFound(matched.entity_name.clone()))?;
+            let reclassified = entity_resolver::reclassify_fields(&all_fields, entity.interface())?;
 
-            // Build a request targeting the resolved dataset/kind.
-            let mut ad_hoc_request = request.clone();
-            ad_hoc_request.entity_name = ds_name.clone();
-
-            let ctx = PlannerContext {
-                manifest,
-                catalog: self.catalog.as_deref(),
-                session: &request.session_variables,
-                plan_builder: self.plan_builder.as_ref(),
-            };
-
-            let (fragment, entity_measures, entity_filters) =
-                self.resolve_entity(&ad_hoc_request, manifest, &ctx)?;
-
-            // Additivity resolution.
-            let mut fragment = fragment;
-            for measure_name in &request.measures {
-                if let Some(measure) = entity_measures.get(measure_name) {
-                    fragment = AdditivityResolver::resolve(
-                        fragment,
-                        measure,
-                        request,
-                    )?;
-                }
-            }
-
-            // Filter injection.
-            let pb = self.plan_builder.as_ref();
-            let mut root = fragment.root;
-            root = inject_entity_filters(root, &entity_filters, pb)?;
-            root = inject_user_filters(root, request, pb)?;
-
-            // ORDER BY + LIMIT.
-            root = apply_order_by(root, request, pb)?;
-            root = apply_limit(root, request, pb)?;
-
-            // Build LogicalPlan.
-            let output_names: Vec<String> = request
+            let mut targeted = request.clone();
+            targeted.entity_name = matched.entity_name.clone();
+            // Keys are classified as dimensions for GROUP BY.
+            targeted.dimensions = reclassified
                 .dimensions
-                .iter()
-                .chain(request.measures.iter())
-                .cloned()
+                .into_iter()
+                .chain(reclassified.keys)
+                .collect();
+            targeted.measures = reclassified
+                .measures
+                .into_iter()
+                .chain(reclassified.metrics)
                 .collect();
 
-            let plan = LogicalPlan::new(root, output_names);
-            self.optimizer.apply(plan)
+            self.plan(&targeted, manifest)
         } else {
-            // Multi-dataset ad-hoc join — not yet implemented.
-            // The resolution found that fields span multiple datasets
-            // connected by join path: {:?}.
-            Err(PlannerError::Internal(format!(
-                "ad-hoc multi-dataset join not yet supported: fields span {} datasets ({}) \
-                 with join path {:?}",
-                resolved.datasets.len(),
-                resolved.datasets.join(", "),
-                resolved.join_path,
-            )))
+            // Multi-entity join synthesis.
+            crate::ad_hoc_join::build_ad_hoc_join_plan(
+                self, &match_result, request, manifest,
+            )
         }
     }
 }
@@ -294,7 +279,7 @@ impl Default for SemanticPlannerBuilder {
 ///
 /// Entity filters apply to all queries against an entity, regardless of dataset or user request.
 /// Expressions use semantic names (post-projection), so we lower with an empty mapping.
-fn inject_entity_filters(
+pub(crate) fn inject_entity_filters(
     mut root: PlanNode,
     filters: &[semstrait_manifest::CompiledFilter],
     plan_builder: &dyn PlanBuilder,
@@ -311,7 +296,7 @@ fn inject_entity_filters(
 }
 
 /// Convert user QueryFilters into FilterNodes wrapping the plan root.
-fn inject_user_filters(
+pub(crate) fn inject_user_filters(
     mut root: PlanNode,
     request: &ResolvedQueryRequest,
     plan_builder: &dyn PlanBuilder,
@@ -415,7 +400,7 @@ fn filter_value_to_expr(value: &FilterValue) -> Result<Expr, PlannerError> {
 // ============================================================================
 
 /// Apply ORDER BY clauses from the request.
-fn apply_order_by(
+pub(crate) fn apply_order_by(
     root: PlanNode,
     request: &ResolvedQueryRequest,
     plan_builder: &dyn PlanBuilder,
@@ -441,7 +426,7 @@ fn apply_order_by(
 }
 
 /// Apply LIMIT from the request.
-fn apply_limit(
+pub(crate) fn apply_limit(
     root: PlanNode,
     request: &ResolvedQueryRequest,
     plan_builder: &dyn PlanBuilder,
@@ -979,6 +964,7 @@ mod tests {
             all_dimensions: ["date", "region"].iter().map(|s| s.to_string()).collect::<HashSet<_>>(),
             all_measures: ["revenue"].iter().map(|s| s.to_string()).collect::<HashSet<_>>(),
             all_metrics: HashSet::new(),
+            all_keys: HashSet::new(),
         };
 
         // Request with empty entity_name — ad-hoc resolution should find orders_ds.

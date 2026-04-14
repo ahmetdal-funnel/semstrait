@@ -10,14 +10,14 @@ use crate::resolver::PhysicalResolver;
 use super::collect_column_refs;
 use super::plan_builder;
 use super::plan_builder::{build_scan_node_binding, build_semantic_type_map};
-use super::{extract_metadata_value_binding, partition_dimensions_iface, KindPlanner, PlanFragment, PlannerContext, PrunedView};
+use super::{extract_metadata_value_binding, partition_dimensions_iface, resolve_guards, split_computed_dims, KindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
 use semstrait_ir::{
     AggregateMeasure, Expr, Field, JoinType as IrJoinType,
     PlanBuilder, PlanNode, Schema,
 };
 use semstrait_manifest::{
-    CompiledRelationship, JoinType as ModelJoinType, CompiledInterface,
+    CompiledManifest, CompiledRelationship, JoinType as ModelJoinType, CompiledInterface,
 };
 use semstrait_manifest::acceleration::{AdjacencyIndex, CompiledDataKind, DatasetBinding, CompiledJoinsetKind};
 use std::collections::{HashSet, VecDeque};
@@ -75,7 +75,7 @@ impl KindPlanner for JoinsetPlanner {
 }
 
 /// Map model JoinType to IR JoinType.
-fn map_join_type(jt: &ModelJoinType) -> IrJoinType {
+pub(crate) fn map_join_type(jt: &ModelJoinType) -> IrJoinType {
     match jt {
         ModelJoinType::Inner => IrJoinType::Inner,
         ModelJoinType::Left => IrJoinType::Left,
@@ -185,14 +185,31 @@ fn build_scan(
     let mut scan_columns: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    // Add dimension columns this binding covers (skip literals — they're injected in projection).
-    for dim_name in &request.dimensions {
+    // Partition dimensions and add physical columns to scan.
+    let (_, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
+    let (physical_dims, computed_dims) = split_computed_dims(&regular_dims, iface);
+
+    for dim_name in &physical_dims {
         if mapping.literals.contains_key(dim_name) {
             continue;
         }
         if let Some(phys) = mapping.physical.get(dim_name) {
             if seen.insert(phys.clone()) {
                 scan_columns.push(phys.clone());
+            }
+        }
+    }
+
+    // Add columns referenced by computed dimensions.
+    for (_, expr) in &computed_dims {
+        let mut sem_refs: Vec<String> = Vec::new();
+        let mut sem_seen_refs: HashSet<String> = HashSet::new();
+        collect_column_refs(expr, &mut sem_refs, &mut sem_seen_refs);
+        for sem_ref in &sem_refs {
+            if let Some(phys) = mapping.physical.get(sem_ref.as_str()) {
+                if seen.insert(phys.clone()) {
+                    scan_columns.push(phys.clone());
+                }
             }
         }
     }
@@ -345,7 +362,13 @@ fn build_join_plan(
     }
 
     // Now build Aggregate -> Project over the joined result.
-    let (metadata_dims, _regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
+    let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
+    let (_physical_regular, computed_dims) = split_computed_dims(&regular_dims, iface);
+
+    let computed_map: std::collections::HashMap<&str, &semstrait_core::Expr> = computed_dims
+        .iter()
+        .map(|(name, expr)| (name.as_str(), expr))
+        .collect();
 
     let mapping_for_field = |field_name: &str| -> Option<String> {
         for &idx in &joined_indices {
@@ -379,18 +402,41 @@ fn build_join_plan(
         }
     }
 
-    // Build group_by for dimensions (only physical columns).
-    let group_by: Vec<Expr> = request
+    // Build group_by for dimensions (physical only, excluding metadata and computed).
+    let mut group_by: Vec<Expr> = request
         .dimensions
         .iter()
         .filter_map(|dim| {
             if metadata_literals.iter().any(|(n, _)| n == dim) {
+                None
+            } else if computed_map.contains_key(dim.as_str()) {
                 None
             } else {
                 mapping_for_field(dim).map(Expr::column)
             }
         })
         .collect();
+
+    // Add extra GROUP BY columns referenced by computed dims.
+    let mut extra_agg_fields: Vec<(String, String)> = Vec::new(); // (semantic, physical)
+    for (_, expr) in &computed_dims {
+        let mut sem_refs: Vec<String> = Vec::new();
+        let mut sem_seen_refs: HashSet<String> = HashSet::new();
+        collect_column_refs(expr, &mut sem_refs, &mut sem_seen_refs);
+        for sem_ref in &sem_refs {
+            let already_grouped = request.dimensions.iter().any(|d| {
+                d == sem_ref
+                    && !metadata_literals.iter().any(|(n, _)| n == d)
+                    && !computed_map.contains_key(d.as_str())
+            });
+            if !already_grouped {
+                if let Some(phys) = mapping_for_field(&sem_ref) {
+                    group_by.push(Expr::column(phys.clone()));
+                    extra_agg_fields.push((sem_ref.clone(), phys));
+                }
+            }
+        }
+    }
 
     // Lower measures and metrics.
     let mut lowered_measures: Vec<(String, DecomposedMeasure)> = Vec::new();
@@ -449,13 +495,19 @@ fn build_join_plan(
         .flat_map(|(_, lowered)| lowered.aggregates.clone())
         .collect();
 
-    // Aggregate schema: physical dimensions + aggregate outputs.
+    // Aggregate schema: physical dimensions (excl. metadata and computed) + extra refs + aggregates.
     let mut agg_fields: Vec<Field> = request
         .dimensions
         .iter()
-        .filter(|name| !metadata_literals.iter().any(|(n, _)| n == *name))
+        .filter(|name| {
+            !metadata_literals.iter().any(|(n, _)| n == *name)
+                && !computed_map.contains_key(name.as_str())
+        })
         .map(|name| Field::new(name.clone(), iface.resolve_dim_type(name)))
         .collect();
+    for (semantic, _) in &extra_agg_fields {
+        agg_fields.push(Field::new(semantic.clone(), iface.resolve_dim_type(semantic)));
+    }
     let mut agg_idx = 0;
     for (semantic, lowered) in &lowered_measures {
         for (j, agg_m) in lowered.aggregates.iter().enumerate() {
@@ -479,6 +531,8 @@ fn build_join_plan(
     for dim_name in &request.dimensions {
         if let Some((_, lit_expr)) = metadata_literals.iter().find(|(n, _)| n == dim_name) {
             project_exprs.push(lit_expr.clone());
+        } else if let Some(expr) = computed_map.get(dim_name.as_str()) {
+            project_exprs.push(resolve_guards(expr));
         } else {
             project_exprs.push(Expr::column(dim_name.clone()));
         }
@@ -500,125 +554,6 @@ fn build_join_plan(
         root: project,
         output_schema: project_schema,
         pending_filters: Vec::new(),
-    })
-}
-
-// ─────────────── field-based join resolution (from join.rs) ──────────────────
-
-use semstrait_manifest::CompiledManifest;
-
-/// Result of field-based entity resolution.
-#[derive(Debug, Clone)]
-pub struct ResolvedFromFields {
-    /// The datasets needed to satisfy the requested fields.
-    pub datasets: Vec<String>,
-    /// The join path (relationship indices) connecting the datasets.
-    /// Empty if only one dataset is needed.
-    pub join_path: Vec<usize>,
-    /// The classified fields: which field comes from which dataset.
-    #[allow(dead_code)] // Used during ad-hoc join plan construction
-    pub field_providers: Vec<(String, String)>,
-}
-
-/// Resolve which datasets and joins are needed to satisfy a set of requested fields.
-///
-/// When `FROM` is omitted in a query, this function uses the pre-computed `FieldIndex`
-/// to find provider datasets for each requested field, then uses the `RelationshipGraph`
-/// to find the shortest join path connecting all needed datasets.
-pub fn resolve_from_fields(
-    requested_fields: &[String],
-    manifest: &CompiledManifest,
-) -> Result<ResolvedFromFields, PlannerError> {
-    let field_index = &manifest.field_index;
-    let rel_graph = &manifest.relationship_graph;
-
-    // Step 1: For each field, find the provider dataset(s).
-    let mut field_providers: Vec<(String, String)> = Vec::new();
-    let mut needed_datasets: Vec<String> = Vec::new();
-    let mut seen_datasets = std::collections::HashSet::new();
-
-    for field in requested_fields {
-        let providers = field_index.providers.get(field);
-
-        match providers {
-            None => {
-                // Check if it's a metric (kind-level, no single provider dataset).
-                if field_index.all_metrics.contains(field) {
-                    continue;
-                }
-                return Err(PlannerError::Internal(format!(
-                    "field '{}' has no provider dataset in the field index",
-                    field
-                )));
-            }
-            Some(ds_list) if ds_list.is_empty() => {
-                return Err(PlannerError::Internal(format!(
-                    "field '{}' has an empty provider list",
-                    field
-                )));
-            }
-            Some(ds_list) => {
-                let provider = &ds_list[0];
-                field_providers.push((field.clone(), provider.clone()));
-                if seen_datasets.insert(provider.clone()) {
-                    needed_datasets.push(provider.clone());
-                }
-            }
-        }
-    }
-
-    if needed_datasets.is_empty() {
-        return Err(PlannerError::Internal(
-            "no datasets needed for the requested fields".to_string(),
-        ));
-    }
-
-    if needed_datasets.len() == 1 {
-        return Ok(ResolvedFromFields {
-            datasets: needed_datasets,
-            join_path: vec![],
-            field_providers,
-        });
-    }
-
-    // Find the join path connecting all needed datasets.
-    let mut connected = vec![needed_datasets[0].clone()];
-    let mut all_join_indices: Vec<usize> = Vec::new();
-
-    for ds in &needed_datasets[1..] {
-        let mut found = false;
-        for connected_ds in &connected {
-            if let Some(path) = rel_graph.shortest_path(connected_ds, ds) {
-                all_join_indices.extend(path);
-                found = true;
-                break;
-            }
-            if let Some(path) = rel_graph.shortest_path(ds, connected_ds) {
-                all_join_indices.extend(path);
-                found = true;
-                break;
-            }
-        }
-
-        if !found {
-            return Err(PlannerError::NoCoveringDataset {
-                kind: "(ad-hoc)".to_string(),
-                reason: format!(
-                    "no join path between datasets '{}' and '{}'",
-                    connected[0], ds
-                ),
-            });
-        }
-        connected.push(ds.clone());
-    }
-
-    all_join_indices.sort();
-    all_join_indices.dedup();
-
-    Ok(ResolvedFromFields {
-        datasets: needed_datasets,
-        join_path: all_join_indices,
-        field_providers,
     })
 }
 
@@ -1076,112 +1011,4 @@ mod tests {
         }
     }
 
-    // ── Tests from join.rs (field-based resolution) ──────────────────────
-
-    fn make_manifest_with_field_index() -> CompiledManifest {
-        let mut providers: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-        providers.insert("date".to_string(), vec!["orders".to_string()]);
-        providers.insert("region".to_string(), vec!["orders".to_string()]);
-        providers.insert("revenue".to_string(), vec!["orders".to_string()]);
-        providers.insert("customer_name".to_string(), vec!["customers".to_string()]);
-
-        let all_dimensions: std::collections::HashSet<String> =
-            ["date", "region", "customer_name"].iter().map(|s| s.to_string()).collect();
-        let all_measures: std::collections::HashSet<String> = ["revenue"].iter().map(|s| s.to_string()).collect();
-
-        let field_index = semstrait_manifest::FieldIndex {
-            providers,
-            all_dimensions,
-            all_measures,
-            all_metrics: std::collections::HashSet::new(),
-        };
-
-        let mut rel_graph = semstrait_manifest::RelationshipGraph::default();
-        rel_graph
-            .forward
-            .insert("orders".to_string(), vec![("customers".to_string(), 0)]);
-        rel_graph
-            .reverse
-            .insert("customers".to_string(), vec![("orders".to_string(), 0)]);
-        rel_graph.set_shortest_path("orders", "customers", vec![0]);
-
-        let relationships = vec![CompiledRelationship {
-            name: "orders_customers".to_string(),
-            from: "orders".to_string(),
-            to: "customers".to_string(),
-            join_type: ModelJoinType::Left,
-            columns: vec![JoinColumnPair {
-                from: "customer_id".to_string(),
-                to: "id".to_string(),
-            }],
-            cardinality: Cardinality::ManyToOne,
-        }];
-
-        CompiledManifest {
-            version: 3,
-            compiled_at: chrono::Utc::now(),
-            source_hash: "test_join".to_string(),
-            entities: IndexMap::new(),
-            relationships,
-            relationship_graph: rel_graph,
-            field_index,
-            diagnostics: semstrait_manifest::CompileDiagnostics::default(),
-            semantic_graph: semstrait_manifest::SemanticGraph::default(),
-            model_name: "test_join".to_string(),
-            model_description: None,
-            catalog_snapshot: None,
-        }
-    }
-
-    #[test]
-    fn test_resolve_single_dataset() {
-        let manifest = make_manifest_with_field_index();
-        let fields = vec!["date".to_string(), "revenue".to_string()];
-
-        let result = resolve_from_fields(&fields, &manifest);
-        assert!(result.is_ok(), "{:?}", result.err());
-
-        let resolved = result.unwrap();
-        assert_eq!(resolved.datasets, vec!["orders"]);
-        assert!(resolved.join_path.is_empty());
-    }
-
-    #[test]
-    fn test_resolve_cross_dataset_join() {
-        let manifest = make_manifest_with_field_index();
-        let fields = vec![
-            "date".to_string(),
-            "revenue".to_string(),
-            "customer_name".to_string(),
-        ];
-
-        let result = resolve_from_fields(&fields, &manifest);
-        assert!(result.is_ok(), "{:?}", result.err());
-
-        let resolved = result.unwrap();
-        assert_eq!(resolved.datasets.len(), 2);
-        assert!(resolved.datasets.contains(&"orders".to_string()));
-        assert!(resolved.datasets.contains(&"customers".to_string()));
-        assert_eq!(resolved.join_path, vec![0]);
-    }
-
-    #[test]
-    fn test_resolve_unknown_field() {
-        let manifest = make_manifest_with_field_index();
-        let fields = vec!["nonexistent_field".to_string()];
-
-        let result = resolve_from_fields(&fields, &manifest);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_resolve_no_join_path() {
-        let mut manifest = make_manifest_with_field_index();
-        manifest.relationship_graph = semstrait_manifest::RelationshipGraph::default();
-
-        let fields = vec!["date".to_string(), "customer_name".to_string()];
-
-        let result = resolve_from_fields(&fields, &manifest);
-        assert!(result.is_err());
-    }
 }

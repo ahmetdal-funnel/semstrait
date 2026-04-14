@@ -1025,6 +1025,9 @@ pub struct FieldIndex {
     pub all_measures: HashSet<String>,
     /// Metric names (across all data kinds).
     pub all_metrics: HashSet<String>,
+    /// Key column names (across all data kinds, excluding those already in dimensions).
+    #[serde(default)]
+    pub all_keys: HashSet<String>,
 }
 
 // ============================================================================
@@ -1046,6 +1049,7 @@ pub enum FieldType {
     Dimension,
     Measure,
     Metric,
+    Key,
 }
 
 /// Edge in the unified semantic graph.

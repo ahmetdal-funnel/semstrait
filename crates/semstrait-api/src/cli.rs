@@ -37,19 +37,19 @@ pub enum Commands {
         output: Option<PathBuf>,
 
         /// Path to catalogs.yaml for catalog connections.
-        #[arg(long)]
+        #[arg(short, long)]
         catalogs: Option<PathBuf>,
     },
 
-    /// Show the query plan, SQL, and Substrait JSON for a query.
+    /// Show the query plan and/or SQL for a query.
     Explain {
         /// Path to YAML model file.
         #[arg(short, long)]
         model: PathBuf,
 
-        /// Entity to query (kind or dataset name).
+        /// Entity to query. If omitted and model has exactly one entity, auto-selects it.
         #[arg(short, long)]
-        from: String,
+        from: Option<String>,
 
         /// Semantic names to select (auto-classified as dimensions/measures).
         #[arg(short, long, num_args = 1..)]
@@ -59,12 +59,16 @@ pub enum Commands {
         #[arg(long, num_args = 0..)]
         filters: Vec<String>,
 
+        /// Output format: "plan", "sql", or omit for both.
+        #[arg(short, long)]
+        output: Option<String>,
+
         /// Output as JSON instead of text.
         #[arg(long)]
         json: bool,
 
         /// Path to catalogs.yaml for catalog connections.
-        #[arg(long)]
+        #[arg(short, long)]
         catalogs: Option<PathBuf>,
     },
 
@@ -74,9 +78,9 @@ pub enum Commands {
         #[arg(short, long)]
         model: PathBuf,
 
-        /// Entity to query (kind or dataset name).
+        /// Entity to query. If omitted and model has exactly one entity, auto-selects it.
         #[arg(short, long)]
-        from: String,
+        from: Option<String>,
 
         /// Semantic names to select (auto-classified as dimensions/measures).
         #[arg(short, long, num_args = 1..)]
@@ -87,7 +91,7 @@ pub enum Commands {
         filters: Vec<String>,
 
         /// Path to catalogs.yaml for catalog connections.
-        #[arg(long)]
+        #[arg(short, long)]
         catalogs: Option<PathBuf>,
     },
 
@@ -98,9 +102,9 @@ pub enum Commands {
         #[arg(short, long)]
         model: PathBuf,
 
-        /// Entity to query (kind or dataset name).
+        /// Entity to query. If omitted and model has exactly one entity, auto-selects it.
         #[arg(short, long)]
-        from: String,
+        from: Option<String>,
 
         /// Semantic names to select (auto-classified as dimensions/measures).
         #[arg(short, long, num_args = 1..)]
@@ -122,9 +126,9 @@ pub enum Commands {
         #[arg(short, long)]
         model: PathBuf,
 
-        /// Entity to query (kind or dataset name).
+        /// Entity to query. If omitted and model has exactly one entity, auto-selects it.
         #[arg(short, long)]
-        from: String,
+        from: Option<String>,
 
         /// Semantic names to select (auto-classified as dimensions/measures).
         #[arg(short, long, num_args = 1..)]
@@ -150,9 +154,9 @@ pub enum Commands {
         #[arg(short, long)]
         model: PathBuf,
 
-        /// Entity to query (kind or dataset name).
+        /// Entity to query. If omitted and model has exactly one entity, auto-selects it.
         #[arg(short, long)]
-        from: String,
+        from: Option<String>,
 
         /// Semantic names to select (auto-classified as dimensions/measures).
         #[arg(short, long, num_args = 1..)]
@@ -358,9 +362,9 @@ async fn build_iceberg_provider(
 }
 
 /// Build a RawQueryRequest from common CLI args.
-fn build_raw_request(from: String, select: Vec<String>, filters: Vec<String>) -> RawQueryRequest {
+fn build_raw_request(from: Option<String>, select: Vec<String>, filters: Vec<String>) -> RawQueryRequest {
     RawQueryRequest {
-        model: None, // model is loaded separately
+        model: None,
         from,
         select,
         filters,
@@ -406,6 +410,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             from,
             select,
             filters,
+            output,
             json,
             catalogs,
         } => {
@@ -416,9 +421,15 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                println!("--- Plan ---\n{}\n", result.plan_text);
-                if let Some(sql) = &result.sql {
-                    println!("--- SQL ---\n{}\n", sql);
+                let show_plan = output.as_deref().is_none() || output.as_deref() == Some("plan");
+                let show_sql = output.as_deref().is_none() || output.as_deref() == Some("sql");
+                if show_plan {
+                    println!("--- Plan ---\n{}\n", result.plan_text);
+                }
+                if show_sql {
+                    if let Some(sql) = &result.sql {
+                        println!("--- SQL ---\n{}\n", sql);
+                    }
                 }
             }
             Ok(())
@@ -471,7 +482,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
-            let raw = build_raw_request(from, select, filters);
+            let raw = build_raw_request(entity, select, filters);
             run_query(&engine, &raw).await
         }
 
@@ -485,7 +496,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             db,
         } => {
             let compiled = compile_from_file(&model, None).await?;
-
             let connector = match db {
                 Some(path) => semstrait_connectors::duckdb::DuckDbConnector::with_path(
                     &path.to_string_lossy(),

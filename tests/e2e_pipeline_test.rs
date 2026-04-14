@@ -311,7 +311,7 @@ async fn test_explain_includes_substrait() {
         .expect("engine should compile manifest");
 
     let raw = RawQueryRequest {
-        from: "orders".to_string(),
+        from: Some("orders".to_string()),
         select: vec!["date".to_string(), "region".to_string(), "revenue".to_string()],
         ..Default::default()
     };
@@ -1389,7 +1389,7 @@ async fn test_fc_explain_plan_tree() {
         .expect("engine should compile e2e_full_coverage");
 
     let raw = RawQueryRequest {
-        from: "transactions".to_string(),
+        from: Some("transactions".to_string()),
         select: vec![
             "event_date".to_string(),
             "country".to_string(),
@@ -1768,6 +1768,9 @@ async fn test_decl_combined_all_categories() {
     assert!(sql.contains("EXTRACT"), "combined should have EXTRACT: {}", sql);
 }
 
+// -- Debug: check alpinestars compiled interface --------------------------------
+
+
 // =============================================================================
 // Test 8: DataFusion query execution (feature-gated)
 // =============================================================================
@@ -1951,7 +1954,7 @@ mod datafusion_tests {
         let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
 
         let raw = RawQueryRequest {
-            from: "orders".to_string(),
+            from: Some("orders".to_string()),
             select: vec!["region".to_string(), "revenue".to_string()],
             ..Default::default()
         };

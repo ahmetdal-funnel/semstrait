@@ -58,6 +58,25 @@ pub(crate) fn split_computed_dims(
     (physical, computed)
 }
 
+/// Expand Guard sugar to Case in an expression tree without touching column names.
+///
+/// Guard is a model-level sugar: `GUARD(condition => expr)` → `CASE WHEN condition THEN expr ELSE NULL END`.
+/// The PhysicalResolver does this during lowering, but when emitting the original semantic
+/// expression (for post-aggregate projection), we need Guard expansion without column remapping.
+pub(crate) fn resolve_guards(expr: &Expr) -> Expr {
+    use semstrait_core::expr::WhenClause;
+    expr.transform(&|e: &Expr| -> Result<Option<Expr>, std::convert::Infallible> {
+        match e {
+            Expr::Guard(g) => Ok(Some(Expr::case(
+                vec![WhenClause::new((*g.condition).clone(), (*g.expr).clone())],
+                Some(Expr::null()),
+            ))),
+            _ => Ok(None),
+        }
+    })
+    .expect("Guard resolution is infallible")
+}
+
 /// Extract metadata dimension value from a DatasetBinding's resolved sources.
 pub(crate) fn extract_metadata_value_binding(
     meta: &MetadataDimension,

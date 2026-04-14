@@ -36,9 +36,13 @@ impl ConstraintValidator {
         request: &ResolvedQueryRequest,
         manifest: &CompiledManifest,
     ) -> Result<(), PlannerError> {
+        if request.entity_name.is_empty() {
+            return Ok(()); // ad-hoc queries skip constraint validation
+        }
+        let entity_name = request.entity_name.as_str();
         let data_kind = manifest
-            .resolve(&request.entity_name)
-            .ok_or_else(|| PlannerError::KindNotFound(request.entity_name.clone()))?;
+            .resolve(entity_name)
+            .ok_or_else(|| PlannerError::KindNotFound(entity_name.to_string()))?;
         let iface = data_kind.interface();
 
         // Build the query scope: all dimensions in GROUP BY + filter dimensions.

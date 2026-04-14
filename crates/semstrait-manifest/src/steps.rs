@@ -1415,6 +1415,7 @@ fn build_field_index(
     let mut all_dimensions: HashSet<String> = HashSet::new();
     let mut all_measures: HashSet<String> = HashSet::new();
     let mut all_metrics: HashSet<String> = HashSet::new();
+    let mut all_keys: HashSet<String> = HashSet::new();
 
     for (name, dk) in data_kinds {
         for dim_name in dk.dimensions().keys() {
@@ -1434,6 +1435,18 @@ fn build_field_index(
         for metric_name in dk.metrics().keys() {
             all_metrics.insert(metric_name.clone());
         }
+        // Index key columns — add to providers only if not already a dimension.
+        if let Some(keys) = dk.keys() {
+            for key_col in keys.all_column_names() {
+                if !all_dimensions.contains(&key_col) {
+                    providers
+                        .entry(key_col.clone())
+                        .or_default()
+                        .push(name.clone());
+                    all_keys.insert(key_col);
+                }
+            }
+        }
     }
 
     crate::acceleration::FieldIndex {
@@ -1441,6 +1454,7 @@ fn build_field_index(
         all_dimensions,
         all_measures,
         all_metrics,
+        all_keys,
     }
 }
 
@@ -1543,6 +1557,18 @@ fn build_semantic_graph(
         // Add metric nodes (not tied to a specific dataset).
         for metric_name in dk.metrics().keys() {
             graph.add_field(metric_name, FieldType::Metric);
+        }
+        // Add key column nodes (only if not already a dimension or measure).
+        if let Some(keys) = dk.keys() {
+            let dim_names: HashSet<&String> = dk.dimensions().keys().collect();
+            let measure_names: HashSet<&String> = dk.measures().keys().collect();
+            for key_col in keys.all_column_names() {
+                if !dim_names.contains(&key_col) && !measure_names.contains(&key_col) {
+                    for binding in dk.bindings() {
+                        graph.add_provides_field(&binding.dataset_name, &key_col, FieldType::Key);
+                    }
+                }
+            }
         }
     }
 

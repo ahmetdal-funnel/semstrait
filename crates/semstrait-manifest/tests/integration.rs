@@ -2990,3 +2990,79 @@ semantic_model:
     assert!(msg.contains("order_date"), "should mention order_date: {msg}");
     assert!(msg.contains("event_ts"), "should mention event_ts: {msg}");
 }
+
+// ============================================================================
+// Computed dimensions in unionset — ref'd and inline
+// ============================================================================
+
+#[tokio::test]
+async fn test_computed_dim_in_unionset_via_ref() {
+    let yaml = r#"
+semantic_model:
+  name: computed_unionset_test
+
+  dimensions:
+    - name: channel
+      data_type: string
+    - name: source
+      data_type: string
+    - name: full_source
+      data_type: string
+      expr:
+        concat:
+          - channel
+          - lit: " - "
+          - source
+
+  measures:
+    - name: clicks
+      data_type: i64
+      agg: sum
+
+  unionsets:
+    - name: all_traffic
+      mode: all
+      dimensions:
+        - ref: channel
+        - ref: source
+        - ref: full_source
+      measures:
+        - ref: clicks
+      datasets:
+        - name: web_clicks
+          extras:
+            column_mapping:
+              channel: web_channel
+              source: web_source
+              clicks: click_count
+            storage:
+              format: parquet
+              paths: ["web_clicks.parquet"]
+        - name: app_clicks
+          extras:
+            column_mapping:
+              channel: app_channel
+              source: app_source
+              clicks: tap_count
+            storage:
+              format: parquet
+              paths: ["app_clicks.parquet"]
+"#;
+
+    let compiler = ManifestCompiler::new();
+    let manifest = compiler
+        .compile(CompileSource::Yaml(yaml.to_string()))
+        .await
+        .expect("compilation should succeed");
+
+    let dk = manifest.entities.get("all_traffic").expect("all_traffic entity");
+    let iface = dk.interface();
+
+    // full_source should be compiled as a computed dimension with expr
+    let full_source = iface.dimensions.get("full_source")
+        .expect("full_source should exist in compiled interface");
+    assert!(
+        full_source.expr.is_some(),
+        "full_source should have expr (concat) after compilation — got None"
+    );
+}

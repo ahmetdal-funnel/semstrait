@@ -10,6 +10,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct ResolvedQueryRequest {
     /// The entity to query (kind name, or dataset name for implicit kinds).
+    /// Empty string triggers ad-hoc resolution from requested fields.
     pub entity_name: String,
     /// Semantic dimension names to include in GROUP BY.
     pub dimensions: Vec<String>,

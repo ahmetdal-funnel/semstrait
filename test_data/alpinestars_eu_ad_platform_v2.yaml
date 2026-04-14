@@ -64,6 +64,11 @@ semantic_model:
     - name: measurement_source
       description: "Measurement source identifier"
       data_type: string
+      expr:
+        concat:
+          - measurement_channel
+          - lit: " - "
+          - traffic_source
 
     - name: currency
       description: "Currency of the reported monetary values"

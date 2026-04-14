@@ -12,7 +12,7 @@ use crate::decomposer::{self, DecomposedMeasure};
 use crate::resolver::PhysicalResolver;
 use super::{
     extract_metadata_value_binding, grain_to_temporal, partition_dimensions_iface,
-    resolve_native_grain_binding, KindPlanner, PlanFragment, PlannerContext, PrunedView,
+    resolve_guards, resolve_native_grain_binding, split_computed_dims, KindPlanner, PlanFragment, PlannerContext, PrunedView,
 };
 use super::plan_builder;
 use super::plan_builder::{build_scan_node_binding, build_semantic_type_map, infer_aggregation_iface};
@@ -371,6 +371,7 @@ fn resolve_leaf_or_expand(
 enum DimSource {
     Physical(String),
     MetadataLiteral(Expr),
+    Computed(Expr),
     NullFill,
 }
 
@@ -433,12 +434,13 @@ fn build_single_dataset_with_rollup(
     let mut scan_seen: HashSet<String> = HashSet::new();
 
     let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
+    let (physical_only, computed_dims) = split_computed_dims(&regular_dims, iface);
 
-    // Map dimensions, applying DATE_TRUNC for the temporal dimension.
+    // Map physical dimensions, applying DATE_TRUNC for the temporal dimension.
     let mut dim_physical: Vec<(String, DimResolve)> = Vec::new();
     let mut metadata_literals: Vec<(String, Expr)> = Vec::new();
 
-    for dim_name in &regular_dims {
+    for dim_name in &physical_only {
         if let Some(lit_val) = mapping.literals.get(dim_name) {
             metadata_literals.push((dim_name.clone(), Expr::string(lit_val.clone())));
         } else if let Some(phys) = mapping.physical.get(dim_name) {
@@ -458,9 +460,55 @@ fn build_single_dataset_with_rollup(
         }
     }
 
-    for (dim_name, meta) in &metadata_dims {
-        let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
-        metadata_literals.push((dim_name.clone(), Expr::string(value)));
+    // Pre-compute metadata dimension values so computed expressions can reference them.
+    let metadata_values: HashMap<String, String> = metadata_dims
+        .iter()
+        .map(|(name, meta)| {
+            let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
+            (name.clone(), value)
+        })
+        .collect();
+
+    // Handle computed dimensions: collect referenced columns for scan and GROUP BY.
+    let mut lowered_computed: Vec<(String, semstrait_core::Expr)> = Vec::new();
+    let mut extra_group_by_cols: Vec<(String, String)> = Vec::new(); // (semantic, physical)
+
+    for (dim_name, expr) in &computed_dims {
+        let mut sem_refs: Vec<String> = Vec::new();
+        let mut sem_seen_refs: HashSet<String> = HashSet::new();
+        collect_column_refs(expr, &mut sem_refs, &mut sem_seen_refs);
+
+        // Inline literal and metadata values, then collect physical scan columns.
+        let resolved = resolve_guards(expr).transform(
+            &|e: &Expr| -> Result<Option<Expr>, std::convert::Infallible> {
+                if let Expr::Column(col) = e {
+                    if let Some(lit_val) = mapping.literals.get(&col.name) {
+                        return Ok(Some(Expr::string(lit_val.clone())));
+                    }
+                    if let Some(meta_val) = metadata_values.get(&col.name) {
+                        return Ok(Some(Expr::string(meta_val.clone())));
+                    }
+                }
+                Ok(None)
+            },
+        ).expect("literal inlining is infallible");
+
+        for sem_ref in &sem_refs {
+            if let Some(phys) = mapping.physical.get(sem_ref) {
+                if scan_seen.insert(phys.clone()) {
+                    scan_columns.push(phys.clone());
+                }
+                // Add to GROUP BY if not already a physical dim.
+                if !dim_physical.iter().any(|(s, _)| s == sem_ref) {
+                    extra_group_by_cols.push((sem_ref.clone(), phys.clone()));
+                }
+            }
+        }
+        lowered_computed.push((dim_name.clone(), resolved));
+    }
+
+    for (dim_name, _meta) in &metadata_dims {
+        metadata_literals.push((dim_name.clone(), Expr::string(metadata_values.get(dim_name).cloned().unwrap_or_default())));
     }
 
     // Lower measures.
@@ -495,8 +543,8 @@ fn build_single_dataset_with_rollup(
     let sem_types = build_semantic_type_map(iface, &binding.column_mapping.physical);
     let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
 
-    // Build Aggregate with DATE_TRUNC in GROUP BY.
-    let group_by: Vec<Expr> = dim_physical
+    // Build Aggregate with DATE_TRUNC in GROUP BY + extra columns for computed dims.
+    let mut group_by: Vec<Expr> = dim_physical
         .iter()
         .map(|(_, resolve)| match resolve {
             DimResolve::Column(phys) => Expr::column(phys.clone()),
@@ -505,6 +553,9 @@ fn build_single_dataset_with_rollup(
             }
         })
         .collect();
+    for (_, phys) in &extra_group_by_cols {
+        group_by.push(Expr::column(phys.clone()));
+    }
 
     let aggregates: Vec<AggregateMeasure> = lowered_measures
         .iter()
@@ -515,6 +566,9 @@ fn build_single_dataset_with_rollup(
         .iter()
         .map(|(semantic, _)| Field::new(semantic.clone(), iface.resolve_dim_type(semantic)))
         .collect();
+    for (semantic, _) in &extra_group_by_cols {
+        agg_fields.push(Field::new(semantic.clone(), iface.resolve_dim_type(semantic)));
+    }
     let mut agg_idx = 0;
     for (semantic, lowered) in &lowered_measures {
         for (j, agg_m) in lowered.aggregates.iter().enumerate() {
@@ -537,6 +591,8 @@ fn build_single_dataset_with_rollup(
     for dim_name in &request.dimensions {
         if let Some((_, lit_expr)) = metadata_literals.iter().find(|(n, _)| n == dim_name) {
             project_exprs.push(lit_expr.clone());
+        } else if let Some((_, comp_expr)) = lowered_computed.iter().find(|(n, _)| n == dim_name) {
+            project_exprs.push(comp_expr.clone());
         } else {
             project_exprs.push(Expr::column(dim_name.clone()));
         }
@@ -667,11 +723,70 @@ fn build_union_branch(
         false
     };
 
+    // Split regular dims into physical and computed.
+    let (physical_regular, computed_dims) = split_computed_dims(regular_dims, iface);
+
+    let computed_map: HashMap<&str, &semstrait_core::Expr> = computed_dims
+        .iter()
+        .map(|(name, expr)| (name.as_str(), expr))
+        .collect();
+
+    // Pre-compute metadata dimension values so computed expressions can reference them.
+    let metadata_values: HashMap<String, String> = metadata_dims
+        .iter()
+        .map(|(name, meta)| {
+            let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
+            (name.clone(), value)
+        })
+        .collect();
+
+    // Track extra columns needed by computed expressions for GROUP BY.
+    let mut extra_group_by: Vec<(String, String)> = Vec::new(); // (semantic, physical)
+
     // Resolve regular dimensions.
     let mut dim_sources: Vec<(String, DimSource)> = Vec::new();
     for dim_name in regular_dims {
         if let Some(lit_val) = mapping.literals.get(dim_name) {
             dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(Expr::string(lit_val.clone()))));
+        } else if let Some(expr) = computed_map.get(dim_name.as_str()) {
+            // Computed dimension: check if referenced columns are available
+            // (as physical columns, literal values, or metadata dimension values).
+            let mut sem_refs: Vec<String> = Vec::new();
+            let mut sem_seen_refs: HashSet<String> = HashSet::new();
+            collect_column_refs(expr, &mut sem_refs, &mut sem_seen_refs);
+            let all_mapped = sem_refs.iter().all(|r| {
+                mapping.physical.contains_key(r)
+                    || mapping.literals.contains_key(r)
+                    || metadata_values.contains_key(r)
+            });
+            if all_mapped {
+                let resolved = resolve_guards(expr).transform(
+                    &|e: &Expr| -> Result<Option<Expr>, std::convert::Infallible> {
+                        if let Expr::Column(col) = e {
+                            if let Some(lit_val) = mapping.literals.get(&col.name) {
+                                return Ok(Some(Expr::string(lit_val.clone())));
+                            }
+                            if let Some(meta_val) = metadata_values.get(&col.name) {
+                                return Ok(Some(Expr::string(meta_val.clone())));
+                            }
+                        }
+                        Ok(None)
+                    },
+                ).expect("literal inlining is infallible");
+                for sem_ref in &sem_refs {
+                    if let Some(phys) = mapping.physical.get(sem_ref) {
+                        if scan_seen.insert(phys.clone()) {
+                            scan_columns.push(phys.clone());
+                        }
+                        if !physical_regular.contains(sem_ref) {
+                            extra_group_by.push((sem_ref.clone(), phys.clone()));
+                        }
+                    }
+                }
+                dim_sources.push((dim_name.clone(), DimSource::Computed(resolved)));
+            } else {
+                dim_sources.push((dim_name.clone(), DimSource::NullFill));
+            }
         } else if let Some(phys) = mapping.physical.get(dim_name) {
             dim_sources.push((dim_name.clone(), DimSource::Physical(phys.clone())));
             if scan_seen.insert(phys.clone()) {
@@ -682,11 +797,10 @@ fn build_union_branch(
         }
     }
 
-    // Also resolve metadata dimensions.
+    // Also resolve metadata dimensions (reuse pre-computed values).
     let mut meta_lit_sources: Vec<(String, Expr)> = Vec::new();
-    for (dim_name, meta) in metadata_dims {
-        let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
-        meta_lit_sources.push((dim_name.clone(), Expr::string(value)));
+    for (dim_name, _meta) in metadata_dims {
+        meta_lit_sources.push((dim_name.clone(), Expr::string(metadata_values.get(dim_name).cloned().unwrap_or_default())));
     }
 
     // Lower measures that this branch covers.
@@ -730,8 +844,8 @@ fn build_union_branch(
     let sem_types = build_semantic_type_map(iface, &mapping.physical);
     let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
 
-    // Build Aggregate node.
-    let group_by: Vec<Expr> = dim_sources
+    // Build Aggregate node (physical dims + extra columns for computed dim refs).
+    let mut group_by: Vec<Expr> = dim_sources
         .iter()
         .filter_map(|(name, src)| match src {
             DimSource::Physical(p) => {
@@ -747,6 +861,9 @@ fn build_union_branch(
             _ => None,
         })
         .collect();
+    for (_, phys) in &extra_group_by {
+        group_by.push(Expr::column(phys.clone()));
+    }
 
     let aggregates: Vec<AggregateMeasure> = lowered_measures
         .iter()
@@ -761,6 +878,9 @@ fn build_union_branch(
             _ => None,
         })
         .collect();
+    for (semantic, _) in &extra_group_by {
+        agg_fields.push(Field::new(semantic.clone(), iface.resolve_dim_type(semantic)));
+    }
 
     let mut agg_idx = 0;
     for (semantic, lowered) in &lowered_measures {
@@ -790,6 +910,7 @@ fn build_union_branch(
             match src {
                 DimSource::Physical(_) => project_exprs.push(Expr::column(dim_name.clone())),
                 DimSource::MetadataLiteral(lit) => project_exprs.push(lit.clone()),
+                DimSource::Computed(expr) => project_exprs.push(expr.clone()),
                 DimSource::NullFill => project_exprs.push(Expr::null()),
             }
         } else {

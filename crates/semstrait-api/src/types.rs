@@ -10,8 +10,9 @@ pub struct RawQueryRequest {
     /// Semantic model source (file path for CLI, inline YAML/JSON for REST/gRPC).
     #[serde(default)]
     pub model: Option<String>,
-    /// Entity to query: a kind name or a dataset name.
-    pub from: String,
+    /// Entity to query: a kind name or a dataset name. If None, planner resolves from select.
+    #[serde(default)]
+    pub from: Option<String>,
     /// Semantic names to select — system classifies into dimensions/measures/metrics.
     /// Use `["*"]` to select all columns from the entity.
     #[serde(default)]

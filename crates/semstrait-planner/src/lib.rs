@@ -23,6 +23,8 @@ pub(crate) mod resolver;
 pub(crate) mod decomposer;
 pub(crate) mod kind;
 pub(crate) mod additivity;
+pub(crate) mod entity_resolver;
+pub(crate) mod ad_hoc_join;
 pub(crate) mod optimizer;
 pub mod planner;
 
