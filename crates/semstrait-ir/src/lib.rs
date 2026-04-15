@@ -15,6 +15,7 @@ pub mod artifact;
 pub mod error;
 pub mod plan;
 pub mod plan_builder;
+pub mod rewrite;
 pub mod schema;
 pub mod substrait;
 
@@ -29,4 +30,5 @@ pub use plan::{
 pub use plan::node::{Aggregation, BinaryOp, DataType, Expr};
 pub use schema::{Field, Schema};
 pub use plan_builder::{DefaultPlanBuilder, PlanBuilder};
+pub use rewrite::{CanonicalFn, FunctionRewriter, FunctionTarget};
 pub use substrait::{ExprConverter, FunctionRegistry, SubstraitSerializer};

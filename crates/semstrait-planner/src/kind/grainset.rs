@@ -8,14 +8,12 @@
 //! 5. UNION ALL all branches → Re-aggregate → Final Project
 
 use crate::error::PlannerError;
-use crate::decomposer::{self, DecomposedMeasure};
-use crate::resolver::PhysicalResolver;
 use super::{
-    extract_metadata_value_binding, grain_to_temporal, partition_dimensions_iface,
-    resolve_guards, resolve_native_grain_binding, split_computed_dims, KindPlanner, PlanFragment, PlannerContext, PrunedView,
+    grain_to_temporal, partition_dimensions_iface,
+    resolve_native_grain_binding, KindPlanner, PlanFragment, PlannerContext, PrunedView,
 };
 use super::plan_builder;
-use super::plan_builder::{build_scan_node_binding, build_semantic_type_map, infer_aggregation_iface};
+use super::plan_builder::infer_aggregation_iface;
 use crate::request::ResolvedQueryRequest;
 use semstrait_ir::{
     AggregateMeasure, Expr, Field, PlanNode,
@@ -26,7 +24,6 @@ use semstrait_manifest::{
 };
 use semstrait_manifest::acceleration::{CompiledDataKind, DatasetBinding};
 use std::collections::{HashMap, HashSet};
-use super::collect_column_refs;
 
 /// Planner for Grainset kinds — grain-aware UNION ALL resolution.
 pub struct GrainsetPlanner;
@@ -135,7 +132,7 @@ fn prune_datasets<'a>(
         let mapping = &binding.column_mapping;
         let expanded_measures: Vec<String> = request.measures.iter().flat_map(|m| {
             if let Some(metric) = iface.metrics.get(m) {
-                extract_metric_constituents(metric, iface)
+                plan_builder::extract_metric_constituents(metric, iface)
             } else {
                 vec![m.clone()]
             }
@@ -226,7 +223,7 @@ fn assign_to_grain_groups<'a>(
     // For metrics, find the cheapest group where all constituent measures are available.
     for metric_name in metric_names {
         if let Some(metric) = iface.metrics.get(metric_name) {
-            let constituent_measures = extract_metric_constituents(metric, iface);
+            let constituent_measures = plan_builder::extract_metric_constituents(metric, iface);
             let mut assigned = false;
             for (grain, bindings) in &sorted_groups {
                 let group_covers_all = constituent_measures.iter().all(|cm| {
@@ -294,86 +291,7 @@ fn assign_to_grain_groups<'a>(
     Ok(dataset_assignments)
 }
 
-/// Extract transitive leaf measure names from a metric's expression.
-///
-/// Recursively expands nested metric references to their underlying measures.
-/// For example, `roi = profit / cost` where `profit = revenue - cost` returns
-/// `["revenue", "cost"]` — the actual physical measures, not intermediate metrics.
-pub fn extract_metric_constituents(
-    metric: &semstrait_manifest::CompiledMetric,
-    iface: &CompiledInterface,
-) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut seen = HashSet::new();
-    collect_leaf_measures(&metric.expr, iface, &mut names, &mut seen);
-    names
-}
-
-/// Collect transitive leaf measure names from an expression tree.
-///
-/// When a leaf reference is itself a metric in the interface, recursively
-/// expands it to its underlying measures. This ensures coverage checks
-/// operate on actual physical measures, consistent with how
-/// `lower_metric_iface()` decomposes metrics at lowering time.
-fn collect_leaf_measures(
-    expr: &Expr,
-    iface: &CompiledInterface,
-    out: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-) {
-    match expr {
-        Expr::Column(col) => {
-            resolve_leaf_or_expand(&col.name, iface, out, seen);
-        }
-        Expr::EntityRef(er) => {
-            resolve_leaf_or_expand(&er.name, iface, out, seen);
-        }
-        Expr::BinaryOp(bin) => {
-            collect_leaf_measures(&bin.left, iface, out, seen);
-            collect_leaf_measures(&bin.right, iface, out, seen);
-        }
-        Expr::Case(case) => {
-            for wc in &case.when_then {
-                collect_leaf_measures(&wc.condition, iface, out, seen);
-                collect_leaf_measures(&wc.result, iface, out, seen);
-            }
-            if let Some(e) = &case.else_expr {
-                collect_leaf_measures(e, iface, out, seen);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// If `name` is a nested metric, recursively expand; otherwise keep as leaf measure.
-fn resolve_leaf_or_expand(
-    name: &str,
-    iface: &CompiledInterface,
-    out: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-) {
-    if let Some(sub_metric) = iface.metrics.get(name) {
-        // Nested metric — recursively expand to leaf measures.
-        // The seen-set prevents infinite recursion on circular references
-        // (which should be caught at compile time, but defensive here).
-        if seen.insert(format!("__metric__{}", name)) {
-            collect_leaf_measures(&sub_metric.expr, iface, out, seen);
-        }
-    } else if seen.insert(name.to_string()) {
-        // Leaf measure (or unknown ref) — include as constituent.
-        out.push(name.to_string());
-    }
-}
-
 // ─────────────────── Step 3: Build Plan ──────────────────────
-
-/// How a dimension is resolved in a UNION branch.
-enum DimSource {
-    Physical(String),
-    MetadataLiteral(Expr),
-    Computed(Expr),
-    NullFill,
-}
 
 /// Build the unified output schema for the UNION plan.
 fn build_unified_schema(request: &ResolvedQueryRequest, iface: &CompiledInterface) -> Schema {
@@ -411,217 +329,15 @@ fn build_single_dataset_plan(
         false
     };
 
-    // Use the shared single-dataset builder, but with grain rollup if needed.
-    if needs_rollup {
-        build_single_dataset_with_rollup(iface, request, binding, ctx, temporal_dim.unwrap(), request_grain.unwrap())
+    // Use the shared layered builder with optional grain rollup.
+    let rollup = if needs_rollup {
+        Some((temporal_dim.unwrap(), request_grain.unwrap()))
     } else {
-        plan_builder::build_binding_plan(iface, binding, request, ctx, true)
-    }
+        None
+    };
+    plan_builder::build_binding_plan(iface, binding, request, ctx, true, rollup)
 }
 
-/// Build a single-dataset plan with DATE_TRUNC grain rollup.
-fn build_single_dataset_with_rollup(
-    iface: &CompiledInterface,
-    request: &ResolvedQueryRequest,
-    binding: &DatasetBinding,
-    ctx: &PlannerContext<'_>,
-    temporal_dim_name: &str,
-    request_grain: TemporalGrain,
-) -> Result<PlanFragment, PlannerError> {
-    let mapping = &binding.column_mapping;
-
-    let mut scan_columns: Vec<String> = Vec::new();
-    let mut scan_seen: HashSet<String> = HashSet::new();
-
-    let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
-    let (physical_only, computed_dims) = split_computed_dims(&regular_dims, iface);
-
-    // Map physical dimensions, applying DATE_TRUNC for the temporal dimension.
-    let mut dim_physical: Vec<(String, DimResolve)> = Vec::new();
-    let mut metadata_literals: Vec<(String, Expr)> = Vec::new();
-
-    for dim_name in &physical_only {
-        if let Some(lit_val) = mapping.literals.get(dim_name) {
-            metadata_literals.push((dim_name.clone(), Expr::string(lit_val.clone())));
-        } else if let Some(phys) = mapping.physical.get(dim_name) {
-            if dim_name == temporal_dim_name {
-                dim_physical.push((dim_name.clone(), DimResolve::DateTrunc(phys.clone(), request_grain)));
-            } else {
-                dim_physical.push((dim_name.clone(), DimResolve::Column(phys.clone())));
-            }
-            if scan_seen.insert(phys.clone()) {
-                scan_columns.push(phys.clone());
-            }
-        } else {
-            return Err(PlannerError::DimensionNotFound {
-                kind: iface.name.clone(),
-                dimension: dim_name.clone(),
-            });
-        }
-    }
-
-    // Pre-compute metadata dimension values so computed expressions can reference them.
-    let metadata_values: HashMap<String, String> = metadata_dims
-        .iter()
-        .map(|(name, meta)| {
-            let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
-            (name.clone(), value)
-        })
-        .collect();
-
-    // Handle computed dimensions: collect referenced columns for scan and GROUP BY.
-    let mut lowered_computed: Vec<(String, semstrait_core::Expr)> = Vec::new();
-    let mut extra_group_by_cols: Vec<(String, String)> = Vec::new(); // (semantic, physical)
-
-    for (dim_name, expr) in &computed_dims {
-        let mut sem_refs: Vec<String> = Vec::new();
-        let mut sem_seen_refs: HashSet<String> = HashSet::new();
-        collect_column_refs(expr, &mut sem_refs, &mut sem_seen_refs);
-
-        // Inline literal and metadata values, then collect physical scan columns.
-        let resolved = resolve_guards(expr).transform(
-            &|e: &Expr| -> Result<Option<Expr>, std::convert::Infallible> {
-                if let Expr::Column(col) = e {
-                    if let Some(lit_val) = mapping.literals.get(&col.name) {
-                        return Ok(Some(Expr::string(lit_val.clone())));
-                    }
-                    if let Some(meta_val) = metadata_values.get(&col.name) {
-                        return Ok(Some(Expr::string(meta_val.clone())));
-                    }
-                }
-                Ok(None)
-            },
-        ).expect("literal inlining is infallible");
-
-        for sem_ref in &sem_refs {
-            if let Some(phys) = mapping.physical.get(sem_ref) {
-                if scan_seen.insert(phys.clone()) {
-                    scan_columns.push(phys.clone());
-                }
-                // Add to GROUP BY if not already a physical dim.
-                if !dim_physical.iter().any(|(s, _)| s == sem_ref) {
-                    extra_group_by_cols.push((sem_ref.clone(), phys.clone()));
-                }
-            }
-        }
-        lowered_computed.push((dim_name.clone(), resolved));
-    }
-
-    for (dim_name, _meta) in &metadata_dims {
-        metadata_literals.push((dim_name.clone(), Expr::string(metadata_values.get(dim_name).cloned().unwrap_or_default())));
-    }
-
-    // Lower measures.
-    let phys_resolver = PhysicalResolver::new(&mapping.physical);
-    let mut lowered_measures: Vec<(String, DecomposedMeasure)> = Vec::new();
-    for measure_name in &request.measures {
-        if let Some(measure) = iface.measures.get(measure_name) {
-            let lowered = decomposer::decompose_measure(
-                &phys_resolver, measure_name, measure.agg, &measure.expr, &measure.filters, &measure.data_type,
-            )?;
-            for agg in &lowered.aggregates {
-                collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
-            }
-            lowered_measures.push((measure_name.clone(), lowered));
-        } else if iface.metrics.contains_key(measure_name) {
-            let metric = &iface.metrics[measure_name];
-            let lowered = decomposer::decompose_metric(measure_name, metric, iface, binding, 4)?;
-            for agg in &lowered.aggregates {
-                collect_column_refs(&agg.expr, &mut scan_columns, &mut scan_seen);
-            }
-            lowered_measures.push((measure_name.clone(), lowered));
-        } else {
-            return Err(PlannerError::MeasureNotFound {
-                kind: iface.name.clone(),
-                measure: measure_name.clone(),
-            });
-        }
-    }
-
-    // Build Scan (multi-source aware).
-    let pb = ctx.plan_builder;
-    let sem_types = build_semantic_type_map(iface, &binding.column_mapping.physical);
-    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
-
-    // Build Aggregate with DATE_TRUNC in GROUP BY + extra columns for computed dims.
-    let mut group_by: Vec<Expr> = dim_physical
-        .iter()
-        .map(|(_, resolve)| match resolve {
-            DimResolve::Column(phys) => Expr::column(phys.clone()),
-            DimResolve::DateTrunc(phys, grain) => {
-                Expr::date_trunc((*grain).into(), Expr::column(phys.clone()))
-            }
-        })
-        .collect();
-    for (_, phys) in &extra_group_by_cols {
-        group_by.push(Expr::column(phys.clone()));
-    }
-
-    let aggregates: Vec<AggregateMeasure> = lowered_measures
-        .iter()
-        .flat_map(|(_, lowered)| lowered.aggregates.clone())
-        .collect();
-
-    let mut agg_fields: Vec<Field> = dim_physical
-        .iter()
-        .map(|(semantic, _)| Field::new(semantic.clone(), iface.resolve_dim_type(semantic)))
-        .collect();
-    for (semantic, _) in &extra_group_by_cols {
-        agg_fields.push(Field::new(semantic.clone(), iface.resolve_dim_type(semantic)));
-    }
-    let mut agg_idx = 0;
-    for (semantic, lowered) in &lowered_measures {
-        for (j, agg_m) in lowered.aggregates.iter().enumerate() {
-            if j == 0 {
-                agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
-            } else {
-                agg_fields.push(Field::new(format!("__agg_{}", agg_idx), agg_m.data_type.clone()));
-            }
-            agg_idx += 1;
-        }
-    }
-    let agg_schema = Schema::new(agg_fields);
-
-    let agg = pb.build_aggregate(agg_schema, scan, group_by, aggregates);
-
-    // Build Project.
-    let mut project_exprs: Vec<Expr> = Vec::new();
-    let mut project_fields: Vec<Field> = Vec::new();
-
-    for dim_name in &request.dimensions {
-        if let Some((_, lit_expr)) = metadata_literals.iter().find(|(n, _)| n == dim_name) {
-            project_exprs.push(lit_expr.clone());
-        } else if let Some((_, comp_expr)) = lowered_computed.iter().find(|(n, _)| n == dim_name) {
-            project_exprs.push(comp_expr.clone());
-        } else {
-            project_exprs.push(Expr::column(dim_name.clone()));
-        }
-        project_fields.push(Field::new(dim_name.clone(), iface.resolve_dim_type(dim_name)));
-    }
-    for (_, lowered) in &lowered_measures {
-        project_exprs.push(lowered.post_agg_expr.clone());
-    }
-    project_fields.extend(
-        lowered_measures
-            .iter()
-            .map(|(name, _)| Field::new(name.clone(), iface.resolve_measure_type(name))),
-    );
-    let project_schema = Schema::new(project_fields);
-
-    let project = pb.build_project(project_schema.clone(), agg, project_exprs);
-
-    Ok(PlanFragment {
-        root: project,
-        output_schema: project_schema,
-        pending_filters: Vec::new(),
-    })
-}
-
-/// How a dimension is resolved for GROUP BY.
-enum DimResolve {
-    Column(String),
-    DateTrunc(String, TemporalGrain),
-}
 
 /// Build UNION ALL plan across multiple dataset assignments.
 fn build_union_plan(
@@ -633,26 +349,14 @@ fn build_union_plan(
     request_grain: Option<TemporalGrain>,
 ) -> Result<PlanFragment, PlannerError> {
     let unified_schema = build_unified_schema(request, iface);
-    let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
-
-    // All requested measure/metric names for the unified schema.
-    let all_measure_names: Vec<&str> = request.measures.iter().map(|s| s.as_str()).collect();
 
     // Build one branch per dataset assignment.
     let branches: Vec<PlanNode> = assignments
         .iter()
         .map(|a| {
             build_union_branch(
-                iface,
-                request,
-                a,
-                &metadata_dims,
-                &regular_dims,
-                &all_measure_names,
-                &unified_schema,
-                temporal_dim,
-                request_grain,
-                ctx,
+                iface, request, a, &unified_schema,
+                temporal_dim, request_grain, ctx,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -697,237 +401,55 @@ fn build_union_plan(
 }
 
 /// Build a single UNION branch for one dataset assignment.
-#[allow(clippy::too_many_arguments)]
+///
+/// Determines covered/uncovered measures for this assignment and delegates
+/// to the shared `plan_builder::build_union_branch`.
 fn build_union_branch(
     iface: &CompiledInterface,
-    _request: &ResolvedQueryRequest,
+    request: &ResolvedQueryRequest,
     assignment: &DatasetAssignment<'_>,
-    metadata_dims: &[(String, semstrait_manifest::MetadataDimension)],
-    regular_dims: &[String],
-    all_measure_names: &[&str],
     unified_schema: &Schema,
     temporal_dim: Option<&str>,
     request_grain: Option<TemporalGrain>,
     ctx: &PlannerContext<'_>,
 ) -> Result<PlanNode, PlannerError> {
     let binding = assignment.binding;
-    let mapping = &binding.column_mapping;
 
-    let mut scan_columns: Vec<String> = Vec::new();
-    let mut scan_seen: HashSet<String> = HashSet::new();
+    // Determine covered measures for this assignment.
+    let mut covered = Vec::new();
+    for measure_name in &request.measures {
+        if iface.measures.contains_key(measure_name) {
+            if assignment.measures.contains(measure_name) {
+                covered.push(measure_name.clone());
+            }
+        } else if let Some(metric) = iface.metrics.get(measure_name) {
+            let constituents = plan_builder::extract_metric_constituents(metric, iface);
+            if constituents.iter().all(|c| assignment.measures.contains(c)) {
+                covered.push(measure_name.clone());
+            }
+        }
+    }
 
-    // Determine if this branch needs DATE_TRUNC.
+    // Determine temporal rollup.
     let needs_rollup = if let (Some(rg), Some(native)) = (request_grain, assignment.native_grain) {
         native.coarseness() < rg.coarseness()
     } else {
         false
     };
+    let temporal_rollup = if needs_rollup {
+        temporal_dim.map(|td| (td, request_grain.unwrap()))
+    } else {
+        None
+    };
 
-    // Split regular dims into physical and computed.
-    let (physical_regular, computed_dims) = split_computed_dims(regular_dims, iface);
-
-    let computed_map: HashMap<&str, &semstrait_core::Expr> = computed_dims
-        .iter()
-        .map(|(name, expr)| (name.as_str(), expr))
-        .collect();
-
-    // Pre-compute metadata dimension values so computed expressions can reference them.
-    let metadata_values: HashMap<String, String> = metadata_dims
-        .iter()
-        .map(|(name, meta)| {
-            let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
-            (name.clone(), value)
-        })
-        .collect();
-
-    // Track extra columns needed by computed expressions for GROUP BY.
-    let mut extra_group_by: Vec<(String, String)> = Vec::new(); // (semantic, physical)
-
-    // Resolve regular dimensions.
-    let mut dim_sources: Vec<(String, DimSource)> = Vec::new();
-    for dim_name in regular_dims {
-        if let Some(lit_val) = mapping.literals.get(dim_name) {
-            dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(Expr::string(lit_val.clone()))));
-        } else if let Some(expr) = computed_map.get(dim_name.as_str()) {
-            // Computed dimension: check if referenced columns are available
-            // (as physical columns, literal values, or metadata dimension values).
-            let mut sem_refs: Vec<String> = Vec::new();
-            let mut sem_seen_refs: HashSet<String> = HashSet::new();
-            collect_column_refs(expr, &mut sem_refs, &mut sem_seen_refs);
-            let all_mapped = sem_refs.iter().all(|r| {
-                mapping.physical.contains_key(r)
-                    || mapping.literals.contains_key(r)
-                    || metadata_values.contains_key(r)
-            });
-            if all_mapped {
-                let resolved = resolve_guards(expr).transform(
-                    &|e: &Expr| -> Result<Option<Expr>, std::convert::Infallible> {
-                        if let Expr::Column(col) = e {
-                            if let Some(lit_val) = mapping.literals.get(&col.name) {
-                                return Ok(Some(Expr::string(lit_val.clone())));
-                            }
-                            if let Some(meta_val) = metadata_values.get(&col.name) {
-                                return Ok(Some(Expr::string(meta_val.clone())));
-                            }
-                        }
-                        Ok(None)
-                    },
-                ).expect("literal inlining is infallible");
-                for sem_ref in &sem_refs {
-                    if let Some(phys) = mapping.physical.get(sem_ref) {
-                        if scan_seen.insert(phys.clone()) {
-                            scan_columns.push(phys.clone());
-                        }
-                        if !physical_regular.contains(sem_ref) {
-                            extra_group_by.push((sem_ref.clone(), phys.clone()));
-                        }
-                    }
-                }
-                dim_sources.push((dim_name.clone(), DimSource::Computed(resolved)));
-            } else {
-                dim_sources.push((dim_name.clone(), DimSource::NullFill));
-            }
-        } else if let Some(phys) = mapping.physical.get(dim_name) {
-            dim_sources.push((dim_name.clone(), DimSource::Physical(phys.clone())));
-            if scan_seen.insert(phys.clone()) {
-                scan_columns.push(phys.clone());
-            }
-        } else {
-            dim_sources.push((dim_name.clone(), DimSource::NullFill));
-        }
-    }
-
-    // Also resolve metadata dimensions (reuse pre-computed values).
-    let mut meta_lit_sources: Vec<(String, Expr)> = Vec::new();
-    for (dim_name, _meta) in metadata_dims {
-        meta_lit_sources.push((dim_name.clone(), Expr::string(metadata_values.get(dim_name).cloned().unwrap_or_default())));
-    }
-
-    // Lower measures that this branch covers.
-    let phys_resolver = PhysicalResolver::new(&mapping.physical);
-    let mut lowered_measures: Vec<(String, Option<DecomposedMeasure>)> = Vec::new();
-    for measure_name in all_measure_names {
-        if let Some(measure) = iface.measures.get(*measure_name) {
-            // Direct measure: check if this dataset was assigned it.
-            let ds_has_it = assignment.measures.contains(&measure_name.to_string());
-            if ds_has_it {
-                let lowered = decomposer::decompose_measure(
-                    &phys_resolver, measure_name, measure.agg, &measure.expr, &measure.filters, &measure.data_type,
-                )?;
-                for agg_m in &lowered.aggregates {
-                    collect_column_refs(&agg_m.expr, &mut scan_columns, &mut scan_seen);
-                }
-                lowered_measures.push((measure_name.to_string(), Some(lowered)));
-            } else {
-                lowered_measures.push((measure_name.to_string(), None));
-            }
-        } else if let Some(metric) = iface.metrics.get(*measure_name) {
-            // Metric: check if all transitive constituent measures are assigned to this dataset.
-            let constituents = extract_metric_constituents(metric, iface);
-            let ds_has_all = constituents.iter().all(|c| assignment.measures.contains(c));
-            if ds_has_all {
-                let lowered = decomposer::decompose_metric(measure_name, metric, iface, binding, 4)?;
-                for agg_m in &lowered.aggregates {
-                    collect_column_refs(&agg_m.expr, &mut scan_columns, &mut scan_seen);
-                }
-                lowered_measures.push((measure_name.to_string(), Some(lowered)));
-            } else {
-                lowered_measures.push((measure_name.to_string(), None));
-            }
-        } else {
-            lowered_measures.push((measure_name.to_string(), None));
-        }
-    }
-
-    // Build Scan (multi-source aware).
-    let pb = ctx.plan_builder;
-    let sem_types = build_semantic_type_map(iface, &mapping.physical);
-    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
-
-    // Build Aggregate node (physical dims + extra columns for computed dim refs).
-    let mut group_by: Vec<Expr> = dim_sources
-        .iter()
-        .filter_map(|(name, src)| match src {
-            DimSource::Physical(p) => {
-                if needs_rollup && temporal_dim == Some(name.as_str()) {
-                    Some(Expr::date_trunc(
-                        request_grain.unwrap().into(),
-                        Expr::column(p.clone()),
-                    ))
-                } else {
-                    Some(Expr::column(p.clone()))
-                }
-            }
-            _ => None,
-        })
-        .collect();
-    for (_, phys) in &extra_group_by {
-        group_by.push(Expr::column(phys.clone()));
-    }
-
-    let aggregates: Vec<AggregateMeasure> = lowered_measures
-        .iter()
-        .filter_map(|(_, lowered)| lowered.as_ref())
-        .flat_map(|l| l.aggregates.clone())
-        .collect();
-
-    let mut agg_fields: Vec<Field> = dim_sources
-        .iter()
-        .filter_map(|(semantic, src)| match src {
-            DimSource::Physical(_) => Some(Field::new(semantic.clone(), iface.resolve_dim_type(semantic))),
-            _ => None,
-        })
-        .collect();
-    for (semantic, _) in &extra_group_by {
-        agg_fields.push(Field::new(semantic.clone(), iface.resolve_dim_type(semantic)));
-    }
-
-    let mut agg_idx = 0;
-    for (semantic, lowered) in &lowered_measures {
-        if let Some(l) = lowered {
-            for (j, agg_m) in l.aggregates.iter().enumerate() {
-                if j == 0 {
-                    agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
-                } else {
-                    agg_fields.push(Field::new(format!("__agg_{}", agg_idx), agg_m.data_type.clone()));
-                }
-                agg_idx += 1;
-            }
-        }
-    }
-    let agg_schema = Schema::new(agg_fields);
-
-    let agg = pb.build_aggregate(agg_schema, scan, group_by, aggregates);
-
-    // Build Project — outputs unified schema, NULL-filling unmapped fields.
-    let mut project_exprs: Vec<Expr> = Vec::new();
-
-    // Dimensions: in request order.
-    for dim_name in &_request.dimensions {
-        if let Some((_, lit)) = meta_lit_sources.iter().find(|(n, _)| n == dim_name) {
-            project_exprs.push(lit.clone());
-        } else if let Some((_, src)) = dim_sources.iter().find(|(n, _)| n == dim_name) {
-            match src {
-                DimSource::Physical(_) => project_exprs.push(Expr::column(dim_name.clone())),
-                DimSource::MetadataLiteral(lit) => project_exprs.push(lit.clone()),
-                DimSource::Computed(expr) => project_exprs.push(expr.clone()),
-                DimSource::NullFill => project_exprs.push(Expr::null()),
-            }
-        } else {
-            project_exprs.push(Expr::null());
-        }
-    }
-
-    // Measures: NULL-fill for unmapped.
-    for (_, lowered) in &lowered_measures {
-        project_exprs.push(
-            lowered.as_ref().map_or(Expr::null(), |l| l.post_agg_expr.clone()),
-        );
-    }
-
-    let project = pb.build_project(unified_schema.clone(), agg, project_exprs);
-
-    Ok(project)
+    plan_builder::build_union_branch(
+        iface, request, binding,
+        &plan_builder::UnionBranchParams {
+            covered_measures: covered,
+            temporal_rollup,
+        },
+        unified_schema, ctx,
+    )
 }
 
 #[cfg(test)]
@@ -1163,12 +685,13 @@ mod tests {
         assert!(result.is_ok(), "single dataset should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
-        // Root should be Project -> Aggregate -> Scan (no Union).
+        // Root should be Aggregate (identity L5 skipped) or Project -> Aggregate -> Scan (no Union).
         match &fragment.root {
+            PlanNode::Aggregate(_) => {} // identity L5 skipped
             PlanNode::Project(p) => {
                 assert!(matches!(p.input.as_ref(), PlanNode::Aggregate(_)));
             }
-            _ => panic!("Expected Project as root"),
+            _ => panic!("Expected Aggregate or Project as root"),
         }
     }
 
@@ -1383,15 +906,17 @@ mod tests {
 
         let fragment = result.unwrap();
         // Verify DATE_TRUNC is in the aggregate's GROUP BY.
-        match &fragment.root {
-            PlanNode::Project(proj) => {
-                if let PlanNode::Aggregate(agg) = proj.input.as_ref() {
-                    let has_date_trunc = agg.group_by.iter().any(|e| matches!(e, Expr::DateTrunc(_)));
-                    assert!(has_date_trunc, "should have DATE_TRUNC in GROUP BY");
-                }
-            }
-            _ => panic!("Expected Project as root"),
-        }
+        // Root is Aggregate (identity L5 skipped) or Project -> Aggregate.
+        let agg_node = match &fragment.root {
+            PlanNode::Aggregate(a) => a,
+            PlanNode::Project(proj) => match proj.input.as_ref() {
+                PlanNode::Aggregate(a) => a,
+                _ => panic!("Expected Aggregate under Project"),
+            },
+            _ => panic!("Expected Aggregate or Project as root"),
+        };
+        let has_date_trunc = agg_node.group_by.iter().any(|e| matches!(e, Expr::DateTrunc(_)));
+        assert!(has_date_trunc, "should have DATE_TRUNC in GROUP BY");
     }
 
     #[test]
@@ -1453,14 +978,16 @@ mod tests {
 
         let fragment = result.unwrap();
         // Should be single dataset (Project -> Aggregate -> Scan, no Union).
+        // Root is Aggregate (identity L5 skipped) or Project -> Aggregate.
         match &fragment.root {
+            PlanNode::Aggregate(_) => {} // identity L5 skipped
             PlanNode::Project(p) => {
                 assert!(
                     matches!(p.input.as_ref(), PlanNode::Aggregate(_)),
                     "single dataset should skip Union"
                 );
             }
-            _ => panic!("Expected Project as root"),
+            _ => panic!("Expected Aggregate or Project as root"),
         }
     }
 
@@ -1544,17 +1071,18 @@ mod tests {
         let result = planner.resolve(&pruned, &request, &ctx);
         assert!(result.is_ok(), "multi-source should succeed: {:?}", result.err());
 
-        // The scan layer should have a Union of scan nodes.
+        // Multi-source bindings produce per-source layered plans:
+        // Project → Aggregate(re-agg) → Union → [Aggregate → ... → Scan, ...]
         let fragment = result.unwrap();
-        fn has_union_scan(node: &PlanNode) -> bool {
+        fn has_union_of_aggregates(node: &PlanNode) -> bool {
             match node {
-                PlanNode::Union(u) => u.inputs.iter().all(|n| matches!(n, PlanNode::Scan(_))),
-                PlanNode::Aggregate(a) => has_union_scan(&a.input),
-                PlanNode::Project(p) => has_union_scan(&p.input),
+                PlanNode::Union(u) => u.inputs.iter().all(|n| matches!(n, PlanNode::Aggregate(_))),
+                PlanNode::Aggregate(a) => has_union_of_aggregates(&a.input),
+                PlanNode::Project(p) => has_union_of_aggregates(&p.input),
                 _ => false,
             }
         }
-        assert!(has_union_scan(&fragment.root), "should have intra-dataset UNION ALL of scans");
+        assert!(has_union_of_aggregates(&fragment.root), "should have UNION ALL of pre-aggregated per-source plans");
     }
 
     #[test]

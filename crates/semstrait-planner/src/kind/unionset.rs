@@ -6,12 +6,9 @@
 
 use std::sync::Arc;
 use crate::error::PlannerError;
-use crate::decomposer::{self, DecomposedMeasure};
-use crate::resolver::PhysicalResolver;
-use super::collect_column_refs;
 use super::plan_builder;
-use super::plan_builder::{build_scan_node_binding, build_semantic_type_map, infer_aggregation_iface};
-use super::{extract_metadata_value_binding, partition_dimensions_iface, resolve_guards, split_computed_dims, KindPlanner, PlanFragment, PlannerContext, PrunedView};
+use super::plan_builder::infer_aggregation_iface;
+use super::{KindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
 use semstrait_ir::{
     AggregateMeasure, Expr, Field, PlanNode,
@@ -19,7 +16,6 @@ use semstrait_ir::{
 };
 use semstrait_manifest::{CompiledInterface, UnionMode};
 use semstrait_manifest::acceleration::{CompiledDataKind, DatasetBinding};
-use std::collections::HashSet;
 
 /// Planner for Unionset kinds — UNION ALL across multiple datasets.
 pub struct UnionsetPlanner;
@@ -121,8 +117,8 @@ fn build_unified_schema(request: &ResolvedQueryRequest, iface: &CompiledInterfac
 
 /// Build a single UNION branch for one dataset binding.
 ///
-/// Produces: Scan -> Aggregate -> Project
-/// The Project outputs the unified schema, using NULL for unmapped fields.
+/// Computes covered/uncovered measures, then delegates to the shared
+/// `plan_builder::build_union_branch` for Scan → Rename → Expression → Aggregate → Project.
 fn build_union_branch(
     iface: &CompiledInterface,
     request: &ResolvedQueryRequest,
@@ -131,224 +127,30 @@ fn build_union_branch(
 ) -> Result<PlanNode, PlannerError> {
     let mapping = &binding.column_mapping;
 
-    // Partition dimensions into metadata (literal injection), computed, and physical.
-    let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
-    let (physical_regular, computed_dims) = split_computed_dims(&regular_dims, iface);
+    // Determine which measures/metrics are covered by this binding.
+    let mut covered_measures: Vec<String> = Vec::new();
 
-    // Determine which requested fields this dataset covers.
-    let mut scan_columns: Vec<String> = Vec::new();
-    let mut scan_seen: HashSet<String> = HashSet::new();
-
-    // Map dimensions to physical columns, metadata literals, computed, or NULL-fill.
-    // DimSource tracks how each dimension is resolved in this branch.
-    enum DimSource {
-        Physical(String),
-        MetadataLiteral(Expr),
-        Computed(Expr),
-        NullFill,
-    }
-
-    // Build lookups for computed dims.
-    let computed_map: std::collections::HashMap<&str, &semstrait_core::Expr> = computed_dims
-        .iter()
-        .map(|(name, expr)| (name.as_str(), expr))
-        .collect();
-
-    // Pre-compute metadata dimension values so computed expressions can reference them.
-    let metadata_values: std::collections::HashMap<String, String> = metadata_dims
-        .iter()
-        .map(|(name, meta)| {
-            let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
-            (name.clone(), value)
-        })
-        .collect();
-
-    // Track extra columns needed by computed expressions for GROUP BY.
-    let mut extra_group_by: Vec<(String, String)> = Vec::new(); // (semantic, physical)
-
-    let mut dim_sources: Vec<(String, DimSource)> = Vec::new();
-    for dim_name in &request.dimensions {
-        if let Some((_, meta)) = metadata_dims.iter().find(|(n, _)| n == dim_name) {
-            let value = extract_metadata_value_binding(meta, binding).unwrap_or_default();
-            dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(Expr::string(value))));
-        } else if let Some(lit_val) = mapping.literals.get(dim_name) {
-            dim_sources.push((dim_name.clone(), DimSource::MetadataLiteral(Expr::string(lit_val.clone()))));
-        } else if let Some(expr) = computed_map.get(dim_name.as_str()) {
-            // Computed dimension: check if all referenced columns are available
-            // (as physical columns, literal values, or metadata dimension values).
-            let mut sem_refs: Vec<String> = Vec::new();
-            let mut sem_seen: HashSet<String> = HashSet::new();
-            collect_column_refs(expr, &mut sem_refs, &mut sem_seen);
-            let all_mapped = sem_refs.iter().all(|r| {
-                mapping.physical.contains_key(r)
-                    || mapping.literals.contains_key(r)
-                    || metadata_values.contains_key(r)
-            });
-            if all_mapped {
-                // Inline literal and metadata values, then collect physical scan columns.
-                let resolved = resolve_guards(expr).transform(
-                    &|e: &Expr| -> Result<Option<Expr>, std::convert::Infallible> {
-                        if let Expr::Column(col) = e {
-                            if let Some(lit_val) = mapping.literals.get(&col.name) {
-                                return Ok(Some(Expr::string(lit_val.clone())));
-                            }
-                            if let Some(meta_val) = metadata_values.get(&col.name) {
-                                return Ok(Some(Expr::string(meta_val.clone())));
-                            }
-                        }
-                        Ok(None)
-                    },
-                ).expect("literal inlining is infallible");
-                for sem_ref in &sem_refs {
-                    if let Some(phys) = mapping.physical.get(sem_ref) {
-                        if scan_seen.insert(phys.clone()) {
-                            scan_columns.push(phys.clone());
-                        }
-                        // Track for GROUP BY if not already a physical dim in this request.
-                        if !physical_regular.contains(sem_ref) {
-                            extra_group_by.push((sem_ref.clone(), phys.clone()));
-                        }
-                    }
-                }
-                dim_sources.push((dim_name.clone(), DimSource::Computed(resolved)));
-            } else {
-                dim_sources.push((dim_name.clone(), DimSource::NullFill));
-            }
-        } else if let Some(phys) = mapping.physical.get(dim_name) {
-            dim_sources.push((dim_name.clone(), DimSource::Physical(phys.clone())));
-            if scan_seen.insert(phys.clone()) {
-                scan_columns.push(phys.clone());
-            }
-        } else {
-            dim_sources.push((dim_name.clone(), DimSource::NullFill));
-        }
-    }
-
-    // Lower measures that this dataset covers.
-    let phys_resolver = PhysicalResolver::new(&mapping.physical);
-    let mut lowered_measures: Vec<(String, Option<DecomposedMeasure>)> = Vec::new();
     for measure_name in &request.measures {
-        if let Some(measure) = iface.measures.get(measure_name) {
+        if iface.measures.contains_key(measure_name) {
             if mapping.contains_key(measure_name) {
-                let lowered = decomposer::decompose_measure(
-                    &phys_resolver,
-                    measure_name,
-                    measure.agg,
-                    &measure.expr,
-                    &measure.filters,
-                    &measure.data_type,
-                )?;
-                for agg_measure in &lowered.aggregates {
-                    collect_column_refs(
-                        &agg_measure.expr,
-                        &mut scan_columns,
-                        &mut scan_seen,
-                    );
-                }
-                lowered_measures.push((measure_name.clone(), Some(lowered)));
-            } else {
-                lowered_measures.push((measure_name.clone(), None));
+                covered_measures.push(measure_name.clone());
             }
         } else if let Some(metric) = iface.metrics.get(measure_name) {
-            // Check if the dataset has any of the metric's constituent measures.
-            let constituents = crate::kind::grainset::extract_metric_constituents(metric, iface);
-            let has_any = constituents.iter().any(|c| mapping.contains_key(c));
-            if has_any {
-                let lowered = decomposer::decompose_metric(measure_name, metric, iface, binding, 4)?;
-                for agg_measure in &lowered.aggregates {
-                    collect_column_refs(
-                        &agg_measure.expr,
-                        &mut scan_columns,
-                        &mut scan_seen,
-                    );
-                }
-                lowered_measures.push((measure_name.clone(), Some(lowered)));
-            } else {
-                lowered_measures.push((measure_name.clone(), None));
-            }
-        } else {
-            lowered_measures.push((measure_name.clone(), None));
-        }
-    }
-
-    // Build Scan node (multi-source aware).
-    let sem_types = build_semantic_type_map(iface, &mapping.physical);
-    let pb = ctx.plan_builder;
-    let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
-
-    // Build Aggregate node (physical dimensions + extra columns needed by computed exprs).
-    let mut group_by: Vec<Expr> = dim_sources
-        .iter()
-        .filter_map(|(_, src)| match src {
-            DimSource::Physical(p) => Some(Expr::column(p.clone())),
-            _ => None,
-        })
-        .collect();
-    // Add extra physical columns referenced by computed dims so they survive aggregation.
-    for (_, phys) in &extra_group_by {
-        group_by.push(Expr::column(phys.clone()));
-    }
-
-    let aggregates: Vec<AggregateMeasure> = lowered_measures
-        .iter()
-        .filter_map(|(_, lowered)| lowered.as_ref())
-        .flat_map(|l| l.aggregates.clone())
-        .collect();
-
-    // Aggregate schema: covered physical dimensions + extra computed-ref columns + aggregate outputs.
-    let mut agg_fields: Vec<Field> = dim_sources
-        .iter()
-        .filter_map(|(semantic, src)| match src {
-            DimSource::Physical(_) => Some(Field::new(semantic.clone(), iface.resolve_dim_type(semantic))),
-            _ => None,
-        })
-        .collect();
-    // Add extra columns for computed dimension references (with semantic names).
-    for (semantic, _) in &extra_group_by {
-        agg_fields.push(Field::new(semantic.clone(), iface.resolve_dim_type(semantic)));
-    }
-
-    let mut agg_idx = 0;
-    for (semantic, lowered) in &lowered_measures {
-        if let Some(l) = lowered {
-            for (j, agg_m) in l.aggregates.iter().enumerate() {
-                if j == 0 {
-                    agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
-                } else {
-                    agg_fields.push(Field::new(format!("__agg_{}", agg_idx), agg_m.data_type.clone()));
-                }
-                agg_idx += 1;
+            let constituents = plan_builder::extract_metric_constituents(metric, iface);
+            if constituents.iter().all(|c| mapping.contains_key(c)) {
+                covered_measures.push(measure_name.clone());
             }
         }
     }
-    let agg_schema = Schema::new(agg_fields);
 
-    let agg = pb.build_aggregate(agg_schema, scan, group_by, aggregates);
-
-    // Build Project node — outputs the unified schema.
-    // Uncovered dimensions/measures are NULL-filled.
     let unified_schema = build_unified_schema(request, iface);
 
-    let mut project_exprs: Vec<Expr> = Vec::new();
-    for (semantic, src) in &dim_sources {
-        match src {
-            DimSource::Physical(_) => project_exprs.push(Expr::column(semantic.clone())),
-            DimSource::MetadataLiteral(lit) => project_exprs.push(lit.clone()),
-            DimSource::Computed(expr) => project_exprs.push(expr.clone()),
-            DimSource::NullFill => project_exprs.push(Expr::null()),
-        }
-    }
-    for (_, lowered) in &lowered_measures {
-        project_exprs.push(
-            lowered
-                .as_ref()
-                .map_or(Expr::null(), |l| l.post_agg_expr.clone()),
-        );
-    }
+    let params = plan_builder::UnionBranchParams {
+        covered_measures,
+        temporal_rollup: None,
+    };
 
-    let project = pb.build_project(unified_schema, agg, project_exprs);
-
-    Ok(project)
+    plan_builder::build_union_branch(iface, request, binding, &params, &unified_schema, ctx)
 }
 
 #[cfg(test)]

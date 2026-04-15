@@ -77,21 +77,23 @@ pub(crate) fn resolve_guards(expr: &Expr) -> Expr {
     .expect("Guard resolution is infallible")
 }
 
-/// Extract metadata dimension value from a DatasetBinding's resolved sources.
-pub(crate) fn extract_metadata_value_binding(
+/// Extract metadata dimension value from a single `ResolvedSource`.
+///
+/// Used by per-source layered plan construction (Phase 3) to extract
+/// correct metadata values per source instead of always using the first.
+pub(crate) fn extract_metadata_value_source(
     meta: &MetadataDimension,
-    binding: &DatasetBinding,
+    source: &semstrait_manifest::ResolvedSource,
 ) -> Option<String> {
-    let first = binding.resolved_sources.first()?;
-    let source = first.location.as_deref().unwrap_or(&first.reference);
+    let location = source.location.as_deref().unwrap_or(&source.reference);
 
     if let Some(ref path_ext) = meta.path {
-        let segments: Vec<&str> = source.split('/').collect();
+        let segments: Vec<&str> = location.split('/').collect();
         return segments.get(path_ext.token).map(|s: &&str| s.to_string());
     }
 
     if let Some(ref part_ext) = meta.partition {
-        let kv_segments: Vec<&str> = source.split('/').filter(|s| s.contains('=')).collect();
+        let kv_segments: Vec<&str> = location.split('/').filter(|s| s.contains('=')).collect();
         if part_ext.level == 0 || part_ext.level > kv_segments.len() {
             return None;
         }
@@ -100,6 +102,18 @@ pub(crate) fn extract_metadata_value_binding(
     }
 
     None
+}
+
+/// Extract metadata dimension value from a DatasetBinding's resolved sources.
+///
+/// Delegates to `extract_metadata_value_source` using the first source.
+/// For multi-source bindings, use `extract_metadata_value_source` per source instead.
+pub(crate) fn extract_metadata_value_binding(
+    meta: &MetadataDimension,
+    binding: &DatasetBinding,
+) -> Option<String> {
+    let first = binding.resolved_sources.first()?;
+    extract_metadata_value_source(meta, first)
 }
 
 /// Resolve the native temporal grain for a binding's temporal dimension.

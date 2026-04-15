@@ -1013,16 +1013,22 @@ mod tests {
         let plan = result.unwrap();
         assert_eq!(plan.output_names, vec!["date", "market", "revenue"]);
 
-        // The root should be a ProjectNode (possibly wrapped in Sort/Fetch).
-        // Verify the computed "market" dimension is a FunctionCall expression,
-        // not a plain column reference.
-        let project = find_project_node(&plan.root)
-            .expect("plan should contain a ProjectNode");
-        // market is the 2nd dimension (index 1) in the project expressions
-        let market_expr = &project.expressions[1];
+        // In the layered architecture, computed dims are projected in L3 (before aggregation).
+        // The L3 expression project contains the FunctionCall; the final project just
+        // references Column("market"). Find the L3 project by traversing through Aggregate.
+        let agg = find_agg_node(&plan.root)
+            .expect("plan should contain an AggNode");
+        // L3 expression project is the aggregate's input (or L2 if no computed dims).
+        let l3_project = match agg.input.as_ref() {
+            PlanNode::Project(p) => p,
+            other => panic!("expected Project (L3) under Aggregate, got {:?}", std::mem::discriminant(other)),
+        };
+        // Find the computed dim expression — it's appended after passthrough columns.
+        let market_expr = l3_project.expressions.last()
+            .expect("L3 project should have expressions");
         assert!(
             matches!(market_expr, semstrait_ir::Expr::FunctionCall(_)),
-            "computed dim 'market' should be a FunctionCall, got: {:?}",
+            "computed dim 'market' should be a FunctionCall in L3, got: {:?}",
             market_expr
         );
     }
@@ -1036,25 +1042,17 @@ mod tests {
         let planner = SemanticPlanner::builder().build();
         let plan = planner.plan(&request, &manifest).unwrap();
 
-        // The AggNode should group by only "date" (physical), not "market" (computed).
+        // In the layered architecture, computed dims ARE in GROUP BY (they're projected
+        // in L3 before aggregation). GROUP BY references semantic Column("market").
         let agg = find_agg_node(&plan.root)
             .expect("plan should contain an AggNode");
-        assert_eq!(agg.group_by.len(), 1, "only physical dims should be in group_by");
-        assert!(
-            matches!(&agg.group_by[0], semstrait_ir::Expr::Column(c) if c.name == "order_date"),
-            "group_by should contain physical 'order_date', got: {:?}",
-            agg.group_by[0]
-        );
-    }
-
-    fn find_project_node(node: &PlanNode) -> Option<&semstrait_ir::ProjectNode> {
-        match node {
-            PlanNode::Project(p) => Some(p),
-            PlanNode::Sort(n) => find_project_node(&n.input),
-            PlanNode::Fetch(n) => find_project_node(&n.input),
-            PlanNode::Filter(n) => find_project_node(&n.input),
+        assert_eq!(agg.group_by.len(), 2, "both date and market should be in group_by");
+        let names: Vec<&str> = agg.group_by.iter().filter_map(|e| match e {
+            semstrait_ir::Expr::Column(c) => Some(c.name.as_str()),
             _ => None,
-        }
+        }).collect();
+        assert!(names.contains(&"date"), "group_by should contain 'date'");
+        assert!(names.contains(&"market"), "group_by should contain 'market'");
     }
 
     fn find_agg_node(node: &PlanNode) -> Option<&semstrait_ir::AggNode> {

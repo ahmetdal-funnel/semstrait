@@ -9,9 +9,10 @@ use crate::decomposer::{self, DecomposedMeasure};
 use crate::resolver::PhysicalResolver;
 use super::collect_column_refs;
 use super::plan_builder;
-use super::plan_builder::{build_scan_node_binding, build_semantic_type_map};
-use super::{extract_metadata_value_binding, partition_dimensions_iface, resolve_guards, split_computed_dims, KindPlanner, PlanFragment, PlannerContext, PrunedView};
+use super::plan_builder::{build_scan_node_binding, build_semantic_type_map, collect_known_values, resolve_semantic_type, collect_semantic_refs, build_expression_project};
+use super::{partition_dimensions_iface, split_computed_dims, KindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
+use indexmap::IndexMap;
 use semstrait_ir::{
     AggregateMeasure, Expr, Field, JoinType as IrJoinType,
     PlanBuilder, PlanNode, Schema,
@@ -60,7 +61,7 @@ impl KindPlanner for JoinsetPlanner {
         // If single active dataset, delegate to simple scan-aggregate-project.
         let active_bindings = pruned.active_bindings();
         if active_count == 1 {
-            return plan_builder::build_binding_plan(iface, active_bindings[0], request, ctx, false);
+            return plan_builder::build_binding_plan(iface, active_bindings[0], request, ctx, false, None);
         }
 
         // Find the anchor dataset (covers most requested fields) among active bindings.
@@ -313,7 +314,10 @@ fn build_join_condition(
         .unwrap_or_else(|| Expr::boolean(true)) // Fallback: no columns -> trivial join (shouldn't happen)
 }
 
-/// Build the full join plan: join tree -> aggregate -> project.
+/// Build the full join plan: join tree → L2 rename → L3 expression → L4 aggregate → L5 project.
+///
+/// The join tree operates on physical column names (join conditions reference physical cols).
+/// After the join, L2 renames physical → semantic, then L3-L5 follow the standard layered pattern.
 fn build_join_plan(
     joinset: &CompiledJoinsetKind,
     request: &ResolvedQueryRequest,
@@ -325,25 +329,18 @@ fn build_join_plan(
     let bindings = &joinset.bindings;
     let relationships = &joinset.relationships;
     let anchor = &bindings[anchor_idx];
-
-    // Build the anchor scan.
     let pb = ctx.plan_builder;
-    let mut current_plan = build_scan(anchor, iface, relationships, request, pb)?;
 
-    // Track all binding indices in the join tree for schema building.
+    // ── Build join tree (physical columns) ─────────────────────────
+    let mut current_plan = build_scan(anchor, iface, relationships, request, pb)?;
     let mut joined_indices: Vec<usize> = vec![anchor_idx];
 
-    // Join each step.
     for step in join_order {
         let right_binding = &bindings[step.binding_idx];
         let right_scan = build_scan(right_binding, iface, relationships, request, pb)?;
         joined_indices.push(step.binding_idx);
 
         let rel = &relationships[step.relationship_idx];
-
-        // Determine which binding is left/right for the condition.
-        // The relationship always defines from -> to. If reversed, the "from" side
-        // is the new binding (right scan) and "to" side is in the existing tree.
         let (left_binding, right_binding_for_cond) = if step.reversed {
             (right_binding, &bindings[joinset.adjacency_index.dataset_index[&rel.to]])
         } else {
@@ -353,133 +350,170 @@ fn build_join_plan(
         let condition = build_join_condition(rel, left_binding, right_binding_for_cond);
         let join_type = map_join_type(&rel.join_type);
 
-        // Compute join output schema (left fields + right fields).
         let mut join_fields: Vec<Field> = current_plan.meta().output_schema.fields.clone();
         join_fields.extend(right_scan.meta().output_schema.fields.iter().cloned());
         let join_schema = Schema::new(join_fields);
 
-        current_plan = ctx.plan_builder.build_join(join_schema, current_plan, right_scan, join_type, condition);
+        current_plan = pb.build_join(join_schema, current_plan, right_scan, join_type, condition);
     }
 
-    // Now build Aggregate -> Project over the joined result.
+    // ── Partition dimensions ────────────────────────────────────────
     let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
-    let (_physical_regular, computed_dims) = split_computed_dims(&regular_dims, iface);
+    let (physical_dims, computed_dims) = split_computed_dims(&regular_dims, iface);
+    let known_values = collect_known_values(anchor, &metadata_dims);
 
-    let computed_map: std::collections::HashMap<&str, &semstrait_core::Expr> = computed_dims
-        .iter()
-        .map(|(name, expr)| (name.as_str(), expr))
-        .collect();
-
+    // Helper: find the physical column for a semantic name across joined bindings.
     let mapping_for_field = |field_name: &str| -> Option<String> {
         for &idx in &joined_indices {
-            let binding = &bindings[idx];
-            if let Some(phys) = binding.column_mapping.physical.get(field_name) {
+            if let Some(phys) = bindings[idx].column_mapping.physical.get(field_name) {
                 return Some(phys.clone());
             }
         }
         None
     };
 
-    // Collect metadata literal expressions.
-    let mut metadata_literals: Vec<(String, Expr)> = Vec::new();
-    for (dim_name, meta) in &metadata_dims {
-        // Use the anchor binding for metadata extraction.
-        let value = extract_metadata_value_binding(meta, anchor).unwrap_or_default();
-        metadata_literals.push((dim_name.clone(), Expr::string(value)));
-    }
+    // ── L2: Rename (physical → semantic) ───────────────────────────
+    let mut rename_exprs: Vec<Expr> = Vec::new();
+    let mut rename_fields: Vec<Field> = Vec::new();
 
-    // Also collect literal-value dimension mappings.
-    for dim_name in &request.dimensions {
-        if metadata_dims.iter().any(|(n, _)| n == dim_name) {
-            continue;
-        }
+    // Physical dimensions.
+    for dim_name in &physical_dims {
+        // Check literal mappings across joined bindings first.
+        let mut found_literal = false;
         for &idx in &joined_indices {
-            let binding = &bindings[idx];
-            if let Some(lit_val) = binding.column_mapping.literals.get(dim_name) {
-                metadata_literals.push((dim_name.clone(), Expr::string(lit_val.clone())));
+            if let Some(lit_val) = bindings[idx].column_mapping.literals.get(dim_name) {
+                rename_exprs.push(Expr::string(lit_val.clone()));
+                rename_fields.push(Field::new(dim_name.clone(), iface.resolve_dim_type(dim_name)));
+                found_literal = true;
                 break;
             }
         }
+        if found_literal { continue; }
+
+        if let Some(phys) = mapping_for_field(dim_name) {
+            rename_exprs.push(Expr::column(phys));
+            rename_fields.push(Field::new(dim_name.clone(), iface.resolve_dim_type(dim_name)));
+        } else {
+            return Err(PlannerError::DimensionNotFound {
+                kind: iface.name.clone(),
+                dimension: dim_name.clone(),
+            });
+        }
     }
 
-    // Build group_by for dimensions (physical only, excluding metadata and computed).
-    let mut group_by: Vec<Expr> = request
-        .dimensions
-        .iter()
-        .filter_map(|dim| {
-            if metadata_literals.iter().any(|(n, _)| n == dim) {
-                None
-            } else if computed_map.contains_key(dim.as_str()) {
-                None
-            } else {
-                mapping_for_field(dim).map(Expr::column)
-            }
-        })
-        .collect();
+    // Metadata dimensions.
+    for (dim_name, _) in &metadata_dims {
+        let value = known_values.get(dim_name).cloned().unwrap_or_default();
+        rename_exprs.push(Expr::string(value));
+        rename_fields.push(Field::new(dim_name.clone(), iface.resolve_dim_type(dim_name)));
+    }
 
-    // Add extra GROUP BY columns referenced by computed dims.
-    let mut extra_agg_fields: Vec<(String, String)> = Vec::new(); // (semantic, physical)
+    // Computed dim dep columns.
     for (_, expr) in &computed_dims {
         let mut sem_refs: Vec<String> = Vec::new();
-        let mut sem_seen_refs: HashSet<String> = HashSet::new();
-        collect_column_refs(expr, &mut sem_refs, &mut sem_seen_refs);
+        let mut sem_refs_seen: HashSet<String> = HashSet::new();
+        collect_column_refs(expr, &mut sem_refs, &mut sem_refs_seen);
         for sem_ref in &sem_refs {
-            let already_grouped = request.dimensions.iter().any(|d| {
-                d == sem_ref
-                    && !metadata_literals.iter().any(|(n, _)| n == d)
-                    && !computed_map.contains_key(d.as_str())
-            });
-            if !already_grouped {
-                if let Some(phys) = mapping_for_field(&sem_ref) {
-                    group_by.push(Expr::column(phys.clone()));
-                    extra_agg_fields.push((sem_ref.clone(), phys));
+            if !rename_fields.iter().any(|f| f.name == *sem_ref) {
+                if let Some(phys) = mapping_for_field(sem_ref) {
+                    rename_exprs.push(Expr::column(phys));
+                    rename_fields.push(Field::new(
+                        sem_ref.clone(),
+                        resolve_semantic_type(sem_ref, iface),
+                    ));
                 }
             }
         }
     }
 
-    // Lower measures and metrics.
-    let mut lowered_measures: Vec<(String, DecomposedMeasure)> = Vec::new();
+    // Measure source columns.
     for measure_name in &request.measures {
         if let Some(measure) = iface.measures.get(measure_name) {
-            // Find which binding provides this measure.
-            let binding_mapping = joined_indices
-                .iter()
-                .find_map(|&idx| {
-                    let b = &bindings[idx];
-                    if b.column_mapping.contains_key(measure_name) {
-                        Some(&b.column_mapping)
-                    } else {
-                        None
+            let mut refs = Vec::new();
+            let mut seen = HashSet::new();
+            collect_semantic_refs(&measure.expr, &mut refs, &mut seen);
+            for sem_ref in &refs {
+                if !rename_fields.iter().any(|f| f.name == *sem_ref) {
+                    if let Some(phys) = mapping_for_field(sem_ref) {
+                        rename_exprs.push(Expr::column(phys));
+                        rename_fields.push(Field::new(
+                            sem_ref.clone(),
+                            resolve_semantic_type(sem_ref, iface),
+                        ));
                     }
-                });
-
-            if let Some(mapping) = binding_mapping {
-                let lowered = decomposer::decompose_measure(
-                    &PhysicalResolver::new(&mapping.physical),
-                    measure_name,
-                    measure.agg,
-                    &measure.expr,
-                    &measure.filters,
-                    &measure.data_type,
-                )?;
-                lowered_measures.push((measure_name.clone(), lowered));
-            } else {
-                return Err(PlannerError::MeasureNotFound {
-                    kind: iface.name.clone(),
-                    measure: measure_name.clone(),
-                });
+                }
+            }
+            for filter in &measure.filters {
+                let mut f_refs = Vec::new();
+                let mut f_seen = HashSet::new();
+                collect_semantic_refs(&filter.expr, &mut f_refs, &mut f_seen);
+                for sem_ref in &f_refs {
+                    if !rename_fields.iter().any(|f| f.name == *sem_ref) {
+                        if let Some(phys) = mapping_for_field(sem_ref) {
+                            rename_exprs.push(Expr::column(phys));
+                            rename_fields.push(Field::new(
+                                sem_ref.clone(),
+                                resolve_semantic_type(sem_ref, iface),
+                            ));
+                        }
+                    }
+                }
             }
         } else if let Some(metric) = iface.metrics.get(measure_name) {
-            // Decompose metric into constituent measure aggregates.
-            // Use anchor binding for physical mapping — constituent measures
-            // are resolved against whichever binding covers them.
-            let lowered = decomposer::decompose_metric(
+            let constituents = super::plan_builder::extract_metric_constituents(metric, iface);
+            for cm_name in &constituents {
+                if let Some(cm) = iface.measures.get(cm_name) {
+                    let mut refs = Vec::new();
+                    let mut seen = HashSet::new();
+                    collect_semantic_refs(&cm.expr, &mut refs, &mut seen);
+                    for sem_ref in &refs {
+                        if !rename_fields.iter().any(|f| f.name == *sem_ref) {
+                            if let Some(phys) = mapping_for_field(sem_ref) {
+                                rename_exprs.push(Expr::column(phys));
+                                rename_fields.push(Field::new(
+                                    sem_ref.clone(),
+                                    resolve_semantic_type(sem_ref, iface),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let rename_schema = Schema::new(rename_fields);
+    let rename = pb.build_project(rename_schema, current_plan, rename_exprs);
+
+    // ── L3: Expression (computed dims with SR-10) ──────────────────
+    let l3_input = build_expression_project(&computed_dims, &known_values, rename, iface, pb);
+
+    // ── L4: Aggregate (semantic GROUP BY) ──────────────────────────
+    let group_by: Vec<Expr> = request
+        .dimensions
+        .iter()
+        .map(|name| Expr::column(name.clone()))
+        .collect();
+
+    // Decompose measures with identity resolver (semantic names after L2).
+    let identity_physical: IndexMap<String, String> = IndexMap::new();
+    let identity_resolver = PhysicalResolver::new(&identity_physical);
+    let mut lowered_measures: Vec<(String, DecomposedMeasure)> = Vec::new();
+
+    for measure_name in &request.measures {
+        if let Some(measure) = iface.measures.get(measure_name) {
+            let lowered = decomposer::decompose_measure(
+                &identity_resolver,
                 measure_name,
-                metric,
-                iface,
-                anchor,
-                5, // max decomposition depth
+                measure.agg,
+                &measure.expr,
+                &measure.filters,
+                &measure.data_type,
+            )?;
+            lowered_measures.push((measure_name.clone(), lowered));
+        } else if let Some(metric) = iface.metrics.get(measure_name) {
+            let lowered = decomposer::decompose_metric(
+                measure_name, metric, iface, anchor, 5,
             )?;
             lowered_measures.push((measure_name.clone(), lowered));
         } else {
@@ -495,19 +529,12 @@ fn build_join_plan(
         .flat_map(|(_, lowered)| lowered.aggregates.clone())
         .collect();
 
-    // Aggregate schema: physical dimensions (excl. metadata and computed) + extra refs + aggregates.
+    // Aggregate schema: all dimensions + measure outputs.
     let mut agg_fields: Vec<Field> = request
         .dimensions
         .iter()
-        .filter(|name| {
-            !metadata_literals.iter().any(|(n, _)| n == *name)
-                && !computed_map.contains_key(name.as_str())
-        })
         .map(|name| Field::new(name.clone(), iface.resolve_dim_type(name)))
         .collect();
-    for (semantic, _) in &extra_agg_fields {
-        agg_fields.push(Field::new(semantic.clone(), iface.resolve_dim_type(semantic)));
-    }
     let mut agg_idx = 0;
     for (semantic, lowered) in &lowered_measures {
         for (j, agg_m) in lowered.aggregates.iter().enumerate() {
@@ -520,22 +547,14 @@ fn build_join_plan(
         }
     }
     let agg_schema = Schema::new(agg_fields);
+    let agg = pb.build_aggregate(agg_schema, l3_input, group_by, aggregates);
 
-    let pb = ctx.plan_builder;
-    let agg = pb.build_aggregate(agg_schema, current_plan, group_by, aggregates);
-
-    // Project node — maps to semantic names.
+    // ── L5: Final Project ──────────────────────────────────────────
     let mut project_exprs: Vec<Expr> = Vec::new();
     let mut project_fields: Vec<Field> = Vec::new();
 
     for dim_name in &request.dimensions {
-        if let Some((_, lit_expr)) = metadata_literals.iter().find(|(n, _)| n == dim_name) {
-            project_exprs.push(lit_expr.clone());
-        } else if let Some(expr) = computed_map.get(dim_name.as_str()) {
-            project_exprs.push(resolve_guards(expr));
-        } else {
-            project_exprs.push(Expr::column(dim_name.clone()));
-        }
+        project_exprs.push(Expr::column(dim_name.clone()));
         project_fields.push(Field::new(dim_name.clone(), iface.resolve_dim_type(dim_name)));
     }
     for (_, lowered) in &lowered_measures {
@@ -547,7 +566,6 @@ fn build_join_plan(
             .map(|(name, _)| Field::new(name.clone(), iface.resolve_measure_type(name))),
     );
     let project_schema = Schema::new(project_fields);
-
     let project = pb.build_project(project_schema.clone(), agg, project_exprs);
 
     Ok(PlanFragment {
@@ -761,18 +779,23 @@ mod tests {
 
         let fragment = result.unwrap();
 
-        // Root should be Project -> Aggregate -> Join -> (Scan, Scan).
+        // Root: Project -> Aggregate -> Project (L2 rename) -> Join -> (Scan, Scan).
         match &fragment.root {
             PlanNode::Project(proj) => {
                 match proj.input.as_ref() {
                     PlanNode::Aggregate(agg) => {
-                        match agg.input.as_ref() {
+                        // L2 rename project sits between Aggregate and Join.
+                        let rename = match agg.input.as_ref() {
+                            PlanNode::Project(p) => p,
+                            _ => panic!("expected Project (L2 rename) under Aggregate"),
+                        };
+                        match rename.input.as_ref() {
                             PlanNode::Join(join) => {
                                 assert!(matches!(*join.left, PlanNode::Scan(_)));
                                 assert!(matches!(*join.right, PlanNode::Scan(_)));
                                 assert_eq!(join.join_type, IrJoinType::Left);
                             }
-                            _ => panic!("expected Join node under Aggregate"),
+                            _ => panic!("expected Join under L2 rename"),
                         }
                     }
                     _ => panic!("expected Aggregate node under Project"),
@@ -825,18 +848,20 @@ mod tests {
         assert!(result.is_ok());
 
         let fragment = result.unwrap();
-        // Single dataset -> Project -> Aggregate -> Scan (no Join).
-        match &fragment.root {
-            PlanNode::Project(proj) => {
-                match proj.input.as_ref() {
-                    PlanNode::Aggregate(agg) => {
-                        assert!(matches!(agg.input.as_ref(), PlanNode::Scan(_)));
-                    }
-                    _ => panic!("expected Aggregate under Project"),
-                }
-            }
-            _ => panic!("expected Project as root"),
-        }
+        // Single dataset -> Aggregate (L5 skipped) or Project -> Aggregate -> Project (L2) -> Scan.
+        let agg_node = match &fragment.root {
+            PlanNode::Aggregate(a) => a, // identity L5 skipped
+            PlanNode::Project(proj) => match proj.input.as_ref() {
+                PlanNode::Aggregate(a) => a,
+                _ => panic!("expected Aggregate under Project"),
+            },
+            _ => panic!("expected Aggregate or Project as root"),
+        };
+        assert!(
+            matches!(agg_node.input.as_ref(), PlanNode::Project(_)),
+            "Aggregate input should be Project (L2 rename), got {:?}",
+            std::mem::discriminant(agg_node.input.as_ref())
+        );
     }
 
     #[test]
@@ -986,22 +1011,24 @@ mod tests {
 
         let fragment = result.unwrap();
 
-        // Root: Project -> Aggregate -> Join -> (Join -> (Scan, Scan), Scan)
+        // Root: Project -> Aggregate -> Project (L2 rename) -> Join -> (Join -> (Scan, Scan), Scan)
         match &fragment.root {
             PlanNode::Project(proj) => {
                 match proj.input.as_ref() {
                     PlanNode::Aggregate(agg) => {
-                        match agg.input.as_ref() {
+                        let rename = match agg.input.as_ref() {
+                            PlanNode::Project(p) => p,
+                            _ => panic!("expected Project (L2 rename) under Aggregate"),
+                        };
+                        match rename.input.as_ref() {
                             PlanNode::Join(outer_join) => {
-                                // Left side should be another join.
                                 assert!(
                                     matches!(*outer_join.left, PlanNode::Join(_)),
                                     "left of outer join should be inner join"
                                 );
-                                // Right side should be a scan.
                                 assert!(matches!(*outer_join.right, PlanNode::Scan(_)));
                             }
-                            _ => panic!("expected Join under Aggregate"),
+                            _ => panic!("expected Join under L2 rename"),
                         }
                     }
                     _ => panic!("expected Aggregate under Project"),

@@ -1,7 +1,10 @@
 //! DataFusion adapter — produces Substrait plans.
 
+mod plan_builder;
+
+use plan_builder::DataFusionPlanBuilder;
 use semstrait_ir::{
-    DefaultPlanBuilder, FunctionRegistry, LogicalPlan, PlanArtifact, PlanBuilder,
+    FunctionRegistry, LogicalPlan, PlanArtifact, PlanBuilder,
     SubstraitSerializer,
 };
 
@@ -20,9 +23,7 @@ impl EngineAdapter for DataFusionAdapter {
     }
 
     fn plan_builder(&self) -> Option<Box<dyn PlanBuilder>> {
-        // V1: identity behavior. Future: engine-specific node shaping
-        // (catalog-qualified table names, DataFusion hints, etc.)
-        Some(Box::new(DefaultPlanBuilder))
+        Some(Box::new(DataFusionPlanBuilder::new()))
     }
 
     fn adapt(&self, plan: &LogicalPlan) -> Result<PlanArtifact, AdaptError> {

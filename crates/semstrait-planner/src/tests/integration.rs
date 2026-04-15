@@ -35,33 +35,37 @@ mod tests {
             vec!["date".to_string(), "revenue".to_string()]
         );
 
-        // Verify the plan structure: Project -> Aggregate -> Scan
+        // Verify plan structure: Aggregate (L5 skipped) or Project -> Aggregate -> Project (L2) -> Scan
+        let agg = match &plan.root {
+            PlanNode::Aggregate(a) => a, // identity L5 skipped
+            PlanNode::Project(proj) => match proj.input.as_ref() {
+                PlanNode::Aggregate(a) => a,
+                _ => panic!("Project input should be Aggregate"),
+            },
+            _ => panic!(
+                "root should be Aggregate or Project, got {:?}",
+                std::mem::discriminant(&plan.root)
+            ),
+        };
+
+        // After layered refactor: Aggregate → Project (L2 rename) → Scan.
         assert!(
-            matches!(&plan.root, PlanNode::Project(_)),
-            "root should be Project, got {:?}",
-            std::mem::discriminant(&plan.root)
+            matches!(agg.input.as_ref(), PlanNode::Project(_)),
+            "Aggregate input should be Project (L2 rename), got {:?}",
+            std::mem::discriminant(agg.input.as_ref())
         );
 
-        if let PlanNode::Project(proj) = &plan.root {
-            assert!(
-                matches!(proj.input.as_ref(), PlanNode::Aggregate(_)),
-                "Project input should be Aggregate"
-            );
-            if let PlanNode::Aggregate(agg) = proj.input.as_ref() {
-                assert!(
-                    matches!(agg.input.as_ref(), PlanNode::Scan(_)),
-                    "Aggregate input should be Scan"
-                );
+        // Verify GROUP BY has the date dimension.
+        assert_eq!(agg.group_by.len(), 1);
 
-                // Verify GROUP BY has the date dimension.
-                assert_eq!(agg.group_by.len(), 1);
+        // Verify there is one aggregate measure.
+        assert_eq!(agg.aggregates.len(), 1);
 
-                // Verify there is one aggregate measure.
-                assert_eq!(agg.aggregates.len(), 1);
-
-                if let PlanNode::Scan(scan) = agg.input.as_ref() {
-                    assert_eq!(scan.table_name, "orders_daily");
-                }
+        if let PlanNode::Project(rename) = agg.input.as_ref() {
+            if let PlanNode::Scan(scan) = rename.input.as_ref() {
+                assert_eq!(scan.table_name, "orders_daily");
+            } else {
+                panic!("L2 rename input should be Scan");
             }
         }
     }

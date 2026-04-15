@@ -3,6 +3,7 @@
 //! Both `ExprConverter` and `SubstraitSerializer` reference the same set of
 //! function anchors. Keeping them in one place avoids drift.
 
+use crate::rewrite::CanonicalFn;
 use substrait::proto::{
     self,
     expression::{self, literal::LiteralType},
@@ -77,6 +78,50 @@ impl FunctionRegistry {
             FunctionEntry { anchor: FUNC_SUBTRACT, name: "subtract".into() },
             FunctionEntry { anchor: FUNC_MULTIPLY, name: "multiply".into() },
             FunctionEntry { anchor: FUNC_DIVIDE, name: "divide".into() },
+            // ── Canonical functions (CanonicalFn::anchor() is source of truth) ──
+            // String
+            FunctionEntry { anchor: CanonicalFn::Upper.anchor(), name: "upper".into() },
+            FunctionEntry { anchor: CanonicalFn::Lower.anchor(), name: "lower".into() },
+            FunctionEntry { anchor: CanonicalFn::Concat.anchor(), name: "concat".into() },
+            FunctionEntry { anchor: CanonicalFn::ConcatWs.anchor(), name: "concat_ws".into() },
+            FunctionEntry { anchor: CanonicalFn::Length.anchor(), name: "length".into() },
+            FunctionEntry { anchor: CanonicalFn::Trim.anchor(), name: "trim".into() },
+            FunctionEntry { anchor: CanonicalFn::Ltrim.anchor(), name: "ltrim".into() },
+            FunctionEntry { anchor: CanonicalFn::Rtrim.anchor(), name: "rtrim".into() },
+            FunctionEntry { anchor: CanonicalFn::Replace.anchor(), name: "replace".into() },
+            FunctionEntry { anchor: CanonicalFn::Substring.anchor(), name: "substring".into() },
+            FunctionEntry { anchor: CanonicalFn::Left.anchor(), name: "left".into() },
+            FunctionEntry { anchor: CanonicalFn::Right.anchor(), name: "right".into() },
+            FunctionEntry { anchor: CanonicalFn::Lpad.anchor(), name: "lpad".into() },
+            FunctionEntry { anchor: CanonicalFn::Rpad.anchor(), name: "rpad".into() },
+            FunctionEntry { anchor: CanonicalFn::SplitPart.anchor(), name: "split_part".into() },
+            FunctionEntry { anchor: CanonicalFn::StartsWith.anchor(), name: "starts_with".into() },
+            FunctionEntry { anchor: CanonicalFn::EndsWith.anchor(), name: "ends_with".into() },
+            FunctionEntry { anchor: CanonicalFn::Initcap.anchor(), name: "initcap".into() },
+            FunctionEntry { anchor: CanonicalFn::Reverse.anchor(), name: "reverse".into() },
+            FunctionEntry { anchor: CanonicalFn::Repeat.anchor(), name: "repeat".into() },
+            FunctionEntry { anchor: CanonicalFn::Position.anchor(), name: "strpos".into() },
+            // Math
+            FunctionEntry { anchor: CanonicalFn::Abs.anchor(), name: "abs".into() },
+            FunctionEntry { anchor: CanonicalFn::Ceil.anchor(), name: "ceil".into() },
+            FunctionEntry { anchor: CanonicalFn::Floor.anchor(), name: "floor".into() },
+            FunctionEntry { anchor: CanonicalFn::Round.anchor(), name: "round".into() },
+            FunctionEntry { anchor: CanonicalFn::Power.anchor(), name: "power".into() },
+            FunctionEntry { anchor: CanonicalFn::Sqrt.anchor(), name: "sqrt".into() },
+            FunctionEntry { anchor: CanonicalFn::Mod.anchor(), name: "mod".into() },
+            // Date/Time
+            FunctionEntry { anchor: CanonicalFn::DatePart.anchor(), name: "date_part".into() },
+            FunctionEntry { anchor: CanonicalFn::CurrentDate.anchor(), name: "current_date".into() },
+            FunctionEntry { anchor: CanonicalFn::CurrentTimestamp.anchor(), name: "current_timestamp".into() },
+            FunctionEntry { anchor: CanonicalFn::DateAdd.anchor(), name: "date_add".into() },
+            FunctionEntry { anchor: CanonicalFn::DateDiff.anchor(), name: "date_diff".into() },
+            FunctionEntry { anchor: CanonicalFn::ToDate.anchor(), name: "to_date".into() },
+            FunctionEntry { anchor: CanonicalFn::ToTimestamp.anchor(), name: "to_timestamp".into() },
+            // Conditional
+            FunctionEntry { anchor: CanonicalFn::Greatest.anchor(), name: "greatest".into() },
+            FunctionEntry { anchor: CanonicalFn::Least.anchor(), name: "least".into() },
+            // Pattern
+            FunctionEntry { anchor: CanonicalFn::RegexpReplace.anchor(), name: "regexp_replace".into() },
         ])
     }
 }

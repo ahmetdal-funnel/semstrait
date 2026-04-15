@@ -1,5 +1,7 @@
 //! PlanNode -> polyglot_sql Expression AST conversion.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use crate::sql::emit_error::EmitError;
 use polyglot_sql::builder::{self, Expr};
 use polyglot_sql::expressions::{
@@ -11,19 +13,31 @@ use semstrait_ir::{JoinType, LogicalPlan, PlanNode, SortDirection};
 use super::ExprBuilder;
 
 /// Converts `PlanNode` IR trees into polyglot-sql `Expression` AST.
+///
+/// Inline view aliases are unique per `build()` call via a monotonic counter
+/// (e.g., `_p0`, `_a1`). This prevents alias collisions in nested plans.
 pub struct PlanBuilder {
     expr: ExprBuilder,
+    alias_counter: AtomicU32,
 }
 
 impl PlanBuilder {
     pub fn new() -> Self {
         Self {
             expr: ExprBuilder,
+            alias_counter: AtomicU32::new(0),
         }
+    }
+
+    /// Generate a unique alias with the given prefix.
+    fn next_alias(&self, prefix: &str) -> String {
+        let n = self.alias_counter.fetch_add(1, Ordering::Relaxed);
+        format!("{prefix}{n}")
     }
 
     /// Convert a full `LogicalPlan` to a polyglot-sql `Expression`.
     pub fn build(&self, plan: &LogicalPlan) -> Result<Expression, EmitError> {
+        self.alias_counter.store(0, Ordering::Relaxed);
         self.build_node(&plan.root)
     }
 
@@ -57,8 +71,9 @@ impl PlanBuilder {
     fn build_filter(&self, filter: &semstrait_ir::FilterNode) -> Result<Expression, EmitError> {
         let child = self.build_node(&filter.input)?;
         let predicate = self.expr.build(&filter.predicate)?;
+        let alias = self.next_alias("_f");
         Ok(builder::select([builder::star()])
-            .from_expr(wrap_subquery(child, "_f"))
+            .from_expr(wrap_subquery(child, &alias))
             .where_(predicate)
             .build())
     }
@@ -82,8 +97,9 @@ impl PlanBuilder {
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let alias = self.next_alias("_p");
         Ok(builder::select(exprs)
-            .from_expr(wrap_subquery(child, "_p"))
+            .from_expr(wrap_subquery(child, &alias))
             .build())
     }
 
@@ -122,8 +138,9 @@ impl PlanBuilder {
             }
         }
 
+        let alias = self.next_alias("_a");
         let mut query = builder::select(select_list)
-            .from_expr(wrap_subquery(child, "_a"));
+            .from_expr(wrap_subquery(child, &alias));
 
         if !group_exprs.is_empty() {
             query = query.group_by(group_exprs);
@@ -155,12 +172,14 @@ impl PlanBuilder {
             trailing_comments: Vec::new(),
             span: None,
         })];
+        let left_alias = self.next_alias("_j");
+        let right_alias = self.next_alias("_j");
         select.from = Some(From {
-            expressions: vec![Expression::Subquery(Box::new(make_subquery(left, "_l")))],
+            expressions: vec![Expression::Subquery(Box::new(make_subquery(left, &left_alias)))],
         });
         select.joins = vec![Join {
             kind,
-            this: Expression::Subquery(Box::new(make_subquery(right, "_r"))),
+            this: Expression::Subquery(Box::new(make_subquery(right, &right_alias))),
             on: Some(on_expr.into_inner()),
             using: Vec::new(),
             use_inner_keyword: false,
@@ -233,8 +252,9 @@ impl PlanBuilder {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        let alias = self.next_alias("_s");
         Ok(builder::select([builder::star()])
-            .from_expr(wrap_subquery(child, "_s"))
+            .from_expr(wrap_subquery(child, &alias))
             .order_by(sort_exprs)
             .build())
     }
@@ -250,8 +270,9 @@ impl PlanBuilder {
         }
 
         let child = self.build_node(&fetch.input)?;
+        let alias = self.next_alias("_t");
         let mut query = builder::select([builder::star()])
-            .from_expr(wrap_subquery(child, "_t"));
+            .from_expr(wrap_subquery(child, &alias));
 
         if fetch.offset > 0 {
             query = query.offset(fetch.offset as usize);

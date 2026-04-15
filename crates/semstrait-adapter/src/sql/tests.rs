@@ -504,7 +504,7 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "SELECT * FROM (SELECT \"id\", \"amount\" FROM \"orders\") AS _f WHERE (\"amount\" > 100)"
+            "SELECT * FROM (SELECT \"id\", \"amount\" FROM \"orders\") AS _f0 WHERE (\"amount\" > 100)"
         );
     }
 
@@ -522,7 +522,7 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "SELECT \"id\", (\"amount\" + \"tax\") FROM (SELECT \"id\", \"amount\", \"tax\" FROM \"orders\") AS _p"
+            "SELECT \"id\", (\"amount\" + \"tax\") FROM (SELECT \"id\", \"amount\", \"tax\" FROM \"orders\") AS _p0"
         );
     }
 
@@ -543,7 +543,7 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "SELECT \"region\", SUM(\"amount\") FROM (SELECT \"region\", \"amount\" FROM \"orders\") AS _a GROUP BY \"region\""
+            "SELECT \"region\", SUM(\"amount\") FROM (SELECT \"region\", \"amount\" FROM \"orders\") AS _a0 GROUP BY \"region\""
         );
     }
 
@@ -564,7 +564,7 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "SELECT COUNT(\"amount\") FROM (SELECT \"amount\" FROM \"orders\") AS _a"
+            "SELECT COUNT(\"amount\") FROM (SELECT \"amount\" FROM \"orders\") AS _a0"
         );
     }
 
@@ -581,9 +581,9 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "SELECT * FROM (SELECT \"id\", \"customer_id\" FROM \"orders\") AS _l \
+            "SELECT * FROM (SELECT \"id\", \"customer_id\" FROM \"orders\") AS _j0 \
              INNER JOIN \
-             (SELECT \"id\", \"name\" FROM \"customers\") AS _r \
+             (SELECT \"id\", \"name\" FROM \"customers\") AS _j1 \
              ON (\"customer_id\" = \"id\")"
         );
     }
@@ -662,7 +662,7 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "SELECT * FROM (SELECT \"id\", \"amount\" FROM \"orders\") AS _s ORDER BY \"amount\" DESC, \"id\" ASC"
+            "SELECT * FROM (SELECT \"id\", \"amount\" FROM \"orders\") AS _s0 ORDER BY \"amount\" DESC, \"id\" ASC"
         );
     }
 
@@ -678,7 +678,7 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "SELECT * FROM (SELECT \"id\" FROM \"orders\") AS _t OFFSET 20 ROWS FETCH FIRST 10 ROWS ONLY"
+            "SELECT * FROM (SELECT \"id\" FROM \"orders\") AS _t0 OFFSET 20 ROWS FETCH FIRST 10 ROWS ONLY"
         );
     }
 
@@ -694,7 +694,7 @@ mod plan_emission {
         let sql = e.emit(&plan(root)).unwrap();
         assert_eq!(
             sql,
-            "SELECT * FROM (SELECT \"id\" FROM \"orders\") AS _t FETCH FIRST 5 ROWS ONLY"
+            "SELECT * FROM (SELECT \"id\" FROM \"orders\") AS _t0 FETCH FIRST 5 ROWS ONLY"
         );
     }
 

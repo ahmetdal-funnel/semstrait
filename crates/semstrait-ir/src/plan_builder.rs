@@ -16,13 +16,40 @@ use crate::schema::Schema;
 /// `PlanNode` variant. Engine adapters override only the methods where
 /// their plan construction diverges from the default.
 ///
-/// The `finalize_node` hook is called on every node after construction,
-/// providing a cross-cutting point for annotation or rewriting.
+/// Two hooks are provided:
+///
+/// - **`rewrite_expr`**: Called on every `Expr` field before node construction.
+///   Engines override this to remap function names, restructure expressions,
+///   or handle dedicated `Expr` variants differently.
+///
+/// - **`finalize_node`**: Called on every node after construction.
+///   Engines override this for node-level rewriting (e.g., decomposing
+///   operators the engine does not support, such as APPLY or LATERAL).
+///
+/// # Override Hazard
+///
+/// If you override a `build_*` method, you **must**:
+/// 1. Call `self.rewrite_expr(expr)` on every `Expr` field before placing it in a `PlanNode`
+/// 2. Call `self.finalize_node(node)` on the constructed `PlanNode` before returning
+///
+/// The default implementations handle both automatically.
 pub trait PlanBuilder: Send + Sync {
+    /// Rewrite an expression for the target engine.
+    ///
+    /// Called by default `build_*` methods on every `Expr` field before
+    /// node construction. Engines override this to apply function remaps,
+    /// structural rewrites, or dedicated `Expr` variant handling.
+    ///
+    /// Default: identity (returns expr unchanged).
+    fn rewrite_expr(&self, expr: Expr) -> Expr {
+        expr
+    }
+
     /// Post-construction hook called on every node.
     ///
     /// Default: identity (returns node unchanged).
-    /// Engines can use this for annotation, validation, or rewriting.
+    /// Engines can use this for annotation, validation, or node-level
+    /// rewriting (e.g., decomposing operators the engine does not support).
     fn finalize_node(&self, node: PlanNode) -> PlanNode {
         node
     }
@@ -52,6 +79,7 @@ pub trait PlanBuilder: Send + Sync {
         input: PlanNode,
         predicate: Expr,
     ) -> PlanNode {
+        let predicate = self.rewrite_expr(predicate);
         self.finalize_node(PlanNode::Filter(FilterNode {
             meta: NodeMeta::new(schema),
             input: Box::new(input),
@@ -66,6 +94,7 @@ pub trait PlanBuilder: Send + Sync {
         input: PlanNode,
         expressions: Vec<Expr>,
     ) -> PlanNode {
+        let expressions = expressions.into_iter().map(|e| self.rewrite_expr(e)).collect();
         self.finalize_node(PlanNode::Project(ProjectNode {
             meta: NodeMeta::new(schema),
             input: Box::new(input),
@@ -81,6 +110,14 @@ pub trait PlanBuilder: Send + Sync {
         group_by: Vec<Expr>,
         aggregates: Vec<AggregateMeasure>,
     ) -> PlanNode {
+        let group_by = group_by.into_iter().map(|e| self.rewrite_expr(e)).collect();
+        let aggregates = aggregates
+            .into_iter()
+            .map(|mut am| {
+                am.expr = self.rewrite_expr(am.expr);
+                am
+            })
+            .collect();
         self.finalize_node(PlanNode::Aggregate(AggNode {
             meta: NodeMeta::new(schema),
             input: Box::new(input),
@@ -98,6 +135,7 @@ pub trait PlanBuilder: Send + Sync {
         join_type: JoinType,
         condition: Expr,
     ) -> PlanNode {
+        let condition = self.rewrite_expr(condition);
         self.finalize_node(PlanNode::Join(JoinNode {
             meta: NodeMeta::new(schema),
             left: Box::new(left),
@@ -128,6 +166,13 @@ pub trait PlanBuilder: Send + Sync {
         input: PlanNode,
         sort_keys: Vec<SortKey>,
     ) -> PlanNode {
+        let sort_keys = sort_keys
+            .into_iter()
+            .map(|mut sk| {
+                sk.expr = self.rewrite_expr(sk.expr);
+                sk
+            })
+            .collect();
         self.finalize_node(PlanNode::Sort(SortNode {
             meta: NodeMeta::new(schema),
             input: Box::new(input),
@@ -255,5 +300,105 @@ mod tests {
         fn assert_object_safe(_: &dyn PlanBuilder) {}
         let builder = DefaultPlanBuilder;
         assert_object_safe(&builder);
+    }
+
+    #[test]
+    fn rewrite_expr_applied_in_build_filter() {
+        /// Renames "position" to "strpos" in FunctionCall nodes.
+        struct RenameBuilder;
+        impl PlanBuilder for RenameBuilder {
+            fn rewrite_expr(&self, expr: Expr) -> Expr {
+                expr.transform(&|e: &Expr| -> Result<Option<Expr>, std::convert::Infallible> {
+                    if let Expr::FunctionCall(fc) = e {
+                        if fc.name == "position" {
+                            return Ok(Some(Expr::function_call("strpos", fc.args.clone())));
+                        }
+                    }
+                    Ok(None)
+                })
+                .expect("infallible")
+            }
+        }
+
+        let builder = RenameBuilder;
+        let schema = Schema::new(vec![Field::new("id", DataType::Integer)]);
+        let scan = builder.build_scan(
+            schema.clone(),
+            "t".to_string(),
+            None,
+            None,
+            vec!["id".to_string()],
+        );
+        let predicate = Expr::function_call("position", vec![Expr::column("name"), Expr::string("x")]);
+        let node = builder.build_filter(schema, scan, predicate);
+
+        if let PlanNode::Filter(f) = &node {
+            if let Expr::FunctionCall(fc) = &f.predicate {
+                assert_eq!(fc.name, "strpos", "rewrite_expr should rename position to strpos");
+            } else {
+                panic!("expected FunctionCall in predicate");
+            }
+        } else {
+            panic!("expected Filter node");
+        }
+    }
+
+    #[test]
+    fn rewrite_expr_applied_in_build_aggregate() {
+        /// Renames "upper" to "UPPER_REWRITTEN" in FunctionCall nodes.
+        struct UpperRewriter;
+        impl PlanBuilder for UpperRewriter {
+            fn rewrite_expr(&self, expr: Expr) -> Expr {
+                expr.transform(&|e: &Expr| -> Result<Option<Expr>, std::convert::Infallible> {
+                    if let Expr::FunctionCall(fc) = e {
+                        if fc.name == "upper" {
+                            return Ok(Some(Expr::function_call("UPPER_REWRITTEN", fc.args.clone())));
+                        }
+                    }
+                    Ok(None)
+                })
+                .expect("infallible")
+            }
+        }
+
+        let builder = UpperRewriter;
+        let schema = Schema::new(vec![
+            Field::new("region", DataType::String),
+            Field::new("total", DataType::Number),
+        ]);
+        let scan = builder.build_scan(
+            schema.clone(),
+            "t".to_string(),
+            None,
+            None,
+            vec!["region".to_string()],
+        );
+
+        let group_by = vec![Expr::function_call("upper", vec![Expr::column("region")])];
+        let aggregates = vec![AggregateMeasure {
+            function: semstrait_core::Aggregation::Sum,
+            expr: Expr::function_call("upper", vec![Expr::column("region")]),
+            distinct: false,
+            data_type: DataType::Number,
+        }];
+
+        let node = builder.build_aggregate(schema, scan, group_by, aggregates);
+
+        if let PlanNode::Aggregate(agg) = &node {
+            // Check group_by rewritten
+            if let Expr::FunctionCall(fc) = &agg.group_by[0] {
+                assert_eq!(fc.name, "UPPER_REWRITTEN");
+            } else {
+                panic!("expected FunctionCall in group_by");
+            }
+            // Check aggregate expr rewritten
+            if let Expr::FunctionCall(fc) = &agg.aggregates[0].expr {
+                assert_eq!(fc.name, "UPPER_REWRITTEN");
+            } else {
+                panic!("expected FunctionCall in aggregate expr");
+            }
+        } else {
+            panic!("expected Aggregate node");
+        }
     }
 }

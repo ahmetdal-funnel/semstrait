@@ -1,6 +1,7 @@
 //! Expr <-> Substrait Expression converter
 
 use crate::error::ConvertError;
+use crate::rewrite::CanonicalFn;
 use crate::schema::Schema;
 use super::anchors::*;
 
@@ -302,6 +303,7 @@ impl<'s> ExprConverter<'s> {
         args: Vec<proto::Expression>,
     ) -> Result<proto::Expression, ConvertError> {
         let function_ref = match name.to_lowercase().as_str() {
+            // Dedicated Expr variant functions (anchors in anchors.rs)
             "not" => FUNC_NOT,
             "is_null" => FUNC_IS_NULL,
             "is_not_null" => FUNC_IS_NOT_NULL,
@@ -319,11 +321,16 @@ impl<'s> ExprConverter<'s> {
                 // Aggregate functions mapped to arithmetic URI for now
                 FUNC_ADD // placeholder — real aggregate handling is in serializer
             }
-            _ => {
-                return Err(ConvertError::FunctionNotFound(format!(
-                    "Function not mapped: {}",
-                    name
-                )))
+            // Canonical functions — anchor via CanonicalFn
+            other => {
+                if let Some(cf) = CanonicalFn::from_name(other) {
+                    cf.anchor()
+                } else {
+                    return Err(ConvertError::FunctionNotFound(format!(
+                        "Function not mapped: {}",
+                        name
+                    )));
+                }
             }
         };
 
