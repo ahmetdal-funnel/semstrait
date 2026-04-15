@@ -24,7 +24,7 @@ use crate::error::PlannerError;
 use crate::kind::PlannerContext;
 use crate::kind::joinset::map_join_type;
 use crate::planner::{
-    SemanticPlanner, apply_limit, apply_order_by, inject_entity_filters, inject_user_filters,
+    SemanticPlanner, apply_limit, apply_order_by, inject_user_filters,
 };
 use crate::request::ResolvedQueryRequest;
 use crate::validator::ConstraintValidator;
@@ -90,17 +90,17 @@ pub fn build_ad_hoc_join_plan(
     // Validate constraints per entity.
     ConstraintValidator::check(&anchor_req.request, manifest)?;
 
-    let (mut anchor_fragment, anchor_measures, anchor_filters) =
+    let (mut anchor_fragment, anchor_measures) =
         planner.resolve_entity(&anchor_req.request, manifest, &ctx)?;
 
-    // Per-entity additivity + entity filter injection.
+    // Per-entity additivity resolution.
     for measure_name in &anchor_req.request.measures {
         if let Some(measure) = anchor_measures.get(measure_name) {
             anchor_fragment =
                 AdditivityResolver::resolve(anchor_fragment, measure, &anchor_req.request)?;
         }
     }
-    let mut current_root = inject_entity_filters(anchor_fragment.root, &anchor_filters, pb)?;
+    let mut current_root = anchor_fragment.root;
 
     // 4. Join each subsequent entity.
     for (step_idx, step) in join_order.iter().enumerate() {
@@ -109,7 +109,7 @@ pub fn build_ad_hoc_join_plan(
 
         ConstraintValidator::check(&step_req.request, manifest)?;
 
-        let (mut step_fragment, step_measures, step_filters) =
+        let (mut step_fragment, step_measures) =
             planner.resolve_entity(&step_req.request, manifest, &ctx)?;
 
         for measure_name in &step_req.request.measures {
@@ -118,7 +118,7 @@ pub fn build_ad_hoc_join_plan(
                     AdditivityResolver::resolve(step_fragment, measure, &step_req.request)?;
             }
         }
-        let step_root = inject_entity_filters(step_fragment.root, &step_filters, pb)?;
+        let step_root = step_fragment.root;
 
         // Build join condition from the relationship.
         let rel = &manifest.relationships[step.relationship_idx];

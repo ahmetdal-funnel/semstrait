@@ -20,9 +20,6 @@ pub enum EngineError {
     #[error("adapt error: {0}")]
     Adapt(#[from] semstrait_adapter::AdaptError),
 
-    #[error("connector error: {0}")]
-    Connector(#[from] semstrait_connectors::ConnectorError),
-
     #[error("not configured: {0}")]
     NotConfigured(String),
 

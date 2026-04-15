@@ -2563,7 +2563,29 @@ fn parse_expr(expr: &str, entity_name: &str) -> Result<Expr, CompileError> {
         return Ok(parsed);
     }
 
-    // Try simple arithmetic: a op b (before entity ref, since
+    // Predicate parsers (lowest → highest precedence).
+    // Logical OR
+    if let Some(parsed) = try_parse_logical_or(trimmed) {
+        return Ok(parsed);
+    }
+    // Logical AND
+    if let Some(parsed) = try_parse_logical_and(trimmed) {
+        return Ok(parsed);
+    }
+    // Comparison operators: =, !=, <, >, <=, >=
+    if let Some(parsed) = try_parse_comparison(trimmed) {
+        return Ok(parsed);
+    }
+    // IS NULL / IS NOT NULL
+    if let Some(parsed) = try_parse_is_null(trimmed) {
+        return Ok(parsed);
+    }
+    // NOT prefix
+    if let Some(parsed) = try_parse_not_prefix(trimmed) {
+        return Ok(parsed);
+    }
+
+    // Arithmetic: a op b (before entity ref, since
     // "{{ a }} - {{ b }}" starts with {{ and ends with }} but is arithmetic)
     if let Some(parsed) = try_parse_arithmetic(trimmed) {
         return Ok(parsed);
@@ -2573,6 +2595,20 @@ fn parse_expr(expr: &str, entity_name: &str) -> Result<Expr, CompileError> {
     if trimmed.starts_with("{{") && trimmed.ends_with("}}") {
         let inner = trimmed[2..trimmed.len() - 2].trim();
         return Ok(Expr::entity_ref(inner));
+    }
+
+    // String literal: 'value'
+    if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2 {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        return Ok(Expr::string(inner.to_string()));
+    }
+
+    // Boolean / null literals (before identifier — these are valid identifiers)
+    match trimmed.to_lowercase().as_str() {
+        "true" => return Ok(Expr::boolean(true)),
+        "false" => return Ok(Expr::boolean(false)),
+        "null" => return Ok(Expr::null()),
+        _ => {}
     }
 
     // Bare identifier => entity ref
@@ -2728,20 +2764,285 @@ fn try_parse_aggregation(expr: &str) -> Option<Expr> {
     None
 }
 
+// ── Inline DSL scan state ──────────────────────────────────────────────────
+//
+// Shared depth/quoting tracker for all try_parse_* byte-scan functions.
+// Ensures operators inside parentheses or single-quoted string literals are
+// never treated as top-level split points.
+
+struct ScanState {
+    paren_depth: i32,
+    in_string: bool,
+}
+
+impl ScanState {
+    fn new() -> Self {
+        Self { paren_depth: 0, in_string: false }
+    }
+
+    /// Update state for the byte at position `i`. Returns `true` if the byte
+    /// was consumed by quoting/nesting and the caller should skip operator checks.
+    fn update(&mut self, b: u8) -> bool {
+        if b == b'\'' {
+            self.in_string = !self.in_string;
+            return true;
+        }
+        if self.in_string {
+            return true;
+        }
+        match b {
+            b'(' => { self.paren_depth += 1; true }
+            b')' => { self.paren_depth -= 1; true }
+            _ => false,
+        }
+    }
+
+    fn at_top_level(&self) -> bool {
+        self.paren_depth == 0 && !self.in_string
+    }
+}
+
+// ── Predicate parsers (lowest → highest precedence) ───────────────────────
+
+/// Check if byte at `pos` is a word boundary in `bytes` (non-alphanumeric or string edge).
+fn is_word_boundary(bytes: &[u8], pos: usize) -> bool {
+    pos >= bytes.len() || !bytes[pos].is_ascii_alphanumeric() && bytes[pos] != b'_'
+}
+
+/// Find the last top-level occurrence of a case-insensitive keyword with word boundaries.
+/// Returns the byte offset of the keyword start, or None.
+fn find_last_keyword(expr: &str, keyword: &str) -> Option<usize> {
+    let bytes = expr.as_bytes();
+    let kw_len = keyword.len();
+    let mut state = ScanState::new();
+    let mut last_pos = None;
+
+    let mut i = 0;
+    while i < bytes.len() {
+        if state.update(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        if !state.at_top_level() {
+            i += 1;
+            continue;
+        }
+        if i + kw_len <= bytes.len()
+            && expr[i..i + kw_len].eq_ignore_ascii_case(keyword)
+            && (i == 0 || is_word_boundary(bytes, i - 1))
+            && is_word_boundary(bytes, i + kw_len)
+        {
+            last_pos = Some(i);
+        }
+        i += 1;
+    }
+    last_pos
+}
+
+/// Try to parse a top-level `OR` (lowest precedence logical operator).
+fn try_parse_logical_or(expr: &str) -> Option<Expr> {
+    let pos = find_last_keyword(expr, "OR")?;
+    let left = expr[..pos].trim();
+    let right = expr[pos + 2..].trim();
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+    Some(Expr::or(parse_predicate_operand(left), parse_predicate_operand(right)))
+}
+
+/// Try to parse a top-level `AND` (binds tighter than OR).
+fn try_parse_logical_and(expr: &str) -> Option<Expr> {
+    let pos = find_last_keyword(expr, "AND")?;
+    let left = expr[..pos].trim();
+    let right = expr[pos + 3..].trim();
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+    Some(Expr::and(parse_predicate_operand(left), parse_predicate_operand(right)))
+}
+
+/// Try to parse a top-level comparison operator (`=`, `!=`, `<`, `>`, `<=`, `>=`).
+fn try_parse_comparison(expr: &str) -> Option<Expr> {
+    let bytes = expr.as_bytes();
+    let mut state = ScanState::new();
+    // Track the last comparison operator found: (position, operator_str_len, op_kind)
+    let mut last_cmp: Option<(usize, usize, &str)> = None;
+
+    let mut i = 0;
+    while i < bytes.len() {
+        if state.update(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        if !state.at_top_level() {
+            i += 1;
+            continue;
+        }
+
+        // Multi-byte operators first (longest match)
+        if bytes[i] == b'!' && bytes.get(i + 1) == Some(&b'=') {
+            last_cmp = Some((i, 2, "!="));
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'<' && bytes.get(i + 1) == Some(&b'=') {
+            last_cmp = Some((i, 2, "<="));
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'>' && bytes.get(i + 1) == Some(&b'=') {
+            last_cmp = Some((i, 2, ">="));
+            i += 2;
+            continue;
+        }
+        // Single-byte (only if not part of multi-byte)
+        if bytes[i] == b'=' {
+            if i == 0 || !matches!(bytes[i - 1], b'!' | b'<' | b'>') {
+                last_cmp = Some((i, 1, "="));
+            }
+        } else if bytes[i] == b'<' {
+            // already checked <= above, so this is bare <
+            last_cmp = Some((i, 1, "<"));
+        } else if bytes[i] == b'>' {
+            last_cmp = Some((i, 1, ">"));
+        }
+        i += 1;
+    }
+
+    let (pos, len, op_str) = last_cmp?;
+    let left = expr[..pos].trim();
+    let right = expr[pos + len..].trim();
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+
+    let l = parse_predicate_operand(left);
+    let r = parse_predicate_operand(right);
+    Some(match op_str {
+        "=" => Expr::eq(l, r),
+        "!=" => Expr::ne(l, r),
+        "<" => Expr::lt(l, r),
+        ">" => Expr::gt(l, r),
+        "<=" => Expr::lte(l, r),
+        ">=" => Expr::gte(l, r),
+        _ => unreachable!(),
+    })
+}
+
+/// Try to parse `<expr> IS NOT NULL` or `<expr> IS NULL` suffix.
+fn try_parse_is_null(expr: &str) -> Option<Expr> {
+    let upper = expr.to_uppercase();
+    if upper.ends_with(" IS NOT NULL") {
+        let subject = expr[..expr.len() - " IS NOT NULL".len()].trim();
+        if !subject.is_empty() {
+            return Some(Expr::is_not_null(parse_predicate_operand(subject)));
+        }
+    } else if upper.ends_with(" IS NULL") {
+        let subject = expr[..expr.len() - " IS NULL".len()].trim();
+        if !subject.is_empty() {
+            return Some(Expr::is_null(parse_predicate_operand(subject)));
+        }
+    }
+    None
+}
+
+/// Try to parse `NOT <expr>` prefix.
+fn try_parse_not_prefix(expr: &str) -> Option<Expr> {
+    let upper = expr.to_uppercase();
+    if upper.starts_with("NOT ") {
+        let remainder = expr[4..].trim();
+        if !remainder.is_empty() {
+            return Some(Expr::not(parse_predicate_operand(remainder)));
+        }
+    }
+    None
+}
+
+/// Recursive descent operand parser for the full predicate grammar.
+///
+/// Tries parsers from lowest to highest precedence:
+/// OR → AND → comparison → IS NULL → NOT → arithmetic → atom.
+fn parse_predicate_operand(s: &str) -> Expr {
+    let trimmed = s.trim();
+
+    // Strip balanced outer parens
+    if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        // Verify the parens are actually balanced (not "(a) + (b)")
+        let mut depth = 0i32;
+        let mut balanced = true;
+        for (i, b) in inner.bytes().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        balanced = false;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            // If depth goes negative before the end, the parens don't wrap the whole expr
+            let _ = i;
+        }
+        if balanced && depth == 0 {
+            return parse_predicate_operand(inner);
+        }
+    }
+
+    // Aggregation (highest precedence in DSL context)
+    if let Some(agg) = try_parse_aggregation(trimmed) {
+        return agg;
+    }
+
+    // Logical OR (lowest)
+    if let Some(parsed) = try_parse_logical_or(trimmed) {
+        return parsed;
+    }
+    // Logical AND
+    if let Some(parsed) = try_parse_logical_and(trimmed) {
+        return parsed;
+    }
+    // Comparison
+    if let Some(parsed) = try_parse_comparison(trimmed) {
+        return parsed;
+    }
+    // IS NULL / IS NOT NULL
+    if let Some(parsed) = try_parse_is_null(trimmed) {
+        return parsed;
+    }
+    // NOT prefix
+    if let Some(parsed) = try_parse_not_prefix(trimmed) {
+        return parsed;
+    }
+    // Arithmetic
+    if let Some(parsed) = try_parse_arithmetic(trimmed) {
+        return parsed;
+    }
+
+    // Atom (delegate to existing parse_operand for literals, entity refs, identifiers)
+    parse_operand(trimmed)
+}
+
 fn try_parse_arithmetic(expr: &str) -> Option<Expr> {
     let bytes = expr.as_bytes();
-    let mut paren_depth = 0i32;
+    let mut state = ScanState::new();
     let mut last_add_sub = None;
     let mut last_mul_div = None;
 
     for (i, &b) in bytes.iter().enumerate() {
+        if state.update(b) {
+            continue;
+        }
+        if !state.at_top_level() {
+            continue;
+        }
         match b {
-            b'(' => paren_depth += 1,
-            b')' => paren_depth -= 1,
-            b'+' | b'-' if paren_depth == 0 && i > 0 => {
+            b'+' | b'-' if i > 0 => {
                 last_add_sub = Some(i);
             }
-            b'*' | b'/' if paren_depth == 0 && i > 0 => {
+            b'*' | b'/' if i > 0 => {
                 last_mul_div = Some(i);
             }
             _ => {}
@@ -2790,6 +3091,20 @@ fn parse_operand(s: &str) -> Expr {
     if trimmed.starts_with("{{") && trimmed.ends_with("}}") {
         let inner = trimmed[2..trimmed.len() - 2].trim();
         return Expr::entity_ref(inner);
+    }
+
+    // String literal: 'value'
+    if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2 {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        return Expr::string(inner.to_string());
+    }
+
+    // Boolean / null literals (before identifier check — these are valid identifiers)
+    match trimmed.to_lowercase().as_str() {
+        "true" => return Expr::boolean(true),
+        "false" => return Expr::boolean(false),
+        "null" => return Expr::null(),
+        _ => {}
     }
 
     if let Ok(v) = trimmed.parse::<i64>() {
@@ -3364,5 +3679,166 @@ mod tests {
 
         let result = super::validate_expr_scope(&dimensions, &measures, &metrics, "test_kind");
         assert!(result.is_ok());
+    }
+
+    // ── Predicate parsing tests ────────────────────────────────────────
+
+    #[test]
+    fn test_parse_expr_simple_equality() {
+        let expr = parse_expr("status = 'active'", "filter").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::Eq);
+                assert!(matches!(&*bin.left, Expr::EntityRef(e) if e.name == "status"));
+                assert!(matches!(&*bin.right, Expr::Literal(semstrait_core::expr::Literal::String { value }) if value == "active"));
+            }
+            _ => panic!("expected BinaryOp(Eq), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_not_equal() {
+        let expr = parse_expr("status != 'cancelled'", "filter").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::NotEq);
+                assert!(matches!(&*bin.left, Expr::EntityRef(e) if e.name == "status"));
+                assert!(matches!(&*bin.right, Expr::Literal(semstrait_core::expr::Literal::String { value }) if value == "cancelled"));
+            }
+            _ => panic!("expected BinaryOp(NotEq), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_gt_numeric() {
+        let expr = parse_expr("amount > 100", "filter").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::Gt);
+                assert!(matches!(&*bin.left, Expr::EntityRef(e) if e.name == "amount"));
+                assert!(matches!(&*bin.right, Expr::Literal(semstrait_core::expr::Literal::Integer { value: 100 })));
+            }
+            _ => panic!("expected BinaryOp(Gt), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_lte_float() {
+        let expr = parse_expr("price <= 9.99", "filter").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::LtEq);
+                assert!(matches!(&*bin.left, Expr::EntityRef(e) if e.name == "price"));
+            }
+            _ => panic!("expected BinaryOp(LtEq), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_and_combinator() {
+        let expr = parse_expr("status = 'active' AND amount > 0", "filter").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::And);
+                assert!(matches!(&*bin.left, Expr::BinaryOp(inner) if inner.op == semstrait_core::BinaryOp::Eq));
+                assert!(matches!(&*bin.right, Expr::BinaryOp(inner) if inner.op == semstrait_core::BinaryOp::Gt));
+            }
+            _ => panic!("expected BinaryOp(And), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_or_combinator() {
+        let expr = parse_expr("type = 'a' OR type = 'b'", "filter").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::Or);
+                assert!(matches!(&*bin.left, Expr::BinaryOp(inner) if inner.op == semstrait_core::BinaryOp::Eq));
+                assert!(matches!(&*bin.right, Expr::BinaryOp(inner) if inner.op == semstrait_core::BinaryOp::Eq));
+            }
+            _ => panic!("expected BinaryOp(Or), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_precedence_and_binds_tighter_than_or() {
+        // "a = 1 OR b = 2 AND c = 3" should parse as OR(a=1, AND(b=2, c=3))
+        let expr = parse_expr("a = 1 OR b = 2 AND c = 3", "filter").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::Or);
+                // Right side should be AND
+                assert!(matches!(&*bin.right, Expr::BinaryOp(inner) if inner.op == semstrait_core::BinaryOp::And));
+            }
+            _ => panic!("expected BinaryOp(Or), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_not_prefix() {
+        let expr = parse_expr("NOT deleted", "filter").unwrap();
+        assert!(matches!(&expr, Expr::Not(inner) if matches!(&*inner.expr, Expr::EntityRef(e) if e.name == "deleted")));
+    }
+
+    #[test]
+    fn test_parse_expr_is_null() {
+        let expr = parse_expr("end_date IS NULL", "filter").unwrap();
+        assert!(matches!(&expr, Expr::IsNull(inner) if matches!(&*inner.expr, Expr::EntityRef(e) if e.name == "end_date")));
+    }
+
+    #[test]
+    fn test_parse_expr_is_not_null() {
+        let expr = parse_expr("start_date IS NOT NULL", "filter").unwrap();
+        assert!(matches!(&expr, Expr::IsNotNull(inner) if matches!(&*inner.expr, Expr::EntityRef(e) if e.name == "start_date")));
+    }
+
+    #[test]
+    fn test_parse_expr_boolean_literal() {
+        let expr = parse_expr("is_active = true", "filter").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::Eq);
+                assert!(matches!(&*bin.right, Expr::Literal(semstrait_core::expr::Literal::Boolean { value: true })));
+            }
+            _ => panic!("expected BinaryOp(Eq), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_entity_ref_in_comparison() {
+        let expr = parse_expr("{{ status }} != 'cancelled'", "filter").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::NotEq);
+                assert!(matches!(&*bin.left, Expr::EntityRef(e) if e.name == "status"));
+            }
+            _ => panic!("expected BinaryOp(NotEq), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_arithmetic_regression() {
+        // Existing arithmetic must still work after predicate parser additions.
+        let expr = parse_expr("{{ revenue }} - {{ cost }}", "profit").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::Subtract);
+            }
+            _ => panic!("expected BinaryOp(Subtract), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_string_with_operator_chars() {
+        // Operator chars inside string literals must not cause splits.
+        let expr = parse_expr("name = 'greater > less'", "filter").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => {
+                assert_eq!(bin.op, semstrait_core::BinaryOp::Eq);
+                assert!(matches!(&*bin.left, Expr::EntityRef(e) if e.name == "name"));
+                assert!(matches!(&*bin.right, Expr::Literal(semstrait_core::expr::Literal::String { value }) if value == "greater > less"));
+            }
+            _ => panic!("expected BinaryOp(Eq), got {:?}", expr),
+        }
     }
 }

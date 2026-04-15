@@ -26,7 +26,7 @@ pub fn router(engine: SharedEngine) -> Router {
         .route("/schema", get(schema))
         .route("/validate", post(validate))
         .route("/explain", post(explain))
-        .route("/query", post(query))
+        .route("/plan", post(plan))
         .route("/compile", post(compile))
         .with_state(engine)
 }
@@ -117,12 +117,32 @@ async fn compile(body: String) -> impl IntoResponse {
     }
 }
 
-async fn query(
+async fn plan(
     State(engine): State<SharedEngine>,
     Json(raw): Json<RawQueryRequest>,
 ) -> impl IntoResponse {
-    match engine.query(&raw).await {
-        Ok(result) => (StatusCode::OK, Json(result)),
+    match engine.plan(&raw).await {
+        Ok(artifact) => {
+            let body = match &artifact {
+                semstrait_ir::PlanArtifact::Sql(sql) => serde_json::json!({
+                    "type": "sql",
+                    "sql": sql,
+                }),
+                semstrait_ir::PlanArtifact::Substrait(plan) => {
+                    match serde_json::to_value(plan.as_ref()) {
+                        Ok(v) => serde_json::json!({
+                            "type": "substrait",
+                            "plan": v,
+                        }),
+                        Err(e) => serde_json::json!({
+                            "type": "substrait",
+                            "error": format!("serialization error: {}", e),
+                        }),
+                    }
+                }
+            };
+            (StatusCode::OK, Json(body))
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),

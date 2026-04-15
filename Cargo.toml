@@ -54,7 +54,6 @@ semstrait-catalog = { path = "crates/semstrait-catalog" }
 semstrait-manifest = { path = "crates/semstrait-manifest" }
 semstrait-ir = { path = "crates/semstrait-ir" }
 semstrait-planner = { path = "crates/semstrait-planner" }
-semstrait-connectors = { path = "crates/semstrait-connectors" }
 semstrait-adapter = { path = "crates/semstrait-adapter" }
 semstrait-api = { path = "crates/semstrait-api" }
 
@@ -71,21 +70,18 @@ semstrait-planner = { workspace = true }
 semstrait-ir = { workspace = true }
 semstrait-core = { workspace = true }
 semstrait-api = { workspace = true }
-semstrait-connectors = { workspace = true }
 semstrait-adapter = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [features]
 default = []
-datafusion = ["semstrait-connectors/datafusion", "semstrait-api/datafusion", "semstrait-adapter/datafusion"]
-duckdb = ["semstrait-connectors/duckdb", "semstrait-api/duckdb"]
-polyglot = ["semstrait-connectors/polyglot", "semstrait-api/polyglot"] # polyglot-sql is now always-on in semstrait-adapter
+datafusion = ["semstrait-adapter/datafusion", "semstrait-api/datafusion"]
+duckdb = ["semstrait-adapter/duckdb", "semstrait-api/duckdb"]
 iceberg = ["semstrait-api/iceberg"]
 unity = ["semstrait-api/unity"]
 aws = ["semstrait-api/aws"]
-trino = ["semstrait-connectors/trino", "semstrait-api/trino"]
-spark = ["semstrait-connectors/spark", "semstrait-api/spark"]
+spark = ["semstrait-adapter/spark", "semstrait-api/spark"]
 
 # polyglot-sql is extremely slow in unoptimized debug builds (recursive AST
 # walking becomes ~1000x slower). Compile it with opt-level 1 so that `cargo test`

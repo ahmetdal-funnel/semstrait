@@ -210,7 +210,7 @@ impl ExprBuilder {
 
             IrExpr::Cast(c) => {
                 let inner = self.build(&c.expr)?;
-                Ok(inner.cast(&c.data_type))
+                Ok(inner.cast(&c.data_type.to_string()))
             }
 
             // EntityRef and Guard should never appear in plan nodes (resolved during planning).

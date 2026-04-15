@@ -108,13 +108,13 @@ impl FunctionRegistry {
             FunctionEntry { anchor: CanonicalFn::Round.anchor(), name: "round".into() },
             FunctionEntry { anchor: CanonicalFn::Power.anchor(), name: "power".into() },
             FunctionEntry { anchor: CanonicalFn::Sqrt.anchor(), name: "sqrt".into() },
-            FunctionEntry { anchor: CanonicalFn::Mod.anchor(), name: "mod".into() },
+            // Note: mod, date_add, date_diff are structurally rewritten by
+            // DataFusionPlanBuilder::rewrite_expr() into arithmetic operations
+            // and never appear as FunctionCall nodes in the serialized plan.
             // Date/Time
             FunctionEntry { anchor: CanonicalFn::DatePart.anchor(), name: "date_part".into() },
             FunctionEntry { anchor: CanonicalFn::CurrentDate.anchor(), name: "current_date".into() },
             FunctionEntry { anchor: CanonicalFn::CurrentTimestamp.anchor(), name: "current_timestamp".into() },
-            FunctionEntry { anchor: CanonicalFn::DateAdd.anchor(), name: "date_add".into() },
-            FunctionEntry { anchor: CanonicalFn::DateDiff.anchor(), name: "date_diff".into() },
             FunctionEntry { anchor: CanonicalFn::ToDate.anchor(), name: "to_date".into() },
             FunctionEntry { anchor: CanonicalFn::ToTimestamp.anchor(), name: "to_timestamp".into() },
             // Conditional

@@ -126,6 +126,9 @@ src/
 ├── validator.rs                ConstraintValidator (pre-resolution validity gate)
 ├── optimizer.rs                OptimizerPass trait + Optimizer
 ├── additivity.rs               AdditivityResolver
+├── entity_resolver.rs          entity resolution from field names (ad-hoc queries)
+├── ad_hoc_join.rs              ad-hoc join resolution (FROM-less queries)
+├── simplify.rs                 plan simplification passes
 │
 ├── expr/
 │   └── mod.rs                  dimension partitioning, column ref collection, grain utils

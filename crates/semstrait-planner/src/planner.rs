@@ -69,7 +69,7 @@ impl SemanticPlanner {
             plan_builder: self.plan_builder.as_ref(),
         };
 
-        let (fragment, entity_measures, entity_filters) =
+        let (fragment, entity_measures) =
             self.resolve_entity(request, manifest, &ctx)?;
 
         // Step 7: Additivity resolution for each measure.
@@ -82,12 +82,11 @@ impl SemanticPlanner {
         }
 
         // Step 8: Inject filters.
+        // Note: entity-level filters are now injected at scan level inside
+        // build_layered_plan() (between scan and rename, using physical names).
         let mut root = fragment.root;
 
         let pb = self.plan_builder.as_ref();
-
-        // 8d: Inject entity-level filters (applied to all queries against this entity).
-        root = inject_entity_filters(root, &entity_filters, pb)?;
 
         // 8e: Inject user filters from the request.
         root = inject_user_filters(root, request, pb)?;
@@ -114,13 +113,15 @@ impl SemanticPlanner {
 
     /// Resolve the entity and build the plan fragment.
     ///
-    /// Returns (fragment, measures_map, filters) where measures_map and filters
-    /// are borrowed from the entity for post-resolution processing.
+    /// Returns (fragment, measures_map) where measures_map is borrowed from the
+    /// entity for post-resolution processing (additivity).
     /// Used by both `plan()` and `ad_hoc_join` for per-entity planning.
+    ///
+    /// Entity-level filters are injected at scan level inside `build_layered_plan()`
+    /// (between scan and rename, using physical column names) — not here.
     ///
     /// Unified dispatch through CompiledDataKind. Dataset variants use the fast path;
     /// complex kinds (grainset/unionset/joinset) delegate to KindPlanner registry.
-    #[allow(clippy::type_complexity)]
     pub(crate) fn resolve_entity<'a>(
         &self,
         request: &ResolvedQueryRequest,
@@ -130,7 +131,6 @@ impl SemanticPlanner {
         (
             PlanFragment,
             &'a indexmap::IndexMap<String, semstrait_manifest::CompiledMeasure>,
-            Vec<semstrait_manifest::CompiledFilter>,
         ),
         PlannerError,
     > {
@@ -150,8 +150,7 @@ impl SemanticPlanner {
         let fragment =
             crate::kind::dispatch_data_kind(&pruned, request, ctx, &self.planners)?;
 
-        let filters = iface.filters.clone();
-        Ok((fragment, &iface.measures, filters))
+        Ok((fragment, &iface.measures))
     }
 
     /// Access the plan builder (for ad_hoc_join module).
@@ -274,26 +273,6 @@ impl Default for SemanticPlannerBuilder {
 // ============================================================================
 // Filter injection helpers
 // ============================================================================
-
-/// Inject entity-level filters as FilterNodes wrapping the plan root.
-///
-/// Entity filters apply to all queries against an entity, regardless of dataset or user request.
-/// Expressions use semantic names (post-projection), so we lower with an empty mapping.
-pub(crate) fn inject_entity_filters(
-    mut root: PlanNode,
-    filters: &[semstrait_manifest::CompiledFilter],
-    plan_builder: &dyn PlanBuilder,
-) -> Result<PlanNode, PlannerError> {
-    let empty_mapping = std::collections::HashMap::new();
-    let resolver = crate::resolver::MappingResolver::new(&empty_mapping);
-    for filter in filters {
-        let predicate = resolver.resolve_expr(&filter.expr)?;
-
-        let schema = (*root.meta().output_schema).clone();
-        root = plan_builder.build_filter(schema, root, predicate);
-    }
-    Ok(root)
-}
 
 /// Convert user QueryFilters into FilterNodes wrapping the plan root.
 pub(crate) fn inject_user_filters(

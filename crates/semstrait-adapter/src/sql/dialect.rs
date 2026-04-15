@@ -1,12 +1,28 @@
 //! SQL dialect trait and implementations.
 
-use semstrait_core::Grain;
+use semstrait_core::{DataType, Grain};
 
 /// Dialect-specific SQL generation behavior.
 ///
 /// Each dialect knows how to quote identifiers, format date truncation,
 /// and handle engine-specific SQL idioms.
 pub trait SqlDialect: Send + Sync {
+    /// Map a canonical `DataType` to the engine-specific SQL type name.
+    ///
+    /// Default: ANSI SQL type names. Engine dialects override for their syntax.
+    fn type_name(&self, dt: &DataType) -> String {
+        match dt {
+            DataType::Integer => "INTEGER".into(),
+            DataType::Number => "DOUBLE PRECISION".into(),
+            DataType::Decimal { precision, scale } => format!("DECIMAL({precision},{scale})"),
+            DataType::String => "VARCHAR".into(),
+            DataType::Boolean => "BOOLEAN".into(),
+            DataType::Date => "DATE".into(),
+            DataType::Timestamp { precision } => format!("TIMESTAMP({precision})"),
+            DataType::Binary => "VARBINARY".into(),
+        }
+    }
+
     /// Quote an identifier (column or table name) per dialect rules.
     ///
     /// Default: ANSI double-quoted identifiers with escaped inner quotes.
@@ -116,6 +132,14 @@ pub struct DataFusionDialect;
 
 #[cfg(feature = "datafusion")]
 impl SqlDialect for DataFusionDialect {
+    fn type_name(&self, dt: &DataType) -> String {
+        match dt {
+            DataType::Integer => "BIGINT".into(),
+            DataType::Number => "DOUBLE".into(),
+            _ => AnsiDialect.type_name(dt),
+        }
+    }
+
     fn date_trunc(&self, grain: &Grain, expr: &str) -> String {
         format!("date_trunc('{}', {})", grain, expr)
     }
@@ -158,6 +182,14 @@ pub struct DuckDbDialect;
 
 #[cfg(feature = "duckdb")]
 impl SqlDialect for DuckDbDialect {
+    fn type_name(&self, dt: &DataType) -> String {
+        match dt {
+            DataType::Integer => "BIGINT".into(),
+            DataType::Number => "DOUBLE".into(),
+            _ => AnsiDialect.type_name(dt),
+        }
+    }
+
     fn date_trunc(&self, grain: &Grain, expr: &str) -> String {
         format!("date_trunc('{}', {})", grain, expr)
     }
@@ -205,6 +237,14 @@ pub struct SparkDialect;
 
 #[cfg(feature = "spark")]
 impl SqlDialect for SparkDialect {
+    fn type_name(&self, dt: &DataType) -> String {
+        match dt {
+            DataType::Integer => "BIGINT".into(),
+            DataType::Number => "DOUBLE".into(),
+            _ => AnsiDialect.type_name(dt),
+        }
+    }
+
     fn date_trunc(&self, grain: &Grain, expr: &str) -> String {
         format!("date_trunc('{}', {})", grain, expr)
     }

@@ -1,29 +1,29 @@
 //! SemstraitEngine — the central orchestrator.
 //!
-//! Coordinates manifest, planner, SQL emitter, and connector
-//! to execute semantic queries end-to-end.
+//! Coordinates manifest, planner, and SQL emitter
+//! to plan semantic queries and produce artifacts.
 
 use crate::error::EngineError;
 use crate::parse::RequestParser;
 use crate::types::{ExplainResult, RawQueryRequest, ValidationResult};
 use semstrait_catalog::{CatalogProvider, TableRef};
-use semstrait_connectors::{ComputeConnector, ComputeResultData};
-use semstrait_ir::PlannerWarning;
+use semstrait_ir::{PlanArtifact, PlannerWarning};
 use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
 use semstrait_planner::SemanticPlanner;
+use semstrait_adapter::EngineAdapter;
 use semstrait_adapter::sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
 use std::sync::Arc;
 
-/// The central engine that orchestrates semantic query execution.
+/// The central engine that orchestrates semantic query planning.
 ///
 /// Supports:
 /// - `validate()` — parse + validate request against manifest
-/// - `explain()` — compile → plan → emit SQL + Substrait JSON
-/// - `query()` — explain + execute (requires connector)
+/// - `explain()` — compile → plan → emit SQL
+/// - `plan()` — compile → plan → produce PlanArtifact (Substrait or SQL)
 pub struct SemstraitEngine {
     manifest: Option<CompiledManifest>,
     planner: SemanticPlanner,
-    connector: Option<Arc<dyn ComputeConnector>>,
+    adapter: Option<Arc<dyn EngineAdapter>>,
 }
 
 impl SemstraitEngine {
@@ -32,7 +32,7 @@ impl SemstraitEngine {
         Self {
             manifest: None,
             planner: SemanticPlanner::builder().build(),
-            connector: None,
+            adapter: None,
         }
     }
 
@@ -41,21 +41,29 @@ impl SemstraitEngine {
         Self {
             manifest: Some(manifest),
             planner: SemanticPlanner::builder().build(),
-            connector: None,
+            adapter: None,
         }
     }
 
-    /// Create an engine with a manifest and a compute connector for query execution.
-    pub fn with_connector(
+    /// Create an engine with a manifest and an engine adapter.
+    ///
+    /// The adapter's `plan_builder()` is wired into the planner for
+    /// engine-specific node construction. `explain()` uses the adapter's
+    /// `debug_sql()` and `plan()` uses `adapt()`.
+    pub fn with_adapter(
         manifest: CompiledManifest,
-        connector: Arc<dyn ComputeConnector>,
+        adapter: Arc<dyn EngineAdapter>,
     ) -> Self {
-        let planner = SemanticPlanner::builder().build();
+        let mut planner_builder = SemanticPlanner::builder();
+        if let Some(pb) = adapter.plan_builder() {
+            planner_builder = planner_builder.with_plan_builder(pb);
+        }
+        let planner = planner_builder.build();
 
         Self {
             manifest: Some(manifest),
             planner,
-            connector: Some(connector),
+            adapter: Some(adapter),
         }
     }
 
@@ -73,15 +81,9 @@ impl SemstraitEngine {
         self.manifest.as_ref()
     }
 
-    /// Set a connector on an existing engine.
-    pub fn set_connector(&mut self, connector: Arc<dyn ComputeConnector>) {
-        self.planner = SemanticPlanner::builder().build();
-        self.connector = Some(connector);
-    }
-
     /// Emit SQL from a logical plan using ANSI dialect.
     ///
-    /// Used as the fallback when no connector/adapter is configured.
+    /// Used as the fallback when no adapter is configured.
     fn emit_ansi_sql(plan: &semstrait_ir::LogicalPlan) -> Result<String, EngineError> {
         let emitter = AnsiSqlEmitter::new(AnsiDialect);
         Ok(emitter.emit(plan)?)
@@ -138,9 +140,8 @@ impl SemstraitEngine {
         // Plan.
         let plan = self.planner.plan(&request, manifest)?;
 
-        // Emit SQL via connector adapter or ANSI fallback.
-        let sql = if let Some(connector) = &self.connector {
-            let adapter = connector.adapter();
+        // Emit SQL via adapter or ANSI fallback.
+        let sql = if let Some(adapter) = &self.adapter {
             Some(adapter.debug_sql(&plan)?)
         } else {
             Some(Self::emit_ansi_sql(&plan)?)
@@ -155,77 +156,28 @@ impl SemstraitEngine {
         })
     }
 
-    /// Execute a query end-to-end. Requires a configured connector.
-    pub async fn query(
+    /// Plan a query and produce an engine-appropriate artifact.
+    ///
+    /// If an adapter is configured, uses `adapter.adapt()` to produce
+    /// the engine-native artifact (Substrait for DataFusion, SQL for others).
+    /// Without an adapter, falls back to ANSI SQL emission.
+    pub async fn plan(
         &self,
         raw: &RawQueryRequest,
-    ) -> Result<serde_json::Value, EngineError> {
-        let connector = self
-            .connector
-            .as_ref()
-            .ok_or_else(|| EngineError::NotConfigured("no connector configured".to_string()))?;
-
+    ) -> Result<PlanArtifact, EngineError> {
         let manifest = self
             .manifest
             .as_ref()
             .ok_or_else(|| EngineError::NotConfigured("no manifest loaded".to_string()))?;
 
-        // Parse and plan.
         let request = RequestParser::to_resolved(raw, manifest)?;
         let plan = self.planner.plan(&request, manifest)?;
 
-        // Use the connector's adapter to produce the engine-native artifact.
-        // Connectors handle both SQL and Substrait artifacts natively.
-        let adapter = connector.adapter();
-        let artifact = adapter.adapt(&plan)?;
-
-        // Execute the artifact.
-        let result = connector.execute(&artifact).await?;
-
-        // Convert result to JSON. Destructure to move fields instead of borrowing.
-        let stats = result.stats;
-        let complete = result.complete;
-        match result.data {
-            ComputeResultData::Json(rows) => Ok(serde_json::json!({
-                "rows": rows,
-                "stats": {
-                    "rows_returned": stats.rows_returned,
-                    "complete": complete,
-                }
-            })),
-            ComputeResultData::Empty => Ok(serde_json::json!({
-                "rows": [],
-                "stats": {
-                    "rows_returned": 0,
-                    "complete": complete,
-                }
-            })),
-            ComputeResultData::Native(native) => {
-                // Attempt to extract ArrowBatches and convert to JSON as a fallback.
-                // Connectors should prefer returning ComputeResultData::Json directly.
-                #[cfg(feature = "datafusion")]
-                {
-                    if let Some(arrow_batches) = native.downcast_ref::<semstrait_connectors::datafusion::ArrowBatches>() {
-                        let json_rows = arrow_batches.to_json_rows()
-                            .map_err(|e| EngineError::Internal(format!("Arrow to JSON conversion failed: {}", e)))?;
-                        return Ok(serde_json::json!({
-                            "rows": json_rows,
-                            "stats": {
-                                "rows_returned": stats.rows_returned,
-                                "complete": complete,
-                            }
-                        }));
-                    }
-                }
-                let _ = native;
-                Ok(serde_json::json!({
-                    "format": "native",
-                    "stats": {
-                        "rows_returned": stats.rows_returned,
-                        "complete": complete,
-                    }
-                }))
-            }
+        if let Some(adapter) = &self.adapter {
+            Ok(adapter.adapt(&plan)?)
+        } else {
+            let sql = Self::emit_ansi_sql(&plan)?;
+            Ok(PlanArtifact::Sql(sql))
         }
     }
 
@@ -472,7 +424,7 @@ semantic_model:
     }
 
     #[tokio::test]
-    async fn test_query_not_configured() {
+    async fn test_plan_not_configured() {
         let engine = SemstraitEngine::new();
         let raw = RawQueryRequest {
             from: Some("sales".to_string()),
@@ -480,7 +432,7 @@ semantic_model:
             ..Default::default()
         };
 
-        let result = engine.query(&raw).await;
+        let result = engine.plan(&raw).await;
         assert!(matches!(result, Err(EngineError::NotConfigured(_))));
     }
 

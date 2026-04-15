@@ -3,6 +3,7 @@
 //! This is the single expression representation from YAML parsing through
 //! planning, IR, SQL emission, and Substrait serialization.
 
+use crate::data_type::DataType;
 use crate::grain::Grain;
 use serde::{Deserialize, Serialize};
 
@@ -281,7 +282,7 @@ pub struct FunctionCallExpr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CastExpr {
     pub expr: Box<Expr>,
-    pub data_type: String,
+    pub data_type: DataType,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -643,10 +644,10 @@ impl Expr {
         })
     }
 
-    pub fn cast(expr: Expr, data_type: impl Into<String>) -> Self {
+    pub fn cast(expr: Expr, data_type: DataType) -> Self {
         Expr::Cast(CastExpr {
             expr: Box::new(expr),
-            data_type: data_type.into(),
+            data_type,
         })
     }
 
@@ -1051,7 +1052,7 @@ mod tests {
                 Expr::lt(Expr::column("y"), Expr::int(100)),
             ),
             Expr::guard(Expr::boolean(true), Expr::column("val")),
-            Expr::cast(Expr::column("amount"), "VARCHAR"),
+            Expr::cast(Expr::column("amount"), DataType::String),
         ];
 
         for expr in exprs {

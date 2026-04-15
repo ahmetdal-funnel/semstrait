@@ -17,7 +17,7 @@ use substrait::proto::{
     },
     function_argument::ArgType,
     plan_rel::RelType as PlanRelType,
-    r#type::{Kind, Nullability},
+    r#type::Nullability,
     read_rel::{NamedTable, ReadType},
     rel::RelType,
     rel_common::EmitKind,
@@ -129,7 +129,7 @@ impl SubstraitSerializer {
             .output_schema
             .fields
             .iter()
-            .map(|f| Self::datatype_to_substrait(&f.data_type))
+            .map(|f| super::datatype_to_substrait(&f.data_type))
             .collect();
 
         let base_schema = proto::NamedStruct {
@@ -184,7 +184,7 @@ impl SubstraitSerializer {
             .iter()
             .zip(types.iter())
             .map(|(name, typ)| {
-                let data_type = Self::substrait_to_datatype(typ);
+                let data_type = super::substrait_to_datatype(typ);
                 Field::new(name.clone(), data_type)
             })
             .collect();
@@ -727,74 +727,6 @@ impl SubstraitSerializer {
             .collect()
     }
 
-    /// Map logical DataType to Substrait type. 1:1 mapping, zero lossy conversions.
-    fn datatype_to_substrait(dt: &DataType) -> proto::Type {
-        let kind = match dt {
-            DataType::Integer => Kind::I64(proto::r#type::I64 {
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
-            DataType::Number => Kind::Fp64(proto::r#type::Fp64 {
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
-            DataType::Boolean => Kind::Bool(proto::r#type::Boolean {
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
-            DataType::String => Kind::String(proto::r#type::String {
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
-            DataType::Date => Kind::Date(proto::r#type::Date {
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
-            DataType::Timestamp { precision } => {
-                Kind::PrecisionTimestamp(proto::r#type::PrecisionTimestamp {
-                    precision: *precision as i32,
-                    type_variation_reference: 0,
-                    nullability: Nullability::Nullable as i32,
-                })
-            }
-            DataType::Decimal { precision, scale } => {
-                Kind::Decimal(proto::r#type::Decimal {
-                    precision: *precision as i32,
-                    scale: *scale as i32,
-                    type_variation_reference: 0,
-                    nullability: Nullability::Nullable as i32,
-                })
-            }
-            DataType::Binary => Kind::Binary(proto::r#type::Binary {
-                type_variation_reference: 0,
-                nullability: Nullability::Nullable as i32,
-            }),
-        };
-
-        proto::Type { kind: Some(kind) }
-    }
-
-    /// Map Substrait type back to logical DataType. 1:1 reverse mapping.
-    #[allow(deprecated)]
-    fn substrait_to_datatype(typ: &proto::Type) -> DataType {
-        match &typ.kind {
-            Some(Kind::I8(_) | Kind::I16(_) | Kind::I32(_) | Kind::I64(_)) => DataType::Integer,
-            Some(Kind::Fp32(_) | Kind::Fp64(_)) => DataType::Number,
-            Some(Kind::Bool(_)) => DataType::Boolean,
-            Some(Kind::String(_)) => DataType::String,
-            Some(Kind::Date(_)) => DataType::Date,
-            Some(Kind::PrecisionTimestamp(pt)) => DataType::Timestamp {
-                precision: pt.precision as u8,
-            },
-            Some(Kind::Timestamp(_)) => DataType::Timestamp { precision: 6 },
-            Some(Kind::Decimal(d)) => DataType::Decimal {
-                precision: d.precision as u8,
-                scale: d.scale as i8,
-            },
-            Some(Kind::Binary(_)) => DataType::Binary,
-            _ => DataType::String,
-        }
-    }
 }
 
 #[cfg(test)]

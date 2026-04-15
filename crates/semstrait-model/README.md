@@ -331,9 +331,9 @@ Validated at compile time with arity checking:
 
 Unknown functions pass validation with a warning (extensibility for engine-specific functions).
 
-### Known Limitation
+### Note on Declarative Expressions
 
-Declarative YAML expression blocks work in top-level `datasets:` scope but **not** inside `grainsets/unionsets/joinsets` due to a serde_yaml 0.9 nested untagged enum limitation (DL-049). Use inline string expressions for kind-level computed dimensions.
+Declarative YAML expression blocks work at all scopes — top-level `datasets:`, `grainsets:`, `unionsets:`, and `joinsets:`. The original serde_yaml 0.9 limitation (DL-049) was resolved via a custom `Deserialize` impl for `ExprSource` (DL-061).
 
 ---
 

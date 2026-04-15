@@ -1,11 +1,11 @@
 //! Builder API for constructing a Semstrait instance.
 
 use semstrait_catalog::{CatalogProvider, NullCatalogProvider};
-use semstrait_connectors::{ComputeConnector, ComputeResult};
 use semstrait_manifest::{CompileSource, CompiledManifest, ManifestCompiler};
 use semstrait_planner::SemanticPlanner;
 use semstrait_adapter::EngineAdapter;
 use semstrait_adapter::sql::{AnsiDialect, AnsiSqlEmitter, SqlEmitter};
+use semstrait_ir::PlanArtifact;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -30,12 +30,6 @@ pub enum BuildError {
 
     #[error("adapt error: {0}")]
     Adapt(#[from] semstrait_adapter::AdaptError),
-
-    #[error("connector error: {0}")]
-    Connector(#[from] semstrait_connectors::ConnectorError),
-
-    #[error("query error: {0}")]
-    Query(String),
 }
 
 /// Builder for constructing a `SemstraitInstance`.
@@ -44,7 +38,6 @@ pub struct SemstraitBuilder {
     manifest_path: Option<PathBuf>,
     catalog: Option<Arc<dyn CatalogProvider>>,
     adapter: Option<Arc<dyn EngineAdapter>>,
-    connector: Option<Arc<dyn ComputeConnector>>,
 }
 
 impl SemstraitBuilder {
@@ -55,7 +48,6 @@ impl SemstraitBuilder {
             manifest_path: None,
             catalog: None,
             adapter: None,
-            connector: None,
         }
     }
 
@@ -80,16 +72,10 @@ impl SemstraitBuilder {
     /// Set the engine adapter for plan conversion.
     ///
     /// The adapter's `plan_builder()` is wired into the planner for
-    /// engine-specific node construction. If not set explicitly, the
-    /// adapter is extracted from the connector (if one is configured).
+    /// engine-specific node construction. When no adapter is set,
+    /// `explain()` falls back to ANSI SQL and `plan()` produces ANSI SQL.
     pub fn with_adapter(mut self, adapter: Arc<dyn EngineAdapter>) -> Self {
         self.adapter = Some(adapter);
-        self
-    }
-
-    /// Set the compute connector for query execution.
-    pub fn with_connector(mut self, connector: Arc<dyn ComputeConnector>) -> Self {
-        self.connector = Some(connector);
         self
     }
 
@@ -112,18 +98,9 @@ impl SemstraitBuilder {
             .compile(CompileSource::Yaml(yaml.clone()))
             .await?;
 
-        // Resolve adapter: explicit > connector's adapter > None.
-        let adapter: Option<Arc<dyn EngineAdapter>> = self.adapter.or_else(|| {
-            self.connector.as_ref().map(|c| {
-                // Extract adapter from connector as an Arc.
-                // The connector owns the adapter; we wrap a reference-based adapter.
-                Arc::new(ConnectorAdapterRef(Arc::clone(c))) as Arc<dyn EngineAdapter>
-            })
-        });
-
         // Wire adapter's plan_builder into the planner.
         let mut planner_builder = SemanticPlanner::builder();
-        if let Some(ref adapter) = adapter {
+        if let Some(ref adapter) = self.adapter {
             if let Some(pb) = adapter.plan_builder() {
                 planner_builder = planner_builder.with_plan_builder(pb);
             }
@@ -134,8 +111,7 @@ impl SemstraitBuilder {
             manifest_yaml: yaml,
             manifest,
             planner,
-            adapter,
-            connector: self.connector,
+            adapter: self.adapter,
         })
     }
 }
@@ -146,37 +122,12 @@ impl Default for SemstraitBuilder {
     }
 }
 
-/// Adapter wrapper that delegates to a connector's adapter.
-///
-/// Used when no explicit adapter is set but a connector is configured.
-/// Delegates all methods to `connector.adapter()`.
-struct ConnectorAdapterRef(Arc<dyn ComputeConnector>);
-
-impl EngineAdapter for ConnectorAdapterRef {
-    fn name(&self) -> &str {
-        self.0.adapter().name()
-    }
-
-    fn plan_builder(&self) -> Option<Box<dyn semstrait_ir::PlanBuilder>> {
-        self.0.adapter().plan_builder()
-    }
-
-    fn adapt(&self, plan: &semstrait_ir::LogicalPlan) -> Result<semstrait_ir::PlanArtifact, semstrait_adapter::AdaptError> {
-        self.0.adapter().adapt(plan)
-    }
-
-    fn debug_sql(&self, plan: &semstrait_ir::LogicalPlan) -> Result<String, semstrait_adapter::AdaptError> {
-        self.0.adapter().debug_sql(plan)
-    }
-}
-
 /// A configured Semstrait instance ready for queries.
 pub struct SemstraitInstance {
     manifest_yaml: String,
     manifest: CompiledManifest,
     planner: SemanticPlanner,
     adapter: Option<Arc<dyn EngineAdapter>>,
-    connector: Option<Arc<dyn ComputeConnector>>,
 }
 
 impl SemstraitInstance {
@@ -214,25 +165,24 @@ impl SemstraitInstance {
         }
     }
 
-    /// Execute a query via the configured connector.
-    pub async fn query(
+    /// Plan and produce an engine-appropriate artifact.
+    ///
+    /// If an adapter is configured, uses `adapter.adapt()` to produce
+    /// the engine-native artifact (Substrait for DataFusion, SQL for others).
+    /// Without an adapter, falls back to ANSI SQL emission.
+    pub fn plan(
         &self,
         request: &semstrait_planner::request::ResolvedQueryRequest,
-    ) -> Result<ComputeResult, BuildError> {
-        let connector = self
-            .connector
-            .as_ref()
-            .ok_or_else(|| BuildError::Query("no connector configured".to_string()))?;
-
+    ) -> Result<PlanArtifact, BuildError> {
         let plan = self.planner.plan(request, &self.manifest)?;
 
-        // Use the adapter to produce the engine-native artifact.
-        // Connectors handle both SQL and Substrait artifacts natively (DL-060).
-        let adapter = self.adapter.as_ref().map(|a| a.as_ref()).unwrap_or(connector.adapter());
-        let artifact = adapter.adapt(&plan)?;
-
-        // Execute the artifact directly — never discard Substrait in favor of SQL.
-        Ok(connector.execute(&artifact).await?)
+        if let Some(adapter) = &self.adapter {
+            Ok(adapter.adapt(&plan)?)
+        } else {
+            let emitter = AnsiSqlEmitter::new(AnsiDialect);
+            let sql = emitter.emit(&plan)?;
+            Ok(PlanArtifact::Sql(sql))
+        }
     }
 }
 

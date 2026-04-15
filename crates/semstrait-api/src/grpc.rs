@@ -12,7 +12,7 @@ pub mod proto {
 
 use proto::semstrait_service_server::{SemstraitService, SemstraitServiceServer};
 use proto::{
-    ExplainResponse, HealthRequest, HealthResponse, QueryRequest, QueryResponse,
+    ExplainResponse, HealthRequest, HealthResponse, PlanResponse, QueryRequest,
     ValidateResponse,
 };
 
@@ -116,31 +116,35 @@ impl SemstraitService for SemstraitGrpcService {
         }))
     }
 
-    async fn query(
+    async fn plan(
         &self,
         request: tonic::Request<QueryRequest>,
-    ) -> Result<tonic::Response<QueryResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<PlanResponse>, tonic::Status> {
         let raw = proto_to_raw(request.into_inner());
 
-        let result = self
+        let artifact = self
             .engine
-            .query(&raw)
+            .plan(&raw)
             .await
             .map_err(|e| tonic::Status::internal(e.to_string()))?;
 
-        // Serialize each row to a JSON string.
-        let rows_json: Vec<String> = match result.as_array() {
-            Some(arr) => arr
-                .iter()
-                .map(|v| serde_json::to_string(v).unwrap_or_default())
-                .collect(),
-            None => vec![serde_json::to_string(&result).unwrap_or_default()],
+        let response = match &artifact {
+            semstrait_ir::PlanArtifact::Sql(sql) => PlanResponse {
+                artifact_type: "sql".to_string(),
+                sql: Some(sql.clone()),
+                substrait_json: None,
+            },
+            semstrait_ir::PlanArtifact::Substrait(plan) => {
+                let json = serde_json::to_string(plan.as_ref())
+                    .map_err(|e| tonic::Status::internal(format!("serialization error: {}", e)))?;
+                PlanResponse {
+                    artifact_type: "substrait".to_string(),
+                    sql: None,
+                    substrait_json: Some(json),
+                }
+            }
         };
-        let rows_returned = rows_json.len() as u64;
 
-        Ok(tonic::Response::new(QueryResponse {
-            rows_json,
-            rows_returned,
-        }))
+        Ok(tonic::Response::new(response))
     }
 }

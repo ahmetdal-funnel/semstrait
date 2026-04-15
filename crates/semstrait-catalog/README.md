@@ -18,7 +18,7 @@ pub trait CatalogProvider: Send + Sync {
     async fn table_exists(&self, table: &TableRef)
         -> Result<bool, CatalogError>;
     async fn load_table_metadata(&self, table: &TableRef)
-        -> Result<TableMetadata, CatalogError>;
+        -> Result<Option<TableMetadataResponse>, CatalogError>;
 }
 ```
 
@@ -33,7 +33,7 @@ pub trait CatalogProvider: Send + Sync {
 | `UnityCatalogProvider` | `unity` | Databricks Unity Catalog REST API. PAT/Bearer auth, pagination. |
 | `NullStorageProvider` | *(always)* | No-op storage: returns empty. For testing. |
 | `LocalStorageProvider` | `local` | Local filesystem glob + schema reading |
-| `S3StorageProvider` | `s3` | S3 storage (stub) |
+| `S3StorageProvider` | `aws` | S3 storage (stub) |
 
 ### NullCatalogProvider
 
@@ -53,6 +53,8 @@ assert!(!exists);
 |------|-------------|
 | `TableRef` | Reference to a table: namespace + name |
 | `CatalogColumn` | Column metadata: name, data type, nullability, optional comment |
+| `CatalogPartitionField` | Partition field: source column, transform, name, field ID |
+| `TableMetadataResponse` | Extended metadata: columns, partitions, snapshot, location, format |
 | `CatalogError` | Error types: not found, auth failure, connection, etc. |
 
 ---
@@ -65,7 +67,7 @@ Defined in `storage.rs`. Abstracts storage-level operations for glob expansion a
 #[async_trait]
 pub trait StorageProvider: Send + Sync {
     async fn expand_glob(&self, pattern: &str) -> Result<Vec<String>, CatalogError>;
-    async fn read_schema(&self, path: &str) -> Result<Vec<CatalogColumn>, CatalogError>;
+    async fn read_schema(&self, path: &str, format: DataFormat) -> Result<Option<Vec<CatalogColumn>>, CatalogError>;
 }
 ```
 
@@ -83,7 +85,7 @@ Defined in `registry.rs`. A named catalog provider registry that allows multiple
 |----------|---------|-------------|
 | `NullStorageProvider` | *(always)* | No-op storage: returns empty. For testing. |
 | `LocalStorageProvider` | `local` | Local filesystem glob + schema reading |
-| `S3StorageProvider` | `s3` | S3 storage (stub) |
+| `S3StorageProvider` | `aws` | S3 storage (stub) |
 
 ---
 

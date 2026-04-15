@@ -1,8 +1,6 @@
 # semstrait-adapter
 
-Engine adapter layer — produces engine-appropriate artifacts from logical plans.
-
-Each adapter holds an `EngineProfile` internally (HAS-A, not IS-A — see DL-055) and implements `EngineAdapter` for plan conversion. This is the core value layer of semstrait's engine integration.
+Engine adapter layer — produces engine-appropriate artifacts (SQL or Substrait) from logical plans. Contains SQL emission (SqlEmitter, dialects) and per-engine adapters.
 
 ---
 
@@ -10,29 +8,75 @@ Each adapter holds an `EngineProfile` internally (HAS-A, not IS-A — see DL-055
 
 ```rust
 pub trait EngineAdapter: Send + Sync {
-    fn profile(&self) -> &dyn EngineProfile;
+    fn name(&self) -> &str;
+    fn plan_builder(&self) -> Option<Box<dyn PlanBuilder>> { None }
     fn adapt(&self, plan: &LogicalPlan) -> Result<PlanArtifact, AdaptError>;
-    fn debug_sql(&self, plan: &LogicalPlan) -> Result<String, AdaptError>;
+    fn debug_sql(&self, plan: &LogicalPlan) -> Result<String, AdaptError> { /* ANSI default */ }
 }
 ```
 
-The facade extracts `adapter.profile()` and passes it to the planner (DL-059). Connectors never reference adapters (DL-056).
+- `plan_builder()` — optional engine-specific node construction. The facade extracts this and passes it to the planner.
+- `adapt()` — converts LogicalPlan to `PlanArtifact::Substrait` or `PlanArtifact::Sql`.
+- `debug_sql()` — always available ANSI SQL for debugging. Default impl uses `AnsiSqlEmitter`.
+
+Connectors never reference adapters (DL-056). Adapter and connector are independent.
 
 ---
 
 ## Adapters
 
-| Adapter | `supports_substrait` | Output | Feature |
-|---------|---------------------|--------|---------|
-| `DataFusionAdapter` | `true` | `PlanArtifact::Substrait` | `datafusion` |
-| `DuckDbAdapter` | `false` | `PlanArtifact::Sql` (DuckDB dialect) | `duckdb` |
-| `TrinoAdapter` | `false` | `PlanArtifact::Sql` (Trino dialect) | `trino` |
-| `SparkAdapter` | `false` | `PlanArtifact::Sql` (Spark dialect) | `spark` |
+| Adapter | Output | Feature | V1 Status |
+|---------|--------|---------|-----------|
+| `DataFusionAdapter` | `PlanArtifact::Substrait` | `datafusion` | Primary V1 engine |
+| `DuckDbAdapter` | `AdaptError::UnsupportedFeature` | `duckdb` | V1 unsupported (dialect infra exists) |
+| `SparkAdapter` | `AdaptError::UnsupportedFeature` | `spark` | V1 unsupported (dialect infra exists) |
+
+---
+
+## SQL Emission
+
+SQL is emitted by walking the `PlanNode` tree via `SqlEmitter` trait. Lives in `src/sql/`.
+
+| Type | Description |
+|------|-------------|
+| `SqlEmitter` trait | `emit(plan) -> Result<String>` |
+| `SqlDialect` trait | Quoting, DATE_TRUNC, LIMIT/FETCH, window functions |
+| `AnsiSqlEmitter<D>` | Parameterized emitter — one per dialect |
+| `AnsiDialect` | ANSI standard (FETCH FIRST, DATE_TRUNC) |
+| `DataFusionDialect` | LIMIT, ILIKE native, `now()`, `regexp_match` |
+| `DuckDbDialect` | LIMIT, lowercase date_trunc |
+| `SparkDialect` | Spark SQL conventions |
+| `ExprSqlRenderer` | `Expr -> SQL string` rendering |
+| `PolyglotEmitter` | Dialect transpilation via `polyglot-sql` (feature-gated) |
+
+---
+
+## Module Structure
+
+```
+src/
+├── lib.rs                  re-exports
+├── error.rs                AdaptError
+├── traits.rs               EngineAdapter trait
+├── sql/
+│   ├── mod.rs              SqlEmitter, SqlDialect, AnsiSqlEmitter
+│   ├── dialect.rs          Dialect impls (Ansi, DataFusion, DuckDb, Spark)
+│   ├── expr_renderer.rs    Expr → SQL string
+│   ├── polyglot_emitter.rs PolyglotSqlEmitter (feature-gated)
+│   ├── polyglot/           polyglot sub-module (expr_builder, plan_builder)
+│   └── tests.rs            SQL emission tests
+└── engines/
+    ├── mod.rs              engine re-exports
+    ├── ansi.rs             AnsiAdapter (always available)
+    ├── datafusion/         DataFusionAdapter + DataFusionPlanBuilder
+    ├── duckdb/             DuckDbAdapter (V1: unsupported)
+    └── spark/              SparkAdapter (V1: unsupported)
+```
 
 ---
 
 ## Dependencies
 
-- `semstrait-core` -- `EngineProfile` trait, `DataType`, `Expr`
-- `semstrait-ir` -- `LogicalPlan`, `PlanArtifact`, `SubstraitSerializer`
-- `semstrait-sql` -- `SqlEmitter` trait, dialect implementations
+- `semstrait-core` — `DataType`, `Expr`
+- `semstrait-ir` — `LogicalPlan`, `PlanArtifact`, `PlanBuilder`, `SubstraitSerializer`, `FunctionRegistry`
+- `polyglot-sql` (optional, behind `duckdb`/`spark` features) — dialect transpilation

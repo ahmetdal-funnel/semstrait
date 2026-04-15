@@ -1778,7 +1778,6 @@ async fn test_decl_combined_all_categories() {
 #[cfg(feature = "datafusion")]
 mod datafusion_tests {
     use super::*;
-    use semstrait_connectors::datafusion::DataFusionConnector;
     use semstrait_adapter::{DataFusionAdapter, EngineAdapter};
     use std::sync::Arc;
 
@@ -1929,51 +1928,4 @@ mod datafusion_tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_query_via_datafusion() {
-        let yaml = load_model("orders_datafusion");
-
-        let compiler = ManifestCompiler::new();
-        let compiled = compiler
-            .compile(CompileSource::Yaml(yaml))
-            .await
-            .expect("compilation should succeed");
-
-        // Create DataFusion connector and register CSV as the dataset table.
-        let connector = DataFusionConnector::new();
-        let csv_path = format!(
-            "{}/tests/fixtures/data/orders.csv",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        // The planner resolves to dataset name "orders_data" as table name.
-        connector
-            .register_csv("orders_data", &csv_path)
-            .await
-            .expect("CSV registration should succeed");
-
-        let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
-
-        let raw = RawQueryRequest {
-            from: Some("orders".to_string()),
-            select: vec!["region".to_string(), "revenue".to_string()],
-            ..Default::default()
-        };
-
-        let result = engine.query(&raw).await.expect("query should succeed");
-
-        // Should return JSON with rows and stats
-        assert!(result.is_object(), "result should be a JSON object");
-        let stats = result.get("stats").expect("should have stats field");
-        let rows_returned = stats.get("rows_returned").expect("should have rows_returned");
-        assert_eq!(rows_returned, 2, "should have 2 rows (US, EU)");
-
-        // Verify actual row data is present (not just stats)
-        let rows = result.get("rows").expect("should have rows field");
-        let rows_array = rows.as_array().expect("rows should be an array");
-        assert_eq!(rows_array.len(), 2, "should have 2 row objects");
-        assert!(
-            rows_array[0].is_object(),
-            "each row should be a JSON object with column values"
-        );
-    }
 }

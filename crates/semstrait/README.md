@@ -2,7 +2,7 @@
 
 Facade crate — single entry point for library consumers.
 
-Re-exports key types from all subsystems under a unified namespace. Most users depend on this crate rather than individual crates directly. Bridges adapter and planner via profile extraction (DL-059).
+Re-exports key types from all subsystems under a unified namespace. Most users depend on this crate rather than individual crates directly. Bridges adapter and planner via `plan_builder()` extraction (DL-059).
 
 ---
 
@@ -38,7 +38,7 @@ let result = sem.query(&request).await?;  // ComputeResult
 
 ```rust
 // Core types
-pub use semstrait_core::{DefaultProfile, DataType, Grain, Schema, SchemaColumn};
+pub use semstrait_core::{DataType, Grain, Schema, SchemaColumn};
 
 // IR types
 pub use semstrait_ir::{LogicalPlan, PlanArtifact};

@@ -54,9 +54,10 @@ All transports accept the same `RawQueryRequest`:
 ```rust
 pub struct RawQueryRequest {
     pub model: Option<String>,      // semantic model source (file path or inline YAML/JSON)
-    pub from: String,               // entity (kind or dataset) to query
+    pub from: Option<String>,       // entity to query (None = resolve from select fields)
     pub select: Vec<String>,        // semantic names -- auto-classified into dims/measures/metrics
     pub filters: Vec<String>,       // named filters from the manifest
+    pub raw_filters: Vec<RawFilter>, // inline filter expressions (not implemented in v1)
     pub grain: Option<String>,      // temporal grain override
     pub limit: Option<u64>,
     pub order_by: Vec<RawOrderBy>,

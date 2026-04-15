@@ -4,8 +4,6 @@
 //! - compile: Compile YAML model files to CompiledManifest
 //! - explain: Show query plan, SQL, and Substrait JSON for a query
 //! - validate: Validate a query request against a manifest
-//! - query: Execute a query via DataFusion (feature-gated)
-//! - query-duckdb: Execute a query via DuckDB (feature-gated)
 //! - serve: Start the REST API server (feature-gated)
 
 use crate::engine::SemstraitEngine;
@@ -93,98 +91,6 @@ pub enum Commands {
         /// Path to catalogs.yaml for catalog connections.
         #[arg(short, long)]
         catalogs: Option<PathBuf>,
-    },
-
-    /// Execute a query against local data files via DataFusion.
-    #[cfg(feature = "datafusion")]
-    Query {
-        /// Path to YAML model file.
-        #[arg(short, long)]
-        model: PathBuf,
-
-        /// Entity to query. If omitted and model has exactly one entity, auto-selects it.
-        #[arg(short, long)]
-        from: Option<String>,
-
-        /// Semantic names to select (auto-classified as dimensions/measures).
-        #[arg(short, long, num_args = 1..)]
-        select: Vec<String>,
-
-        /// Named filters to apply.
-        #[arg(long, num_args = 0..)]
-        filters: Vec<String>,
-
-        /// Register data files: name=path pairs (e.g., orders_data=data/orders.csv).
-        #[arg(short, long, num_args = 1..)]
-        register: Vec<String>,
-    },
-
-    /// Execute a query against local data files via DuckDB.
-    #[cfg(feature = "duckdb")]
-    QueryDuckdb {
-        /// Path to YAML model file.
-        #[arg(short, long)]
-        model: PathBuf,
-
-        /// Entity to query. If omitted and model has exactly one entity, auto-selects it.
-        #[arg(short, long)]
-        from: Option<String>,
-
-        /// Semantic names to select (auto-classified as dimensions/measures).
-        #[arg(short, long, num_args = 1..)]
-        select: Vec<String>,
-
-        /// Named filters to apply.
-        #[arg(long, num_args = 0..)]
-        filters: Vec<String>,
-
-        /// Register data files: name=path pairs (e.g., orders_data=data/orders.csv).
-        #[arg(short, long, num_args = 1..)]
-        register: Vec<String>,
-
-        /// Path to DuckDB database file (default: in-memory).
-        #[arg(long)]
-        db: Option<PathBuf>,
-    },
-
-    /// Execute a query against a Trino cluster.
-    #[cfg(feature = "trino")]
-    QueryTrino {
-        /// Path to YAML model file.
-        #[arg(short, long)]
-        model: PathBuf,
-
-        /// Entity to query. If omitted and model has exactly one entity, auto-selects it.
-        #[arg(short, long)]
-        from: Option<String>,
-
-        /// Semantic names to select (auto-classified as dimensions/measures).
-        #[arg(short, long, num_args = 1..)]
-        select: Vec<String>,
-
-        /// Named filters to apply.
-        #[arg(long, num_args = 0..)]
-        filters: Vec<String>,
-
-        /// Trino coordinator URL (e.g., http://trino:8080).
-        #[arg(long)]
-        trino_url: String,
-
-        /// Trino catalog name.
-        #[arg(long)]
-        trino_catalog: String,
-
-        /// Trino schema name.
-        #[arg(long)]
-        trino_schema: String,
-
-        /// Trino user name.
-        #[arg(long, default_value = "semstrait")]
-        trino_user: String,
-
-        /// Trino Bearer token for authentication.
-        #[arg(long)]
-        trino_token: Option<String>,
     },
 
     /// Start the REST API server.
@@ -372,17 +278,6 @@ fn build_raw_request(from: Option<String>, select: Vec<String>, filters: Vec<Str
     }
 }
 
-/// Execute a query and print the result as pretty JSON.
-#[cfg(any(feature = "datafusion", feature = "duckdb", feature = "trino"))]
-async fn run_query(
-    engine: &SemstraitEngine,
-    raw: &RawQueryRequest,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let result = engine.query(raw).await?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    Ok(())
-}
-
 /// Run the CLI.
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -459,87 +354,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
             Ok(())
-        }
-
-        #[cfg(feature = "datafusion")]
-        Commands::Query {
-            model,
-            from,
-            select,
-            filters,
-            register,
-        } => {
-            let compiled = compile_from_file(&model, None).await?;
-
-            let connector = semstrait_connectors::datafusion::DataFusionConnector::new();
-            for pair in &register {
-                let (name, path) = pair
-                    .split_once('=')
-                    .ok_or_else(|| format!("invalid --register format '{}': expected name=path", pair))?;
-                connector.register_file(name, path).await
-                    .map_err(|e| format!("failed to register '{}': {}", pair, e))?;
-                eprintln!("Registered table '{}' from {}", name, path);
-            }
-
-            let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
-            let raw = build_raw_request(entity, select, filters);
-            run_query(&engine, &raw).await
-        }
-
-        #[cfg(feature = "duckdb")]
-        Commands::QueryDuckdb {
-            model,
-            from,
-            select,
-            filters,
-            register,
-            db,
-        } => {
-            let compiled = compile_from_file(&model, None).await?;
-            let connector = match db {
-                Some(path) => semstrait_connectors::duckdb::DuckDbConnector::with_path(
-                    &path.to_string_lossy(),
-                )?,
-                None => semstrait_connectors::duckdb::DuckDbConnector::new()?,
-            };
-            for pair in &register {
-                let (name, path) = pair
-                    .split_once('=')
-                    .ok_or_else(|| format!("invalid --register format '{}': expected name=path", pair))?;
-                connector.register_file(name, path).await
-                    .map_err(|e| format!("failed to register '{}': {}", pair, e))?;
-                eprintln!("Registered table '{}' from {}", name, path);
-            }
-
-            let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
-            let raw = build_raw_request(from, select, filters);
-            run_query(&engine, &raw).await
-        }
-
-        #[cfg(feature = "trino")]
-        Commands::QueryTrino {
-            model,
-            from,
-            select,
-            filters,
-            trino_url,
-            trino_catalog,
-            trino_schema,
-            trino_user,
-            trino_token,
-        } => {
-            let compiled = compile_from_file(&model, None).await?;
-
-            let mut connector =
-                semstrait_connectors::trino::TrinoConnector::new(trino_url, trino_catalog, trino_schema)
-                    .with_user(trino_user);
-            if let Some(token) = trino_token {
-                connector = connector.with_bearer_token(token);
-            }
-
-            let engine = SemstraitEngine::with_connector(compiled, Arc::new(connector));
-            let raw = build_raw_request(from, select, filters);
-            run_query(&engine, &raw).await
         }
 
         #[cfg(feature = "rest")]

@@ -102,8 +102,8 @@ Model-level `DataType` (I64, F64, Date, String, ...) is converted to core `DataT
 
 Consumes the `SourceResolutionResult` by value (no clone) and builds:
 
-1. **CompiledManifest** — `CompiledKind` (legacy), `CompiledDataset`, relationships
-2. **DataKind** map — planner-optimized structures (primary planner API)
+1. **CompiledManifest** — `entities: IndexMap<String, CompiledDataKind>`, relationships
+2. **CompiledDataKind** variants — planner-optimized structures with acceleration indices
 3. **FieldIndex** — global inverted index (field name -> provider datasets)
 4. **RelationshipGraph** — BFS-ready graph with pre-computed shortest paths
 
@@ -121,23 +121,24 @@ pub struct CompiledManifest {
     pub model_name: String,
     pub model_description: Option<String>,
 
-    // Semantic entities
-    pub datasets: IndexMap<String, CompiledDataset>,     // standalone datasets
-    pub kinds: IndexMap<String, CompiledKind>,            // legacy (deprecated — planner uses data_kinds)
-    pub data_kinds: IndexMap<String, DataKind>,           // planner-optimized kinds (primary API)
+    // Unified entity map — all queryable entities (datasets, grainsets, unionsets, joinsets)
+    pub entities: IndexMap<String, CompiledDataKind>,     // serde alias: "data_kinds"
 
     // Relationships
-    pub relationships: Vec<CompiledRelationship>,         // top-level join definitions
+    pub relationships: Vec<CompiledRelationship>,
     pub relationship_graph: RelationshipGraph,            // pre-computed BFS graph
 
     // Search index
     pub field_index: FieldIndex,                          // field -> provider lookup
 
+    // Unified semantic graph (petgraph-based, skip serde)
+    pub semantic_graph: SemanticGraph,
+
     // Physical metadata
     pub catalog_snapshot: Option<CatalogSnapshot>,        // catalog state at compile time
 
     // Diagnostics
-    pub diagnostics: CompileDiagnostics,                  // warnings from compilation
+    pub diagnostics: CompileDiagnostics,
 }
 ```
 
@@ -214,12 +215,12 @@ pub struct DatasetBinding {
 ```rust
 pub struct ResolvedSource {
     pub reference: String,                      // original path or table pattern
+    pub source_type: SourceType,                // Path or Table
     pub table_fqn: Option<String>,              // fully-qualified table name (namespace.table)
     pub location: Option<String>,               // physical URI (s3://, file://)
     pub format: Option<DataFormat>,             // Iceberg, Parquet, Csv
     pub catalog_alias: Option<String>,          // which catalog resolved this
-    pub schema: Option<Vec<SchemaColumn>>,      // column names + types from catalog
-    pub iceberg_metadata: Option<IcebergMetadata>,
+    pub schema: Option<Vec<ResolvedColumn>>,    // column names + types from catalog
 }
 ```
 
@@ -234,9 +235,7 @@ QueryRequest { from: "orders", select: ["date", "revenue"] }
        |
   1. Entity Resolution (semstrait-api RequestParser)
        |
-       +-- Check manifest.kinds["orders"]       --> CompiledKind (if found)
-       +-- Check manifest.data_kinds["orders"]  --> DataKind (v2 fast path)
-       +-- Check manifest.datasets["orders"]    --> CompiledDataset (standalone)
+       +-- Check manifest.entities["orders"]      --> CompiledDataKind (unified lookup)
        |
   2. Kind Dispatch (semstrait-planner, via manifest.resolve() -> &DataKind)
        |

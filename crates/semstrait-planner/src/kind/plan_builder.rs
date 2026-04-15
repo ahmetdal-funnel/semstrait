@@ -285,6 +285,12 @@ fn build_layered_plan(
         }
     }
 
+    // Entity-level filter columns (physical) — needed in scan for pre-aggregate filtering.
+    for filter in &iface.filters {
+        let lowered_filter = phys_resolver.resolve_expr(&filter.expr)?;
+        collect_column_refs(&lowered_filter, &mut scan_columns, &mut scan_seen);
+    }
+
     // ── Aggregate setup: GROUP BY + measure decomposition ──────────
     let group_by: Vec<Expr> = request
         .dimensions
@@ -385,10 +391,24 @@ fn build_layered_plan(
     // Catalog types: physical column → catalog-reported DataType (for CAST in L2).
     let catalog_types = build_catalog_type_map(binding);
 
+    // ── Pre-resolve entity filters to physical names (for scan-level injection) ──
+    let physical_entity_filters: Vec<Expr> = iface
+        .filters
+        .iter()
+        .map(|f| phys_resolver.resolve_expr(&f.expr))
+        .collect::<Result<Vec<_>, _>>()?;
+
     let l4_output = if binding.resolved_sources.len() <= 1 {
         // ── Single-source path ────────────────────────────────────
         let known_values = collect_known_values(binding, &metadata_dims);
-        let scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
+        let mut scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
+
+        // Inject entity-level filters right after scan (physical names).
+        for predicate in &physical_entity_filters {
+            let schema = (*scan.meta().output_schema).clone();
+            scan = pb.build_filter(schema, scan, predicate.clone());
+        }
+
         let rename = build_rename_project(
             scan, &dim_physical, &physical_dims, &metadata_dims, &known_values,
             &computed_dims, &request.measures, iface, mapping, &catalog_types, handle_metrics, pb,
@@ -412,13 +432,19 @@ fn build_layered_plan(
 
             // Scan for this specific source.
             let table_name = source.table_fqn.as_deref().unwrap_or(&source.reference);
-            let scan = pb.build_scan(
+            let mut scan = pb.build_scan(
                 scan_schema.clone(),
                 table_name.to_string(),
                 source.location.clone(),
                 source.format,
                 scan_columns.to_vec(),
             );
+
+            // Inject entity-level filters right after scan (physical names).
+            for predicate in &physical_entity_filters {
+                let schema = (*scan.meta().output_schema).clone();
+                scan = pb.build_filter(schema, scan, predicate.clone());
+            }
 
             // Rename with per-source metadata values.
             let rename = build_rename_project(
@@ -534,7 +560,7 @@ fn build_rename_project(
     let maybe_cast = |physical: &str, semantic_type: &DataType| -> Expr {
         if let Some(catalog_type) = catalog_types.get(physical) {
             if catalog_type != semantic_type {
-                return Expr::cast(Expr::column(physical.to_string()), semantic_type.to_string());
+                return Expr::cast(Expr::column(physical.to_string()), semantic_type.clone());
             }
         }
         Expr::column(physical.to_string())
@@ -634,7 +660,12 @@ fn build_rename_project(
     }
 
     let rename_schema = Schema::new(rename_fields);
-    Ok(pb.build_project(rename_schema, scan, rename_exprs))
+    let scan_schema = scan.meta().output_schema.as_ref();
+    if is_rename_identity(&rename_exprs, &rename_schema.fields, scan_schema) {
+        Ok(scan)
+    } else {
+        Ok(pb.build_project(rename_schema, scan, rename_exprs))
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -755,6 +786,32 @@ fn is_identity_projection(exprs: &[Expr], input_schema: &Schema) -> bool {
         .iter()
         .zip(input_schema.fields.iter())
         .all(|(expr, field)| matches!(expr, Expr::Column(col) if col.name == field.name))
+}
+
+/// Check if L2 rename projection is an identity transformation.
+///
+/// Stronger than `is_identity_projection`: also verifies that output field names
+/// match input field names (no physical→semantic renaming). Returns `true` when
+/// every expression is `Column(col)` where `col.name` equals both the scan field
+/// name and the rename output field name at that position.
+fn is_rename_identity(
+    rename_exprs: &[Expr],
+    rename_fields: &[Field],
+    scan_schema: &Schema,
+) -> bool {
+    if rename_exprs.len() != scan_schema.fields.len()
+        || rename_fields.len() != scan_schema.fields.len()
+    {
+        return false;
+    }
+    rename_exprs
+        .iter()
+        .zip(rename_fields.iter())
+        .zip(scan_schema.fields.iter())
+        .all(|((expr, out_field), in_field)| {
+            matches!(expr, Expr::Column(col) if col.name == in_field.name)
+                && out_field.name == in_field.name
+        })
 }
 
 /// Resolve DataType for a semantic name from CompiledInterface.

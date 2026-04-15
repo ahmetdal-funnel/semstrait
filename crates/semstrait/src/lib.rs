@@ -25,16 +25,10 @@ pub use semstrait_core::{
 };
 
 // Re-export IR types
-pub use semstrait_ir::LogicalPlan;
-
-// Re-export connector traits
-pub use semstrait_connectors::{ComputeConnector, ComputeResult, ComputeResultData};
+pub use semstrait_ir::{LogicalPlan, PlanArtifact};
 
 // Re-export adapter types
 pub use semstrait_adapter::{AdaptError, EngineAdapter};
-
-// Re-export plan artifact
-pub use semstrait_ir::PlanArtifact;
 
 // Re-export catalog traits
 pub use semstrait_catalog::{CatalogProvider, NullCatalogProvider, TableRef};

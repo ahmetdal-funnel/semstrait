@@ -11,10 +11,9 @@ It resolves semantic models (defined in YAML) into engine-executable artifacts b
 1. Compiling YAML model files into a validated `CompiledManifest` artifact (offline)
 2. Planning `QueryRequest`s against that manifest into a `LogicalPlan` IR (online)
 3. Adapting the plan into an engine-appropriate artifact — SQL or Substrait (online)
-4. Optionally executing the artifact via a compute connector (online, convenience)
 
 The primary output is `PlanArtifact` — either a SQL string or `substrait::proto::Plan`.
-Optional execution produces `ComputeResult` — Arrow `RecordBatch`es or JSON.
+Execution is the consumer's responsibility — semstrait is a plan-generation library.
 
 ---
 
@@ -30,8 +29,8 @@ Active constraints that guide new code. Historical crate-organization decisions 
 | E1 | Engine selection at request level | `engine` field in `RawQueryRequest`. Same server targets different engines per query. Model is engine-agnostic. |
 | E2 | Artifact driven by engine adapter | `EngineAdapter` trait determines output type. DataFusion → Substrait, DuckDB/Trino → SQL. |
 | E3 | `PlanBuilder` trait in IR, concrete impls in adapter | Breaks planner ↔ adapter coupling. Planner depends only on the trait. |
-| E4 | Adapters and connectors are separate crates | `semstrait-adapter` (plan generation) vs `semstrait-connectors` (optional execution). |
-| E5 | Semstrait is a plan-generation library | Primary output is `PlanArtifact`. Connectors are convenience for testing/CLI. |
+| E4 | ~~Adapters and connectors are separate crates~~ | **Retired** — connectors removed. Semstrait produces `PlanArtifact`; consumers own execution. |
+| E5 | Semstrait is a plan-generation library | Primary output is `PlanArtifact`. Execution is the consumer's responsibility. |
 | E6 | Primary path: DataFusion + Polaris/Iceberg | Polaris as catalog, DataFusion as compute, Substrait as interchange format. |
 | E7 | Debug SQL always available | `EngineAdapter::debug_sql()` generates ANSI SQL regardless of primary artifact type. Default impl provided. |
 
@@ -39,7 +38,7 @@ Active constraints that guide new code. Historical crate-organization decisions 
 
 ## 2b. Versioning & V1 Scope
 
-**Semstrait is V1.** There is no V2. All internal development phases (model redesign, DataKind planner, declarative measures, computed expressions, temporal schema, adapter/connector decoupling) are part of V1 core functionality. Future versions will follow V1 semantic versioning (1.x).
+**Semstrait is V1.** There is no V2. All internal development phases (model redesign, DataKind planner, declarative measures, computed expressions, temporal schema, adapter cleanup) are part of V1 core functionality. Future versions will follow V1 semantic versioning (1.x).
 
 **V1 focus areas:**
 1. **E2E functional query generation** — all core analytical functions (aggregation, additivity, grain, temporal, computed expressions, constraints)
@@ -73,7 +72,6 @@ semstrait/                       Cargo workspace root
 ├── semstrait-ir/                PlanNode IR + Substrait bridge + PlanArtifact + PlanBuilder trait
 ├── semstrait-planner/           SemanticPlanner + EntityPlanners + Optimizer
 ├── semstrait-adapter/           EngineAdapter trait + SqlEmitter + dialect impls (includes former semstrait-sql)
-├── semstrait-connectors/        ComputeConnector — optional execution (feature-gated)
 ├── semstrait-api/               gRPC + REST + CLI (submodules, feature-gated)
 └── semstrait/                   Facade — builder, public API, feature flags
 ```
@@ -83,8 +81,7 @@ semstrait/                       Cargo workspace root
 **Hard rules — enforced by Cargo:**
 1. No cycles. Any proposed change that creates a cycle is rejected.
 2. `semstrait-core` has zero internal workspace dependencies.
-3. `semstrait-connectors` leaf engine modules (`duckdb`, `datafusion`, `trino`, `spark`) have no reverse dependencies.
-4. `semstrait-api` and `semstrait` (facade) are the only crates that may depend on the full stack.
+3. `semstrait-api` and `semstrait` (facade) are the only crates that may depend on the full stack.
 
 **Dependency table (direct only):**
 
@@ -97,15 +94,13 @@ semstrait/                       Cargo workspace root
 | `semstrait-ir` | `semstrait-core` |
 | `semstrait-planner` | `semstrait-core`, `semstrait-ir`, `semstrait-manifest`, `semstrait-catalog` |
 | `semstrait-adapter` | `semstrait-core`, `semstrait-ir`, `polyglot-sql` (optional) |
-| `semstrait-connectors` | `semstrait-adapter`, `semstrait-ir` |
-| `semstrait-api` | `semstrait-core`, `semstrait-ir`, `semstrait-planner`, `semstrait-manifest`, `semstrait-adapter`, `semstrait-connectors`, `semstrait-catalog` |
-| `semstrait` (facade) | `semstrait-core`, `semstrait-ir`, `semstrait-planner`, `semstrait-manifest`, `semstrait-adapter`, `semstrait-connectors`, `semstrait-catalog` |
+| `semstrait-api` | `semstrait-core`, `semstrait-ir`, `semstrait-planner`, `semstrait-manifest`, `semstrait-adapter`, `semstrait-catalog` |
+| `semstrait` (facade) | `semstrait-core`, `semstrait-ir`, `semstrait-planner`, `semstrait-manifest`, `semstrait-adapter`, `semstrait-catalog` |
 
 **Connection verification — cycle check:**
-- `semstrait-connectors` depends on `semstrait-adapter` (for `EngineAdapter` trait and per-engine adapters) and `semstrait-ir` (for `PlanArtifact`). No cycle with `semstrait-planner`. ✓
-- `semstrait-planner` uses `PlanBuilder` (from `semstrait-ir`) for engine-specific node construction. It does NOT depend on connectors or adapters. ✓
+- `semstrait-planner` uses `PlanBuilder` (from `semstrait-ir`) for engine-specific node construction. It does NOT depend on adapters. ✓
 - `semstrait-adapter` bridges `LogicalPlan` (IR) + internal `SqlEmitter` into `PlanArtifact`. No upward dependencies. ✓
-- `semstrait-ir` must NOT depend on `semstrait-planner` or `semstrait-connectors`. IR nodes are data structures, not planners. ✓
+- `semstrait-ir` must NOT depend on `semstrait-planner` or `semstrait-adapter`. IR nodes are data structures, not planners. ✓
 
 ### 3.2 Diagram 1 — Crate Layer Architecture
 
@@ -116,12 +111,6 @@ semstrait/                       Cargo workspace root
 │  semstrait-api (grpc · rest · cli submodules — feature-gated)       │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │ depends on ↓
-┌──────────────────────────────▼──────────────────────────────────────┐
-│  Execution layer (optional)                                          │
-│  semstrait-connectors — ComputeConnector trait                      │
-│  engine impls: datafusion · duckdb · trino · spark (feature-gated)  │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
 ┌──────────────────────────────▼──────────────────────────────────────┐
 │  Adapter layer                                                       │
 │  semstrait-adapter — EngineAdapter trait · SqlEmitter · dialects     │
@@ -196,13 +185,7 @@ InMemoryRepository.save()         │    Substrait-serializable + SemAnnotation
                                   │    └─────┬─────┘
                                   │          ▼
                                   │  PlanArtifact ← primary output
-                                  │          │
-                                  │          ▼ (optional — connector execution)
-                                  │  ComputeConnector.execute(artifact)
-                                  │    datafusion · duckdb · trino · spark
-                                  │          │
-                                  │          ▼
-                                  │  ComputeResult → JSON rows or Arrow
+                                  │    (consumer owns execution)
 ──────────────────────────────────┴──────────────────────────────────────
 ```
 
@@ -1219,7 +1202,7 @@ When the `polyglot` feature is enabled, `PolyglotEmitter` generates dialect-spec
 2. Transpiling to the target dialect via `polyglot_sql::transpile()`
 
 ```rust
-// Always available — connectors declare their preferred dialect
+// Always available — adapters declare their target dialect
 pub enum TargetDialect { Ansi, DataFusion, DuckDb, Trino, Spark, Snowflake, Databricks, PostgreSql }
 
 // Feature-gated behind "polyglot"
@@ -1301,53 +1284,14 @@ pub trait EngineAdapter: Send + Sync {
 
 ---
 
-### 5.9 `semstrait-connectors`
+### 5.9 `semstrait-connectors` — REMOVED
 
-**Role:** Optional execution layer. Receives `PlanArtifact` and executes it against a compute engine. Fully independent from `semstrait-adapter` — pure artifact consumption (DL-056). Convenience for testing and CLI — not the core value.
+**Status:** Crate deleted. Semstrait is a plan-generation library (E5). `PlanArtifact` is the output boundary; consumers own execution.
 
-**Structure within crate:**
-```
-semstrait-connectors/
-├── src/
-│   ├── lib.rs           re-exports
-│   ├── traits.rs        ComputeConnector trait
-│   ├── result.rs        ComputeResult, ComputeResultData, ExecutionStats
-│   ├── duckdb.rs        #[cfg(feature = "duckdb")]
-│   ├── datafusion.rs    #[cfg(feature = "datafusion")]
-│   ├── trino.rs         #[cfg(feature = "trino")]
-│   └── spark.rs         #[cfg(feature = "spark")]
-```
+Former decision log entries (DL-056, DL-031) are archived in DECISION_LOG.md.
 
-#### Core trait (decoupled — no adapter dependency)
+#### Diagram 6 — Adapter Pipeline
 
-```rust
-/// Optional compute execution. Receives a PlanArtifact and runs it.
-/// No knowledge of EngineAdapter — pure execution boundary (DL-056).
-#[async_trait]
-pub trait ComputeConnector: Send + Sync {
-    async fn execute(&self, artifact: &PlanArtifact) -> Result<ComputeResult, ConnectorError>;
-    async fn health_check(&self) -> Result<(), ConnectorError>;
-    fn name(&self) -> &str;
-}
-
-pub struct ComputeResult {
-    pub complete:    bool,
-    pub stats:       ExecutionStats,
-    pub data:        ComputeResultData,
-}
-
-pub enum ComputeResultData {
-    Empty,
-    Json(Vec<serde_json::Value>),
-    Native(Box<dyn Any + Send + Sync>),
-}
-```
-
-**Key design decision (DL-056):** `ComputeConnector` has no `fn adapter()` method. Adapter and connector are independent: adapter transforms IR → artifact, connector executes artifact → result. They share no references. The facade orchestrates both (see §5.11).
-
-#### Adapter + Connector Architecture
-
-**Diagram 6 — Adapter/Connector Pipeline:**
 ```
 LogicalPlan (from SemanticPlanner)
         │
@@ -1362,35 +1306,8 @@ Sql(String)              Substrait(proto::Plan)
               ▼
      PlanArtifact ← primary output (semstrait boundary)
               │
-              ▼ (optional — ComputeConnector execution)
-  ┌───────────┼───────────────────┬──────────────┐
-  ▼           ▼                   ▼              ▼
-DuckDB    DataFusion            Trino          Spark
-SQL exec  Substrait→DF plan    SQL REST    structural (deferred)
-  │           │                   │              │
-  └───────────┴───────────────────┴──────────────┘
-              ▼
-     ComputeResult (JSON rows or Arrow)
+              ▼ (consumer-owned execution)
 ```
-
-**Per-engine notes:**
-
-| Engine | Adapter Output | Connector Wire | Notes |
-|---|---|---|---|
-| DataFusion | `Substrait` | In-process via `datafusion-substrait` | Deserializes `proto::Plan` → DF LogicalPlan → execute; SQL fallback available |
-| DuckDB | `Sql` (DuckDB dialect) | DuckDB C API (embedded, `bundled`) | `Connection` is `Send`/`!Sync` → `Arc<Mutex<Connection>>` + `spawn_blocking` |
-| Trino | `Sql` (Trino dialect) | reqwest REST v1/statement | POST→poll nextUri→collect pages. Basic/JWT auth. |
-| Spark | `Sql` (Spark dialect) | structural (deferred) | Builder pattern, `execute()` returns `NotImplemented`. |
-
-**External deps:** `semstrait-core`, `semstrait-ir`, `arrow`, `async-trait`
-
-**Note:** `semstrait-adapter` is NOT a dependency of `semstrait-connectors`. Connectors depend only on `semstrait-ir` (for `PlanArtifact`) and `semstrait-core` (for shared types).
-
-Engine deps (feature-gated):
-- `datafusion`: `datafusion` v52 + `datafusion-substrait` v52 (Substrait consumption)
-- `duckdb`: `duckdb` crate v1.3.x (>=1.3.0, <1.4.0 — pinned for arrow 55 per DL-031)
-- `trino`: `reqwest` v0.12 — REST v1/statement API with pagination
-- `spark`: `uuid` v1 — structural impl only
 
 #### Diagram 7 — E2E Abstraction Graph (Traits, Dependencies, Control Flow)
 
@@ -1422,13 +1339,6 @@ semstrait-adapter                  EngineAdapter (trait)
                                    SqlEmitter (trait), dialect impls (from former semstrait-sql)
                                    Concrete: DataFusionAdapter, DuckDbAdapter, SparkAdapter
 
-semstrait-connectors               ComputeConnector (trait)           ← INDEPENDENT
-                                     ├── fn execute(PlanArtifact) → ComputeResult
-                                     ├── fn health_check()
-                                     └── fn name()
-                                   Concrete: DataFusionConnector, DuckDbConnector,
-                                             TrinoConnector, SparkConnector
-
 semstrait-api                      SemstraitEngine, RequestParser
 semstrait (facade)                 SemstraitBuilder, SemstraitInstance
 
@@ -1437,12 +1347,12 @@ COMPILE-TIME DEPENDENCY GRAPH (crate → crate)
 ═══════════════════════════════════════════════════════════════════════════
 
                     semstrait (facade)
-                   ╱      │       ╲
-                  ╱       │        ╲
-        semstrait-api  semstrait-connectors  semstrait-adapter
-              │              │                    │
-              └──────┬───────┘                    │
-                     │                            │
+                   ╱      │
+                  ╱       │
+        semstrait-api  semstrait-adapter
+              │              │
+              └──────┬───────┘
+                     │
               semstrait-planner ←── NO dep on adapter
                      │
                  semstrait-ir  ←── PlanBuilder trait lives here
@@ -1458,7 +1368,7 @@ COMPILE-TIME DEPENDENCY GRAPH (crate → crate)
   Key: planner → ir (for PlanBuilder). Facade bridges adapter→plan_builder.
 
 ═══════════════════════════════════════════════════════════════════════════
-CONTROL FLOW — Query Execution (numbered call sequence)
+CONTROL FLOW — Plan Generation (numbered call sequence)
 ═══════════════════════════════════════════════════════════════════════════
 
   Consumer App
@@ -1466,7 +1376,6 @@ CONTROL FLOW — Query Execution (numbered call sequence)
       │ ①  SemstraitBuilder::new()
       │      .with_manifest_yaml(yaml)
       │      .with_adapter(adapter)           // Arc<dyn EngineAdapter>
-      │      .with_connector(connector)       // Optional
       │      .build().await
       │
       │    build() internals:
@@ -1475,12 +1384,12 @@ CONTROL FLOW — Query Execution (numbered call sequence)
       │      c. SemanticPlanner::builder()
       │           .with_plan_builder(builder)  // extracted from adapter
       │           .build()
-      │      d. Store adapter + connector on SemstraitInstance
+      │      d. Store adapter on SemstraitInstance
       │
       ▼
   SemstraitInstance
       │
-      │ ②  instance.query(request)
+      │ ②  instance.plan(request)
       │
       ├──→ ③  planner.plan(request) → LogicalPlan
       │         Uses PlanBuilder for engine-specific node construction
@@ -1488,24 +1397,13 @@ CONTROL FLOW — Query Execution (numbered call sequence)
       ├──→ ④  adapter.adapt(plan) → PlanArtifact
       │         Substrait (DataFusion) or SQL (DuckDB/Trino/Spark)
       │
-      ├──→ ⑤  connector.execute(artifact) → ComputeResult  [optional]
-      │         Pure execution — no knowledge of adapter
-      │
-      └──→ ⑥  Return ComputeResult (or PlanArtifact if no connector)
-
-  Library mode (no connector):
-      Steps ①→④ only. Consumer receives PlanArtifact.
-      Consumer app owns engine integration.
-
-  Full mode (with connector):
-      Steps ①→⑥. Semstrait handles execution end-to-end.
+      └──→ ⑤  Return PlanArtifact (consumer owns execution)
 
 ═══════════════════════════════════════════════════════════════════════════
 TRAIT RELATIONSHIP CONSTRAINTS
 ═══════════════════════════════════════════════════════════════════════════
 
   EngineAdapter ──PROVIDES──► PlanBuilder  (fn plan_builder(), optional)
-  ComputeConnector ──INDEPENDENT──►       (no adapter() method)
   SemanticPlanner ──DEPENDS-ON──► PlanBuilder (trait in IR)
   Facade ──BRIDGES──► adapter.plan_builder() → planner.with_plan_builder()
 
@@ -1539,7 +1437,6 @@ pub mod parse {
 pub struct SemstraitEngine {
     manifest:        Option<CompiledManifest>,
     default_adapter: Option<Arc<dyn EngineAdapter>>,    // adapter-based
-    connector:       Option<Arc<dyn ComputeConnector>>, // optional execution
 }
 
 impl SemstraitEngine {
@@ -1549,17 +1446,13 @@ impl SemstraitEngine {
         manifest: CompiledManifest,
         adapter: Arc<dyn EngineAdapter>,
     ) -> Self;
-    pub fn with_connector(
-        manifest: CompiledManifest,
-        connector: Arc<dyn ComputeConnector>,
-    ) -> Self;
     pub async fn with_manifest_yaml(yaml: &str) -> Result<Self, EngineError>;
 
     pub fn validate(&self, raw: &RawQueryRequest) -> ValidationResult;
-    pub async fn explain(&self, raw: &RawQueryRequest)
-        -> Result<ExplainResult, EngineError>;          // returns PlanArtifact
-    pub async fn query(&self, raw: &RawQueryRequest)
-        -> Result<serde_json::Value, EngineError>;      // requires connector
+    pub fn plan(&self, raw: &RawQueryRequest)
+        -> Result<PlanArtifact, EngineError>;            // plan + adapt
+    pub fn explain(&self, raw: &RawQueryRequest)
+        -> Result<ExplainResult, EngineError>;           // debug SQL
 }
 
 // gRPC transport — feature = "grpc" (tonic 0.14, DL-034)
@@ -1567,7 +1460,7 @@ impl SemstraitEngine {
 pub mod grpc {
     // Proto generated via tonic-prost-build from crates/semstrait-api/proto/service.proto
     pub struct SemstraitGrpcService { engine: SharedEngine }
-    // Implements: Explain, Validate, Query, Health RPCs
+    // Implements: Plan, Explain, Validate, Health RPCs
     // Proto: semstrait.v1.SemstraitService
 }
 
@@ -1575,17 +1468,19 @@ pub mod grpc {
 #[cfg(feature = "rest")]
 pub mod rest {
     pub fn router(engine: Arc<SemstraitEngine>) -> axum::Router;
-    // POST /query   → ComputeResult as JSON
-    // POST /explain → ExplainResult as JSON
+    // POST /plan    → PlanArtifact as JSON
+    // POST /explain → ExplainResult as JSON (debug SQL)
+    // POST /validate → ValidationResult as JSON
     // GET  /schema  → SchemaResponse as JSON
     // POST /compile → CompileResponse as JSON
+    // GET  /health  → HealthResponse as JSON
 }
 
 // CLI transport — feature = "cli"
 #[cfg(feature = "cli")]
 pub mod cli {
     pub async fn run() -> Result<(), Box<dyn std::error::Error>>;
-    // Commands: compile | explain | validate | query (datafusion) | query-duckdb (duckdb) | serve (rest)
+    // Commands: compile | plan | explain | validate | serve (rest)
     // Binary target: `cargo build -p semstrait-api --features cli,rest,datafusion`
 }
 ```
@@ -1593,7 +1488,7 @@ pub mod cli {
 **Proto surface:**
 ```protobuf
 service SemstraitService {
-  rpc Query    (QueryRequest)   returns (QueryResponse);
+  rpc Plan     (QueryRequest)   returns (PlanResponse);
   rpc Explain  (QueryRequest)   returns (ExplainResponse);
   rpc Validate (QueryRequest)   returns (ValidationResponse);
   rpc Schema   (SchemaRequest)  returns (SchemaResponse);
@@ -1601,7 +1496,7 @@ service SemstraitService {
 }
 ```
 
-**External deps:** `semstrait-core`, `semstrait-planner`, `semstrait-manifest`, `semstrait-connectors`
+**External deps:** `semstrait-core`, `semstrait-planner`, `semstrait-manifest`, `semstrait-adapter`, `semstrait-catalog`
 
 Transport deps (feature-gated): `tonic` + `prost` (grpc), `axum` (rest), `clap` (cli)
 
@@ -1616,16 +1511,14 @@ pub struct SemstraitInstance {
     manifest_yaml: String,
     manifest: CompiledManifest,
     planner: SemanticPlanner,
-    adapter: Option<Arc<dyn EngineAdapter>>,       // independent
-    connector: Option<Arc<dyn ComputeConnector>>,   // independent
+    adapter: Option<Arc<dyn EngineAdapter>>,
 }
 
 pub struct SemstraitBuilder {
     manifest_yaml: Option<String>,
     manifest_path: Option<PathBuf>,
     catalog:       Option<Arc<dyn CatalogProvider>>,
-    adapter:       Option<Arc<dyn EngineAdapter>>,      // NEW (DL-059)
-    connector:     Option<Arc<dyn ComputeConnector>>,
+    adapter:       Option<Arc<dyn EngineAdapter>>,      // (DL-059)
 }
 
 impl SemstraitBuilder {
@@ -1633,27 +1526,25 @@ impl SemstraitBuilder {
     pub fn with_manifest_yaml(self, yaml: impl Into<String>) -> Self;
     pub fn with_manifest_file(self, path: impl Into<PathBuf>) -> Self;
     pub fn with_catalog(self, catalog: Arc<dyn CatalogProvider>) -> Self;
-    pub fn with_adapter(self, adapter: Arc<dyn EngineAdapter>) -> Self;      // NEW
-    pub fn with_connector(self, connector: Arc<dyn ComputeConnector>) -> Self;
+    pub fn with_adapter(self, adapter: Arc<dyn EngineAdapter>) -> Self;
     pub async fn build(self) -> Result<SemstraitInstance, BuildError>;
     // build() internals:
     //   1. ManifestCompiler.compile(yaml) → CompiledManifest
     //   2. adapter.plan_builder() → Option<Box<dyn PlanBuilder>> (or DefaultPlanBuilder)
     //   3. SemanticPlanner::builder().with_plan_builder(builder).build()
-    //   4. Store adapter + connector independently on SemstraitInstance
+    //   4. Store adapter on SemstraitInstance
 }
 
 impl SemstraitInstance {
     pub fn builder() -> SemstraitBuilder;
     pub fn manifest(&self) -> &CompiledManifest;
-    pub fn explain(&self, req: &ResolvedQueryRequest) -> Result<String, String>; // sync SQL
     pub fn plan(&self, req: &ResolvedQueryRequest)
-        -> Result<PlanArtifact, BuildError>;  // plan + adapt (library mode)
-    pub async fn query(&self, req: &ResolvedQueryRequest)
-        -> Result<ComputeResult, BuildError>;  // plan + adapt + execute (requires connector)
+        -> Result<PlanArtifact, BuildError>;  // plan + adapt
+    pub fn explain(&self, req: &ResolvedQueryRequest)
+        -> Result<String, BuildError>;        // debug SQL
 }
 
-// Library mode (no connector — consumer owns execution):
+// Usage — consumer owns execution:
 let sem = Semstrait::builder()
     .with_manifest_yaml(yaml_str)
     .with_adapter(Arc::new(DataFusionAdapter::new()))
@@ -1663,21 +1554,12 @@ let sem = Semstrait::builder()
 let artifact = sem.plan(&request)?;  // PlanArtifact::Substrait
 // Consumer passes artifact to their own DataFusion SessionContext
 
-// Full mode (with connector — semstrait handles execution):
-let sem = Semstrait::builder()
-    .with_manifest_yaml(yaml_str)
-    .with_adapter(Arc::new(DuckDbAdapter::new()))
-    .with_connector(Arc::new(DuckDbConnector::new()?))
-    .build()
-    .await?;
-
-let result = sem.query(&request).await?;  // ComputeResult
+let sql = sem.explain(&request)?;    // debug SQL string
 ```
 
 **Key design decisions:**
 - Facade provides `with_adapter()`. Internally extracts `adapter.plan_builder()` for the planner. Planner keeps `with_plan_builder()` (cannot depend on adapter crate — DAG constraint).
-- **DL-060:** `plan()` and `query()` pass `PlanArtifact` directly to connector. Never discard Substrait in favor of SQL.
-- Adapter and connector are independent — either can be set without the other. `plan()` requires adapter; `query()` requires both.
+- **DL-060:** `plan()` returns `PlanArtifact` directly. Never discards Substrait in favor of SQL.
 - `DefaultPlanBuilder` (in `semstrait-ir`) is the fallback when no adapter is provided or adapter returns `None` from `plan_builder()`.
 - **DL-061:** `ExprSource` custom Deserialize (fixes DL-049). Replaced `#[serde(untagged)]` with manual `impl Deserialize` that routes `String` → `Inline`, `Mapping` → `Declarative(ExprBlock)`. Enables declarative expressions at Tier 2 (kind-level dimensions).
 - **DL-062:** Expression scope validation (SR-5a). `validate_expr_scope()` in `steps.rs` checks that all `Expr::Column` references in computed dimension and metric expressions refer to names exposed in the same interface. Measure base expressions are exempt (reference physical columns).
@@ -1694,11 +1576,10 @@ let result = sem.query(&request).await?;  // ComputeResult
 **Feature flags:**
 ```toml
 [features]
-default         = ["duckdb"]
-duckdb          = ["semstrait-adapter/duckdb", "semstrait-connectors/duckdb"]
-datafusion      = ["semstrait-adapter/datafusion", "semstrait-connectors/datafusion"]
-trino           = ["semstrait-adapter/trino", "semstrait-connectors/trino"]
-spark           = ["semstrait-adapter/spark", "semstrait-connectors/spark"]
+default         = ["datafusion"]
+duckdb          = ["semstrait-adapter/duckdb"]
+datafusion      = ["semstrait-adapter/datafusion"]
+spark           = ["semstrait-adapter/spark"]
 catalog-iceberg = ["semstrait-catalog/iceberg"]
 api-grpc        = ["semstrait-api/grpc"]
 api-rest        = ["semstrait-api/rest"]
@@ -1766,16 +1647,14 @@ This table records every cross-crate type reference and confirms no cycle is int
 | `CatalogProvider` trait | `catalog` | `manifest`, `planner` | ✓ catalog → core only; no dep on manifest or planner |
 | `CompiledManifest`, `CompiledDataKind` | `manifest` | `planner`, `api`, `facade` | ✓ manifest → model, catalog; no dep on planner |
 | `PlanNode`, `LogicalPlan` | `ir` | `planner`, `sql`, `adapter` | ✓ ir → core only; downstream use is one-way |
-| `PlanArtifact` | `ir` | `adapter`, `connectors`, `api` | ✓ ir → core; all consumers depend on ir |
+| `PlanArtifact` | `ir` | `adapter`, `api`, `facade` | ✓ ir → core; all consumers depend on ir |
 | `SubstraitSerializer` | `ir` | `adapter` (DataFusionAdapter) | ✓ ir → core; adapter → ir |
 | `SemAnnotation` | `ir` | `planner` (sets annotations), `adapter` (reads for Explain) | ✓ annotation type defined in ir, set by planner |
 | `ResolvedQueryRequest` | `planner` | `planner` internally, `api` (calls planner) | ✓ lives in planner; api → planner |
 | `EntityPlanner` trait | `planner` | `planner` (registry) | ✓ internal to planner crate |
 | `Optimizer`, `OptimizerPass` | `planner` | `planner` (internal), `facade` (configuration) | ✓ no external crate depends on these for execution |
 | `SqlEmitter`, `SqlDialect` | `adapter` (internal) | `adapter` (SQL adapters use emitter) | ✓ internal to adapter crate |
-| `EngineAdapter` trait | `adapter` | `connectors`, `api`, `facade` | ✓ adapter → core, ir, sql; downstream is one-way |
-| `ComputeConnector` | `connectors` | `api`, `facade` | ✓ connectors → core, adapter; api → connectors |
-| `ComputeResult` | `connectors` | `api`, `facade` | ✓ same crate |
+| `EngineAdapter` trait | `adapter` | `api`, `facade` | ✓ adapter → core, ir; downstream is one-way |
 | `SemstraitEngine` | `api` | `facade` | ✓ api is only used by facade and binaries |
 | `RequestParser` | `api` | `api` (internal to submodules) | ✓ |
 
@@ -1789,9 +1668,8 @@ Items not yet implemented. Completed items archived in DECISION_LOG.md.
 
 | Item | Notes |
 |---|---|
-| Arrow Flight SQL | Databricks-specific, not Spark/Trino (DL-029) |
+| Arrow Flight SQL | Databricks-specific, not Spark/Trino (DL-029). Out of scope — execution is consumer-owned. |
 | Spark Substrait support | Spark 3.4+ experimental; default to SQL emitter |
-| Multi-engine query fan-out | Single connector per `Semstrait` instance |
 | Cross-kind metric refs | Prohibited v1 (COMP_E006); multi-kind planning deferred |
 | Many-to-many junction tables | Bridge as explicit dataset in joinset |
 | Glue/Hive catalogs | Heavy deps; Unity done, Glue/Hive deferred |
@@ -1800,7 +1678,7 @@ Items not yet implemented. Completed items archived in DECISION_LOG.md.
 | Ratio/window structured aggregation | `ratio:` and `window:` YAML tags on metrics |
 | Planner metadata dim injection | ScanNode literal column injection per source path (metadata dims handled; computed dims done in Phase G) |
 | Model hash caching | Content hash as manifest cache key — design decided, not implemented |
-| Declarative YAML in nested kinds | serde_yaml 0.9 nested untagged enum limitation — declarative expr blocks work in `datasets:` but not `grainsets/unionsets/joinsets` (DL-049) |
+| Declarative YAML in nested kinds | Fixed (DL-061): custom `Deserialize` for `ExprSource` resolves the serde_yaml 0.9 limitation. Declarative blocks now work at all scopes. |
 
 ---
 
@@ -1815,23 +1693,41 @@ Workspace-level diagrams live in `docs/`. Module-specific diagrams live in crate
 | D3 — Planner Evaluation Order | `crates/semstrait-planner/docs/D3_planner_evaluation_order.svg` |
 | D4 — PlanNode Substrait Map | `crates/semstrait-ir/docs/D4_plannode_substrait_map.svg` |
 | D5 — Kind Interface Binding | `crates/semstrait-planner/docs/D5_kind_interface_binding.svg` |
-| D6 — Connector Architecture | `crates/semstrait-connectors/docs/D6_connector_architecture.svg` |
+| D6 — Adapter Pipeline | Inline in CONTEXT.md §5.9 |
 | D7 — E2E Abstraction Graph | Inline in CONTEXT.md §5.9 (traits, dependencies, control flow) |
 
 ---
 
-## 10. Module Document Index
+## 10. Design Document Index
 
-Each crate's `MODULE.md` is derived from the corresponding section in this document plus the per-module details listed below.
+Design documents in `docs/` provide deep-dive specifications for complex subsystems. Read the relevant document before working on the corresponding area. Each crate also has a `README.md` with module map, control flows, and basic instructions.
 
-| Document | Primary source section | Additional content |
-|---|---|---|
-| `semstrait-core/MODULE.md` | §5.1 | Unified `Expr` variant catalog; `DataType` ANSI logical types (8 variants); error type hierarchy |
-| `semstrait-model/MODULE.md` | §5.2 | Full YAML schema specification (v1.4); ref resolution algorithm; `GlobPattern` grammar |
-| `semstrait-catalog/MODULE.md` | §5.3 | `CatalogProvider` contract; per-impl authentication flows; `NullCatalogProvider` behavior spec |
-| `semstrait-manifest/MODULE.md` | §5.4 | Compilation pipeline step-by-step; `CompiledManifest` JSON schema; error codes (COMP_E*) |
-| `semstrait-ir/MODULE.md` | §5.5 | Complete `PlanNode` variant specs; Substrait extension proto definition; ordinal invariant proofs; `PlanBuilder` trait |
-| `semstrait-planner/MODULE.md` | §5.6 | Full evaluation order spec; module structure (Phase H); `ExprResolver` trait; `DecomposedMeasure`; `DatasetPlanner`; `GrainsetPlanner` coverage algorithm; `UnionsetPlanner` branch pruning; `JoinsetPlanner` BFS + field resolution; error codes (PLAN_E*, PLAN_W*) |
-| `semstrait-connectors/MODULE.md` | §5.8 | Trait contracts; per-engine: wire protocol, auth methods, known limitations, payload support matrix. See also D6 in `crates/semstrait-connectors/docs/`. |
-| `semstrait-api/MODULE.md` | §5.9 | Proto definitions; `RequestParser` algorithm; per-transport setup guide |
-| `semstrait/MODULE.md` | §5.10 | Builder usage examples; feature flag combinations; embedding guide |
+### When to read which document
+
+| Task Area | Document | What It Covers |
+|-----------|----------|---------------|
+| Catalog metadata, storage providers, source resolution, schema validation | `docs/CATALOG_RESOLUTION.md` | CatalogProvider extension, StorageProvider trait, CatalogSnapshot, source type discrimination, Iceberg REST metadata extraction, DataFusion integration |
+| Function mapping between IR and engines, expression rewriting | `docs/FUNCTION_CATALOG.md` | Canonical function set (aggregates, string, date, pattern matching), per-engine rewrite tiers (name-only, name-remap, structural, unsupported), Substrait anchor allocation, PlanBuilder rewrite integration |
+| Grainset kind planning — multi-grain, multi-dataset | `docs/GRAINSET.md` | Dataset pruning (metadata, literal, grain eligibility), grain group assignment, DATE_TRUNC rollup, UNION ALL + re-aggregation, NULL-fill semantics |
+| Unionset kind planning — UNION ALL/DISTINCT | `docs/UNIONSET.md` | Per-dataset branch building, dimension source classification (Physical/MetadataLiteral/NullFill), union mode, re-aggregation function inference |
+| Joinset kind planning — BFS join chains | `docs/JOINSET.md` | Anchor selection, BFS traversal, bidirectional relationships, left-fold join tree construction, composite join keys |
+| Dataset kind planning — single-dataset fast path | `docs/DATASET.md` | Scan → Aggregate → Project pipeline, metadata/computed/physical dimension partitioning, filter injection |
+| Semantic model scoping rules, ref/override, expression scope | `docs/SEMANTIC_RESOLUTION.md` | Three-tier scope hierarchy (top-level → kind → dataset), SR-1 through SR-11 rules, expression scope validation, static pushdown, nesting matrix |
+| Computed dimensions and expression system | `docs/COMPUTED_EXPRESSIONS.md` | Inline DSL + declarative YAML syntax, FunctionRegistry (28 ANSI functions), expression compilation pipeline, Phase G design |
+| Known technical debt items | `docs/TECH_DEBT.md` | Tracked issues from code reviews with severity, origin, and remediation guidance |
+
+### Per-crate documentation
+
+Each crate's `README.md` contains: purpose, module map, key types/traits, control flows, feature flags, and dependencies. Read the crate README before modifying that crate.
+
+```
+crates/semstrait-core/README.md        Foundation types (Expr, DataType, Schema, Grain)
+crates/semstrait-model/README.md       YAML parsing, type hierarchy, expression syntax
+crates/semstrait-catalog/README.md     CatalogProvider/StorageProvider traits, implementations
+crates/semstrait-manifest/README.md    Compilation pipeline (9 steps), CompiledManifest, acceleration structures
+crates/semstrait-ir/README.md          PlanNode IR, Substrait serialization, PlanBuilder trait
+crates/semstrait-planner/README.md     Planning pipeline, kind planners, ExprResolver, filter injection
+crates/semstrait-adapter/README.md     EngineAdapter trait, SQL emission, dialect implementations
+crates/semstrait-api/README.md         SemstraitEngine, transports (CLI/REST/gRPC)
+crates/semstrait/README.md             Facade builder API, re-exports, feature flags
+```

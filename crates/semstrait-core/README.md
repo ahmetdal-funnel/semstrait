@@ -29,6 +29,7 @@ semstrait-core/src/
 ├── expr.rs                 Unified Expr AST (Aggregate, BinaryOp, Case, DateTrunc, etc.)
 ├── constraints.rs          Measure/dimension/aggregation constraint types
 ├── types.rs                GlobPattern with glob_match()
+├── format.rs               DataFormat enum (Iceberg, Parquet, Csv)
 └── error.rs                CoreError, SchemaError
 ```
 

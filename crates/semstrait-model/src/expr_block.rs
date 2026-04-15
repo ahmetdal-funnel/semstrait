@@ -1031,7 +1031,9 @@ impl ExprBlock {
 
             // ── Type conversion ─────────────────────────────────
             ExprBlock::Cast(c) => {
-                Ok(Expr::cast(c.col.to_expr()?, &c.to))
+                let data_type: semstrait_core::DataType = c.to.parse()
+                    .map_err(|_| ExprBlockError::InvalidCastType(c.to.clone()))?;
+                Ok(Expr::cast(c.col.to_expr()?, data_type))
             }
 
             // ── Guard ───────────────────────────────────────────
@@ -1082,6 +1084,9 @@ fn convert_many(exprs: &[ExprBlock]) -> Result<Vec<Expr>, ExprBlockError> {
 pub enum ExprBlockError {
     #[error("invalid grain value: '{0}'")]
     InvalidGrain(String),
+
+    #[error("invalid cast type: '{0}'")]
+    InvalidCastType(String),
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -1796,7 +1801,7 @@ regexp_match:
         match &expr {
             Expr::Cast(c) => {
                 assert_eq!(*c.expr, Expr::column("price"));
-                assert_eq!(c.data_type, "DECIMAL(10,2)");
+                assert_eq!(c.data_type, semstrait_core::DataType::Decimal { precision: 10, scale: 2 });
             }
             _ => panic!("Expected Cast"),
         }
@@ -1809,7 +1814,7 @@ regexp_match:
         match &expr {
             Expr::Cast(c) => {
                 assert_eq!(*c.expr, Expr::column("price"));
-                assert_eq!(c.data_type, "VARCHAR");
+                assert_eq!(c.data_type, semstrait_core::DataType::String);
             }
             _ => panic!("Expected Cast"),
         }

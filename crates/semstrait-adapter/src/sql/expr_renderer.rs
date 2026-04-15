@@ -170,7 +170,10 @@ impl<'d> ExprSqlRenderer<'d> {
 
             Expr::Cast(c) => {
                 let rendered_expr = self.render(&c.expr)?;
-                Ok(format!("CAST({rendered_expr} AS {})", c.data_type))
+                Ok(format!(
+                    "CAST({rendered_expr} AS {})",
+                    self.dialect.type_name(&c.data_type)
+                ))
             }
 
             // EntityRef and Guard should never appear in plan nodes (resolved during planning).

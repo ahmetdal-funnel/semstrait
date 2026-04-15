@@ -10,8 +10,8 @@ service SemstraitService {
   // Validate a query request against the loaded manifest.
   rpc Validate(QueryRequest) returns (ValidateResponse);
 
-  // Execute a query and return result rows as JSON.
-  rpc Query(QueryRequest) returns (QueryResponse);
+  // Plan a query: returns PlanArtifact (SQL or Substrait).
+  rpc Plan(QueryRequest) returns (PlanResponse);
 
   // Health check.
   rpc Health(HealthRequest) returns (HealthResponse);
@@ -61,10 +61,13 @@ message ValidateResponse {
   repeated string warnings = 3;
 }
 
-message QueryResponse {
-  // Result rows encoded as JSON strings (one per row).
-  repeated string rows_json = 1;
-  uint64 rows_returned = 2;
+message PlanResponse {
+  // Artifact type: "sql" or "substrait".
+  string artifact_type = 1;
+  // SQL string (when artifact_type = "sql").
+  optional string sql = 2;
+  // Substrait plan as JSON (when artifact_type = "substrait").
+  optional string substrait_json = 3;
 }
 
 message HealthRequest {}
