@@ -658,76 +658,53 @@ impl Expr {
         })
     }
 
+    // ── Traversal ────────────────────────────────────────────────────
+
+    /// Pre-order read-only traversal of the expression tree.
+    ///
+    /// Calls `f` on this node first, then recursively walks all children.
+    /// Zero-allocation: borrows the entire tree. Exhaustive match ensures
+    /// the compiler catches new variants.
+    pub fn walk<F>(&self, f: &mut F)
+    where
+        F: FnMut(&Expr),
+    {
+        f(self);
+        match self {
+            Expr::Column(_) | Expr::Literal(_) | Expr::EntityRef(_) => {}
+            Expr::Aggregate(agg) => agg.expr.walk(f),
+            Expr::BinaryOp(bin) => { bin.left.walk(f); bin.right.walk(f); }
+            Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => u.expr.walk(f),
+            Expr::Case(c) => {
+                for wc in &c.when_then { wc.condition.walk(f); wc.result.walk(f); }
+                if let Some(e) = &c.else_expr { e.walk(f); }
+            }
+            Expr::InList(il) => { il.expr.walk(f); for item in &il.list { item.walk(f); } }
+            Expr::Between(bt) => { bt.expr.walk(f); bt.low.walk(f); bt.high.walk(f); }
+            Expr::Like(lk) => { lk.expr.walk(f); lk.pattern.walk(f); }
+            Expr::ILike(lk) => { lk.expr.walk(f); lk.pattern.walk(f); }
+            Expr::RegexpMatch(re) => { re.expr.walk(f); re.pattern.walk(f); }
+            Expr::RegexpExtract(re) => { re.expr.walk(f); re.pattern.walk(f); }
+            Expr::Coalesce(co) => { for e in &co.exprs { e.walk(f); } }
+            Expr::NullIf(ni) => { ni.expr.walk(f); ni.null_expr.walk(f); }
+            Expr::DateTrunc(dt) => dt.expr.walk(f),
+            Expr::FunctionCall(fc) => { for arg in &fc.args { arg.walk(f); } }
+            Expr::Cast(c) => c.expr.walk(f),
+            Expr::Guard(g) => { g.condition.walk(f); g.expr.walk(f); }
+        }
+    }
+
     // ── Introspection ───────────────────────────────────────────────
 
     /// Collect all unique column reference names in this expression tree.
     pub fn column_refs(&self) -> std::collections::HashSet<String> {
         let mut refs = std::collections::HashSet::new();
-        self.collect_column_refs_into(&mut refs);
+        self.walk(&mut |node| {
+            if let Expr::Column(c) = node {
+                refs.insert(c.name.clone());
+            }
+        });
         refs
-    }
-
-    fn collect_column_refs_into(&self, refs: &mut std::collections::HashSet<String>) {
-        match self {
-            Expr::Column(c) => { refs.insert(c.name.clone()); }
-            Expr::Literal(_) | Expr::EntityRef(_) => {}
-            Expr::Aggregate(a) => a.expr.collect_column_refs_into(refs),
-            Expr::BinaryOp(b) => {
-                b.left.collect_column_refs_into(refs);
-                b.right.collect_column_refs_into(refs);
-            }
-            Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
-                u.expr.collect_column_refs_into(refs);
-            }
-            Expr::Case(c) => {
-                for wc in &c.when_then {
-                    wc.condition.collect_column_refs_into(refs);
-                    wc.result.collect_column_refs_into(refs);
-                }
-                if let Some(e) = &c.else_expr { e.collect_column_refs_into(refs); }
-            }
-            Expr::InList(il) => {
-                il.expr.collect_column_refs_into(refs);
-                for v in &il.list { v.collect_column_refs_into(refs); }
-            }
-            Expr::Between(b) => {
-                b.expr.collect_column_refs_into(refs);
-                b.low.collect_column_refs_into(refs);
-                b.high.collect_column_refs_into(refs);
-            }
-            Expr::Like(l) => {
-                l.expr.collect_column_refs_into(refs);
-                l.pattern.collect_column_refs_into(refs);
-            }
-            Expr::ILike(l) => {
-                l.expr.collect_column_refs_into(refs);
-                l.pattern.collect_column_refs_into(refs);
-            }
-            Expr::RegexpMatch(r) => {
-                r.expr.collect_column_refs_into(refs);
-                r.pattern.collect_column_refs_into(refs);
-            }
-            Expr::RegexpExtract(r) => {
-                r.expr.collect_column_refs_into(refs);
-                r.pattern.collect_column_refs_into(refs);
-            }
-            Expr::FunctionCall(f) => {
-                for a in &f.args { a.collect_column_refs_into(refs); }
-            }
-            Expr::Coalesce(c) => {
-                for e in &c.exprs { e.collect_column_refs_into(refs); }
-            }
-            Expr::NullIf(n) => {
-                n.expr.collect_column_refs_into(refs);
-                n.null_expr.collect_column_refs_into(refs);
-            }
-            Expr::DateTrunc(d) => d.expr.collect_column_refs_into(refs),
-            Expr::Cast(c) => c.expr.collect_column_refs_into(refs),
-            Expr::Guard(g) => {
-                g.condition.collect_column_refs_into(refs);
-                g.expr.collect_column_refs_into(refs);
-            }
-        }
     }
 
     // ── Tree transformation ─────────────────────────────────────────

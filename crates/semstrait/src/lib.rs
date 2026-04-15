@@ -27,6 +27,12 @@ pub use semstrait_core::{
 // Re-export IR types
 pub use semstrait_ir::{LogicalPlan, PlanArtifact};
 
+// Re-export manifest types
+pub use semstrait_manifest::CompiledManifest;
+
+// Re-export planner types
+pub use semstrait_planner::request::ResolvedQueryRequest;
+
 // Re-export adapter types
 pub use semstrait_adapter::{AdaptError, EngineAdapter};
 

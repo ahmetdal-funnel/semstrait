@@ -6,7 +6,7 @@
 //! - validate: Validate a query request against a manifest
 //! - serve: Start the REST API server (feature-gated)
 
-use crate::engine::SemstraitEngine;
+use crate::engine::{resolve_adapter, SemstraitEngine};
 use crate::types::RawQueryRequest;
 use clap::{Parser, Subcommand};
 use semstrait_manifest::{CompileSource, ManifestCompiler};
@@ -68,6 +68,10 @@ pub enum Commands {
         /// Path to catalogs.yaml for catalog connections.
         #[arg(short, long)]
         catalogs: Option<PathBuf>,
+
+        /// Engine adapter: "datafusion", "ansi" (default: ansi).
+        #[arg(short, long)]
+        engine: Option<String>,
     },
 
     /// Validate a query request against a manifest.
@@ -91,6 +95,10 @@ pub enum Commands {
         /// Path to catalogs.yaml for catalog connections.
         #[arg(short, long)]
         catalogs: Option<PathBuf>,
+
+        /// Engine adapter: "datafusion", "ansi" (default: ansi).
+        #[arg(short, long)]
+        engine: Option<String>,
     },
 
     /// Start the REST API server.
@@ -107,6 +115,10 @@ pub enum Commands {
         /// Host to bind to.
         #[arg(long, default_value = "0.0.0.0")]
         host: String,
+
+        /// Engine adapter: "datafusion", "ansi" (default: ansi).
+        #[arg(short, long)]
+        engine: Option<String>,
 
         /// Also start a gRPC server on this port.
         #[cfg(feature = "grpc")]
@@ -267,6 +279,26 @@ async fn build_iceberg_provider(
     .into())
 }
 
+/// Build a SemstraitEngine from a compiled manifest and optional engine name.
+///
+/// When `engine_name` is "datafusion", wires the DataFusion adapter's plan_builder
+/// into the planner for engine-specific node construction.
+fn build_engine(
+    manifest: semstrait_manifest::CompiledManifest,
+    engine_name: Option<&str>,
+) -> Result<SemstraitEngine, Box<dyn std::error::Error>> {
+    match resolve_adapter(engine_name)? {
+        Some(adapter) => {
+            eprintln!("Engine: {}", adapter.name());
+            Ok(SemstraitEngine::with_adapter(manifest, adapter))
+        }
+        None => {
+            eprintln!("Engine: ansi (canonical)");
+            Ok(SemstraitEngine::with_manifest(manifest))
+        }
+    }
+}
+
 /// Build a RawQueryRequest from common CLI args.
 fn build_raw_request(from: Option<String>, select: Vec<String>, filters: Vec<String>) -> RawQueryRequest {
     RawQueryRequest {
@@ -308,9 +340,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             output,
             json,
             catalogs,
+            engine: engine_name,
         } => {
             let manifest = compile_from_file(&model, catalogs.as_ref()).await?;
-            let engine = SemstraitEngine::with_manifest(manifest);
+            let engine = build_engine(manifest, engine_name.as_deref())?;
             let raw = build_raw_request(from, select, filters);
             let result = engine.explain(&raw).await?;
             if json {
@@ -336,9 +369,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             select,
             filters,
             catalogs,
+            engine: engine_name,
         } => {
             let manifest = compile_from_file(&model, catalogs.as_ref()).await?;
-            let engine = SemstraitEngine::with_manifest(manifest);
+            let engine = build_engine(manifest, engine_name.as_deref())?;
             let raw = build_raw_request(from, select, filters);
             let result = engine.validate(&raw);
             if result.valid {
@@ -361,11 +395,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             model,
             port,
             host,
+            engine: engine_name,
             #[cfg(feature = "grpc")]
             grpc_port,
         } => {
-            let yaml = tokio::fs::read_to_string(&model).await?;
-            let engine = SemstraitEngine::with_manifest_yaml(&yaml).await?;
+            let manifest = compile_from_file(&model, None).await?;
+            let engine = build_engine(manifest, engine_name.as_deref())?;
             let shared = Arc::new(engine);
 
             // Optionally start gRPC server in background.

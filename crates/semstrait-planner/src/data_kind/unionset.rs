@@ -6,13 +6,12 @@
 
 use std::sync::Arc;
 use crate::error::PlannerError;
-use super::plan_builder;
-use super::plan_builder::infer_aggregation_iface;
-use super::{KindPlanner, PlanFragment, PlannerContext, PrunedView};
+use super::plan_layers;
+use super::plan_layers::infer_aggregation_iface;
+use super::{DataKindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
 use semstrait_ir::{
-    AggregateMeasure, Expr, Field, PlanNode,
-    Schema,
+    AggregateMeasure, Expr, PlanNode,
 };
 use semstrait_manifest::{CompiledInterface, UnionMode};
 use semstrait_manifest::acceleration::{CompiledDataKind, DatasetBinding};
@@ -20,7 +19,7 @@ use semstrait_manifest::acceleration::{CompiledDataKind, DatasetBinding};
 /// Planner for Unionset kinds — UNION ALL across multiple datasets.
 pub struct UnionsetPlanner;
 
-impl KindPlanner for UnionsetPlanner {
+impl DataKindPlanner for UnionsetPlanner {
     fn supports(&self, data_kind: &CompiledDataKind) -> bool {
         matches!(data_kind, CompiledDataKind::Unionset(_))
     }
@@ -55,7 +54,7 @@ impl KindPlanner for UnionsetPlanner {
             .collect::<Result<Vec<_>, _>>()?;
 
         // Validate type consistency across branches before UNION.
-        plan_builder::validate_union_types(&branches)?;
+        plan_layers::validate_union_types(&branches)?;
 
         let pb = ctx.plan_builder;
 
@@ -70,7 +69,7 @@ impl KindPlanner for UnionsetPlanner {
         };
 
         // Re-aggregate across all branches.
-        let unified_schema = build_unified_schema(request, iface);
+        let unified_schema = plan_layers::build_unified_schema(request, iface);
 
         let group_by: Vec<Expr> = request
             .dimensions
@@ -91,34 +90,14 @@ impl KindPlanner for UnionsetPlanner {
 
         let agg = pb.build_aggregate(unified_schema.clone(), union_input, group_by, aggregates);
 
-        Ok(PlanFragment {
-            root: agg,
-            output_schema: unified_schema,
-            pending_filters: Vec::new(),
-        })
+        Ok(PlanFragment { root: agg })
     }
-}
-
-/// Build the unified output schema with types from the kind's semantic model.
-fn build_unified_schema(request: &ResolvedQueryRequest, iface: &CompiledInterface) -> Schema {
-    let fields: Vec<Field> = request
-        .dimensions
-        .iter()
-        .map(|name| Field::new(name.clone(), iface.resolve_dim_type(name)))
-        .chain(
-            request
-                .measures
-                .iter()
-                .map(|name| Field::new(name.clone(), iface.resolve_measure_type(name))),
-        )
-        .collect();
-    Schema::new(fields)
 }
 
 /// Build a single UNION branch for one dataset binding.
 ///
 /// Computes covered/uncovered measures, then delegates to the shared
-/// `plan_builder::build_union_branch` for Scan → Rename → Expression → Aggregate → Project.
+/// `plan_layers::build_union_branch` for Scan → Rename → Expression → Aggregate → Project.
 fn build_union_branch(
     iface: &CompiledInterface,
     request: &ResolvedQueryRequest,
@@ -136,21 +115,21 @@ fn build_union_branch(
                 covered_measures.push(measure_name.clone());
             }
         } else if let Some(metric) = iface.metrics.get(measure_name) {
-            let constituents = plan_builder::extract_metric_constituents(metric, iface);
+            let constituents = plan_layers::extract_metric_constituents(metric, iface);
             if constituents.iter().all(|c| mapping.contains_key(c)) {
                 covered_measures.push(measure_name.clone());
             }
         }
     }
 
-    let unified_schema = build_unified_schema(request, iface);
+    let unified_schema = plan_layers::build_unified_schema(request, iface);
 
-    let params = plan_builder::UnionBranchParams {
+    let params = plan_layers::UnionBranchParams {
         covered_measures,
         temporal_rollup: None,
     };
 
-    plan_builder::build_union_branch(iface, request, binding, &params, &unified_schema, ctx)
+    plan_layers::build_union_branch(iface, request, binding, &params, &unified_schema, ctx)
 }
 
 #[cfg(test)]
@@ -339,7 +318,7 @@ mod tests {
         }
 
         // Check output schema.
-        assert_eq!(fragment.output_schema.fields.len(), 3); // date, region, revenue
+        assert_eq!(fragment.root.meta().output_schema.fields.len(), 3); // date, region, revenue
     }
 
     #[test]

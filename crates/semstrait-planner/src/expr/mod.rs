@@ -153,84 +153,13 @@ pub(crate) fn grain_to_temporal(grain: semstrait_core::Grain) -> TemporalGrain {
 
 /// Recursively collect all column references from an Expr tree.
 pub(crate) fn collect_column_refs(expr: &Expr, columns: &mut Vec<String>, seen: &mut HashSet<String>) {
-    match expr {
-        Expr::Column(col) => {
+    expr.walk(&mut |node| {
+        if let Expr::Column(col) = node {
             if seen.insert(col.name.clone()) {
                 columns.push(col.name.clone());
             }
         }
-        Expr::BinaryOp(bin) => {
-            collect_column_refs(&bin.left, columns, seen);
-            collect_column_refs(&bin.right, columns, seen);
-        }
-        Expr::Case(case) => {
-            for wc in &case.when_then {
-                collect_column_refs(&wc.condition, columns, seen);
-                collect_column_refs(&wc.result, columns, seen);
-            }
-            if let Some(e) = &case.else_expr {
-                collect_column_refs(e, columns, seen);
-            }
-        }
-        Expr::FunctionCall(fc) => {
-            for arg in &fc.args {
-                collect_column_refs(arg, columns, seen);
-            }
-        }
-        Expr::Aggregate(agg) => {
-            collect_column_refs(&agg.expr, columns, seen);
-        }
-        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
-            collect_column_refs(&u.expr, columns, seen);
-        }
-        Expr::InList(il) => {
-            collect_column_refs(&il.expr, columns, seen);
-            for item in &il.list {
-                collect_column_refs(item, columns, seen);
-            }
-        }
-        Expr::Between(bt) => {
-            collect_column_refs(&bt.expr, columns, seen);
-            collect_column_refs(&bt.low, columns, seen);
-            collect_column_refs(&bt.high, columns, seen);
-        }
-        Expr::Like(lk) => {
-            collect_column_refs(&lk.expr, columns, seen);
-            collect_column_refs(&lk.pattern, columns, seen);
-        }
-        Expr::ILike(lk) => {
-            collect_column_refs(&lk.expr, columns, seen);
-            collect_column_refs(&lk.pattern, columns, seen);
-        }
-        Expr::RegexpMatch(re) => {
-            collect_column_refs(&re.expr, columns, seen);
-            collect_column_refs(&re.pattern, columns, seen);
-        }
-        Expr::RegexpExtract(re) => {
-            collect_column_refs(&re.expr, columns, seen);
-            collect_column_refs(&re.pattern, columns, seen);
-        }
-        Expr::Coalesce(co) => {
-            for e in &co.exprs {
-                collect_column_refs(e, columns, seen);
-            }
-        }
-        Expr::NullIf(ni) => {
-            collect_column_refs(&ni.expr, columns, seen);
-            collect_column_refs(&ni.null_expr, columns, seen);
-        }
-        Expr::DateTrunc(dt) => {
-            collect_column_refs(&dt.expr, columns, seen);
-        }
-        Expr::Cast(c) => {
-            collect_column_refs(&c.expr, columns, seen);
-        }
-        Expr::Guard(g) => {
-            collect_column_refs(&g.condition, columns, seen);
-            collect_column_refs(&g.expr, columns, seen);
-        }
-        Expr::Literal(_) | Expr::EntityRef(_) => {}
-    }
+    });
 }
 
 #[cfg(test)]

@@ -162,12 +162,12 @@ impl SqlDialect for DataFusionDialect {
         format!("{expr} ILIKE {pattern}")
     }
 
-    /// DataFusion `regexp_match` — returns array, check IS NOT NULL for predicate.
+    /// DataFusion `regexp_like` — returns Boolean directly (not array).
     fn regexp_match(&self, expr: &str, pattern: &str, full_match: bool) -> String {
         if full_match {
-            format!("regexp_match({expr}, CONCAT('^', {pattern}, '$')) IS NOT NULL")
+            format!("regexp_like({expr}, CONCAT('^', {pattern}, '$'))")
         } else {
-            format!("regexp_match({expr}, {pattern}) IS NOT NULL")
+            format!("regexp_like({expr}, {pattern})")
         }
     }
 }

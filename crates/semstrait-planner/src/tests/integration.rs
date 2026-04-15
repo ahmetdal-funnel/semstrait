@@ -337,7 +337,7 @@ mod tests {
             DimensionType, JoinColumnPair, JoinType as ModelJoinType,
         };
         use semstrait_manifest::acceleration::{
-            CompiledDataKind, CompiledDatasetKind, CompiledInterface,
+            CompiledDataKind, CompiledSimpleKind, CompiledInterface,
             DatasetBinding, ResolvedColumnMapping,
         };
 
@@ -405,7 +405,7 @@ mod tests {
             },
             resolved_sources: vec![],
         };
-        let orders_dk = CompiledDataKind::Dataset(Box::new(CompiledDatasetKind {
+        let orders_dk = CompiledDataKind::Simple(Box::new(CompiledSimpleKind {
             interface: orders_iface,
             binding: orders_binding,
         }));
@@ -456,7 +456,7 @@ mod tests {
             },
             resolved_sources: vec![],
         };
-        let cust_dk = CompiledDataKind::Dataset(Box::new(CompiledDatasetKind {
+        let cust_dk = CompiledDataKind::Simple(Box::new(CompiledSimpleKind {
             interface: cust_iface,
             binding: cust_binding,
         }));

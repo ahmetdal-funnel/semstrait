@@ -13,10 +13,10 @@ mod repository;
 mod steps;
 
 pub use acceleration::{
-    AdjacencyIndex, CompileDiagnostics, CompileWarning, CompiledDataKind, CompiledDatasetKind,
-    CompiledGrainsetKind, CompiledInterface, CompiledJoinsetKind, CompiledSemanticInterface,
+    AdjacencyIndex, CompileDiagnostics, CompileWarning, CompiledDataKind, CompiledSimpleKind,
+    CompiledGrainsetKind, CompiledInterface, CompiledJoinsetKind,
     CompiledUnionsetKind, CoverageIndex, DatasetBinding, DimensionIndex, FieldIndex, FieldType,
-    GrainMap, MetricOrder, MultiDatasetKind, RelationshipGraph, ResolvedColumnMapping,
+    GrainMap, MetricOrder, RelationshipGraph, ResolvedColumnMapping,
     ResolvedSource, SemanticEdge, SemanticGraph, SemanticNode, SourceType, TemporalMapping,
 };
 pub use catalog_snapshot::{

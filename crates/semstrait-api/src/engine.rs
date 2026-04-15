@@ -89,6 +89,40 @@ impl SemstraitEngine {
         Ok(emitter.emit(plan)?)
     }
 
+    /// Validate that the request's engine field matches the configured adapter.
+    ///
+    /// The planner uses the adapter's plan_builder at construction time, so
+    /// switching engines per-request is not supported. This check prevents
+    /// silent mismatches where a client requests "datafusion" but gets ANSI output.
+    fn validate_engine_field(&self, raw: &RawQueryRequest) -> Result<(), EngineError> {
+        let requested = match &raw.engine {
+            Some(e) if !e.is_empty() => e.as_str(),
+            _ => return Ok(()), // no engine specified — use whatever is configured
+        };
+
+        // "ansi" / "canonical" always valid when no adapter is configured.
+        if matches!(requested, "ansi" | "canonical") {
+            if self.adapter.is_none() {
+                return Ok(());
+            }
+            // Adapter is configured but client wants ANSI — that's fine, debug_sql uses ANSI anyway.
+            return Ok(());
+        }
+
+        match &self.adapter {
+            Some(adapter) if adapter.name() == requested => Ok(()),
+            Some(adapter) => Err(EngineError::NotConfigured(format!(
+                "engine mismatch: request specifies '{}' but server is configured with '{}'",
+                requested,
+                adapter.name(),
+            ))),
+            None => Err(EngineError::NotConfigured(format!(
+                "engine '{}' requested but no adapter is configured (server uses ANSI canonical)",
+                requested,
+            ))),
+        }
+    }
+
     /// Validate a query request against the manifest.
     pub fn validate(&self, raw: &RawQueryRequest) -> ValidationResult {
         // Basic structural validation.
@@ -134,6 +168,8 @@ impl SemstraitEngine {
             .as_ref()
             .ok_or_else(|| EngineError::NotConfigured("no manifest loaded".to_string()))?;
 
+        self.validate_engine_field(raw)?;
+
         // Parse the raw request into a resolved query request.
         let request = RequestParser::to_resolved(raw, manifest)?;
 
@@ -169,6 +205,8 @@ impl SemstraitEngine {
             .manifest
             .as_ref()
             .ok_or_else(|| EngineError::NotConfigured("no manifest loaded".to_string()))?;
+
+        self.validate_engine_field(raw)?;
 
         let request = RequestParser::to_resolved(raw, manifest)?;
         let plan = self.planner.plan(&request, manifest)?;
@@ -256,6 +294,33 @@ impl SemstraitEngine {
 impl Default for SemstraitEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Resolve an engine adapter by name.
+///
+/// Supported engines:
+/// - `"datafusion"` — DataFusion adapter (Substrait output, DF-specific plan builder). Requires `datafusion` feature.
+/// - `"ansi"` / `None` — No adapter, ANSI SQL canonical output.
+///
+/// Returns `None` for ANSI/canonical (no adapter needed).
+/// Returns `Err` for unknown engine names or engines not compiled in.
+pub fn resolve_adapter(engine: Option<&str>) -> Result<Option<Arc<dyn EngineAdapter>>, EngineError> {
+    match engine {
+        None | Some("ansi") | Some("canonical") => Ok(None),
+        #[cfg(feature = "datafusion")]
+        Some("datafusion") => {
+            Ok(Some(Arc::new(semstrait_adapter::DataFusionAdapter)))
+        }
+        #[cfg(not(feature = "datafusion"))]
+        Some("datafusion") => {
+            Err(EngineError::NotConfigured(
+                "engine 'datafusion' requires the 'datafusion' feature".to_string(),
+            ))
+        }
+        Some(other) => Err(EngineError::NotConfigured(
+            format!("unknown engine '{}' (supported: datafusion, ansi)", other),
+        )),
     }
 }
 

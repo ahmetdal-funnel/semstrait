@@ -10,13 +10,13 @@
 use crate::error::PlannerError;
 use super::{
     grain_to_temporal, partition_dimensions_iface,
-    resolve_native_grain_binding, KindPlanner, PlanFragment, PlannerContext, PrunedView,
+    resolve_native_grain_binding, DataKindPlanner, PlanFragment, PlannerContext, PrunedView,
 };
-use super::plan_builder;
-use super::plan_builder::infer_aggregation_iface;
+use super::plan_layers;
+use super::plan_layers::infer_aggregation_iface;
 use crate::request::ResolvedQueryRequest;
 use semstrait_ir::{
-    AggregateMeasure, Expr, Field, PlanNode,
+    AggregateMeasure, Expr, PlanNode,
     Schema,
 };
 use semstrait_manifest::{
@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 /// Planner for Grainset kinds — grain-aware UNION ALL resolution.
 pub struct GrainsetPlanner;
 
-impl KindPlanner for GrainsetPlanner {
+impl DataKindPlanner for GrainsetPlanner {
     fn supports(&self, data_kind: &CompiledDataKind) -> bool {
         matches!(data_kind, CompiledDataKind::Grainset(_))
     }
@@ -132,7 +132,7 @@ fn prune_datasets<'a>(
         let mapping = &binding.column_mapping;
         let expanded_measures: Vec<String> = request.measures.iter().flat_map(|m| {
             if let Some(metric) = iface.metrics.get(m) {
-                plan_builder::extract_metric_constituents(metric, iface)
+                plan_layers::extract_metric_constituents(metric, iface)
             } else {
                 vec![m.clone()]
             }
@@ -223,7 +223,7 @@ fn assign_to_grain_groups<'a>(
     // For metrics, find the cheapest group where all constituent measures are available.
     for metric_name in metric_names {
         if let Some(metric) = iface.metrics.get(metric_name) {
-            let constituent_measures = plan_builder::extract_metric_constituents(metric, iface);
+            let constituent_measures = plan_layers::extract_metric_constituents(metric, iface);
             let mut assigned = false;
             for (grain, bindings) in &sorted_groups {
                 let group_covers_all = constituent_measures.iter().all(|cm| {
@@ -293,22 +293,6 @@ fn assign_to_grain_groups<'a>(
 
 // ─────────────────── Step 3: Build Plan ──────────────────────
 
-/// Build the unified output schema for the UNION plan.
-fn build_unified_schema(request: &ResolvedQueryRequest, iface: &CompiledInterface) -> Schema {
-    let fields: Vec<Field> = request
-        .dimensions
-        .iter()
-        .map(|name| Field::new(name.clone(), iface.resolve_dim_type(name)))
-        .chain(
-            request
-                .measures
-                .iter()
-                .map(|name| Field::new(name.clone(), iface.resolve_measure_type(name))),
-        )
-        .collect();
-    Schema::new(fields)
-}
-
 /// Build a single-dataset plan with optional grain rollup.
 fn build_single_dataset_plan(
     iface: &CompiledInterface,
@@ -335,7 +319,7 @@ fn build_single_dataset_plan(
     } else {
         None
     };
-    plan_builder::build_binding_plan(iface, binding, request, ctx, true, rollup)
+    plan_layers::build_binding_plan(iface, binding, request, ctx, true, rollup)
 }
 
 
@@ -348,7 +332,7 @@ fn build_union_plan(
     temporal_dim: Option<&str>,
     request_grain: Option<TemporalGrain>,
 ) -> Result<PlanFragment, PlannerError> {
-    let unified_schema = build_unified_schema(request, iface);
+    let unified_schema = plan_layers::build_unified_schema(request, iface);
 
     // Build one branch per dataset assignment.
     let branches: Vec<PlanNode> = assignments
@@ -362,7 +346,7 @@ fn build_union_plan(
         .collect::<Result<Vec<_>, _>>()?;
 
     // Validate type consistency across branches before UNION.
-    plan_builder::validate_union_types(&branches)?;
+    plan_layers::validate_union_types(&branches)?;
 
     let pb = ctx.plan_builder;
 
@@ -393,17 +377,13 @@ fn build_union_plan(
 
     let agg = pb.build_aggregate(unified_schema.clone(), union_input, group_by, aggregates);
 
-    Ok(PlanFragment {
-        root: agg,
-        output_schema: unified_schema,
-        pending_filters: Vec::new(),
-    })
+    Ok(PlanFragment { root: agg })
 }
 
 /// Build a single UNION branch for one dataset assignment.
 ///
 /// Determines covered/uncovered measures for this assignment and delegates
-/// to the shared `plan_builder::build_union_branch`.
+/// to the shared `plan_layers::build_union_branch`.
 fn build_union_branch(
     iface: &CompiledInterface,
     request: &ResolvedQueryRequest,
@@ -423,7 +403,7 @@ fn build_union_branch(
                 covered.push(measure_name.clone());
             }
         } else if let Some(metric) = iface.metrics.get(measure_name) {
-            let constituents = plan_builder::extract_metric_constituents(metric, iface);
+            let constituents = plan_layers::extract_metric_constituents(metric, iface);
             if constituents.iter().all(|c| assignment.measures.contains(c)) {
                 covered.push(measure_name.clone());
             }
@@ -442,9 +422,9 @@ fn build_union_branch(
         None
     };
 
-    plan_builder::build_union_branch(
+    plan_layers::build_union_branch(
         iface, request, binding,
-        &plan_builder::UnionBranchParams {
+        &plan_layers::UnionBranchParams {
             covered_measures: covered,
             temporal_rollup,
         },
@@ -685,9 +665,9 @@ mod tests {
         assert!(result.is_ok(), "single dataset should succeed: {:?}", result.err());
 
         let fragment = result.unwrap();
-        // Root should be Aggregate (identity L5 skipped) or Project -> Aggregate -> Scan (no Union).
+        // Root should be Aggregate (identity Final Projection skipped) or Project -> Aggregate -> Scan (no Union).
         match &fragment.root {
-            PlanNode::Aggregate(_) => {} // identity L5 skipped
+            PlanNode::Aggregate(_) => {} // identity Final Projection skipped
             PlanNode::Project(p) => {
                 assert!(matches!(p.input.as_ref(), PlanNode::Aggregate(_)));
             }
@@ -790,7 +770,7 @@ mod tests {
         let fragment = result.unwrap();
 
         // Output schema should have dims + both measures.
-        let field_names: Vec<&str> = fragment.output_schema.fields.iter().map(|f| f.name.as_str()).collect();
+        let field_names: Vec<&str> = fragment.root.meta().output_schema.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(field_names, vec!["date", "region", "cost", "revenue"]);
 
         // Root should be Aggregate over Union (re-aggregation).
@@ -906,7 +886,7 @@ mod tests {
 
         let fragment = result.unwrap();
         // Verify DATE_TRUNC is in the aggregate's GROUP BY.
-        // Root is Aggregate (identity L5 skipped) or Project -> Aggregate.
+        // Root is Aggregate (identity Final Projection skipped) or Project -> Aggregate.
         let agg_node = match &fragment.root {
             PlanNode::Aggregate(a) => a,
             PlanNode::Project(proj) => match proj.input.as_ref() {
@@ -978,9 +958,9 @@ mod tests {
 
         let fragment = result.unwrap();
         // Should be single dataset (Project -> Aggregate -> Scan, no Union).
-        // Root is Aggregate (identity L5 skipped) or Project -> Aggregate.
+        // Root is Aggregate (identity Final Projection skipped) or Project -> Aggregate.
         match &fragment.root {
-            PlanNode::Aggregate(_) => {} // identity L5 skipped
+            PlanNode::Aggregate(_) => {} // identity Final Projection skipped
             PlanNode::Project(p) => {
                 assert!(
                     matches!(p.input.as_ref(), PlanNode::Aggregate(_)),

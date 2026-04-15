@@ -21,8 +21,8 @@ use semstrait_manifest::{CompiledManifest, CompiledRelationship};
 use crate::additivity::AdditivityResolver;
 use crate::entity_resolver::{MatchResult, MatchedEntity};
 use crate::error::PlannerError;
-use crate::kind::PlannerContext;
-use crate::kind::joinset::map_join_type;
+use crate::data_kind::PlannerContext;
+use crate::data_kind::joinset::map_join_type;
 use crate::planner::{
     SemanticPlanner, apply_limit, apply_order_by, inject_user_filters,
 };

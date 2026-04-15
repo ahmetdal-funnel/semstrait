@@ -141,7 +141,7 @@ fn simplify_in_list(il: &semstrait_core::expr::InListExpr) -> Option<Expr> {
         })
         .collect::<Option<Vec<_>>>()?;
 
-    let found = haystack.iter().any(|lit| *lit == needle);
+    let found = haystack.contains(&needle);
     let result = if il.negated { !found } else { found };
     Some(Expr::boolean(result))
 }

@@ -811,14 +811,14 @@ semantic_model:
         .await
         .expect("should compile");
 
-    // Single-dataset kinds compile as Dataset (fast path — no routing needed).
+    // Single-dataset kinds compile as Simple (fast path — no routing needed).
     assert!(matches!(
         &manifest.entities["grain_kind"],
-        CompiledDataKind::Dataset(_)
+        CompiledDataKind::Simple(_)
     ));
     assert!(matches!(
         &manifest.entities["union_kind"],
-        CompiledDataKind::Dataset(_)
+        CompiledDataKind::Simple(_)
     ));
 }
 

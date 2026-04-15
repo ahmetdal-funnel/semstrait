@@ -165,7 +165,7 @@ pub fn find_covering_entities(
         }
 
         let kind_rank = match dk {
-            CompiledDataKind::Dataset(_) => 0u8,
+            CompiledDataKind::Simple(_) => 0u8,
             _ => 1u8,
         };
 
@@ -331,7 +331,7 @@ mod tests {
         DimensionType, CategoricalDimension, MetricType,
     };
     use semstrait_manifest::acceleration::{
-        CompiledDataKind, CompiledDatasetKind, CompiledInterface,
+        CompiledDataKind, CompiledSimpleKind, CompiledInterface,
         DatasetBinding, ResolvedColumnMapping, CompiledGrainsetKind,
     };
     use semstrait_model::Keys;
@@ -419,7 +419,7 @@ mod tests {
             filters: vec![],
             temporal_dim: None,
         };
-        let dk = CompiledDataKind::Dataset(Box::new(CompiledDatasetKind {
+        let dk = CompiledDataKind::Simple(Box::new(CompiledSimpleKind {
             interface: iface,
             binding: binding(&format!("{}_ds", name)),
         }));

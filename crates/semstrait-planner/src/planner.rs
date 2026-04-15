@@ -3,7 +3,7 @@
 //! Orchestrates the full planning pipeline:
 //! 1. Constraint evaluation
 //! 2. Kind dispatch
-//! 3. KindPlanner resolution
+//! 3. DataKindPlanner resolution
 //! 4. Additivity resolution
 //! 5. Filter injection
 //! 6. Optimizer application
@@ -18,11 +18,10 @@ use semstrait_ir::{
 use semstrait_manifest::CompiledManifest;
 
 use crate::additivity::AdditivityResolver;
-use crate::resolver::ExprResolver;
 use crate::validator::ConstraintValidator;
 use crate::error::PlannerError;
-use crate::kind::{
-    KindPlannerRegistry, PlanFragment, PlannerContext, PrunedView,
+use crate::data_kind::{
+    DataKindPlannerRegistry, PlanFragment, PlannerContext, PrunedView,
 };
 use crate::optimizer::{Optimizer, OptimizerPass};
 use crate::request::{FilterOperator, FilterValue, ResolvedQueryRequest, SortDirection};
@@ -34,7 +33,7 @@ use crate::request::{FilterOperator, FilterValue, ResolvedQueryRequest, SortDire
 pub struct SemanticPlanner {
     catalog: Option<Arc<dyn CatalogProvider>>,
     optimizer: Optimizer,
-    planners: KindPlannerRegistry,
+    planners: DataKindPlannerRegistry,
     plan_builder: Box<dyn PlanBuilder>,
 }
 
@@ -121,7 +120,7 @@ impl SemanticPlanner {
     /// (between scan and rename, using physical column names) — not here.
     ///
     /// Unified dispatch through CompiledDataKind. Dataset variants use the fast path;
-    /// complex kinds (grainset/unionset/joinset) delegate to KindPlanner registry.
+    /// complex kinds (grainset/unionset/joinset) delegate to DataKindPlanner registry.
     pub(crate) fn resolve_entity<'a>(
         &self,
         request: &ResolvedQueryRequest,
@@ -148,7 +147,7 @@ impl SemanticPlanner {
 
         // Dispatch through CompiledDataKind.
         let fragment =
-            crate::kind::dispatch_data_kind(&pruned, request, ctx, &self.planners)?;
+            crate::data_kind::dispatch_data_kind(&pruned, request, ctx, &self.planners)?;
 
         Ok((fragment, &iface.measures))
     }
@@ -258,7 +257,7 @@ impl SemanticPlannerBuilder {
         SemanticPlanner {
             catalog: self.catalog,
             optimizer: Optimizer::new(self.passes),
-            planners: KindPlannerRegistry::new(),
+            planners: DataKindPlannerRegistry::new(),
             plan_builder: self.plan_builder,
         }
     }
@@ -859,7 +858,7 @@ mod tests {
     #[test]
     fn test_ad_hoc_single_dataset_resolution() {
         use semstrait_manifest::{FieldIndex, CompiledDimension, CompiledMeasure};
-        use semstrait_manifest::acceleration::{CompiledDataKind, CompiledDatasetKind, DatasetBinding, ResolvedColumnMapping};
+        use semstrait_manifest::acceleration::{CompiledDataKind, CompiledSimpleKind, DatasetBinding, ResolvedColumnMapping};
         use std::collections::HashSet;
 
         let mut manifest = make_test_manifest();
@@ -929,7 +928,7 @@ mod tests {
 
         manifest.entities.insert(
             "orders_ds".to_string(),
-            CompiledDataKind::Dataset(Box::new(CompiledDatasetKind { interface: iface, binding })),
+            CompiledDataKind::Simple(Box::new(CompiledSimpleKind { interface: iface, binding })),
         );
 
         // Build a FieldIndex pointing to orders_ds.
@@ -992,22 +991,22 @@ mod tests {
         let plan = result.unwrap();
         assert_eq!(plan.output_names, vec!["date", "market", "revenue"]);
 
-        // In the layered architecture, computed dims are projected in L3 (before aggregation).
-        // The L3 expression project contains the FunctionCall; the final project just
-        // references Column("market"). Find the L3 project by traversing through Aggregate.
+        // In the layered architecture, computed dims are projected in the Expression layer
+        // (before aggregation). The Expression project contains the FunctionCall; the Final
+        // Projection just references Column("market"). Find it by traversing through Aggregate.
         let agg = find_agg_node(&plan.root)
             .expect("plan should contain an AggNode");
-        // L3 expression project is the aggregate's input (or L2 if no computed dims).
-        let l3_project = match agg.input.as_ref() {
+        // Expression project is the aggregate's input (or Rename if no computed dims).
+        let expr_project = match agg.input.as_ref() {
             PlanNode::Project(p) => p,
-            other => panic!("expected Project (L3) under Aggregate, got {:?}", std::mem::discriminant(other)),
+            other => panic!("expected Expression Project under Aggregate, got {:?}", std::mem::discriminant(other)),
         };
         // Find the computed dim expression — it's appended after passthrough columns.
-        let market_expr = l3_project.expressions.last()
-            .expect("L3 project should have expressions");
+        let market_expr = expr_project.expressions.last()
+            .expect("Expression project should have expressions");
         assert!(
             matches!(market_expr, semstrait_ir::Expr::FunctionCall(_)),
-            "computed dim 'market' should be a FunctionCall in L3, got: {:?}",
+            "computed dim 'market' should be a FunctionCall in Expression project, got: {:?}",
             market_expr
         );
     }
@@ -1022,7 +1021,7 @@ mod tests {
         let plan = planner.plan(&request, &manifest).unwrap();
 
         // In the layered architecture, computed dims ARE in GROUP BY (they're projected
-        // in L3 before aggregation). GROUP BY references semantic Column("market").
+        // in the Expression layer before aggregation). GROUP BY references semantic Column("market").
         let agg = find_agg_node(&plan.root)
             .expect("plan should contain an AggNode");
         assert_eq!(agg.group_by.len(), 2, "both date and market should be in group_by");

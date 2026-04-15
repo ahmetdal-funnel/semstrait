@@ -92,7 +92,21 @@ fn fmt_filter(n: &FilterNode, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 }
 
 fn fmt_project(n: &ProjectNode, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let exprs: Vec<String> = n.expressions.iter().map(|e| e.to_string()).collect();
+    let fields = &n.meta.output_schema.fields;
+    let exprs: Vec<String> = n
+        .expressions
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let expr_str = e.to_string();
+            if let Some(field) = fields.get(i) {
+                if field.name != expr_str {
+                    return format!("{} AS {}", expr_str, field.name);
+                }
+            }
+            expr_str
+        })
+        .collect();
     write!(f, "Projection: {}", exprs.join(", "))
 }
 
@@ -405,6 +419,34 @@ Union: ALL (2 inputs)
     TableScan: orders_us [region, amount]
   Aggregate: groupBy=[region], aggr=[SUM(amount)]
     TableScan: orders_eu [region, amount]";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_projection_with_aliases() {
+        use crate::schema::Field;
+
+        let scan = PlanNode::Scan(ScanNode {
+            meta: meta(),
+            table_name: "events".into(),
+            location: None,
+            format: None,
+            projection: vec!["phys_region".into(), "amt".into()],
+        });
+        // Rename projection: phys_region → region, amt stays amt
+        let rename_schema = Schema::new(vec![
+            Field::new("region", DataType::String),
+            Field::new("amt", DataType::Number),
+        ]);
+        let proj = PlanNode::Project(ProjectNode {
+            meta: NodeMeta::new(rename_schema),
+            input: Box::new(scan),
+            expressions: vec![Expr::column("phys_region"), Expr::column("amt")],
+        });
+        let output = proj.to_string();
+        let expected = "\
+Projection: phys_region AS region, amt
+  TableScan: events [phys_region, amt]";
         assert_eq!(output, expected);
     }
 }

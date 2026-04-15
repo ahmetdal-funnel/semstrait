@@ -1,21 +1,21 @@
-//! KindPlanner trait, registry, and kind-specific planner implementations.
+//! DataKindPlanner trait, registry, and kind-specific planner implementations.
 //!
-//! - [`KindPlanner`] trait: strategy pattern for kind-specific planning
-//! - [`DatasetPlanner`]: single-dataset fast path
+//! - [`DataKindPlanner`] trait: strategy pattern for kind-specific planning
+//! - [`SimplePlanner`]: single-dataset fast path
 //! - [`GrainsetPlanner`]: single-dataset covering strategy
 //! - [`UnionsetPlanner`]: UNION ALL across multiple datasets
 //! - [`JoinsetPlanner`]: BFS join chain across datasets
 
-pub mod dataset;
+pub mod simple;
 pub mod grainset;
 pub mod joinset;
-pub(crate) mod plan_builder;
+pub(crate) mod plan_layers;
 pub mod unionset;
 
 use crate::error::PlannerError;
 use crate::request::{ResolvedQueryRequest, SessionVariables};
 use semstrait_catalog::CatalogProvider;
-use semstrait_ir::{Expr, PlanBuilder, PlanNode, Schema};
+use semstrait_ir::{PlanBuilder, PlanNode};
 use semstrait_manifest::{
     CompiledManifest, CompiledDataKind, DimensionType, MetadataDimension,
 };
@@ -28,7 +28,7 @@ pub(crate) use crate::expr::{
     split_computed_dims,
 };
 
-pub use dataset::DatasetPlanner;
+pub use simple::SimplePlanner;
 pub use grainset::GrainsetPlanner;
 pub use joinset::JoinsetPlanner;
 pub use unionset::UnionsetPlanner;
@@ -50,12 +50,6 @@ pub struct PlannerContext<'a> {
 pub struct PlanFragment {
     /// Root of the plan fragment tree.
     pub root: PlanNode,
-    /// Output schema of the fragment.
-    #[allow(dead_code)] // Read in tests; planner.rs reads via PlanNode::meta()
-    pub(crate) output_schema: Schema,
-    /// Filters not yet injected into the plan.
-    #[allow(dead_code)] // Read in tests; reserved for filter injection pipeline
-    pub(crate) pending_filters: Vec<Expr>,
 }
 
 /// A borrowed view of a CompiledDataKind with a subset of active bindings.
@@ -217,7 +211,7 @@ impl<'a> PrunedView<'a> {
 }
 
 /// Strategy trait for kind-specific plan construction.
-pub trait KindPlanner: Send + Sync {
+pub trait DataKindPlanner: Send + Sync {
     /// Returns true if this planner handles the given CompiledDataKind variant.
     fn supports(&self, data_kind: &CompiledDataKind) -> bool;
 
@@ -230,17 +224,17 @@ pub trait KindPlanner: Send + Sync {
     ) -> Result<PlanFragment, PlannerError>;
 }
 
-/// Registry that dispatches to the appropriate KindPlanner based on CompiledDataKind variant.
-pub struct KindPlannerRegistry {
-    planners: Vec<Box<dyn KindPlanner>>,
+/// Registry that dispatches to the appropriate DataKindPlanner based on CompiledDataKind variant.
+pub struct DataKindPlannerRegistry {
+    planners: Vec<Box<dyn DataKindPlanner>>,
 }
 
-impl KindPlannerRegistry {
+impl DataKindPlannerRegistry {
     /// Create a new registry with all built-in planners.
     pub fn new() -> Self {
         Self {
             planners: vec![
-                Box::new(DatasetPlanner),
+                Box::new(SimplePlanner),
                 Box::new(GrainsetPlanner),
                 Box::new(UnionsetPlanner),
                 Box::new(JoinsetPlanner),
@@ -249,7 +243,7 @@ impl KindPlannerRegistry {
     }
 
     /// Dispatch to the appropriate planner for the given CompiledDataKind.
-    pub fn dispatch(&self, data_kind: &CompiledDataKind) -> Result<&dyn KindPlanner, PlannerError> {
+    pub fn dispatch(&self, data_kind: &CompiledDataKind) -> Result<&dyn DataKindPlanner, PlannerError> {
         self.planners
             .iter()
             .find(|p| p.supports(data_kind))
@@ -258,20 +252,20 @@ impl KindPlannerRegistry {
     }
 }
 
-impl Default for KindPlannerRegistry {
+impl Default for DataKindPlannerRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Dispatch a CompiledDataKind to the appropriate KindPlanner via the registry.
+/// Dispatch a CompiledDataKind to the appropriate DataKindPlanner via the registry.
 ///
-/// All kinds (Dataset, Grainset, Unionset, Joinset) go through the registry.
+/// All kinds (Simple, Grainset, Unionset, Joinset) go through the registry.
 pub fn dispatch_data_kind(
     pruned: &PrunedView<'_>,
     request: &ResolvedQueryRequest,
     ctx: &PlannerContext<'_>,
-    registry: &KindPlannerRegistry,
+    registry: &DataKindPlannerRegistry,
 ) -> Result<PlanFragment, PlannerError> {
     let planner = registry.dispatch(pruned.data_kind())?;
     planner.resolve(pruned, request, ctx)

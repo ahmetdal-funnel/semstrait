@@ -10,7 +10,7 @@ use semstrait_manifest::{
     CompiledDimension, CompiledManifest, CompiledMeasure, DimensionType,
 };
 use semstrait_manifest::acceleration::{
-    CompiledDataKind, DatasetBinding, CompiledDatasetKind,
+    CompiledDataKind, DatasetBinding, CompiledSimpleKind,
     CompiledInterface, ResolvedColumnMapping,
 };
 
@@ -133,8 +133,8 @@ pub fn make_test_manifest_with_constraints(
         vec![],
     );
 
-    // Single dataset → CompiledDataKind::Dataset (fast path).
-    let data_kind = CompiledDataKind::Dataset(Box::new(CompiledDatasetKind { interface, binding }));
+    // Single dataset → CompiledDataKind::Simple (fast path).
+    let data_kind = CompiledDataKind::Simple(Box::new(CompiledSimpleKind { interface, binding }));
 
     let mut entities = IndexMap::new();
     entities.insert("orders".to_string(), data_kind);
@@ -241,7 +241,7 @@ pub fn make_computed_dim_manifest() -> CompiledManifest {
         vec![],
     );
 
-    let data_kind = CompiledDataKind::Dataset(Box::new(CompiledDatasetKind { interface, binding }));
+    let data_kind = CompiledDataKind::Simple(Box::new(CompiledSimpleKind { interface, binding }));
 
     let mut entities = IndexMap::new();
     entities.insert("orders".to_string(), data_kind);

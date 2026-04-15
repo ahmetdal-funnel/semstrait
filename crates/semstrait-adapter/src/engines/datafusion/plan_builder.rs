@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use semstrait_core::expr::{Expr, RegexpExtractExpr};
+use semstrait_core::expr::Expr;
 use semstrait_ir::rewrite::{CanonicalFn, FunctionRewriter, FunctionTarget};
 use semstrait_ir::PlanBuilder;
 
@@ -47,11 +47,40 @@ impl PlanBuilder for DataFusionPlanBuilder {
 
                 // Layer 2: Dedicated Expr variants — pattern matching
                 //
-                // RegexpExtract → regexp_match (name-remap, same semantics)
+                // RegexpMatch → regexp_like(expr, pattern)
+                //
+                // DataFusion's regexp_match() returns List<Utf8>, not Boolean.
+                // For boolean predicate semantics, use regexp_like() which returns Boolean.
+                // For full_match, anchor the pattern with ^ and $.
+                Expr::RegexpMatch(re) => {
+                    let pattern = if re.full_match {
+                        Expr::function_call("concat", vec![
+                            Expr::string("^"),
+                            (*re.pattern).clone(),
+                            Expr::string("$"),
+                        ])
+                    } else {
+                        (*re.pattern).clone()
+                    };
+                    Ok(Some(Expr::function_call(
+                        "regexp_like",
+                        vec![(*re.expr).clone(), pattern],
+                    )))
+                }
+
+                // RegexpExtract → array_element(regexp_match(expr, pattern), group_idx)
+                //
+                // DataFusion's regexp_match returns List<Utf8> of capture groups only
+                // (full match / group 0 is excluded when capture groups exist).
+                // array_element is 1-based, and so is canonical group_idx (1 = first
+                // capture group), so group_idx maps directly — no offset needed.
                 Expr::RegexpExtract(re) => {
-                    let mut args = vec![(*re.expr).clone(), (*re.pattern).clone()];
-                    args.push(Expr::int(re.group_idx as i64));
-                    Ok(Some(Expr::function_call("regexp_match", args)))
+                    let regexp_match = Expr::function_call(
+                        "regexp_match",
+                        vec![(*re.expr).clone(), (*re.pattern).clone()],
+                    );
+                    let index = Expr::int(re.group_idx as i64);
+                    Ok(Some(Expr::function_call("array_element", vec![regexp_match, index])))
                 }
 
                 // All other variants pass through unchanged
@@ -114,7 +143,7 @@ fn passthrough(name: &str, args: &[Expr]) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use semstrait_core::expr::FunctionCallExpr;
+    use semstrait_core::expr::{RegexpExpr, RegexpExtractExpr};
 
     #[test]
     fn position_renamed_to_strpos() {
@@ -131,7 +160,59 @@ mod tests {
     }
 
     #[test]
-    fn regexp_extract_to_regexp_match() {
+    fn regexp_match_to_regexp_like_substring() {
+        let builder = DataFusionPlanBuilder::new();
+        let expr = Expr::RegexpMatch(RegexpExpr {
+            expr: Box::new(Expr::column("campaign")),
+            pattern: Box::new(Expr::string("^UK_")),
+            full_match: false,
+        });
+        let result = builder.rewrite_expr(expr);
+
+        // Should become: regexp_like(campaign, '^UK_')
+        if let Expr::FunctionCall(fc) = &result {
+            assert_eq!(fc.name, "regexp_like");
+            assert_eq!(fc.args.len(), 2);
+            assert_eq!(fc.args[0], Expr::column("campaign"));
+            assert_eq!(fc.args[1], Expr::string("^UK_"));
+        } else {
+            panic!("expected FunctionCall(regexp_like), got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn regexp_match_to_regexp_like_full_match() {
+        let builder = DataFusionPlanBuilder::new();
+        let expr = Expr::RegexpMatch(RegexpExpr {
+            expr: Box::new(Expr::column("email")),
+            pattern: Box::new(Expr::string(".*@example\\.com")),
+            full_match: true,
+        });
+        let result = builder.rewrite_expr(expr);
+
+        // Should become: regexp_like(email, concat('^', '.*@example\.com', '$'))
+        if let Expr::FunctionCall(fc) = &result {
+            assert_eq!(fc.name, "regexp_like");
+            assert_eq!(fc.args.len(), 2);
+            assert_eq!(fc.args[0], Expr::column("email"));
+
+            // Second arg: concat('^', pattern, '$')
+            if let Expr::FunctionCall(concat_fc) = &fc.args[1] {
+                assert_eq!(concat_fc.name, "concat");
+                assert_eq!(concat_fc.args.len(), 3);
+                assert_eq!(concat_fc.args[0], Expr::string("^"));
+                assert_eq!(concat_fc.args[1], Expr::string(".*@example\\.com"));
+                assert_eq!(concat_fc.args[2], Expr::string("$"));
+            } else {
+                panic!("expected FunctionCall(concat) for anchored pattern, got {:?}", fc.args[1]);
+            }
+        } else {
+            panic!("expected FunctionCall(regexp_like), got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn regexp_extract_to_array_element_regexp_match() {
         let builder = DataFusionPlanBuilder::new();
         let expr = Expr::RegexpExtract(RegexpExtractExpr {
             expr: Box::new(Expr::column("text")),
@@ -140,11 +221,23 @@ mod tests {
         });
         let result = builder.rewrite_expr(expr);
 
+        // Outer: array_element(regexp_match(...), 1)
         if let Expr::FunctionCall(fc) = &result {
-            assert_eq!(fc.name, "regexp_match");
-            assert_eq!(fc.args.len(), 3);
+            assert_eq!(fc.name, "array_element");
+            assert_eq!(fc.args.len(), 2);
+
+            // First arg: regexp_match(expr, pattern) — 2 args, no group_idx
+            if let Expr::FunctionCall(inner) = &fc.args[0] {
+                assert_eq!(inner.name, "regexp_match");
+                assert_eq!(inner.args.len(), 2);
+            } else {
+                panic!("expected inner FunctionCall(regexp_match), got {:?}", fc.args[0]);
+            }
+
+            // Second arg: Expr::int(1) — group_idx maps directly (DF array excludes full match)
+            assert_eq!(fc.args[1], Expr::int(1));
         } else {
-            panic!("expected FunctionCall, got {:?}", result);
+            panic!("expected FunctionCall(array_element), got {:?}", result);
         }
     }
 

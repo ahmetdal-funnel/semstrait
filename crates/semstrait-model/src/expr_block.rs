@@ -117,6 +117,7 @@ pub enum ExprBlock {
     // ── Pattern matching ───────────────────────────────────────
     RegexpMatch(RegexpMatchBlock),
     RegexpExtract(RegexpExtractBlock),
+    RegexpReplace(RegexpReplaceBlock),
 
     // ── String functions ───────────────────────────────────────
     Upper(Box<ExprBlock>),
@@ -125,13 +126,21 @@ pub enum ExprBlock {
     Ltrim(Box<ExprBlock>),
     Rtrim(Box<ExprBlock>),
     Length(Box<ExprBlock>),
+    Reverse(Box<ExprBlock>),
+    Initcap(Box<ExprBlock>),
     Concat(Vec<ExprBlock>),
+    ConcatWs(ConcatWsBlock),
     Replace(ReplaceBlock),
     Substring(SubstringBlock),
     Left(LeftRightBlock),
     Right(LeftRightBlock),
+    Repeat(LeftRightBlock),
     Lpad(PadBlock),
     Rpad(PadBlock),
+    StartsWith(PatternBlock),
+    EndsWith(PatternBlock),
+    Position(PatternBlock),
+    SplitPart(SplitPartBlock),
 
     // ── Math functions ─────────────────────────────────────────
     Abs(Box<ExprBlock>),
@@ -149,6 +158,8 @@ pub enum ExprBlock {
     DateAdd(DateAddBlock),
     DateDiff(DateDiffBlock),
     Extract(ExtractBlock),
+    ToDate(ToDateBlock),
+    ToTimestamp(ToDateBlock),
 
     // ── Type conversion ────────────────────────────────────────
     Cast(CastBlock),
@@ -384,6 +395,29 @@ dual_deser!(RegexpExtractBlock, |v: &Value| -> Result<RegexpExtractBlock, String
     #[serde(default)] group: usize,
 });
 
+// ── RegexpReplaceBlock ──────────────────────────────────────────────────────
+// Array: `regexp_replace: [col, pattern, replacement]`
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RegexpReplaceBlock {
+    pub col: Box<ExprBlock>,
+    pub pattern: Box<ExprBlock>,
+    pub replacement: Box<ExprBlock>,
+}
+
+dual_deser!(RegexpReplaceBlock, |v: &Value| -> Result<RegexpReplaceBlock, String> {
+    let seq = seq_min(v, 3, "regexp_replace")?;
+    Ok(RegexpReplaceBlock {
+        col: Box::new(expr_from_val(&seq[0])?),
+        pattern: Box::new(expr_from_val(&seq[1])?),
+        replacement: Box::new(expr_from_val(&seq[2])?),
+    })
+}, {
+    col: Box<ExprBlock>,
+    pattern: Box<ExprBlock>,
+    replacement: Box<ExprBlock>,
+});
+
 // ── ReplaceBlock ─────────────────────────────────────────────────────────────
 // Array: `replace: [col, old, new]`
 
@@ -405,6 +439,49 @@ dual_deser!(ReplaceBlock, |v: &Value| -> Result<ReplaceBlock, String> {
     col: Box<ExprBlock>,
     old: Box<ExprBlock>,
     new: Box<ExprBlock>,
+});
+
+// ── SplitPartBlock ──────────────────────────────────────────────────────────
+// Array: `split_part: [col, delimiter, part]`
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SplitPartBlock {
+    pub col: Box<ExprBlock>,
+    pub delimiter: Box<ExprBlock>,
+    pub part: i64,
+}
+
+dual_deser!(SplitPartBlock, |v: &Value| -> Result<SplitPartBlock, String> {
+    let seq = seq_min(v, 3, "split_part")?;
+    Ok(SplitPartBlock {
+        col: Box::new(expr_from_val(&seq[0])?),
+        delimiter: Box::new(expr_from_val(&seq[1])?),
+        part: i64_from_val(&seq[2])?,
+    })
+}, {
+    col: Box<ExprBlock>,
+    delimiter: Box<ExprBlock>,
+    part: i64,
+});
+
+// ── ConcatWsBlock ───────────────────────────────────────────────────────────
+// Array: `concat_ws: [separator, expr1, expr2, ...]`
+// Map: `concat_ws: {separator: ..., exprs: [...]}`
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConcatWsBlock {
+    pub separator: Box<ExprBlock>,
+    pub exprs: Vec<ExprBlock>,
+}
+
+dual_deser!(ConcatWsBlock, |v: &Value| -> Result<ConcatWsBlock, String> {
+    let seq = seq_min(v, 2, "concat_ws")?;
+    let separator = expr_from_val(&seq[0])?;
+    let exprs = seq[1..].iter().map(expr_from_val).collect::<Result<Vec<_>, _>>()?;
+    Ok(ConcatWsBlock { separator: Box::new(separator), exprs })
+}, {
+    separator: Box<ExprBlock>,
+    exprs: Vec<ExprBlock>,
 });
 
 // ── SubstringBlock ───────────────────────────────────────────────────────────
@@ -581,6 +658,28 @@ dual_deser!(DateDiffBlock, |v: &Value| -> Result<DateDiffBlock, String> {
 }, {
     start: Box<ExprBlock>,
     end: Box<ExprBlock>,
+});
+
+// ── ToDateBlock ─────────────────────────────────────────────────────────────
+// Array: `to_date: [col]` or `to_date: [col, format]`
+// Also reused for `to_timestamp`.
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToDateBlock {
+    pub col: Box<ExprBlock>,
+    pub format: Option<Box<ExprBlock>>,
+}
+
+dual_deser!(ToDateBlock, |v: &Value| -> Result<ToDateBlock, String> {
+    let seq = seq_min(v, 1, "to_date/to_timestamp")?;
+    let format = if seq.len() > 1 { Some(Box::new(expr_from_val(&seq[1])?)) } else { None };
+    Ok(ToDateBlock {
+        col: Box::new(expr_from_val(&seq[0])?),
+        format,
+    })
+}, {
+    col: Box<ExprBlock>,
+    #[serde(default)] format: Option<Box<ExprBlock>>,
 });
 
 // ── ExtractBlock ─────────────────────────────────────────────────────────────
@@ -763,6 +862,7 @@ expr_block_serde! {
     // Pattern matching
     "regexp_match" => RegexpMatch(RegexpMatchBlock),
     "regexp_extract" => RegexpExtract(RegexpExtractBlock),
+    "regexp_replace" => RegexpReplace(RegexpReplaceBlock),
     // String functions
     "upper" => Upper(Box<ExprBlock>),
     "lower" => Lower(Box<ExprBlock>),
@@ -770,13 +870,21 @@ expr_block_serde! {
     "ltrim" => Ltrim(Box<ExprBlock>),
     "rtrim" => Rtrim(Box<ExprBlock>),
     "length" => Length(Box<ExprBlock>),
+    "reverse" => Reverse(Box<ExprBlock>),
+    "initcap" => Initcap(Box<ExprBlock>),
     "concat" => Concat(Vec<ExprBlock>),
+    "concat_ws" => ConcatWs(ConcatWsBlock),
     "replace" => Replace(ReplaceBlock),
     "substr" => Substring(SubstringBlock),
     "left" => Left(LeftRightBlock),
     "right" => Right(LeftRightBlock),
+    "repeat" => Repeat(LeftRightBlock),
     "lpad" => Lpad(PadBlock),
     "rpad" => Rpad(PadBlock),
+    "starts_with" => StartsWith(PatternBlock),
+    "ends_with" => EndsWith(PatternBlock),
+    "position" => Position(PatternBlock),
+    "split_part" => SplitPart(SplitPartBlock),
     // Math functions
     "abs" => Abs(Box<ExprBlock>),
     "ceil" => Ceil(Box<ExprBlock>),
@@ -792,6 +900,8 @@ expr_block_serde! {
     "date_add" => DateAdd(DateAddBlock),
     "date_diff" => DateDiff(DateDiffBlock),
     "extract" => Extract(ExtractBlock),
+    "to_date" => ToDate(ToDateBlock),
+    "to_timestamp" => ToTimestamp(ToDateBlock),
     // Type conversion
     "cast" => Cast(CastBlock),
     // Guard
@@ -924,6 +1034,12 @@ impl ExprBlock {
                     r.group,
                 ))
             }
+            ExprBlock::RegexpReplace(r) => {
+                Ok(Expr::function_call(
+                    "REGEXP_REPLACE",
+                    vec![r.col.to_expr()?, r.pattern.to_expr()?, r.replacement.to_expr()?],
+                ))
+            }
 
             // ── String functions → FunctionCall ─────────────────
             ExprBlock::Upper(e) => func1("UPPER", e),
@@ -932,9 +1048,16 @@ impl ExprBlock {
             ExprBlock::Ltrim(e) => func1("LTRIM", e),
             ExprBlock::Rtrim(e) => func1("RTRIM", e),
             ExprBlock::Length(e) => func1("LENGTH", e),
+            ExprBlock::Reverse(e) => func1("REVERSE", e),
+            ExprBlock::Initcap(e) => func1("INITCAP", e),
             ExprBlock::Concat(exprs) => {
                 let args = convert_many(exprs)?;
                 Ok(Expr::function_call("CONCAT", args))
+            }
+            ExprBlock::ConcatWs(cw) => {
+                let mut args = vec![cw.separator.to_expr()?];
+                args.extend(convert_many(&cw.exprs)?);
+                Ok(Expr::function_call("CONCAT_WS", args))
             }
             ExprBlock::Replace(r) => {
                 Ok(Expr::function_call(
@@ -961,6 +1084,12 @@ impl ExprBlock {
                     vec![lr.col.to_expr()?, Expr::int(lr.length)],
                 ))
             }
+            ExprBlock::Repeat(lr) => {
+                Ok(Expr::function_call(
+                    "REPEAT",
+                    vec![lr.col.to_expr()?, Expr::int(lr.length)],
+                ))
+            }
             ExprBlock::Lpad(p) => {
                 Ok(Expr::function_call(
                     "LPAD",
@@ -971,6 +1100,30 @@ impl ExprBlock {
                 Ok(Expr::function_call(
                     "RPAD",
                     vec![p.col.to_expr()?, Expr::int(p.length), Expr::string(&p.fill)],
+                ))
+            }
+            ExprBlock::StartsWith(p) => {
+                Ok(Expr::function_call(
+                    "STARTS_WITH",
+                    vec![p.col.to_expr()?, p.pattern.to_expr()?],
+                ))
+            }
+            ExprBlock::EndsWith(p) => {
+                Ok(Expr::function_call(
+                    "ENDS_WITH",
+                    vec![p.col.to_expr()?, p.pattern.to_expr()?],
+                ))
+            }
+            ExprBlock::Position(p) => {
+                Ok(Expr::function_call(
+                    "POSITION",
+                    vec![p.col.to_expr()?, p.pattern.to_expr()?],
+                ))
+            }
+            ExprBlock::SplitPart(sp) => {
+                Ok(Expr::function_call(
+                    "SPLIT_PART",
+                    vec![sp.col.to_expr()?, sp.delimiter.to_expr()?, Expr::int(sp.part)],
                 ))
             }
 
@@ -1027,6 +1180,20 @@ impl ExprBlock {
                     "EXTRACT",
                     vec![Expr::string(&e.part), e.col.to_expr()?],
                 ))
+            }
+            ExprBlock::ToDate(td) => {
+                let mut args = vec![td.col.to_expr()?];
+                if let Some(fmt) = &td.format {
+                    args.push(fmt.to_expr()?);
+                }
+                Ok(Expr::function_call("TO_DATE", args))
+            }
+            ExprBlock::ToTimestamp(td) => {
+                let mut args = vec![td.col.to_expr()?];
+                if let Some(fmt) = &td.format {
+                    args.push(fmt.to_expr()?);
+                }
+                Ok(Expr::function_call("TO_TIMESTAMP", args))
             }
 
             // ── Type conversion ─────────────────────────────────
@@ -1481,6 +1648,37 @@ regexp_match:
         }
     }
 
+    #[test]
+    fn test_regexp_replace() {
+        let yaml = r#"regexp_replace: [text, {lit: "\\d+"}, {lit: "X"}]"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "REGEXP_REPLACE");
+                assert_eq!(fc.args.len(), 3);
+            }
+            _ => panic!("Expected FunctionCall(REGEXP_REPLACE)"),
+        }
+    }
+
+    #[test]
+    fn test_regexp_replace_map() {
+        let yaml = r#"
+regexp_replace:
+  col: text
+  pattern: {lit: "\\d+"}
+  replacement: {lit: "X"}
+"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "REGEXP_REPLACE");
+                assert_eq!(fc.args.len(), 3);
+            }
+            _ => panic!("Expected FunctionCall(REGEXP_REPLACE)"),
+        }
+    }
+
     // ── String functions ────────────────────────────────────────────────
 
     #[test]
@@ -1641,6 +1839,133 @@ regexp_match:
         }
     }
 
+    #[test]
+    fn test_reverse() {
+        let expr = parse_block("reverse: name");
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "REVERSE");
+                assert_eq!(fc.args.len(), 1);
+            }
+            _ => panic!("Expected FunctionCall(REVERSE)"),
+        }
+    }
+
+    #[test]
+    fn test_initcap() {
+        let expr = parse_block("initcap: title");
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "INITCAP");
+                assert_eq!(fc.args.len(), 1);
+            }
+            _ => panic!("Expected FunctionCall(INITCAP)"),
+        }
+    }
+
+    #[test]
+    fn test_repeat() {
+        let expr = parse_block("repeat: [star, 3]");
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "REPEAT");
+                assert_eq!(fc.args.len(), 2);
+            }
+            _ => panic!("Expected FunctionCall(REPEAT)"),
+        }
+    }
+
+    #[test]
+    fn test_starts_with() {
+        let yaml = r#"starts_with: [url, {lit: "https"}]"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "STARTS_WITH");
+                assert_eq!(fc.args.len(), 2);
+            }
+            _ => panic!("Expected FunctionCall(STARTS_WITH)"),
+        }
+    }
+
+    #[test]
+    fn test_ends_with() {
+        let yaml = r#"ends_with: [file, {lit: ".csv"}]"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "ENDS_WITH");
+                assert_eq!(fc.args.len(), 2);
+            }
+            _ => panic!("Expected FunctionCall(ENDS_WITH)"),
+        }
+    }
+
+    #[test]
+    fn test_position() {
+        let yaml = r#"position: [haystack, {lit: "needle"}]"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "POSITION");
+                assert_eq!(fc.args.len(), 2);
+            }
+            _ => panic!("Expected FunctionCall(POSITION)"),
+        }
+    }
+
+    #[test]
+    fn test_split_part() {
+        let yaml = r#"split_part: [name, {lit: "_"}, 1]"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "SPLIT_PART");
+                assert_eq!(fc.args.len(), 3);
+            }
+            _ => panic!("Expected FunctionCall(SPLIT_PART)"),
+        }
+    }
+
+    #[test]
+    fn test_split_part_map() {
+        let yaml = r#"split_part: {col: name, delimiter: {lit: "_"}, part: 2}"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "SPLIT_PART");
+                assert_eq!(fc.args.len(), 3);
+            }
+            _ => panic!("Expected FunctionCall(SPLIT_PART)"),
+        }
+    }
+
+    #[test]
+    fn test_concat_ws() {
+        let yaml = r#"concat_ws: [{lit: "-"}, a, b, c]"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "CONCAT_WS");
+                assert_eq!(fc.args.len(), 4); // separator + 3 values
+            }
+            _ => panic!("Expected FunctionCall(CONCAT_WS)"),
+        }
+    }
+
+    #[test]
+    fn test_concat_ws_map() {
+        let yaml = r#"concat_ws: {separator: {lit: "-"}, exprs: [a, b]}"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "CONCAT_WS");
+                assert_eq!(fc.args.len(), 3); // separator + 2 values
+            }
+            _ => panic!("Expected FunctionCall(CONCAT_WS)"),
+        }
+    }
+
     // ── Math functions ──────────────────────────────────────────────────
 
     #[test]
@@ -1789,6 +2114,69 @@ regexp_match:
                 assert_eq!(fc.args.len(), 2);
             }
             _ => panic!("Expected FunctionCall(EXTRACT)"),
+        }
+    }
+
+    #[test]
+    fn test_to_date() {
+        let expr = parse_block("to_date: [str_col]");
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "TO_DATE");
+                assert_eq!(fc.args.len(), 1);
+            }
+            _ => panic!("Expected FunctionCall(TO_DATE)"),
+        }
+    }
+
+    #[test]
+    fn test_to_date_with_format() {
+        let yaml = r#"to_date: [str_col, {lit: "%Y-%m-%d"}]"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "TO_DATE");
+                assert_eq!(fc.args.len(), 2);
+            }
+            _ => panic!("Expected FunctionCall(TO_DATE)"),
+        }
+    }
+
+    #[test]
+    fn test_to_date_map() {
+        let yaml = r#"to_date: {col: str_col, format: {lit: "%Y-%m-%d"}}"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "TO_DATE");
+                assert_eq!(fc.args.len(), 2);
+            }
+            _ => panic!("Expected FunctionCall(TO_DATE)"),
+        }
+    }
+
+    #[test]
+    fn test_to_timestamp() {
+        let expr = parse_block("to_timestamp: [str_col]");
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "TO_TIMESTAMP");
+                assert_eq!(fc.args.len(), 1);
+            }
+            _ => panic!("Expected FunctionCall(TO_TIMESTAMP)"),
+        }
+    }
+
+    #[test]
+    fn test_to_timestamp_with_format() {
+        let yaml = r#"to_timestamp: [str_col, {lit: "%Y-%m-%dT%H:%M:%S"}]"#;
+        let expr = parse_block(yaml);
+        match &expr {
+            Expr::FunctionCall(fc) => {
+                assert_eq!(fc.name, "TO_TIMESTAMP");
+                assert_eq!(fc.args.len(), 2);
+            }
+            _ => panic!("Expected FunctionCall(TO_TIMESTAMP)"),
         }
     }
 

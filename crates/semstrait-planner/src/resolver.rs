@@ -9,10 +9,13 @@
 
 use semstrait_core::expr::WhenClause;
 use semstrait_core::Expr;
-use semstrait_manifest::{ColumnMappingValue, LiteralValue};
 
 use crate::error::PlannerError;
 use indexmap::IndexMap;
+
+#[cfg(test)]
+use semstrait_manifest::{ColumnMappingValue, LiteralValue};
+#[cfg(test)]
 use std::collections::HashMap;
 
 /// Trait for resolving semantic column names to physical expressions.
@@ -37,18 +40,20 @@ pub trait ExprResolver {
 
 /// Resolves names via `HashMap<String, ColumnMappingValue>`.
 ///
-/// Used for the legacy column mapping path and for entity filter injection
-/// in `planner.rs`.
+/// Used in tests for the legacy column mapping path.
+#[cfg(test)]
 pub struct MappingResolver<'a> {
     pub mapping: &'a HashMap<String, ColumnMappingValue>,
 }
 
+#[cfg(test)]
 impl<'a> MappingResolver<'a> {
     pub fn new(mapping: &'a HashMap<String, ColumnMappingValue>) -> Self {
         Self { mapping }
     }
 }
 
+#[cfg(test)]
 impl ExprResolver for MappingResolver<'_> {
     fn resolve_column(&self, name: &str) -> Expr {
         match self.mapping.get(name) {

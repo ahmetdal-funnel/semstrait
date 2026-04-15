@@ -4,7 +4,7 @@
 //! Full window function and double-aggregate strategies will be implemented in v2.
 
 use crate::error::PlannerError;
-use crate::kind::PlanFragment;
+use crate::data_kind::PlanFragment;
 use crate::request::ResolvedQueryRequest;
 use semstrait_manifest::CompiledMeasure;
 use semstrait_manifest::AdditivityType;

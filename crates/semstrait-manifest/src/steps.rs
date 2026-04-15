@@ -1409,8 +1409,6 @@ pub(crate) fn emit(
 fn build_field_index(
     data_kinds: &IndexMap<String, crate::acceleration::CompiledDataKind>,
 ) -> crate::acceleration::FieldIndex {
-    use crate::acceleration::CompiledSemanticInterface;
-
     let mut providers: HashMap<String, Vec<String>> = HashMap::new();
     let mut all_dimensions: HashSet<String> = HashSet::new();
     let mut all_measures: HashSet<String> = HashSet::new();
@@ -1418,25 +1416,26 @@ fn build_field_index(
     let mut all_keys: HashSet<String> = HashSet::new();
 
     for (name, dk) in data_kinds {
-        for dim_name in dk.dimensions().keys() {
+        let iface = dk.interface();
+        for dim_name in iface.dimensions.keys() {
             providers
                 .entry(dim_name.clone())
                 .or_default()
                 .push(name.clone());
             all_dimensions.insert(dim_name.clone());
         }
-        for measure_name in dk.measures().keys() {
+        for measure_name in iface.measures.keys() {
             providers
                 .entry(measure_name.clone())
                 .or_default()
                 .push(name.clone());
             all_measures.insert(measure_name.clone());
         }
-        for metric_name in dk.metrics().keys() {
+        for metric_name in iface.metrics.keys() {
             all_metrics.insert(metric_name.clone());
         }
         // Index key columns — add to providers only if not already a dimension.
-        if let Some(keys) = dk.keys() {
+        if let Some(keys) = iface.keys.as_ref() {
             for key_col in keys.all_column_names() {
                 if !all_dimensions.contains(&key_col) {
                     providers
@@ -1536,32 +1535,33 @@ fn build_semantic_graph(
     data_kinds: &IndexMap<String, crate::acceleration::CompiledDataKind>,
     relationships: &[CompiledRelationship],
 ) -> crate::acceleration::SemanticGraph {
-    use crate::acceleration::{CompiledSemanticInterface, FieldType, SemanticGraph};
+    use crate::acceleration::{FieldType, SemanticGraph};
 
     let mut graph = SemanticGraph::new();
 
     for (kind_name, dk) in data_kinds {
+        let iface = dk.interface();
         // Add dataset nodes for each binding.
         for binding in dk.bindings() {
             graph.add_dataset(&binding.dataset_name, kind_name);
 
             // Add field edges for dimensions.
-            for dim_name in dk.dimensions().keys() {
+            for dim_name in iface.dimensions.keys() {
                 graph.add_provides_field(&binding.dataset_name, dim_name, FieldType::Dimension);
             }
             // Add field edges for measures.
-            for measure_name in dk.measures().keys() {
+            for measure_name in iface.measures.keys() {
                 graph.add_provides_field(&binding.dataset_name, measure_name, FieldType::Measure);
             }
         }
         // Add metric nodes (not tied to a specific dataset).
-        for metric_name in dk.metrics().keys() {
+        for metric_name in iface.metrics.keys() {
             graph.add_field(metric_name, FieldType::Metric);
         }
         // Add key column nodes (only if not already a dimension or measure).
-        if let Some(keys) = dk.keys() {
-            let dim_names: HashSet<&String> = dk.dimensions().keys().collect();
-            let measure_names: HashSet<&String> = dk.measures().keys().collect();
+        if let Some(keys) = iface.keys.as_ref() {
+            let dim_names: HashSet<&String> = iface.dimensions.keys().collect();
+            let measure_names: HashSet<&String> = iface.measures.keys().collect();
             for key_col in keys.all_column_names() {
                 if !dim_names.contains(&key_col) && !measure_names.contains(&key_col) {
                     for binding in dk.bindings() {
@@ -1934,50 +1934,14 @@ fn map_aggregation_type(agg: &AggregationType) -> semstrait_core::Aggregation {
 }
 
 /// Check if a parsed Expr contains any aggregation functions.
-/// Exhaustive match ensures new Expr variants are explicitly handled.
 fn contains_aggregation(expr: &Expr) -> bool {
-    match expr {
-        Expr::Aggregate(_) => true,
-        Expr::BinaryOp(bin) => {
-            contains_aggregation(&bin.left) || contains_aggregation(&bin.right)
+    let mut found = false;
+    expr.walk(&mut |node| {
+        if matches!(node, Expr::Aggregate(_)) {
+            found = true;
         }
-        Expr::Case(case) => {
-            case.when_then.iter().any(|wt| {
-                contains_aggregation(&wt.condition) || contains_aggregation(&wt.result)
-            }) || case.else_expr.as_ref().is_some_and(|e| contains_aggregation(e))
-        }
-        Expr::Guard(g) => {
-            contains_aggregation(&g.condition) || contains_aggregation(&g.expr)
-        }
-        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
-            contains_aggregation(&u.expr)
-        }
-        Expr::Coalesce(c) => c.exprs.iter().any(contains_aggregation),
-        Expr::NullIf(n) => {
-            contains_aggregation(&n.expr) || contains_aggregation(&n.null_expr)
-        }
-        Expr::DateTrunc(d) => contains_aggregation(&d.expr),
-        Expr::FunctionCall(f) => f.args.iter().any(contains_aggregation),
-        Expr::Cast(c) => contains_aggregation(&c.expr),
-        Expr::InList(il) => {
-            contains_aggregation(&il.expr) || il.list.iter().any(contains_aggregation)
-        }
-        Expr::Between(b) => {
-            contains_aggregation(&b.expr)
-                || contains_aggregation(&b.low)
-                || contains_aggregation(&b.high)
-        }
-        Expr::Like(l) => contains_aggregation(&l.expr) || contains_aggregation(&l.pattern),
-        Expr::ILike(l) => contains_aggregation(&l.expr) || contains_aggregation(&l.pattern),
-        Expr::RegexpMatch(re) => {
-            contains_aggregation(&re.expr) || contains_aggregation(&re.pattern)
-        }
-        Expr::RegexpExtract(re) => {
-            contains_aggregation(&re.expr) || contains_aggregation(&re.pattern)
-        }
-        // Leaf nodes: no children to recurse into.
-        Expr::Column(_) | Expr::Literal(_) | Expr::EntityRef(_) => false,
-    }
+    });
+    found
 }
 
 fn compile_measures(
@@ -2210,7 +2174,7 @@ fn compile_to_compiled_data_kind(
                 .map(|(name, _)| name.clone());
 
             let interface = build_compiled_interface(temporal_dim);
-            Ok(CompiledDataKind::Dataset(Box::new(CompiledDatasetKind {
+            Ok(CompiledDataKind::Simple(Box::new(CompiledSimpleKind {
                 interface,
                 binding,
             })))
@@ -2260,7 +2224,7 @@ fn compile_to_compiled_data_kind(
             // handles computed dimensions and simpler plans correctly.
             if bindings.len() == 1 {
                 let binding = bindings.into_iter().next().unwrap();
-                return Ok(CompiledDataKind::Dataset(Box::new(CompiledDatasetKind {
+                return Ok(CompiledDataKind::Simple(Box::new(CompiledSimpleKind {
                     interface,
                     binding,
                 })));
@@ -2448,80 +2412,14 @@ fn validate_measure_references(
 /// Collect all column/entity reference names from an expression tree.
 fn collect_expr_column_refs(expr: &Expr) -> Vec<String> {
     let mut refs = Vec::new();
-    collect_expr_refs_inner(expr, &mut refs);
+    expr.walk(&mut |node| {
+        match node {
+            Expr::Column(col) => refs.push(col.name.clone()),
+            Expr::EntityRef(er) => refs.push(er.name.clone()),
+            _ => {}
+        }
+    });
     refs
-}
-
-fn collect_expr_refs_inner(expr: &Expr, refs: &mut Vec<String>) {
-    match expr {
-        Expr::Column(col) => refs.push(col.name.clone()),
-        Expr::EntityRef(er) => refs.push(er.name.clone()),
-        Expr::BinaryOp(bin) => {
-            collect_expr_refs_inner(&bin.left, refs);
-            collect_expr_refs_inner(&bin.right, refs);
-        }
-        Expr::Case(case) => {
-            for wc in &case.when_then {
-                collect_expr_refs_inner(&wc.condition, refs);
-                collect_expr_refs_inner(&wc.result, refs);
-            }
-            if let Some(e) = &case.else_expr {
-                collect_expr_refs_inner(e, refs);
-            }
-        }
-        Expr::FunctionCall(fc) => {
-            for arg in &fc.args {
-                collect_expr_refs_inner(arg, refs);
-            }
-        }
-        Expr::Cast(c) => collect_expr_refs_inner(&c.expr, refs),
-        Expr::Aggregate(agg) => collect_expr_refs_inner(&agg.expr, refs),
-        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
-            collect_expr_refs_inner(&u.expr, refs);
-        }
-        Expr::Coalesce(co) => {
-            for e in &co.exprs {
-                collect_expr_refs_inner(e, refs);
-            }
-        }
-        Expr::NullIf(ni) => {
-            collect_expr_refs_inner(&ni.expr, refs);
-            collect_expr_refs_inner(&ni.null_expr, refs);
-        }
-        Expr::DateTrunc(dt) => collect_expr_refs_inner(&dt.expr, refs),
-        Expr::Guard(g) => {
-            collect_expr_refs_inner(&g.condition, refs);
-            collect_expr_refs_inner(&g.expr, refs);
-        }
-        Expr::InList(il) => {
-            collect_expr_refs_inner(&il.expr, refs);
-            for item in &il.list {
-                collect_expr_refs_inner(item, refs);
-            }
-        }
-        Expr::Between(bt) => {
-            collect_expr_refs_inner(&bt.expr, refs);
-            collect_expr_refs_inner(&bt.low, refs);
-            collect_expr_refs_inner(&bt.high, refs);
-        }
-        Expr::Like(lk) => {
-            collect_expr_refs_inner(&lk.expr, refs);
-            collect_expr_refs_inner(&lk.pattern, refs);
-        }
-        Expr::ILike(lk) => {
-            collect_expr_refs_inner(&lk.expr, refs);
-            collect_expr_refs_inner(&lk.pattern, refs);
-        }
-        Expr::RegexpMatch(re) => {
-            collect_expr_refs_inner(&re.expr, refs);
-            collect_expr_refs_inner(&re.pattern, refs);
-        }
-        Expr::RegexpExtract(re) => {
-            collect_expr_refs_inner(&re.expr, refs);
-            collect_expr_refs_inner(&re.pattern, refs);
-        }
-        Expr::Literal(_) => {}
-    }
 }
 
 fn compile_measure_filters(
@@ -3183,91 +3081,14 @@ fn validate_function_calls(
     registry: &crate::function_registry::FunctionRegistry,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    validate_function_calls_inner(expr, entity_name, registry, &mut errors);
-    errors
-}
-
-fn validate_function_calls_inner(
-    expr: &Expr,
-    entity_name: &str,
-    registry: &crate::function_registry::FunctionRegistry,
-    errors: &mut Vec<String>,
-) {
-    match expr {
-        Expr::FunctionCall(fc) => {
+    expr.walk(&mut |node| {
+        if let Expr::FunctionCall(fc) = node {
             if let Err(msg) = registry.validate(&fc.name, fc.args.len()) {
                 errors.push(format!("'{}': {}", entity_name, msg));
             }
-            for arg in &fc.args {
-                validate_function_calls_inner(arg, entity_name, registry, errors);
-            }
         }
-        // Walk all other variants' children
-        Expr::EntityRef(_) | Expr::Column(_) | Expr::Literal(_) => {}
-        Expr::Aggregate(agg) => validate_function_calls_inner(&agg.expr, entity_name, registry, errors),
-        Expr::BinaryOp(bin) => {
-            validate_function_calls_inner(&bin.left, entity_name, registry, errors);
-            validate_function_calls_inner(&bin.right, entity_name, registry, errors);
-        }
-        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
-            validate_function_calls_inner(&u.expr, entity_name, registry, errors);
-        }
-        Expr::Case(c) => {
-            for wc in &c.when_then {
-                validate_function_calls_inner(&wc.condition, entity_name, registry, errors);
-                validate_function_calls_inner(&wc.result, entity_name, registry, errors);
-            }
-            if let Some(e) = &c.else_expr {
-                validate_function_calls_inner(e, entity_name, registry, errors);
-            }
-        }
-        Expr::InList(il) => {
-            validate_function_calls_inner(&il.expr, entity_name, registry, errors);
-            for item in &il.list {
-                validate_function_calls_inner(item, entity_name, registry, errors);
-            }
-        }
-        Expr::Between(b) => {
-            validate_function_calls_inner(&b.expr, entity_name, registry, errors);
-            validate_function_calls_inner(&b.low, entity_name, registry, errors);
-            validate_function_calls_inner(&b.high, entity_name, registry, errors);
-        }
-        Expr::Like(l) => {
-            validate_function_calls_inner(&l.expr, entity_name, registry, errors);
-            validate_function_calls_inner(&l.pattern, entity_name, registry, errors);
-        }
-        Expr::ILike(l) => {
-            validate_function_calls_inner(&l.expr, entity_name, registry, errors);
-            validate_function_calls_inner(&l.pattern, entity_name, registry, errors);
-        }
-        Expr::RegexpMatch(re) => {
-            validate_function_calls_inner(&re.expr, entity_name, registry, errors);
-            validate_function_calls_inner(&re.pattern, entity_name, registry, errors);
-        }
-        Expr::RegexpExtract(re) => {
-            validate_function_calls_inner(&re.expr, entity_name, registry, errors);
-            validate_function_calls_inner(&re.pattern, entity_name, registry, errors);
-        }
-        Expr::Coalesce(c) => {
-            for e in &c.exprs {
-                validate_function_calls_inner(e, entity_name, registry, errors);
-            }
-        }
-        Expr::NullIf(n) => {
-            validate_function_calls_inner(&n.expr, entity_name, registry, errors);
-            validate_function_calls_inner(&n.null_expr, entity_name, registry, errors);
-        }
-        Expr::DateTrunc(dt) => {
-            validate_function_calls_inner(&dt.expr, entity_name, registry, errors);
-        }
-        Expr::Cast(c) => {
-            validate_function_calls_inner(&c.expr, entity_name, registry, errors);
-        }
-        Expr::Guard(g) => {
-            validate_function_calls_inner(&g.condition, entity_name, registry, errors);
-            validate_function_calls_inner(&g.expr, entity_name, registry, errors);
-        }
-    }
+    });
+    errors
 }
 
 /// Extract identifiers from an `ExprSource`.
@@ -3292,82 +3113,14 @@ fn extract_identifiers_from_expr_source(source: &semstrait_model::expr_block::Ex
 /// Collect identifier names from a compiled Expr tree (for metric dependency graph).
 fn collect_identifiers_from_expr(expr: &Expr) -> Vec<String> {
     let mut names = Vec::new();
-    collect_identifiers_inner(expr, &mut names);
+    expr.walk(&mut |node| {
+        match node {
+            Expr::EntityRef(e) => names.push(e.name.clone()),
+            Expr::Column(c) => names.push(c.name.clone()),
+            _ => {}
+        }
+    });
     names
-}
-
-fn collect_identifiers_inner(expr: &Expr, names: &mut Vec<String>) {
-    match expr {
-        Expr::EntityRef(e) => names.push(e.name.clone()),
-        Expr::Column(c) => names.push(c.name.clone()),
-        Expr::Literal(_) => {}
-        Expr::Aggregate(agg) => collect_identifiers_inner(&agg.expr, names),
-        Expr::BinaryOp(bin) => {
-            collect_identifiers_inner(&bin.left, names);
-            collect_identifiers_inner(&bin.right, names);
-        }
-        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
-            collect_identifiers_inner(&u.expr, names);
-        }
-        Expr::Case(c) => {
-            for wc in &c.when_then {
-                collect_identifiers_inner(&wc.condition, names);
-                collect_identifiers_inner(&wc.result, names);
-            }
-            if let Some(else_expr) = &c.else_expr {
-                collect_identifiers_inner(else_expr, names);
-            }
-        }
-        Expr::InList(il) => {
-            collect_identifiers_inner(&il.expr, names);
-            for item in &il.list {
-                collect_identifiers_inner(item, names);
-            }
-        }
-        Expr::Between(b) => {
-            collect_identifiers_inner(&b.expr, names);
-            collect_identifiers_inner(&b.low, names);
-            collect_identifiers_inner(&b.high, names);
-        }
-        Expr::Like(l) => {
-            collect_identifiers_inner(&l.expr, names);
-            collect_identifiers_inner(&l.pattern, names);
-        }
-        Expr::ILike(l) => {
-            collect_identifiers_inner(&l.expr, names);
-            collect_identifiers_inner(&l.pattern, names);
-        }
-        Expr::RegexpMatch(re) => {
-            collect_identifiers_inner(&re.expr, names);
-            collect_identifiers_inner(&re.pattern, names);
-        }
-        Expr::RegexpExtract(re) => {
-            collect_identifiers_inner(&re.expr, names);
-            collect_identifiers_inner(&re.pattern, names);
-        }
-        Expr::Coalesce(c) => {
-            for e in &c.exprs {
-                collect_identifiers_inner(e, names);
-            }
-        }
-        Expr::NullIf(n) => {
-            collect_identifiers_inner(&n.expr, names);
-            collect_identifiers_inner(&n.null_expr, names);
-        }
-        Expr::DateTrunc(dt) => {
-            collect_identifiers_inner(&dt.expr, names);
-        }
-        Expr::FunctionCall(fc) => {
-            for arg in &fc.args {
-                collect_identifiers_inner(arg, names);
-            }
-        }
-        Expr::Cast(c) => collect_identifiers_inner(&c.expr, names),
-        Expr::Guard(g) => {
-            collect_identifiers_inner(&g.condition, names);
-            collect_identifiers_inner(&g.expr, names);
-        }
-    }
 }
 
 /// Resolve an `ExprSource` to a core `Expr`.

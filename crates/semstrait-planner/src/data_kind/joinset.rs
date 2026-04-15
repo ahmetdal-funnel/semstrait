@@ -8,9 +8,9 @@ use crate::error::PlannerError;
 use crate::decomposer::{self, DecomposedMeasure};
 use crate::resolver::PhysicalResolver;
 use super::collect_column_refs;
-use super::plan_builder;
-use super::plan_builder::{build_scan_node_binding, build_semantic_type_map, collect_known_values, resolve_semantic_type, collect_semantic_refs, build_expression_project};
-use super::{partition_dimensions_iface, split_computed_dims, KindPlanner, PlanFragment, PlannerContext, PrunedView};
+use super::plan_layers;
+use super::plan_layers::{build_scan_node_binding, build_semantic_type_map, collect_known_values, resolve_semantic_type, collect_semantic_refs, build_expression_project};
+use super::{partition_dimensions_iface, split_computed_dims, DataKindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
 use indexmap::IndexMap;
 use semstrait_ir::{
@@ -26,7 +26,7 @@ use std::collections::{HashSet, VecDeque};
 /// Planner for Joinset kinds — BFS-based join chain construction.
 pub struct JoinsetPlanner;
 
-impl KindPlanner for JoinsetPlanner {
+impl DataKindPlanner for JoinsetPlanner {
     fn supports(&self, data_kind: &CompiledDataKind) -> bool {
         matches!(data_kind, CompiledDataKind::Joinset(_))
     }
@@ -61,7 +61,7 @@ impl KindPlanner for JoinsetPlanner {
         // If single active dataset, delegate to simple scan-aggregate-project.
         let active_bindings = pruned.active_bindings();
         if active_count == 1 {
-            return plan_builder::build_binding_plan(iface, active_bindings[0], request, ctx, false, None);
+            return plan_layers::build_binding_plan(iface, active_bindings[0], request, ctx, false, None);
         }
 
         // Find the anchor dataset (covers most requested fields) among active bindings.
@@ -314,10 +314,10 @@ fn build_join_condition(
         .unwrap_or_else(|| Expr::boolean(true)) // Fallback: no columns -> trivial join (shouldn't happen)
 }
 
-/// Build the full join plan: join tree → L2 rename → L3 expression → L4 aggregate → L5 project.
+/// Build the full join plan: Join → Rename → Expression → Aggregate → Final Projection.
 ///
 /// The join tree operates on physical column names (join conditions reference physical cols).
-/// After the join, L2 renames physical → semantic, then L3-L5 follow the standard layered pattern.
+/// After the join, Rename maps physical → semantic, then Expression/Aggregate/Projection follow.
 fn build_join_plan(
     joinset: &CompiledJoinsetKind,
     request: &ResolvedQueryRequest,
@@ -372,7 +372,7 @@ fn build_join_plan(
         None
     };
 
-    // ── L2: Rename (physical → semantic) ───────────────────────────
+    // ── Rename: physical → semantic ─────────────────────────────────
     let mut rename_exprs: Vec<Expr> = Vec::new();
     let mut rename_fields: Vec<Field> = Vec::new();
 
@@ -460,7 +460,7 @@ fn build_join_plan(
                 }
             }
         } else if let Some(metric) = iface.metrics.get(measure_name) {
-            let constituents = super::plan_builder::extract_metric_constituents(metric, iface);
+            let constituents = super::plan_layers::extract_metric_constituents(metric, iface);
             for cm_name in &constituents {
                 if let Some(cm) = iface.measures.get(cm_name) {
                     let mut refs = Vec::new();
@@ -485,17 +485,17 @@ fn build_join_plan(
     let rename_schema = Schema::new(rename_fields);
     let rename = pb.build_project(rename_schema, current_plan, rename_exprs);
 
-    // ── L3: Expression (computed dims with SR-10) ──────────────────
-    let l3_input = build_expression_project(&computed_dims, &known_values, rename, iface, pb);
+    // ── Expression: computed dims (SR-10) ───────────────────────────
+    let expr_proj = build_expression_project(&computed_dims, &known_values, rename, iface, pb);
 
-    // ── L4: Aggregate (semantic GROUP BY) ──────────────────────────
+    // ── Aggregate: semantic GROUP BY ──────────────────────────────
     let group_by: Vec<Expr> = request
         .dimensions
         .iter()
         .map(|name| Expr::column(name.clone()))
         .collect();
 
-    // Decompose measures with identity resolver (semantic names after L2).
+    // Decompose measures with identity resolver (semantic names after Rename).
     let identity_physical: IndexMap<String, String> = IndexMap::new();
     let identity_resolver = PhysicalResolver::new(&identity_physical);
     let mut lowered_measures: Vec<(String, DecomposedMeasure)> = Vec::new();
@@ -547,9 +547,9 @@ fn build_join_plan(
         }
     }
     let agg_schema = Schema::new(agg_fields);
-    let agg = pb.build_aggregate(agg_schema, l3_input, group_by, aggregates);
+    let agg = pb.build_aggregate(agg_schema, expr_proj, group_by, aggregates);
 
-    // ── L5: Final Project ──────────────────────────────────────────
+    // ── Final Projection ───────────────────────────────────────────
     let mut project_exprs: Vec<Expr> = Vec::new();
     let mut project_fields: Vec<Field> = Vec::new();
 
@@ -568,11 +568,7 @@ fn build_join_plan(
     let project_schema = Schema::new(project_fields);
     let project = pb.build_project(project_schema.clone(), agg, project_exprs);
 
-    Ok(PlanFragment {
-        root: project,
-        output_schema: project_schema,
-        pending_filters: Vec::new(),
-    })
+    Ok(PlanFragment { root: project })
 }
 
 /// Get the relationship at a given index from the manifest's top-level relationships.
@@ -779,15 +775,15 @@ mod tests {
 
         let fragment = result.unwrap();
 
-        // Root: Project -> Aggregate -> Project (L2 rename) -> Join -> (Scan, Scan).
+        // Root: Project -> Aggregate -> Project (Rename) -> Join -> (Scan, Scan).
         match &fragment.root {
             PlanNode::Project(proj) => {
                 match proj.input.as_ref() {
                     PlanNode::Aggregate(agg) => {
-                        // L2 rename project sits between Aggregate and Join.
+                        // Rename project sits between Aggregate and Join.
                         let rename = match agg.input.as_ref() {
                             PlanNode::Project(p) => p,
-                            _ => panic!("expected Project (L2 rename) under Aggregate"),
+                            _ => panic!("expected Project (Rename) under Aggregate"),
                         };
                         match rename.input.as_ref() {
                             PlanNode::Join(join) => {
@@ -795,7 +791,7 @@ mod tests {
                                 assert!(matches!(*join.right, PlanNode::Scan(_)));
                                 assert_eq!(join.join_type, IrJoinType::Left);
                             }
-                            _ => panic!("expected Join under L2 rename"),
+                            _ => panic!("expected Join under Rename"),
                         }
                     }
                     _ => panic!("expected Aggregate node under Project"),
@@ -805,7 +801,7 @@ mod tests {
         }
 
         // Output schema should have 3 fields.
-        assert_eq!(fragment.output_schema.fields.len(), 3);
+        assert_eq!(fragment.root.meta().output_schema.fields.len(), 3);
     }
 
     #[test]
@@ -848,9 +844,9 @@ mod tests {
         assert!(result.is_ok());
 
         let fragment = result.unwrap();
-        // Single dataset -> Aggregate (L5 skipped) or Project -> Aggregate -> Project (L2) -> Scan.
+        // Single dataset -> Aggregate (Final Projection skipped) or Project -> Aggregate -> Project (Rename) -> Scan.
         let agg_node = match &fragment.root {
-            PlanNode::Aggregate(a) => a, // identity L5 skipped
+            PlanNode::Aggregate(a) => a, // identity Final Projection skipped
             PlanNode::Project(proj) => match proj.input.as_ref() {
                 PlanNode::Aggregate(a) => a,
                 _ => panic!("expected Aggregate under Project"),
@@ -859,7 +855,7 @@ mod tests {
         };
         assert!(
             matches!(agg_node.input.as_ref(), PlanNode::Project(_)),
-            "Aggregate input should be Project (L2 rename), got {:?}",
+            "Aggregate input should be Project (Rename), got {:?}",
             std::mem::discriminant(agg_node.input.as_ref())
         );
     }
@@ -1011,14 +1007,14 @@ mod tests {
 
         let fragment = result.unwrap();
 
-        // Root: Project -> Aggregate -> Project (L2 rename) -> Join -> (Join -> (Scan, Scan), Scan)
+        // Root: Project -> Aggregate -> Project (Rename) -> Join -> (Join -> (Scan, Scan), Scan)
         match &fragment.root {
             PlanNode::Project(proj) => {
                 match proj.input.as_ref() {
                     PlanNode::Aggregate(agg) => {
                         let rename = match agg.input.as_ref() {
                             PlanNode::Project(p) => p,
-                            _ => panic!("expected Project (L2 rename) under Aggregate"),
+                            _ => panic!("expected Project (Rename) under Aggregate"),
                         };
                         match rename.input.as_ref() {
                             PlanNode::Join(outer_join) => {
@@ -1028,7 +1024,7 @@ mod tests {
                                 );
                                 assert!(matches!(*outer_join.right, PlanNode::Scan(_)));
                             }
-                            _ => panic!("expected Join under L2 rename"),
+                            _ => panic!("expected Join under Rename"),
                         }
                     }
                     _ => panic!("expected Aggregate under Project"),

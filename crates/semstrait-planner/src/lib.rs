@@ -9,8 +9,8 @@
 //! The planner follows the pipeline defined in CONTEXT.md section 5.6:
 //!
 //! 1. `ConstraintValidator::check()` — validate measure/dimension constraints
-//! 2. `KindPlannerRegistry::dispatch()` — route to correct KindPlanner
-//! 3. `KindPlanner::resolve()` — build PlanFragment
+//! 2. `DataKindPlannerRegistry::dispatch()` — route to correct DataKindPlanner
+//! 3. `DataKindPlanner::resolve()` — build PlanFragment
 //! 4. `AdditivityResolver` — handle semi/non-additive measures
 //! 5. Filter injection (dataset, measure, metric, user filters)
 //! 6. `Optimizer::apply()` — identity in v1
@@ -21,7 +21,7 @@ pub(crate) mod validator;
 pub(crate) mod expr;
 pub(crate) mod resolver;
 pub(crate) mod decomposer;
-pub(crate) mod kind;
+pub(crate) mod data_kind;
 pub(crate) mod additivity;
 pub(crate) mod entity_resolver;
 pub(crate) mod ad_hoc_join;

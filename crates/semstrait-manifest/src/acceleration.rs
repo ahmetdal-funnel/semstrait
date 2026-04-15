@@ -107,7 +107,8 @@ impl CompiledInterface {
 #[serde(tag = "kind_type", rename_all = "snake_case")]
 pub enum CompiledDataKind {
     /// Single dataset, direct query. No dataset routing logic.
-    Dataset(Box<CompiledDatasetKind>),
+    #[serde(rename = "dataset")]
+    Simple(Box<CompiledSimpleKind>),
     /// UNION ALL across multiple datasets.
     Unionset(Box<CompiledUnionsetKind>),
     /// Grain-based covering dataset selection.
@@ -120,7 +121,7 @@ impl CompiledDataKind {
     /// Access the shared CompiledInterface regardless of variant.
     pub fn interface(&self) -> &CompiledInterface {
         match self {
-            CompiledDataKind::Dataset(k) => &k.interface,
+            CompiledDataKind::Simple(k) => &k.interface,
             CompiledDataKind::Unionset(k) => &k.interface,
             CompiledDataKind::Grainset(k) => &k.interface,
             CompiledDataKind::Joinset(k) => &k.interface,
@@ -135,7 +136,7 @@ impl CompiledDataKind {
     /// Mutable access to the shared CompiledInterface (for tests / configuration).
     pub fn interface_mut(&mut self) -> &mut CompiledInterface {
         match self {
-            CompiledDataKind::Dataset(k) => &mut k.interface,
+            CompiledDataKind::Simple(k) => &mut k.interface,
             CompiledDataKind::Unionset(k) => &mut k.interface,
             CompiledDataKind::Grainset(k) => &mut k.interface,
             CompiledDataKind::Joinset(k) => &mut k.interface,
@@ -145,7 +146,7 @@ impl CompiledDataKind {
     /// All dataset bindings across all variants.
     pub fn bindings(&self) -> &[DatasetBinding] {
         match self {
-            CompiledDataKind::Dataset(k) => std::slice::from_ref(&k.binding),
+            CompiledDataKind::Simple(k) => std::slice::from_ref(&k.binding),
             CompiledDataKind::Unionset(k) => &k.bindings,
             CompiledDataKind::Grainset(k) => &k.bindings,
             CompiledDataKind::Joinset(k) => &k.bindings,
@@ -153,62 +154,17 @@ impl CompiledDataKind {
     }
 }
 
-/// Shared interface across all queryable entities.
-/// Returns references only — no cloning in the hot path.
-pub trait CompiledSemanticInterface {
-    fn interface(&self) -> &CompiledInterface;
-
-    fn dimensions(&self) -> &IndexMap<String, CompiledDimension> {
-        &self.interface().dimensions
-    }
-    fn measures(&self) -> &IndexMap<String, CompiledMeasure> {
-        &self.interface().measures
-    }
-    fn metrics(&self) -> &IndexMap<String, CompiledMetric> {
-        &self.interface().metrics
-    }
-    fn filters(&self) -> &[CompiledFilter] {
-        &self.interface().filters
-    }
-    fn keys(&self) -> Option<&Keys> {
-        self.interface().keys.as_ref()
-    }
-    fn temporal_dimension(&self) -> Option<&str> {
-        self.interface().temporal_dim.as_deref()
-    }
-}
-
-impl CompiledSemanticInterface for CompiledDataKind {
-    fn interface(&self) -> &CompiledInterface {
-        self.interface()
-    }
-}
-
-/// Shared behavior for multi-dataset kinds (unionset, grainset, joinset).
-pub trait MultiDatasetKind: CompiledSemanticInterface {
-    fn bindings(&self) -> &[DatasetBinding];
-    fn coverage_index(&self) -> &CoverageIndex;
-    fn dimension_index(&self) -> &DimensionIndex;
-    fn metric_order(&self) -> Option<&MetricOrder>;
-}
-
 // ============================================================================
-// CompiledDatasetKind — Single-Dataset Fast Path
+// CompiledSimpleKind — Single-Dataset Fast Path
 // ============================================================================
 
 /// Single dataset, direct Scan → Agg → Project. No routing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompiledDatasetKind {
+pub struct CompiledSimpleKind {
     #[serde(flatten)]
     pub interface: CompiledInterface,
     /// The single dataset binding for this entity.
     pub binding: DatasetBinding,
-}
-
-impl CompiledSemanticInterface for CompiledDatasetKind {
-    fn interface(&self) -> &CompiledInterface {
-        &self.interface
-    }
 }
 
 // ============================================================================
@@ -228,27 +184,6 @@ pub struct CompiledUnionsetKind {
     pub dimension_index: DimensionIndex,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metric_order: Option<MetricOrder>,
-}
-
-impl CompiledSemanticInterface for CompiledUnionsetKind {
-    fn interface(&self) -> &CompiledInterface {
-        &self.interface
-    }
-}
-
-impl MultiDatasetKind for CompiledUnionsetKind {
-    fn bindings(&self) -> &[DatasetBinding] {
-        &self.bindings
-    }
-    fn coverage_index(&self) -> &CoverageIndex {
-        &self.coverage_index
-    }
-    fn dimension_index(&self) -> &DimensionIndex {
-        &self.dimension_index
-    }
-    fn metric_order(&self) -> Option<&MetricOrder> {
-        self.metric_order.as_ref()
-    }
 }
 
 // ============================================================================
@@ -272,27 +207,6 @@ pub struct CompiledGrainsetKind {
     pub grain_map: Option<GrainMap>,
 }
 
-impl CompiledSemanticInterface for CompiledGrainsetKind {
-    fn interface(&self) -> &CompiledInterface {
-        &self.interface
-    }
-}
-
-impl MultiDatasetKind for CompiledGrainsetKind {
-    fn bindings(&self) -> &[DatasetBinding] {
-        &self.bindings
-    }
-    fn coverage_index(&self) -> &CoverageIndex {
-        &self.coverage_index
-    }
-    fn dimension_index(&self) -> &DimensionIndex {
-        &self.dimension_index
-    }
-    fn metric_order(&self) -> Option<&MetricOrder> {
-        self.metric_order.as_ref()
-    }
-}
-
 // ============================================================================
 // CompiledJoinsetKind — Join-Based Composition
 // ============================================================================
@@ -311,27 +225,6 @@ pub struct CompiledJoinsetKind {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metric_order: Option<MetricOrder>,
     pub adjacency_index: AdjacencyIndex,
-}
-
-impl CompiledSemanticInterface for CompiledJoinsetKind {
-    fn interface(&self) -> &CompiledInterface {
-        &self.interface
-    }
-}
-
-impl MultiDatasetKind for CompiledJoinsetKind {
-    fn bindings(&self) -> &[DatasetBinding] {
-        &self.bindings
-    }
-    fn coverage_index(&self) -> &CoverageIndex {
-        &self.coverage_index
-    }
-    fn dimension_index(&self) -> &DimensionIndex {
-        &self.dimension_index
-    }
-    fn metric_order(&self) -> Option<&MetricOrder> {
-        self.metric_order.as_ref()
-    }
 }
 
 // ============================================================================
@@ -899,83 +792,14 @@ impl MetricOrder {
 
 /// Recursively collect all `EntityRef` names from an expression tree.
 fn collect_entity_refs(expr: &semstrait_core::Expr) -> Vec<String> {
-    let mut refs = Vec::new();
-    collect_entity_refs_inner(expr, &mut refs);
-    refs
-}
-
-fn collect_entity_refs_inner(expr: &semstrait_core::Expr, refs: &mut Vec<String>) {
     use semstrait_core::Expr;
-    match expr {
-        Expr::EntityRef(er) => refs.push(er.name.clone()),
-        Expr::Column(_) | Expr::Literal(_) => {}
-        Expr::Aggregate(agg) => collect_entity_refs_inner(&agg.expr, refs),
-        Expr::BinaryOp(bin) => {
-            collect_entity_refs_inner(&bin.left, refs);
-            collect_entity_refs_inner(&bin.right, refs);
+    let mut refs = Vec::new();
+    expr.walk(&mut |node| {
+        if let Expr::EntityRef(er) = node {
+            refs.push(er.name.clone());
         }
-        Expr::Negate(u) | Expr::Not(u) | Expr::IsNull(u) | Expr::IsNotNull(u) => {
-            collect_entity_refs_inner(&u.expr, refs);
-        }
-        Expr::Case(c) => {
-            for wc in &c.when_then {
-                collect_entity_refs_inner(&wc.condition, refs);
-                collect_entity_refs_inner(&wc.result, refs);
-            }
-            if let Some(else_expr) = &c.else_expr {
-                collect_entity_refs_inner(else_expr, refs);
-            }
-        }
-        Expr::InList(il) => {
-            collect_entity_refs_inner(&il.expr, refs);
-            for item in &il.list {
-                collect_entity_refs_inner(item, refs);
-            }
-        }
-        Expr::Between(b) => {
-            collect_entity_refs_inner(&b.expr, refs);
-            collect_entity_refs_inner(&b.low, refs);
-            collect_entity_refs_inner(&b.high, refs);
-        }
-        Expr::Like(l) => {
-            collect_entity_refs_inner(&l.expr, refs);
-            collect_entity_refs_inner(&l.pattern, refs);
-        }
-        Expr::ILike(l) => {
-            collect_entity_refs_inner(&l.expr, refs);
-            collect_entity_refs_inner(&l.pattern, refs);
-        }
-        Expr::RegexpMatch(re) => {
-            collect_entity_refs_inner(&re.expr, refs);
-            collect_entity_refs_inner(&re.pattern, refs);
-        }
-        Expr::RegexpExtract(re) => {
-            collect_entity_refs_inner(&re.expr, refs);
-            collect_entity_refs_inner(&re.pattern, refs);
-        }
-        Expr::Coalesce(c) => {
-            for e in &c.exprs {
-                collect_entity_refs_inner(e, refs);
-            }
-        }
-        Expr::NullIf(n) => {
-            collect_entity_refs_inner(&n.expr, refs);
-            collect_entity_refs_inner(&n.null_expr, refs);
-        }
-        Expr::DateTrunc(dt) => {
-            collect_entity_refs_inner(&dt.expr, refs);
-        }
-        Expr::FunctionCall(fc) => {
-            for arg in &fc.args {
-                collect_entity_refs_inner(arg, refs);
-            }
-        }
-        Expr::Cast(c) => collect_entity_refs_inner(&c.expr, refs),
-        Expr::Guard(g) => {
-            collect_entity_refs_inner(&g.condition, refs);
-            collect_entity_refs_inner(&g.expr, refs);
-        }
-    }
+    });
+    refs
 }
 
 // ============================================================================
