@@ -171,6 +171,12 @@ A final Aggregate node combines rows from all branches:
 
 The re-aggregation output schema matches the unified schema exactly.
 
+**Re-aggregation skip (distinguishing literals):** When a literal dimension in the GROUP BY has distinct values across all dataset bindings, no rows from different branches can share the same GROUP BY key. In this case, re-aggregation is a no-op and the Aggregate node is omitted. The Union output feeds directly into the PlanFragment.
+
+Example: if `dataset_name` is a literal with values `"adwords"`, `"klaviyo"`, `"bing"` across three branches, and `dataset_name` is in the GROUP BY, then rows from different branches can never merge — re-aggregation is skipped.
+
+This optimization is the cross-binding analog of `has_source_distinguishing_metadata` (used by grainset for multi-source bindings).
+
 ---
 
 ## 4. Detailed Scenarios

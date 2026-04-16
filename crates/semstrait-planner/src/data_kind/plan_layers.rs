@@ -346,6 +346,10 @@ fn build_layered_plan(
     };
 
     for measure_name in &scan_measure_names {
+        // Skip literal-mapped measures: they don't reference physical columns.
+        if mapping.literals.contains_key(measure_name) {
+            continue;
+        }
         if let Some(measure) = iface.measures.get(measure_name) {
             let lowered = phys_resolver.resolve_expr(&measure.expr)?;
             collect_column_refs(&lowered, &mut scan_columns, &mut scan_seen);
@@ -357,6 +361,9 @@ fn build_layered_plan(
             if let Some(metric) = iface.metrics.get(measure_name) {
                 let constituents = extract_metric_constituents(metric, iface);
                 for cm_name in &constituents {
+                    if mapping.literals.contains_key(cm_name) {
+                        continue;
+                    }
                     if let Some(cm) = iface.measures.get(cm_name) {
                         let lowered = phys_resolver.resolve_expr(&cm.expr)?;
                         collect_column_refs(&lowered, &mut scan_columns, &mut scan_seen);
@@ -430,7 +437,7 @@ fn build_layered_plan(
                             measure_name,
                             metric,
                             iface,
-                            binding,
+                            &identity_resolver,
                             5,
                         )?;
                         lowered_measures.push((measure_name.clone(), Some(lowered)));
@@ -464,7 +471,7 @@ fn build_layered_plan(
                         lowered_measures.push((measure_name.clone(), Some(lowered)));
                     } else if let Some(metric) = iface.metrics.get(measure_name) {
                         let lowered = decomposer::decompose_metric(
-                            measure_name, metric, iface, binding, 4,
+                            measure_name, metric, iface, &identity_resolver, 4,
                         )?;
                         lowered_measures.push((measure_name.clone(), Some(lowered)));
                     } else {
@@ -477,11 +484,24 @@ fn build_layered_plan(
         }
     }
 
-    let aggregates: Vec<AggregateMeasure> = lowered_measures
-        .iter()
-        .filter_map(|(_, lowered)| lowered.as_ref())
-        .flat_map(|l| l.aggregates.clone())
-        .collect();
+    // ── D4b: Collect aggregates with deduplication ──────────────────
+    // Metrics and direct measures may share constituents (e.g., `clicks`
+    // appears both as a direct measure and inside `ctr = clicks / impressions`).
+    // After rename, both produce identical aggregates in the semantic domain.
+    // Deduplicate by (function, expr_debug, distinct) to avoid phantom columns.
+    let mut aggregates: Vec<AggregateMeasure> = Vec::new();
+    let mut agg_seen: HashSet<String> = HashSet::new();
+
+    for (_, lowered) in &lowered_measures {
+        if let Some(l) = lowered {
+            for agg_m in &l.aggregates {
+                let dedup_key = format!("{:?}|{:?}|{}", agg_m.function, agg_m.expr, agg_m.distinct);
+                if agg_seen.insert(dedup_key) {
+                    aggregates.push(agg_m.clone());
+                }
+            }
+        }
+    }
 
     // ── D5: Aggregate schema ───────────────────────────────────────
     // Full: all dim fields + all measure fields.
@@ -511,18 +531,29 @@ fn build_layered_plan(
                 .collect()
         }
     };
-    let mut agg_idx = 0;
-    for (semantic, lowered) in &lowered_measures {
-        if let Some(l) = lowered {
-            for (j, agg_m) in l.aggregates.iter().enumerate() {
-                if j == 0 {
-                    agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
-                } else {
-                    agg_fields.push(Field::new(format!("__agg_{}", agg_idx), agg_m.data_type.clone()));
-                }
-                agg_idx += 1;
+    // Build aggregate fields from the deduplicated vector.
+    // The first aggregate for each measure uses the semantic name;
+    // subsequent aggregates (from multi-constituent metrics) use __agg_N.
+    let mut named_aggs: HashSet<String> = HashSet::new();
+    for agg_m in &aggregates {
+        // Derive the field name from the aggregate expression.
+        // Simple column refs use the column name; complex exprs get __agg_N.
+        let field_name = match &agg_m.expr {
+            Expr::Column(col) if !named_aggs.contains(&col.name) => {
+                named_aggs.insert(col.name.clone());
+                col.name.clone()
             }
-        }
+            _ => {
+                let name = format!("__agg_{}", agg_fields.len());
+                name
+            }
+        };
+        let data_type = if let Some(m) = iface.measures.get(&field_name) {
+            m.data_type.clone()
+        } else {
+            agg_m.data_type.clone()
+        };
+        agg_fields.push(Field::new(field_name, data_type));
     }
     let agg_schema = Schema::new(agg_fields);
 
@@ -617,11 +648,14 @@ fn build_layered_plan(
                 .collect(),
         };
 
-        // Skip re-aggregation when a metadata dimension in the GROUP BY has
-        // distinct values per source — no rows from different sources can merge.
-        if has_source_distinguishing_metadata(
-            &binding.resolved_sources, &metadata_dims, &reagg_dims,
-        ) {
+        // Skip re-aggregation when a known-value dimension in the GROUP BY
+        // has distinct values per source — no rows from different sources can merge.
+        let per_source_known: Vec<HashMap<String, String>> = binding
+            .resolved_sources
+            .iter()
+            .map(|s| collect_known_values_for_source(s, &mapping.literals, &metadata_dims))
+            .collect();
+        if has_distinguishing_known_values(&per_source_known, &reagg_dims) {
             union
         } else {
             // Re-aggregate the union (merge partial aggregates).
@@ -769,8 +803,8 @@ fn build_rename_project(
             rename_exprs.push(maybe_cast(physical, &semantic_type));
             rename_fields.push(Field::new(dim_name.clone(), semantic_type));
         } else if let Some(lit_val) = mapping.literals.get(dim_name) {
-            // Literal dimension: semantic := Literal(value).
-            rename_exprs.push(Expr::string(lit_val.clone()));
+            // Literal dimension: semantic := typed literal.
+            rename_exprs.push(typed_literal(lit_val, &semantic_type));
             rename_fields.push(Field::new(dim_name.clone(), semantic_type));
         } else if meta_set.contains(dim_name.as_str()) {
             // Metadata dimension: semantic := Literal(extracted_value).
@@ -797,6 +831,18 @@ fn build_rename_project(
         }
     }
 
+    // Literal measure injection: emit typed constant values before physical ref
+    // collection, so the closure doesn't need to handle them.
+    for measure_name in measure_names {
+        if let Some(lit_val) = mapping.literals.get(measure_name) {
+            if !rename_fields.iter().any(|f| f.name == *measure_name) {
+                let measure_type = iface.resolve_measure_type(measure_name);
+                rename_exprs.push(typed_literal(lit_val, &measure_type));
+                rename_fields.push(Field::new(measure_name.clone(), measure_type));
+            }
+        }
+    }
+
     // Measure source columns: map entity refs to their physical columns, with optional CAST.
     let mut add_physical_ref = |sem_ref: &str| {
         if !rename_fields.iter().any(|f| f.name == sem_ref) {
@@ -809,6 +855,10 @@ fn build_rename_project(
     };
 
     for measure_name in measure_names {
+        // Skip literal measures — already injected above.
+        if mapping.literals.contains_key(measure_name) {
+            continue;
+        }
         let expr = iface.measures.get(measure_name).map(|m| &m.expr);
 
         if let Some(expr) = expr {
@@ -909,32 +959,35 @@ pub(crate) fn collect_known_values_for_source(
     known
 }
 
-/// Check whether any metadata dimension in the GROUP BY has distinct values
-/// across all resolved sources, making re-aggregation after UNION ALL a no-op.
+/// Check whether any GROUP BY dimension has distinct known values across all
+/// items, making re-aggregation a no-op.
 ///
-/// When a metadata dimension like `funnel_account_id` produces unique values
-/// per source, no two sources can produce rows that share the same GROUP BY key,
-/// so the re-aggregation merges nothing and can be skipped.
-fn has_source_distinguishing_metadata(
-    sources: &[ResolvedSource],
-    metadata_dims: &[(String, MetadataDimension)],
+/// Operates on pre-computed known-value maps — agnostic to value origin
+/// (literals, metadata path extraction, catalog properties, etc.).
+/// When a dimension like `funnel_account_id` or `dataset_name` produces
+/// unique values per item, no two items can produce rows that share the
+/// same GROUP BY key, so re-aggregation merges nothing and can be skipped.
+///
+/// Used by:
+/// - Multi-source path (within a binding): per-source known values
+/// - Unionset path (across bindings): per-binding known values
+pub(crate) fn has_distinguishing_known_values(
+    known_values_per_item: &[HashMap<String, String>],
     group_by_dims: &[String],
 ) -> bool {
-    if sources.len() <= 1 {
-        return false; // single source: re-agg is already skipped by the caller
+    if known_values_per_item.len() <= 1 {
+        return false;
     }
-    for (dim_name, meta) in metadata_dims {
-        if !group_by_dims.contains(dim_name) {
-            continue; // not in GROUP BY — can't distinguish
-        }
-        let values: Vec<Option<String>> = sources
+    let n = known_values_per_item.len();
+    for dim_name in group_by_dims {
+        let values: Vec<Option<&str>> = known_values_per_item
             .iter()
-            .map(|s| extract_metadata_value_source(meta, s))
+            .map(|kv| kv.get(dim_name).map(|s| s.as_str()))
             .collect();
-        // All values must be Some and all must be distinct.
+        // All items must have a known value for this dim, and all values must be distinct.
         if values.iter().all(|v| v.is_some()) {
-            let unique: HashSet<&str> = values.iter().filter_map(|v| v.as_deref()).collect();
-            if unique.len() == sources.len() {
+            let unique: HashSet<&str> = values.iter().filter_map(|v| *v).collect();
+            if unique.len() == n {
                 return true;
             }
         }
@@ -1014,6 +1067,51 @@ pub(crate) fn resolve_semantic_type(name: &str, iface: &CompiledInterface) -> Da
         return m.data_type.clone();
     }
     DataType::String
+}
+
+/// Build a typed literal expression from a string value and target DataType.
+///
+/// Tries to parse the string into the appropriate native Expr constructor
+/// (int, float, boolean) to avoid unnecessary `CAST('...' AS type)` in SQL.
+/// Falls back to `Expr::cast(Expr::string(value), target_type)` when parsing
+/// fails or the type has no natural literal form (Date, Timestamp, Binary).
+///
+/// For numeric types, uses `Expr::cast(Expr::int/float(...), target_type)` to
+/// preserve the literal's numeric nature while ensuring exact target precision.
+fn typed_literal(value: &str, target_type: &DataType) -> Expr {
+    match target_type {
+        DataType::Integer => {
+            if let Ok(i) = value.parse::<i64>() {
+                return Expr::int(i);
+            }
+        }
+        DataType::Number => {
+            if let Ok(f) = value.parse::<f64>() {
+                return Expr::float(f);
+            }
+        }
+        DataType::Decimal { .. } => {
+            // Emit CAST(numeric_literal AS decimal(p,s)) — preserves numeric nature
+            // while ensuring exact precision. Prefer int when possible.
+            if let Ok(i) = value.parse::<i64>() {
+                return Expr::cast(Expr::int(i), target_type.clone());
+            }
+            if let Ok(f) = value.parse::<f64>() {
+                return Expr::cast(Expr::float(f), target_type.clone());
+            }
+        }
+        DataType::Boolean => {
+            if let Ok(b) = value.parse::<bool>() {
+                return Expr::boolean(b);
+            }
+        }
+        DataType::String => {
+            return Expr::string(value);
+        }
+        _ => {}
+    }
+    // Fallback: string cast for types without natural literal form.
+    Expr::cast(Expr::string(value), target_type.clone())
 }
 
 /// Collect semantic entity/column references from an expression tree.

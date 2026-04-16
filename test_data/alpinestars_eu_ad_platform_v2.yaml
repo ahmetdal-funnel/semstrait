@@ -306,7 +306,7 @@ semantic_model:
               platform_conversions: adwords_conversions
               platform_revenue: adwords_allConvValue
               actions:
-                lit: "0"
+                lit: 0
 
         # ── Bing Ads ─────────────────────────────────────────────────────
         # 6 accounts, glob safe (all bing tables are campaign perf)
@@ -334,7 +334,7 @@ semantic_model:
               platform_conversions: bing-Conversions
               platform_revenue: bing-Revenue
               actions:
-                lit: "0"
+                lit: 0
 
         # ── Facebook / Meta ──────────────────────────────────────────────
         # 1 account, glob (future-proof for additional accounts)
@@ -361,11 +361,11 @@ semantic_model:
               impressions: facebookads-impressions
               clicks: facebookads-clicks
               platform_conversions:
-                lit: "0"
+                lit: 0
               platform_revenue:
-                lit: "0"
+                lit: 0
               actions:
-                lit: "0"
+                lit: 0
 
         # ── TikTok ───────────────────────────────────────────────────────
         # 1 account, glob (future-proof for additional accounts)
@@ -393,9 +393,9 @@ semantic_model:
               clicks: tiktok-click_cnt
               platform_conversions: tiktok-convert_cnt
               platform_revenue:
-                lit: "0"
+                lit: 0
               actions:
-                lit: "0"
+                lit: 0
 
         # ── Impact ───────────────────────────────────────────────────────
         - name: impact_adset_data
@@ -419,11 +419,11 @@ semantic_model:
               # measures
               cost: impact-client_cost
               impressions:
-                lit: "0"
+                lit: 0
               clicks:
-                lit: "0"
+                lit: 0
               platform_conversions:
-                lit: "0"
+                lit: 0
               platform_revenue: impact-amount
               # mapping its here - temporary, for others platform actions can be tread as sum of fields
               actions: impact-actions
@@ -451,16 +451,16 @@ semantic_model:
                 lit: ""
               # measures
               cost:
-                lit: "0"
+                lit: 0
               impressions:
-                lit: "0"
+                lit: 0
               clicks: klaviyo-clicks2
               platform_conversions:
-                lit: "0"
+                lit: 0
               platform_revenue:
-                lit: "0"
+                lit: 0
               actions:
-                lit: "0"
+                lit: 0
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Standalone Dataset: Shopify

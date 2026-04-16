@@ -10,7 +10,6 @@ use semstrait_core::expr::WhenClause;
 use semstrait_core::Expr;
 use semstrait_ir::{AggregateMeasure, Aggregation};
 use semstrait_manifest::{CompiledFilter, CompiledMetric, CompiledInterface};
-use semstrait_manifest::acceleration::DatasetBinding;
 
 use crate::error::PlannerError;
 use crate::resolver::ExprResolver;
@@ -111,23 +110,25 @@ pub fn decompose_measure_legacy(
     }
 }
 
-/// Decompose a metric into constituent aggregates via CompiledInterface + DatasetBinding.
+/// Decompose a metric into constituent aggregates via CompiledInterface.
+///
+/// The `resolver` controls how column names are resolved in constituent
+/// measure expressions. Post-rename callers pass an identity resolver
+/// (semantic domain); scan-collection callers pass a PhysicalResolver.
 pub fn decompose_metric(
     metric_name: &str,
     metric: &CompiledMetric,
     iface: &CompiledInterface,
-    binding: &DatasetBinding,
+    resolver: &dyn ExprResolver,
     max_depth: usize,
 ) -> Result<DecomposedMeasure, PlannerError> {
-    let physical = &binding.column_mapping.physical;
-    let resolver = crate::resolver::PhysicalResolver::new(physical);
     let mut aggregates: Vec<AggregateMeasure> = Vec::new();
     let mut agg_names: HashMap<String, String> = HashMap::new();
 
     let post_agg = decompose_metric_expr(
         &metric.expr,
         iface,
-        &resolver,
+        resolver,
         &mut aggregates,
         &mut agg_names,
         metric_name,

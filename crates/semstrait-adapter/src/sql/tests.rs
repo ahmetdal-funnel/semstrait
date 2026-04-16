@@ -998,6 +998,202 @@ fn union_empty_inputs_errors() {
 }
 
 // ---------------------------------------------------------------------------
+// type_name() dialect tests — see docs/DATATYPE_CATALOG.md
+// ---------------------------------------------------------------------------
+
+mod type_name_tests {
+    use super::*;
+    use semstrait_core::DataType;
+
+    // ── ANSI defaults ─────────────────────────────────────────────
+
+    #[test]
+    fn ansi_type_names() {
+        let d = AnsiDialect;
+        assert_eq!(d.type_name(&DataType::Integer), "INTEGER");
+        assert_eq!(d.type_name(&DataType::Number), "DOUBLE PRECISION");
+        assert_eq!(d.type_name(&DataType::Decimal { precision: 10, scale: 2 }), "DECIMAL(10,2)");
+        assert_eq!(d.type_name(&DataType::String), "VARCHAR");
+        assert_eq!(d.type_name(&DataType::Boolean), "BOOLEAN");
+        assert_eq!(d.type_name(&DataType::Date), "DATE");
+        assert_eq!(d.type_name(&DataType::Timestamp { precision: 6 }), "TIMESTAMP(6)");
+        assert_eq!(d.type_name(&DataType::Binary), "VARBINARY");
+    }
+
+    // ── DataFusion ────────────────────────────────────────────────
+
+    #[cfg(feature = "datafusion")]
+    mod datafusion {
+        use super::*;
+        use crate::sql::dialect::DataFusionDialect;
+
+        #[test]
+        fn integer_is_bigint() {
+            assert_eq!(DataFusionDialect.type_name(&DataType::Integer), "BIGINT");
+        }
+
+        #[test]
+        fn number_is_double() {
+            assert_eq!(DataFusionDialect.type_name(&DataType::Number), "DOUBLE");
+        }
+
+        #[test]
+        fn string_is_varchar() {
+            assert_eq!(DataFusionDialect.type_name(&DataType::String), "VARCHAR");
+        }
+
+        #[test]
+        fn boolean_is_boolean() {
+            assert_eq!(DataFusionDialect.type_name(&DataType::Boolean), "BOOLEAN");
+        }
+
+        #[test]
+        fn date_is_date() {
+            assert_eq!(DataFusionDialect.type_name(&DataType::Date), "DATE");
+        }
+
+        #[test]
+        fn timestamp_precision() {
+            assert_eq!(DataFusionDialect.type_name(&DataType::Timestamp { precision: 0 }), "TIMESTAMP(0)");
+            assert_eq!(DataFusionDialect.type_name(&DataType::Timestamp { precision: 3 }), "TIMESTAMP(3)");
+            assert_eq!(DataFusionDialect.type_name(&DataType::Timestamp { precision: 6 }), "TIMESTAMP(6)");
+            assert_eq!(DataFusionDialect.type_name(&DataType::Timestamp { precision: 9 }), "TIMESTAMP(9)");
+        }
+
+        #[test]
+        fn binary_is_bytea() {
+            assert_eq!(DataFusionDialect.type_name(&DataType::Binary), "BYTEA");
+        }
+
+        #[test]
+        fn decimal_unchanged() {
+            assert_eq!(DataFusionDialect.type_name(&DataType::Decimal { precision: 18, scale: 2 }), "DECIMAL(18,2)");
+        }
+    }
+
+    // ── DuckDB ────────────────────────────────────────────────────
+
+    #[cfg(feature = "duckdb")]
+    mod duckdb {
+        use super::*;
+        use crate::sql::dialect::DuckDbDialect;
+
+        #[test]
+        fn integer_is_bigint() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::Integer), "BIGINT");
+        }
+
+        #[test]
+        fn number_is_double() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::Number), "DOUBLE");
+        }
+
+        #[test]
+        fn string_is_varchar() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::String), "VARCHAR");
+        }
+
+        #[test]
+        fn boolean_is_boolean() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::Boolean), "BOOLEAN");
+        }
+
+        #[test]
+        fn date_is_date() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::Date), "DATE");
+        }
+
+        #[test]
+        fn timestamp_seconds() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::Timestamp { precision: 0 }), "TIMESTAMP_S");
+        }
+
+        #[test]
+        fn timestamp_milliseconds() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::Timestamp { precision: 3 }), "TIMESTAMP_MS");
+        }
+
+        #[test]
+        fn timestamp_microseconds() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::Timestamp { precision: 6 }), "TIMESTAMP");
+        }
+
+        #[test]
+        fn timestamp_nanoseconds() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::Timestamp { precision: 9 }), "TIMESTAMP_NS");
+        }
+
+        #[test]
+        fn binary_is_blob() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::Binary), "BLOB");
+        }
+
+        #[test]
+        fn timestamp_nonstandard_precision_falls_back() {
+            // Non-standard precision (not 0/3/6/9) defensively maps to bare TIMESTAMP (microseconds)
+            assert_eq!(DuckDbDialect.type_name(&DataType::Timestamp { precision: 2 }), "TIMESTAMP");
+        }
+
+        #[test]
+        fn decimal_unchanged() {
+            assert_eq!(DuckDbDialect.type_name(&DataType::Decimal { precision: 38, scale: 10 }), "DECIMAL(38,10)");
+        }
+    }
+
+    // ── Spark ─────────────────────────────────────────────────────
+
+    #[cfg(feature = "spark")]
+    mod spark {
+        use super::*;
+        use crate::sql::dialect::SparkDialect;
+
+        #[test]
+        fn integer_is_bigint() {
+            assert_eq!(SparkDialect.type_name(&DataType::Integer), "BIGINT");
+        }
+
+        #[test]
+        fn number_is_double() {
+            assert_eq!(SparkDialect.type_name(&DataType::Number), "DOUBLE");
+        }
+
+        #[test]
+        fn string_is_string() {
+            assert_eq!(SparkDialect.type_name(&DataType::String), "STRING");
+        }
+
+        #[test]
+        fn boolean_is_boolean() {
+            assert_eq!(SparkDialect.type_name(&DataType::Boolean), "BOOLEAN");
+        }
+
+        #[test]
+        fn date_is_date() {
+            assert_eq!(SparkDialect.type_name(&DataType::Date), "DATE");
+        }
+
+        #[test]
+        fn timestamp_no_precision() {
+            // Spark TIMESTAMP has no precision parameter — always bare TIMESTAMP
+            assert_eq!(SparkDialect.type_name(&DataType::Timestamp { precision: 0 }), "TIMESTAMP");
+            assert_eq!(SparkDialect.type_name(&DataType::Timestamp { precision: 3 }), "TIMESTAMP");
+            assert_eq!(SparkDialect.type_name(&DataType::Timestamp { precision: 6 }), "TIMESTAMP");
+            assert_eq!(SparkDialect.type_name(&DataType::Timestamp { precision: 9 }), "TIMESTAMP");
+        }
+
+        #[test]
+        fn binary_is_binary() {
+            assert_eq!(SparkDialect.type_name(&DataType::Binary), "BINARY");
+        }
+
+        #[test]
+        fn decimal_unchanged() {
+            assert_eq!(SparkDialect.type_name(&DataType::Decimal { precision: 10, scale: 0 }), "DECIMAL(10,0)");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Polyglot emitter tests (feature-gated)
 // ---------------------------------------------------------------------------
 
