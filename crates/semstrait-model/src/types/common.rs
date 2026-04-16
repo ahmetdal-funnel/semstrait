@@ -178,6 +178,12 @@ impl ColumnMapping {
         ColumnMapping::Inherited
     }
 
+    /// Default value for `DatasetExtras.column_mapping` when the field is absent.
+    /// Simple kinds have no parent to inherit from, so default is Auto (identity).
+    pub fn default_auto() -> Self {
+        ColumnMapping::Auto
+    }
+
     /// Get the underlying map. Panics if `Auto` or `Inherited` (must be expanded before use).
     pub fn as_map(&self) -> &HashMap<String, ColumnMappingValue> {
         match self {

@@ -14,7 +14,7 @@ semantic_model:
       measures:
         - name: total_sales
           data_type: float64
-          expr: "SUM(sales_amount)"
+          agg: sum
       datasets:
         - name: product_sales
           extras:

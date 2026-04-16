@@ -13,13 +13,13 @@ semantic_model:
       measures:
         - name: revenue
           data_type: float64
-          expr: "SUM(amount)"
+          agg: sum
         - name: transaction_count
           data_type: int64
-          expr: "COUNT(id)"
+          agg: count
         - name: avg_amount
           data_type: float64
-          expr: "AVG(amount)"
+          agg: avg
       datasets:
         - name: txn_daily
           extras:

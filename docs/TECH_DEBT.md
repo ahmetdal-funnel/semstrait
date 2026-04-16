@@ -107,3 +107,31 @@ Tracked issues from code reviews during Phase J (Type System Hardening & Data St
 **Dependency:** Requires TD-002 (SemanticGraph serde) to be resolved first, so the graph survives serialization roundtrips.
 
 **Remediation:** Migrate planner code from `RelationshipGraph`/`FieldIndex` to `SemanticGraph`, then remove the deprecated structures.
+
+---
+
+## TD-008: Generic I/O utilities placed in semstrait-manifest
+
+**Phase:** Phase 3 (API cleanup + S3 loading)
+**Severity:** Low
+**Location:** `crates/semstrait-manifest/src/io.rs` — `load_text()`, `IoError`
+
+**Problem:** `load_text()` is a generic text-loading utility (local filesystem + S3) that is not manifest-specific. It lives in `semstrait-manifest` pragmatically because both consumers (`semstrait-api/cli.rs` and `semstrait/builder.rs`) already depend on manifest, and the `aws` feature flag passthrough already exists.
+
+**Why not semstrait-core:** Core is zero-dep foundation (no I/O, no async, no network). Adding `tokio` + `aws-sdk-s3` would contaminate all 9 downstream crates.
+
+**Trigger to extract:** When 3+ I/O utilities accumulate (e.g., `load_bytes`, `load_yaml_multi`, `write_artifact`), extract `semstrait-manifest::io` into a dedicated `semstrait-io` crate at the same DAG level as `semstrait-model` and `semstrait-catalog`:
+
+```
+semstrait-core                     (pure data types, zero I/O)
+    ├── semstrait-model
+    ├── semstrait-catalog
+    ├── semstrait-io     ← NEW    (load_text, S3, local fs — generic I/O)
+    └── semstrait-ir
+```
+
+**Remediation:**
+1. Create `crates/semstrait-io/` with `tokio` + `aws-sdk-s3` (behind `aws` feature)
+2. Move `io.rs` content from manifest to the new crate
+3. Update manifest, api, and facade to depend on `semstrait-io`
+4. Remove `aws-sdk-s3` and `aws-config` from manifest's Cargo.toml

@@ -11,7 +11,7 @@
 //! use semstrait::SemstraitBuilder;
 //!
 //! let sem = SemstraitBuilder::new()
-//!     .with_manifest_yaml(yaml_string)
+//!     .with_model(yaml_string)
 //!     .build()
 //!     .await?;
 //!
@@ -30,6 +30,12 @@ pub use semstrait_ir::{LogicalPlan, PlanArtifact};
 // Re-export manifest types
 pub use semstrait_manifest::CompiledManifest;
 
+/// Re-export generic I/O utilities for loading model YAML from local paths or S3.
+pub mod io {
+    pub use semstrait_manifest::io::load_text;
+    pub use semstrait_manifest::io::IoError;
+}
+
 // Re-export planner types
 pub use semstrait_planner::request::ResolvedQueryRequest;
 
@@ -37,7 +43,10 @@ pub use semstrait_planner::request::ResolvedQueryRequest;
 pub use semstrait_adapter::{AdaptError, EngineAdapter};
 
 // Re-export catalog traits
-pub use semstrait_catalog::{CatalogProvider, NullCatalogProvider, TableRef};
+pub use semstrait_catalog::{CatalogProvider, CatalogRegistry, NullCatalogProvider, TableRef};
+
+#[cfg(feature = "catalog-iceberg")]
+pub use semstrait_catalog::IcebergRestCatalog;
 
 mod builder;
 

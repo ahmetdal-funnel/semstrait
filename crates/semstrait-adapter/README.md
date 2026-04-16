@@ -19,8 +19,6 @@ pub trait EngineAdapter: Send + Sync {
 - `adapt()` — converts LogicalPlan to `PlanArtifact::Substrait` or `PlanArtifact::Sql`.
 - `debug_sql()` — always available ANSI SQL for debugging. Default impl uses `AnsiSqlEmitter`.
 
-Connectors never reference adapters (DL-056). Adapter and connector are independent.
-
 ---
 
 ## Adapters

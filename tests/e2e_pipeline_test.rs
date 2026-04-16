@@ -306,7 +306,7 @@ async fn test_kind_not_found() {
 async fn test_explain_includes_substrait() {
     let yaml = load_model("orders_with_metrics");
 
-    let engine = SemstraitEngine::with_manifest_yaml(&yaml)
+    let engine = SemstraitEngine::with_model(&yaml)
         .await
         .expect("engine should compile manifest");
 
@@ -1384,7 +1384,7 @@ async fn test_fc_filters_order_limit() {
 #[tokio::test]
 async fn test_fc_explain_plan_tree() {
     let yaml = load_model("e2e_full_coverage");
-    let engine = SemstraitEngine::with_manifest_yaml(&yaml)
+    let engine = SemstraitEngine::with_model(&yaml)
         .await
         .expect("engine should compile e2e_full_coverage");
 
@@ -1803,10 +1803,14 @@ mod datafusion_tests {
             session_variables: HashMap::new(),
         };
 
-        let planner = SemanticPlanner::builder().build();
+        let adapter = DataFusionAdapter;
+        let mut planner_builder = SemanticPlanner::builder();
+        if let Some(pb) = adapter.plan_builder() {
+            planner_builder = planner_builder.with_plan_builder(pb);
+        }
+        let planner = planner_builder.build();
         let plan = planner.plan(&request, &manifest).expect("planning should succeed");
 
-        let adapter = DataFusionAdapter;
         let artifact = adapter.adapt(&plan).expect("adapt should succeed");
 
         // DataFusion adapter MUST produce Substrait, not SQL.
@@ -1841,7 +1845,7 @@ mod datafusion_tests {
 
         let adapter: Arc<dyn EngineAdapter> = Arc::new(DataFusionAdapter);
         let instance = semstrait::SemstraitInstance::builder()
-            .with_manifest_yaml(yaml)
+            .with_model(yaml)
             .with_adapter(adapter)
             .build()
             .await

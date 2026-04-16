@@ -468,6 +468,8 @@ semantic_model:
   datasets:
     - name: shopify
       dimensions:
+        - ref: dataset_name
+        - ref: funnel_account_id
         - ref: date
         - ref: currency
         - name: country
@@ -510,8 +512,17 @@ semantic_model:
                   then:
                     lit: "IT"
               else:
-                lit: ""
+                lit: null
+
         - name: sales_channel
+          data_type: string
+        - name: brand
+          data_type: string
+        - name: sale_line_type
+          data_type: string
+        - name: sale_action_type
+          data_type: string
+        - name: order_action_type
           data_type: string
       measures:
         - name: orders
@@ -533,3 +544,18 @@ semantic_model:
         storage:
           tables:
             - "shopify.*"
+        column_mapping:
+          date: date
+          brand:
+            lit: "Alpinestars"
+          conversion_event:
+            lit: "purchase"
+          currency: currency
+          order_action_type: shopify-order_action_type
+          sale_action_type: shopify-sale_action_type
+          sale_line_type: sale_line_type
+          sales_channel: order_app_name
+          orders: shopify-orders
+          revenue: shopify-total_amount
+          tax: shopify-total_tax_amount
+          country: shopify-shipping_country

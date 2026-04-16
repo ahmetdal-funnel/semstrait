@@ -21,10 +21,10 @@ semantic_model:
       measures:
         - name: revenue
           data_type: float64
-          expr: "SUM(amount)"
+          agg: sum
         - name: order_count
           data_type: int64
-          expr: "COUNT(order_id)"
+          agg: count
       metrics:
         - name: avg_order_value
           data_type: float64

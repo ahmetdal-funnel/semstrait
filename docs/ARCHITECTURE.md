@@ -19,10 +19,10 @@ Active constraints that guide new code. Historical decisions (D1-D4, D7) archive
 | # | Constraint | Rationale |
 |---|---|---|
 | D5 | Wildcard expansion requires a provider | `storage.paths` -> StorageProvider; `storage.tables` -> CatalogProvider. No silent pass-through. |
-| D6 | `DataKind` has three layers: interface, strategy, binding | Interface = what users query. Strategy (Simple/Grainset/Unionset/Joinset) = plan structure. Binding = physical impl. |
+| D6 | `CompiledDataKind` has three layers: interface, strategy, binding | Interface = what users query. Strategy (Simple/Grainset/Unionset/Joinset) = plan structure. Binding = physical impl. |
 | D8 | YAML field is `constraints`, not `requires` | Pre-resolution validity gates at step 0, before dataset routing. |
 | E1 | Engine selection at request level | `engine` field in `RawQueryRequest`. Model is engine-agnostic. |
-| E2 | Artifact driven by engine adapter | `EngineAdapter` trait determines output type. DataFusion -> Substrait, DuckDB/Trino -> SQL. |
+| E2 | Artifact driven by engine adapter | `EngineAdapter` trait determines output type. DataFusion -> Substrait, DuckDB/Spark -> SQL. |
 | E3 | `PlanBuilder` trait in IR, impls in adapter | Breaks planner <-> adapter coupling. Planner depends only on the trait. |
 | E5 | Semstrait is a plan-generation library | Primary output is `PlanArtifact`. Consumers own execution. |
 | E6 | Primary path: DataFusion + Polaris/Iceberg | Polaris as catalog, DataFusion as compute, Substrait as interchange. |
@@ -175,15 +175,9 @@ Cross-crate type references -- confirms no cycles.
 
 ---
 
-## Diagram Index
+## Diagrams
 
-| Diagram | Location |
-|---------|----------|
-| D1 -- Crate Layer Architecture | `docs/D1_crate_layer_architecture.svg` |
-| D2 -- System Pipeline | `docs/D2_system_pipeline.svg` |
-| D3 -- Planner Evaluation Order | `crates/semstrait-planner/docs/D3_planner_evaluation_order.svg` |
-| D4 -- PlanNode Substrait Map | `crates/semstrait-ir/docs/D4_plannode_substrait_map.svg` |
-| D5 -- DataKind Interface Binding | `crates/semstrait-planner/docs/D5_kind_interface_binding.svg` |
+The text diagrams above (Crate Layer, System Pipeline) are the authoritative architecture reference. Legacy SVG files exist in `docs/` and crate `docs/` subdirectories but may be outdated — refer to the text diagrams and crate READMEs instead.
 
 ---
 

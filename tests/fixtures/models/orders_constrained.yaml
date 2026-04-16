@@ -16,7 +16,7 @@ semantic_model:
       measures:
         - name: revenue
           data_type: float64
-          expr: "SUM(amount)"
+          agg: sum
           constraints:
             dimensions:
               one_of:

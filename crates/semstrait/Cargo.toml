@@ -7,6 +7,7 @@ description = "Facade crate for semstrait — semantic model to compute plan com
 
 [dependencies]
 semstrait-core = { workspace = true }
+semstrait-model = { workspace = true }
 semstrait-planner = { workspace = true }
 semstrait-manifest = { workspace = true }
 semstrait-adapter = { workspace = true }
@@ -22,6 +23,7 @@ duckdb = ["semstrait-adapter/duckdb"]
 datafusion = ["semstrait-adapter/datafusion"]
 spark = ["semstrait-adapter/spark"]
 catalog-iceberg = ["semstrait-catalog/iceberg"]
+aws = ["semstrait-manifest/aws", "semstrait-catalog/aws"]
 api-rest = ["semstrait-api/rest"]
 api-cli = ["semstrait-api/cli"]
 api-grpc = ["semstrait-api/grpc"]

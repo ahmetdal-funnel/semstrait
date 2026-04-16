@@ -19,10 +19,12 @@ chrono = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 
+# S3 loading (feature-gated)
+aws-config = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+tokio = { workspace = true }
+
 [features]
 default = []
 iceberg = ["semstrait-catalog/iceberg"]
-aws = ["semstrait-catalog/aws", "iceberg"]
-
-[dev-dependencies]
-tokio = { workspace = true }
+aws = ["semstrait-catalog/aws", "iceberg", "dep:aws-config", "dep:aws-sdk-s3"]

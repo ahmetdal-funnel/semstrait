@@ -828,7 +828,34 @@ fn validate_metadata_for_dataset(
 /// `catalog` defaults from `kind.extras` are also propagated (dataset value wins).
 pub(crate) fn expand_auto_mappings(model: &mut SemanticModel) {
     for dk in model.entities.values_mut() {
-        if dk.is_simple() { continue; }
+        // Simple kinds: expand column_mapping on the dataset extras directly.
+        // Simple kinds have no children — the kind IS the dataset.
+        if let DataKind::Simple(dsk) = dk {
+            let interface_names: Vec<String> = collect_mappable_names_simple(dsk);
+            if let Some(ref mut extras) = dsk.extras {
+                let effective = match &extras.column_mapping {
+                    ColumnMapping::Auto | ColumnMapping::Inherited => {
+                        // Identity mapping — each semantic name maps to itself.
+                        interface_names
+                            .iter()
+                            .map(|n| (n.clone(), ColumnMappingValue::Simple(n.clone())))
+                            .collect()
+                    }
+                    ColumnMapping::Explicit(ds_map) => {
+                        // Start from identity, then apply user overrides.
+                        let mut merged: HashMap<String, ColumnMappingValue> = interface_names
+                            .iter()
+                            .map(|n| (n.clone(), ColumnMappingValue::Simple(n.clone())))
+                            .collect();
+                        merged.extend(ds_map.clone());
+                        merged
+                    }
+                };
+                extras.column_mapping = ColumnMapping::Explicit(effective);
+            }
+            continue;
+        }
+
         // Use mappable names (excludes metadata dimensions and metrics)
         // since those entities don't require physical column mapping.
         let interface_names: Vec<String> = collect_mappable_names(dk).collect();
@@ -1609,6 +1636,27 @@ fn collect_mappable_names(dk: &DataKind) -> impl Iterator<Item = String> + '_ {
         }))
 }
 
+/// Collect mappable names from a SimpleDataKind (standalone dataset).
+/// Same logic as `collect_mappable_names` but takes &SimpleDataKind directly.
+fn collect_mappable_names_simple(dsk: &SimpleDataKind) -> Vec<String> {
+    let iface = &dsk.interface;
+    let dims = iface.dimensions.values().filter_map(|d| match d {
+        DimensionEntry::Inline(dim) => {
+            if matches!(dim.dim_type, DimensionType::Metadata(_)) || dim.expr.is_some() {
+                None
+            } else {
+                Some(dim.name.clone())
+            }
+        }
+        DimensionEntry::Ref(r) => Some(r.ref_name.clone()),
+    });
+    let measures = iface.measures.values().map(|m| match m {
+        MeasureEntry::Inline(mea) => mea.name.clone(),
+        MeasureEntry::Ref(r) => r.ref_name.clone(),
+    });
+    dims.chain(measures).collect()
+}
+
 /// Collect interface names (dimensions + measures + metrics) from a data kind.
 fn collect_interface_names(dk: &DataKind) -> impl Iterator<Item = String> + '_ {
     dk.interface().dimensions
@@ -2145,26 +2193,34 @@ fn compile_to_compiled_data_kind(
 
     match dk {
         DataKind::Simple(dsk) => {
-            // Standalone dataset: identity column mapping.
-            let interface_names: Vec<&String> = dimensions.keys().chain(measures.keys()).collect();
-            let mapping: HashMap<String, semstrait_model::ColumnMappingValue> = interface_names
-                .iter()
-                .map(|name| {
-                    (
-                        (*name).clone(),
-                        semstrait_model::ColumnMappingValue::Simple((*name).clone()),
+            // Standalone dataset: use column_mapping from extras (expanded in step 4.5).
+            // Falls back to identity if extras is absent.
+            let mapping: semstrait_model::ColumnMapping = dsk
+                .extras
+                .as_ref()
+                .map(|e| e.column_mapping.clone())
+                .unwrap_or_else(|| {
+                    // No extras: build identity mapping from interface names.
+                    let interface_names: Vec<&String> = dimensions.keys().chain(measures.keys()).collect();
+                    semstrait_model::ColumnMapping::Explicit(
+                        interface_names
+                            .iter()
+                            .map(|name| {
+                                (
+                                    (*name).clone(),
+                                    semstrait_model::ColumnMappingValue::Simple((*name).clone()),
+                                )
+                            })
+                            .collect(),
                     )
-                })
-                .collect();
+                });
 
             // Resolve sources from extras.storage if present.
             let resolved_sources = resolve_dataset_sources(&dsk.name, &dsk.extras, resolution);
 
             let binding = DatasetBinding {
                 dataset_name: dsk.name.clone(),
-                column_mapping: ResolvedColumnMapping::from_column_mapping(
-                    &semstrait_model::ColumnMapping::Explicit(mapping),
-                ),
+                column_mapping: ResolvedColumnMapping::from_column_mapping(&mapping),
                 resolved_sources,
             };
 
