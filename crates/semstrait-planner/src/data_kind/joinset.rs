@@ -10,7 +10,7 @@ use crate::resolver::PhysicalResolver;
 use super::collect_column_refs;
 use super::plan_layers;
 use super::plan_layers::{build_scan_node_binding, build_semantic_type_map, collect_known_values, resolve_semantic_type, collect_semantic_refs, build_expression_project};
-use super::{partition_dimensions_iface, split_computed_dims, DataKindPlanner, PlanFragment, PlannerContext, PrunedView};
+use super::{collect_all_metadata_dims, partition_dimensions_iface, split_computed_dims, DataKindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
 use indexmap::IndexMap;
 use semstrait_ir::{
@@ -238,7 +238,7 @@ fn build_scan(
                 measure_name,
                 iface.metrics.get(measure_name).unwrap(),
                 iface,
-                binding,
+                &phys_resolver,
                 5,
             )?;
             for agg in &lowered.aggregates {
@@ -360,7 +360,10 @@ fn build_join_plan(
     // ── Partition dimensions ────────────────────────────────────────
     let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
     let (physical_dims, computed_dims) = split_computed_dims(&regular_dims, iface);
-    let known_values = collect_known_values(anchor, &metadata_dims);
+    // All metadata dims from the interface for SR-10 known_values — computed dims
+    // may reference metadata dims not in the user's SELECT.
+    let all_metadata_dims = collect_all_metadata_dims(iface);
+    let known_values = collect_known_values(anchor, &all_metadata_dims);
 
     // Helper: find the physical column for a semantic name across joined bindings.
     let mapping_for_field = |field_name: &str| -> Option<String> {
@@ -513,7 +516,7 @@ fn build_join_plan(
             lowered_measures.push((measure_name.clone(), lowered));
         } else if let Some(metric) = iface.metrics.get(measure_name) {
             let lowered = decomposer::decompose_metric(
-                measure_name, metric, iface, anchor, 5,
+                measure_name, metric, iface, &identity_resolver, 5,
             )?;
             lowered_measures.push((measure_name.clone(), lowered));
         } else {
@@ -524,27 +527,40 @@ fn build_join_plan(
         }
     }
 
-    let aggregates: Vec<AggregateMeasure> = lowered_measures
-        .iter()
-        .flat_map(|(_, lowered)| lowered.aggregates.clone())
-        .collect();
+    // Deduplicate aggregates: metrics and direct measures may share
+    // constituents, producing identical aggregates in the semantic domain.
+    let mut aggregates: Vec<AggregateMeasure> = Vec::new();
+    let mut agg_seen: HashSet<String> = HashSet::new();
+    for (_, lowered) in &lowered_measures {
+        for agg_m in &lowered.aggregates {
+            let dedup_key = format!("{:?}|{:?}|{}", agg_m.function, agg_m.expr, agg_m.distinct);
+            if agg_seen.insert(dedup_key) {
+                aggregates.push(agg_m.clone());
+            }
+        }
+    }
 
-    // Aggregate schema: all dimensions + measure outputs.
+    // Aggregate schema: all dimensions + deduplicated measure outputs.
     let mut agg_fields: Vec<Field> = request
         .dimensions
         .iter()
         .map(|name| Field::new(name.clone(), iface.resolve_dim_type(name)))
         .collect();
-    let mut agg_idx = 0;
-    for (semantic, lowered) in &lowered_measures {
-        for (j, agg_m) in lowered.aggregates.iter().enumerate() {
-            if j == 0 {
-                agg_fields.push(Field::new(semantic.clone(), iface.resolve_measure_type(semantic)));
-            } else {
-                agg_fields.push(Field::new(format!("__agg_{}", agg_idx), agg_m.data_type.clone()));
+    let mut named_aggs: HashSet<String> = HashSet::new();
+    for agg_m in &aggregates {
+        let field_name = match &agg_m.expr {
+            Expr::Column(col) if !named_aggs.contains(&col.name) => {
+                named_aggs.insert(col.name.clone());
+                col.name.clone()
             }
-            agg_idx += 1;
-        }
+            _ => format!("__agg_{}", agg_fields.len()),
+        };
+        let data_type = if let Some(m) = iface.measures.get(&field_name) {
+            m.data_type.clone()
+        } else {
+            agg_m.data_type.clone()
+        };
+        agg_fields.push(Field::new(field_name, data_type));
     }
     let agg_schema = Schema::new(agg_fields);
     let agg = pb.build_aggregate(agg_schema, expr_proj, group_by, aggregates);

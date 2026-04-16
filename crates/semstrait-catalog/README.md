@@ -24,16 +24,13 @@ pub trait CatalogProvider: Send + Sync {
 
 ---
 
-## Implementations
+## Catalog Provider Implementations
 
 | Provider | Feature | Description |
 |----------|---------|-------------|
 | `NullCatalogProvider` | *(always)* | No-op: returns empty results. For testing and stateless operations. |
 | `IcebergRestCatalog` | `iceberg` | Iceberg REST API client. OAuth2/Bearer auth, glob expansion. |
 | `UnityCatalogProvider` | `unity` | Databricks Unity Catalog REST API. PAT/Bearer auth, pagination. |
-| `NullStorageProvider` | *(always)* | No-op storage: returns empty. For testing. |
-| `LocalStorageProvider` | `local` | Local filesystem glob + schema reading |
-| `S3StorageProvider` | `aws` | S3 storage (stub) |
 
 ### NullCatalogProvider
 

@@ -24,23 +24,25 @@ let resolved = resolve_refs(model)?;
 
 | Type | Description |
 |------|-------------|
-| `SemanticModel` | Root: name, description, namespace, data_kinds, relationships, reusable definitions |
+| `SemanticModel` | Root: name, description, namespace, entities, relationships, reusable definitions |
 | `SemanticInterface` | Shared interface: dimensions, measures, metrics, filters, keys |
-| `DataKind` | Unified entity enum: `Dataset`, `Grainset`, `Unionset`, `Joinset` |
-| `DataKindEntry` | Dataset reference within a kind: `Inline(DataKindBinding)` or `Ref(DataKindRef)` |
+| `DataKind` | Top-level entity enum: `Simple(SimpleDataKind)` or `Complex(ComplexDataKind)` |
+| `ChildEntry` | Child reference within a Complex kind: `Inline(...)` or `Ref(...)` |
 | `Relationship` | Top-level join definition (from, to, type, columns, cardinality) |
-| `DataKindRelationship` | Kind-internal join definition (same structure, scoped to kind) |
 
-### DataKind Variants
+### DataKind Variants — Simple vs Complex
+
+The model distinguishes between **Simple** (a single standalone Dataset) and **Complex** kinds that compose children via a strategy:
 
 | Type | Description |
 |------|-------------|
-| `DatasetKind` | Standalone dataset: interface + `DatasetExtras` |
-| `GrainsetKind` | Grain-partitioned: interface + child datasets + `DataKindExtras` |
-| `UnionsetKind` | UNION: interface + mode + child datasets + `DataKindExtras` |
-| `JoinsetKind` | JOIN: interface + associativity + child datasets + relationships + `DataKindExtras` |
+| `SimpleDataKind` | Standalone Dataset: interface + `DatasetExtras`. The fundamental leaf. |
+| `ComplexDataKind::Grainset(GrainsetSpec)` | Grain-partitioned: interface + children + `ComplexExtras` |
+| `ComplexDataKind::Unionset(UnionsetSpec)` | UNION: interface + `UnionMode` + children + `ComplexExtras` |
+| `ComplexDataKind::Joinset(JoinsetSpec)` | JOIN: interface + `JoinAssociativity` + children + relationships + `ComplexExtras` |
 | `UnionMode` | `All` (default) or `Unique` |
 | `JoinAssociativity` | `Left` (default), `Right`, `Full` |
+| `DataKindVariant` | Discriminant enum (`Simple`, `Grainset`, `Unionset`, `Joinset`) used for routing |
 
 ```yaml
 # Grainset: route to cheapest covering dataset
@@ -89,22 +91,7 @@ joinsets:
 
 ### Data Types
 
-Standard SQL logical types — engine-agnostic. The adapter layer maps these to engine-specific physical types.
-
-```yaml
-# Supported data_type values in YAML:
-string, text, varchar           # SQL VARCHAR
-integer, int, i32               # SQL INTEGER
-long, bigint, int64, i64        # SQL BIGINT
-float, float32, f32             # SQL REAL
-double, float64, f64            # SQL DOUBLE PRECISION
-bool, boolean                   # SQL BOOLEAN
-date                            # SQL DATE
-timestamp, datetime             # SQL TIMESTAMP
-decimal                         # SQL DECIMAL(18,2) default
-decimal(p, s)                   # SQL DECIMAL(p, s) explicit
-i8, i16                         # small integer variants
-```
+Standard SQL logical types — engine-agnostic. The adapter layer maps these to engine-specific physical types. See `semstrait-core` README for the full `DataType` enum and parsing aliases.
 
 ### Column Mapping
 
@@ -244,12 +231,13 @@ Parses `catalogs.yaml` — external catalog configuration with authentication.
 |------|-------------|
 | `CatalogsConfig` | Named map of catalog entries |
 | `CatalogEntry` | URI, warehouse, namespace, auth method |
-| `CatalogAuthMethod` | `OAuth2`, `Bearer`, `AwsSecrets` |
+| `CatalogAuthMethod` | `Oauth2`, `Bearer`, `AwsSecrets` |
 
 ```rust
-use semstrait_model::catalogs::parse_catalogs;
+use semstrait_model::parse_catalogs;
 
-let config = parse_catalogs("catalogs.yaml")?;
+let yaml = std::fs::read_to_string("catalogs.yaml")?;
+let config = parse_catalogs(&yaml)?;
 ```
 
 ---
@@ -290,7 +278,7 @@ dimensions:
       case:
         when:
           - condition:
-              in_list:
+              in:
                 expr: dataset_name
                 list: ["adwords", "facebook"]
             then:
@@ -303,37 +291,35 @@ dimensions:
         else: ""
 ```
 
-### Supported Declarative Expression Keys
+### Declarative Expression Keys (69 total)
 
-| YAML Key | Expr Variant | Example |
-|----------|-------------|---------|
-| `case` | `Case` | `case: { when: [{condition: ..., then: ...}], else: ... }` |
-| `in_list` | `InList` | `in_list: { expr: region, list: ["US", "EU"] }` |
-| `like` | `Like` | `like: { expr: name, pattern: "%test%" }` |
-| `ilike` | `ILike` | `ilike: { expr: name, pattern: "%test%" }` |
-| `regexp_match` | `RegexpMatch` | `regexp_match: { expr: campaign, pattern: "^[A-Z]{2}_" }` |
-| `regexp_extract` | `RegexpExtract` | `regexp_extract: { expr: campaign, pattern: "^([A-Z]{2})_", group: 1 }` |
-| `between` | `Between` | `between: { expr: amount, low: 0, high: 100 }` |
-| `is_null` | `IsNull` | `is_null: region` |
-| `is_not_null` | `IsNotNull` | `is_not_null: region` |
-| `coalesce` | `Coalesce` | `coalesce: [region, "Unknown"]` |
-| `nullif` | `NullIf` | `nullif: { expr: value, null_expr: 0 }` |
-| `upper`, `lower`, etc. | `FunctionCall` | `upper: region` (shorthand for single-arg functions) |
+**Arithmetic** (5): `add`, `subtract`, `multiply`, `divide`, `safe_divide`
 
-### Registered Functions (28 ANSI SQL)
+**Comparison** (6): `eq`, `not_eq`, `lt`, `gt`, `lte`, `gte`
 
-Validated at compile time with arity checking:
+**Logical** (4): `and`, `or`, `not`, `negate`
 
-- **String:** UPPER, LOWER, TRIM, LTRIM, RTRIM, LENGTH, CONCAT, REPLACE, SUBSTRING, LEFT, RIGHT, LPAD, RPAD
-- **Math:** ABS, CEIL, FLOOR, ROUND, POWER, SQRT, MOD
-- **Date:** CURRENT_DATE, CURRENT_TIMESTAMP, DATE_ADD, DATEDIFF, EXTRACT
-- **Conditional:** GREATEST, LEAST, CAST
+**Conditional** (6): `case`, `coalesce`, `nullif`, `if`, `greatest`, `least`
 
-Unknown functions pass validation with a warning (extensibility for engine-specific functions).
+**Predicates** (7): `in`, `not_in`, `between`, `like`, `ilike`, `is_null`, `is_not_null`
+
+**Pattern matching** (3): `regexp_match`, `regexp_extract`, `regexp_replace`
+
+**String** (21): `upper`, `lower`, `trim`, `ltrim`, `rtrim`, `length`, `reverse`, `initcap`, `concat`, `concat_ws`, `replace`, `substr`, `left`, `right`, `repeat`, `lpad`, `rpad`, `starts_with`, `ends_with`, `position`, `split_part`
+
+**Math** (7): `abs`, `ceil`, `floor`, `round`, `power`, `sqrt`, `mod`
+
+**Date** (8): `date_trunc`, `current_date`, `current_timestamp`, `date_add`, `date_diff`, `extract`, `to_date`, `to_timestamp`
+
+**Type conversion** (1): `cast`
+
+**Guard** (1): `guard`
+
+Unknown functions pass through as `FunctionCall` with a compile warning (extensibility for engine-specific functions).
 
 ### Note on Declarative Expressions
 
-Declarative YAML expression blocks work at all scopes — top-level `datasets:`, `grainsets:`, `unionsets:`, and `joinsets:`. The original serde_yaml 0.9 limitation (DL-049) was resolved via a custom `Deserialize` impl for `ExprSource` (DL-061).
+Declarative YAML expression blocks work at all scopes — top-level datasets, grainsets, unionsets, and joinsets. The original serde_yaml nested-untagged-enum limitation tracked as DL-049 was resolved by replacing `#[serde(untagged)]` with a custom `Deserialize` impl for `ExprSource` (see `expr_block.rs`).
 
 ---
 
@@ -341,12 +327,12 @@ Declarative YAML expression blocks work at all scopes — top-level `datasets:`,
 
 JSON Schema definitions for model validation are in the `schema/` directory:
 
-- `semantic-model.schema.yaml` -- YAML-based JSON Schema for model files
-- `reference.yaml` -- Reference documentation for model structure
+- `semantic-model.schema.yaml` — YAML-based JSON Schema for model files
+- `reference.yaml` — Reference documentation for model structure
 
 ---
 
 ## Dependencies
 
-- `semstrait-core` -- `DataType`, `Expr`, `DataFormat`, `GlobPattern`
-- `serde`, `serde_yaml` -- YAML deserialization
+- `semstrait-core` — `DataType`, `Expr`, `DataFormat`, `GlobPattern`
+- `serde`, `serde_yaml` — YAML deserialization

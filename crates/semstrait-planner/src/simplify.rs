@@ -153,10 +153,17 @@ fn simplify_case(case: &semstrait_core::expr::CaseExpr) -> Option<Expr> {
 
     for wc in &case.when_then {
         match &wc.condition {
-            // True condition → this branch always fires.
+            // True condition → this branch always fires (guaranteed match).
+            // CASE evaluates top-to-bottom: prior runtime branches in `remaining`
+            // have higher priority. The true branch replaces ELSE, and all
+            // subsequent branches are unreachable.
             Expr::Literal(Literal::Boolean { value: true }) => {
-                // Return the result directly (all prior branches were false/pruned).
-                return Some(wc.result.clone());
+                if remaining.is_empty() {
+                    // No prior runtime branches — collapse directly to result.
+                    return Some(wc.result.clone());
+                }
+                // Prior runtime branches take priority; true branch becomes ELSE.
+                return Some(Expr::case(remaining, Some(wc.result.clone())));
             }
             // False condition → prune this branch entirely.
             Expr::Literal(Literal::Boolean { value: false }) => {
@@ -324,7 +331,8 @@ mod tests {
     // ── CASE pruning ────────────────────────────────────────────────
 
     #[test]
-    fn test_simplify_case_true_branch() {
+    fn test_simplify_case_true_branch_no_prior_runtime() {
+        // True is the first branch — no prior runtime branches, collapses directly.
         let expr = Expr::case(
             vec![
                 WhenClause::new(Expr::boolean(true), Expr::string("hit")),
@@ -333,6 +341,54 @@ mod tests {
             Some(Expr::string("default")),
         );
         assert_eq!(simplify(&expr), Expr::string("hit"));
+    }
+
+    #[test]
+    fn test_simplify_case_true_preserves_prior_runtime_branches() {
+        // Models the SR-10 scenario: inner CASE for the facebook binding.
+        // CASE
+        //   WHEN campaign REGEXP '^UK_' THEN 'GB'     ← runtime, must be preserved
+        //   WHEN dataset_name = 'facebook' THEN ...    ← becomes true after substitute
+        //   ELSE <fallback>
+        // The true branch becomes the new ELSE; prior runtime branches kept.
+        let expr = Expr::case(
+            vec![
+                WhenClause::new(Expr::column("runtime_cond"), Expr::string("priority")),
+                WhenClause::new(Expr::boolean(true), Expr::string("fallback_from_true")),
+                WhenClause::new(Expr::column("unreachable"), Expr::string("dead")),
+            ],
+            Some(Expr::string("original_else")),
+        );
+        let expected = Expr::case(
+            vec![WhenClause::new(Expr::column("runtime_cond"), Expr::string("priority"))],
+            Some(Expr::string("fallback_from_true")),
+        );
+        assert_eq!(simplify(&expr), expected);
+    }
+
+    #[test]
+    fn test_simplify_case_true_after_false_and_runtime() {
+        // Mixed: false branches pruned, runtime kept, true becomes else.
+        // CASE
+        //   WHEN false THEN 'dead'        ← pruned
+        //   WHEN col_x THEN 'runtime'     ← kept
+        //   WHEN false THEN 'dead2'        ← pruned
+        //   WHEN true THEN 'guaranteed'    ← becomes else
+        //   ELSE 'original'
+        let expr = Expr::case(
+            vec![
+                WhenClause::new(Expr::boolean(false), Expr::string("dead")),
+                WhenClause::new(Expr::column("col_x"), Expr::string("runtime")),
+                WhenClause::new(Expr::boolean(false), Expr::string("dead2")),
+                WhenClause::new(Expr::boolean(true), Expr::string("guaranteed")),
+            ],
+            Some(Expr::string("original")),
+        );
+        let expected = Expr::case(
+            vec![WhenClause::new(Expr::column("col_x"), Expr::string("runtime"))],
+            Some(Expr::string("guaranteed")),
+        );
+        assert_eq!(simplify(&expr), expected);
     }
 
     #[test]
@@ -445,6 +501,59 @@ mod tests {
         // First branch: 'klaviyo' = 'adwords' → false → pruned
         // Second branch: 'klaviyo' = 'klaviyo' → true → 'Email'
         assert_eq!(simplified, Expr::string("Email"));
+    }
+
+    #[test]
+    fn test_sr10_nested_case_with_prior_runtime_branch() {
+        // Models the alpinestars market expression for the facebook binding.
+        // Outer CASE: dataset_name IN (...) → true → collapses to inner.
+        // Inner CASE:
+        //   WHEN campaign REGEXP '^UK_' THEN 'GB'           ← runtime, must survive
+        //   WHEN dataset_name = 'facebook' THEN <fb_logic>  ← becomes true
+        //   ELSE UPPER(REGEXP_EXTRACT(campaign, ...))
+        // After simplification: UK check preserved, facebook logic becomes ELSE.
+        let fb_logic = Expr::string("facebook_specific");
+        let default_logic = Expr::string("default_extract");
+
+        let inner_case = Expr::case(
+            vec![
+                WhenClause::new(Expr::column("campaign_check"), Expr::string("GB")),
+                WhenClause::new(
+                    Expr::eq(Expr::column("dataset_name"), Expr::string("facebook")),
+                    fb_logic.clone(),
+                ),
+            ],
+            Some(default_logic),
+        );
+
+        let outer = Expr::case(
+            vec![
+                WhenClause::new(
+                    Expr::in_list(
+                        Expr::column("dataset_name"),
+                        vec![Expr::string("adwords"), Expr::string("facebook"), Expr::string("bing")],
+                    ),
+                    inner_case,
+                ),
+                WhenClause::new(
+                    Expr::eq(Expr::column("dataset_name"), Expr::string("impact")),
+                    Expr::string("impact_logic"),
+                ),
+            ],
+            Some(Expr::string("")),
+        );
+
+        let known = HashMap::from([("dataset_name".to_string(), "facebook".to_string())]);
+        let substituted = substitute(&outer, &known);
+        let simplified = simplify(&substituted);
+
+        // Outer: 'facebook' IN (...) → true → collapses to inner.
+        // Inner: campaign_check is runtime (kept), 'facebook'='facebook' → true (becomes else).
+        let expected = Expr::case(
+            vec![WhenClause::new(Expr::column("campaign_check"), Expr::string("GB"))],
+            Some(fb_logic),
+        );
+        assert_eq!(simplified, expected);
     }
 
     #[test]

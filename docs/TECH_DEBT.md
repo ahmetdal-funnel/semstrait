@@ -86,7 +86,7 @@ Tracked issues from code reviews during Phase J (Type System Hardening & Data St
 
 **Phase:** J5 (Planner borrow optimization)
 **Severity:** Low
-**Location:** `crates/semstrait-planner/src/kind/mod.rs` — `PrunedView::active_bindings()`
+**Location:** `crates/semstrait-planner/src/data_kind/mod.rs` — `PrunedView::active_bindings()`
 
 **Problem:** `active_bindings()` returns `Vec<&DatasetBinding>`, allocating a new Vec on every call. If called multiple times in a hot path, this creates unnecessary allocations.
 
@@ -107,3 +107,47 @@ Tracked issues from code reviews during Phase J (Type System Hardening & Data St
 **Dependency:** Requires TD-002 (SemanticGraph serde) to be resolved first, so the graph survives serialization roundtrips.
 
 **Remediation:** Migrate planner code from `RelationshipGraph`/`FieldIndex` to `SemanticGraph`, then remove the deprecated structures.
+
+---
+
+## TD-008: Generic I/O utilities placed in semstrait-manifest
+
+**Phase:** Phase 3 (API cleanup + S3 loading)
+**Severity:** Low
+**Location:** `crates/semstrait-manifest/src/io.rs` — `load_text()`, `IoError`
+
+**Problem:** `load_text()` is a generic text-loading utility (local filesystem + S3) that is not manifest-specific. It lives in `semstrait-manifest` pragmatically because both consumers (`semstrait-api/cli.rs` and `semstrait/builder.rs`) already depend on manifest, and the `aws` feature flag passthrough already exists.
+
+**Why not semstrait-core:** Core is zero-dep foundation (no I/O, no async, no network). Adding `tokio` + `aws-sdk-s3` would contaminate all 9 downstream crates.
+
+**Trigger to extract:** When 3+ I/O utilities accumulate (e.g., `load_bytes`, `load_yaml_multi`, `write_artifact`), extract `semstrait-manifest::io` into a dedicated `semstrait-io` crate at the same DAG level as `semstrait-model` and `semstrait-catalog`:
+
+```
+semstrait-core                     (pure data types, zero I/O)
+    ├── semstrait-model
+    ├── semstrait-catalog
+    ├── semstrait-io     ← NEW    (load_text, S3, local fs — generic I/O)
+    └── semstrait-ir
+```
+
+**Remediation:**
+1. Create `crates/semstrait-io/` with `tokio` + `aws-sdk-s3` (behind `aws` feature)
+2. Move `io.rs` content from manifest to the new crate
+3. Update manifest, api, and facade to depend on `semstrait-io`
+4. Remove `aws-sdk-s3` and `aws-config` from manifest's Cargo.toml
+
+---
+
+## TD-009: Computed dimension expressions with unreachable metadata values not detected at compile time
+
+**Phase:** SR-10 (Static Pushdown)
+**Severity:** Low
+**Location:** `crates/semstrait-planner/src/simplify.rs`, model YAML validation
+
+**Problem:** When a computed dimension's CASE expression references metadata dimension values that don't match actual extraction results (e.g., expression checks `dataset_name = 'facebook'` but the catalog namespace is `facebookads`), the CASE silently falls through to the else branch (producing `''`). No compile-time or plan-time warning is raised.
+
+**Example:** `alpinestars_eu_ad_platform_v2.yaml` — the `market` expression uses `lit: "facebook"` but metadata extraction from the facebookads Polaris namespace at token 5 yields `"facebookads"`.
+
+**Current mitigation:** Plan output is inspectable via `explain --output plan`; the collapsed `'' AS market` is visible.
+
+**Remediation:** Add a compiler validation pass that cross-references literal values in computed dimension CASE conditions against known metadata extraction results from resolved sources. Emit a `COMPILE_W001`-level warning when a CASE branch's metadata condition can never be true for any resolved source.

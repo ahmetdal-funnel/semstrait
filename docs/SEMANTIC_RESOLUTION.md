@@ -842,17 +842,15 @@ incrementally:
 | SR-7 | Dataset > Dataset = error | Structural | `DataKindBinding` has no `datasets:` field + `deny_unknown_fields` |
 | SR-8 | No empty semantics | Existing | `validate_mappings()` ensures physical coverage |
 | SR-9 | Partial coverage OK (NULL-fill) | Existing | Unionset planner fills missing dims with NULL |
-| SR-10 | Static pushdown | **Deferred** | Requires expression simplification engine — not blocking v1 |
+| SR-10 | Static pushdown | Implemented | `crates/semstrait-planner/src/simplify.rs` — metadata/literal substitution + constant folding |
 | SR-11 | All links resolved at compile time | Existing | `resolve_refs()` + `validate_structure()` + nesting matrix |
 
 ---
 
 ## 15. Relationship to Other Documents
 
-- **CONTEXT.md** §4 — compilation pipeline steps
-- **DECISION_LOG.md** — DL-047 (computed dims excluded from mapping), DL-048
-  (computed dims as ProjectNode), DL-049 (to be superseded)
-- **docs/COMPUTED_EXPRESSIONS.md** — Phase G expression design
-- **docs/UNIONSET.md** — unionset planning strategy
-- **docs/GRAINSET.md** — grainset planning strategy
-- **docs/JOINSET.md** — joinset planning strategy
+- `crates/semstrait-manifest/README.md` — compilation pipeline (the step numbers SR-* rules attach to)
+- `DECISION_LOG.md` — DL-047 (computed dims excluded from mapping), DL-048 (computed dims as ProjectNode), DL-049 (nested-enum serde limitation)
+- `docs/COMPUTED_EXPRESSIONS.md` — computed expression reference
+- `docs/DATASET.md` — single-dataset (Simple kind) planning
+- `docs/GRAINSET.md`, `docs/UNIONSET.md`, `docs/JOINSET.md` — Complex kind strategies

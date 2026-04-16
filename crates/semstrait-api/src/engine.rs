@@ -67,8 +67,8 @@ impl SemstraitEngine {
         }
     }
 
-    /// Create an engine by compiling a manifest YAML string.
-    pub async fn with_manifest_yaml(yaml: &str) -> Result<Self, EngineError> {
+    /// Create an engine by compiling a model YAML string.
+    pub async fn with_model(yaml: &str) -> Result<Self, EngineError> {
         let compiler = ManifestCompiler::new();
         let manifest = compiler
             .compile(CompileSource::Yaml(yaml.to_string()))
@@ -384,7 +384,7 @@ mod tests {
     async fn test_explain_with_manifest() {
         let yaml = load_model("orders_with_metrics");
 
-        let engine = SemstraitEngine::with_manifest_yaml(&yaml)
+        let engine = SemstraitEngine::with_model(&yaml)
             .await
             .expect("engine should compile manifest");
 
@@ -417,7 +417,7 @@ mod tests {
     async fn test_validate_against_manifest() {
         let yaml = load_model("orders_simple");
 
-        let engine = SemstraitEngine::with_manifest_yaml(&yaml)
+        let engine = SemstraitEngine::with_model(&yaml)
             .await
             .expect("engine should compile manifest");
 
@@ -458,7 +458,7 @@ semantic_model:
       measures:
         - name: revenue
           data_type: float64
-          expr: "SUM(amount)"
+          agg: sum
       datasets:
         - name: orders_fact
           extras:
@@ -469,7 +469,7 @@ semantic_model:
                 - db.orders_fact
 "#;
 
-        let engine = SemstraitEngine::with_manifest_yaml(yaml)
+        let engine = SemstraitEngine::with_model(yaml)
             .await
             .expect("engine should compile with auto mapping");
 
@@ -508,7 +508,7 @@ semantic_model:
         use semstrait_core::DataType;
 
         let yaml = load_model("orders_simple");
-        let mut engine = SemstraitEngine::with_manifest_yaml(&yaml)
+        let mut engine = SemstraitEngine::with_model(&yaml)
             .await
             .expect("engine should compile manifest");
 

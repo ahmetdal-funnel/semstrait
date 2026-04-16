@@ -1,0 +1,852 @@
+---
+prereqs: [00, 11, 13, 16]
+authoritative-for:
+  - `TemporalShape` classification vocabulary — the four top-level variants `Timeseries`, `Events`, `Snapshot`, `Scd`, their per-variant payloads, and the `#[non_exhaustive]` enum sketch
+  - `ScdSubtype` sub-enumeration — the seven Kimball subtypes `Type0`–`Type6` ratified as canonical, their per-subtype payload shapes, and the history-preserving / non-history-preserving split
+  - the per-variant identifying Dimension rule — which binding Dimension carries the time axis for each variant
+  - the declaration site — `TemporalShape` is authored exclusively on `SimpleDataKind` and composes outward via the rules in §3
+  - the `TemporalShape × Grain` interaction matrix (§4) — which shapes roll up under `Grain`, which are grain-fixed, which have no intrinsic grain
+  - the `JoinType::AsOf` variant as the ratified (but implementation-DEFERRED) extension to `16 §4.1`'s `JoinType` enum — shape, semantics, legal shape pairs
+  - as-of anchor selection rules per shape pair — `SCD ↔ Events` uses `AsOf(valid_from, valid_to)`; `Snapshot ↔ Events` uses `AsOf(snapshotted_at)` with latest-at-or-before semantics
+  - the `Request.temporal` block — as-of timestamp, time-range override, and default-current behavior (vocabulary ratified; planner consumption DEFERRED)
+  - the `TemporalShape × Additivity` advisory-warning roster — independent-axes rule (§7.1) and the concrete advisories (§7.3)
+  - shape-gated composition rules (§8) refining `16 §11` — per-shape rollup / as-of-anchoring preconditions for implicit and explicit composition
+  - the 17-subsystem `validate` / `compile` / `plan` Precondition catalog and error-code allocations (`VALID_E_1700`–`1799`, `COMP_E_1700`–`1799`, `PLAN_E_1700`–`1799`, `PLAN_W_1700`–`1799`), coordinated with `30 §6.2` per `[CONTRADICTION-FOUND]` below
+  - the DEFERRED-items roster (§10) — the closed list of planner behaviors gated on this doc whose vocabulary and model surface are ratified but whose implementation lands in a later milestone
+refined-by:
+  - 20 (`data-kinds/20_taxonomy.md` — per-DataKind lifecycle hook for `TemporalShape` resolution during `compile`)
+  - 21 (`data-kinds/21_dataset.md` — `TemporalShape` lives on the `Simple` kind; this doc fixes the hook)
+  - 22 (`data-kinds/22_grainset.md` — shape-dependent grain eligibility; `Snapshot` cadence vs `Timeseries` rollup)
+  - 23 (`data-kinds/23_unionset.md` — shape compatibility across union branches)
+  - 24 (`data-kinds/24_joinset.md` — per-traversal `JoinType::AsOf` override; anchor selection in explicit paths)
+  - 25 (cross-kind strategy catalog — per-shape planner strategies for rollup, as-of resolution, current-snapshot pinning)
+  - 32 (`apis/32_semstrait_model.md` — YAML surface for `temporal_shape:` block, including SCD subtype discriminator keys)
+  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedTemporalShape` on `ResolvedDataKind`, per-shape indices)
+  - 34 (`apis/34_semstrait_planner.md` — planner's shape-aware strategy dispatch; `Request.temporal` consumption)
+  - 35 (`apis/35_semstrait_ir.md` — `PlanNode::Join` carriage of `JoinType::AsOf` variant data)
+  - `registry/temporal_shape_mapping.md` (per-engine SCD / Events / Snapshot emission — AS OF JOIN in Spark, lateral joins in DuckDB, temporal tables, etc.)
+---
+
+# 17. Temporal Shape
+
+> **Status:** ratified — vocabulary, model-surface shape, and design-level interactions are authoritative. Planner-side implementation of shape-aware behavior (as-of joins, snapshot-selection, SCD window resolution, `Request.temporal` consumption) is **DEFERRED** to a later milestone as declared in `00 §4.1` (`TemporalShape` row) and `00 §4.1` (`AsOf` `JoinType` row). Round-1 drafting open items are parked in `open_questions/17_open_questions.md`.
+
+## [CONTRADICTION-FOUND] — code-range coordination with `30 §6.2`
+
+This document assigns error codes in the doc-aligned range `*_E_1700`–`*_E_1799` (and `*_W_1700`–`*_W_1799`) per the authoring-time brief. `30 §6.2` as currently ratified allocates subsystem-level ranges that **do not extend past 0999** — `VALID_E` tops out at `0999`, `COMP_E` at `0499`, `PLAN_E` / `PLAN_W` at `0699`. The 17NN allocation sits outside every current subsystem range.
+
+**Two reconciliations are possible** (both are MINOR per `30 §2`):
+
+1. **Extend `30 §6.2`'s subsystem ranges.** Add a doc-aligned sub-range convention (`NN00`–`NN99` reserved for the doc that ratifies the error, where `NN` is the doc number), and widen `VALID_E` / `COMP_E` / `PLAN_E` / `PLAN_W` overall ranges to `0001`–`9999` to accommodate. Bumps `30 §6.2`'s table.
+2. **Re-allocate within `30 §6.2`'s current ranges.** `16` used `0400`–`0499` / `0500`–`0599`; the next free 100-ranges in the ratified allocation are `VALID_E_0500`–`0999` (structurally claimed for keys + internal but most unused), `COMP_E` has no free 100-block left (0400-0499 taken), `PLAN_E_0600`–`0699`, `PLAN_W_0600`–`0699`. Under this reconciliation, `17` would claim `VALID_E_0500`–`0599` and `PLAN_E_0600`–`0699` and `PLAN_W_0600`–`0699`; `COMP_E` would need to either borrow from `VALID_E_0400`–`0499` unused slots or extend.
+
+This doc adopts **Option 1** (doc-aligned 17NN allocation) on the authoring-time brief, and records the coordination task as Q-TEMPORAL-001 in `open_questions/17_open_questions.md`. If `30 §6.2` is instead revised to adopt Option 2, every `*_E_17NN` reference in this doc is re-homed to its Option-2 code; error semantics are unchanged.
+
+`16 §14`'s `COMP_E_04xx` / `VALID_E_04xx` / `PLAN_E_05xx` / `PLAN_W_05xx` allocations are **not affected** — they remain authoritative for composition.
+
+---
+
+## 1. Purpose and Scope
+
+### 1.1 What `17` ratifies
+
+`17` is the canonical specification for the **historization axis** of a `DataKind`: *how* the data records time, *which* Dimension carries the time axis, and *what* the planner is permitted (or required) to infer from that classification. It is the eighth and final foundations document in the `1x` series; every `2x` data-kind doc consumes `17`'s vocabulary (`20 §…` — `25 §…`).
+
+Concretely, `17` ratifies:
+
+- **§2** — The `TemporalShape` classification vocabulary. Four top-level variants — `Timeseries`, `Events`, `Snapshot`, `Scd` — with per-variant payloads identifying the time axis and auxiliary fields. SCD subtypes `Type0`–`Type6` are ratified in a nested `ScdSubtype` enum, superseding the `Type1` / `Type2` / `Type6`-only naming from `00 §4.1`.
+- **§3** — The declaration site. `TemporalShape` is authored on a `SimpleDataKind` alongside its `Binding` and its declared `Grain`; `ComplexDataKind`s do not carry their own `TemporalShape` but may constrain or inherit their constituents' shapes per §8.
+- **§4** — The `TemporalShape × Grain` interaction matrix. Which shapes roll up freely across `Grain`, which have a fixed source grain (`Snapshot`), which have no intrinsic grain (`Scd`).
+- **§5** — The `JoinType::AsOf` variant ratification. Shape, semantics, and the per-shape-pair legality matrix gating which combinations admit `AsOf` traversal. Implementation is DEFERRED (planner does not yet emit `AsOf` joins); the variant is ratified at the IR vocabulary level per `16 §4.4.2`.
+- **§6** — The `Request.temporal` block. As-of timestamp, time-range override, default-current behavior. Vocabulary ratified; planner consumption DEFERRED.
+- **§7** — The `TemporalShape × Additivity` interaction. Two-axis independence (per `11 §7.2`) plus the concrete advisory-warning roster when the two appear inconsistent.
+- **§8** — Shape-gated composition rules refining `16 §11`. Which shape combinations admit implicit composition, which require explicit `AsOf` anchoring, which forbid composition entirely in Round 1.
+- **§9** — The structural-Precondition catalog by stage (`validate`, `compile`, `plan`), with code allocations in `VALID_E_1700`–`1799` / `COMP_E_1700`–`1799` / `PLAN_E_1700`–`1799` / `PLAN_W_1700`–`1799` per the [CONTRADICTION-FOUND] block above.
+- **§10** — The DEFERRED-items roster: the closed list of planner behaviors whose vocabulary and model surface this doc ratifies but whose implementation lands in a later milestone.
+
+### 1.2 What `17` does NOT ratify (forward-refs)
+
+- The YAML surface for `temporal_shape:` authoring (subtype discriminator keys, alias policy) — `32`.
+- The per-engine emission of `AsOf` / snapshot-selection / SCD-window predicates — `registry/temporal_shape_mapping.md` and per-adapter docs (`36`).
+- Per-DataKind-variant planner strategies that consume `TemporalShape` — `20`–`25`, particularly `22` (Grainset cadence alignment) and `24` (Joinset as-of anchors).
+- Non-temporal grain extensions (geographic, entity rollup) — deferred per `13 §3.4` (`TD-GRAIN-NON-TEMPORAL`); `17`'s vocabulary is temporal-only.
+- The full `Request.temporal` planner algorithm (how default-current resolves when multiple constituents disagree on "current") — deferred per §6.5, gated on `34`.
+
+### 1.3 Green-field vs existing-code stance
+
+Per I9, the design tree is the "after" state. The existing crate `semstrait-model::types::temporal` already carries a `TemporalHistorization` enum with `Timeseries` / `Events` / `Snapshot` / `Scd` variants and an `ScdType` enum covering `Type1` / `Type2(ScdVersionedColumns)` / `Type3` / `Type4` / `Type5(ScdVersionedColumns)` / `Type6(ScdVersionedColumns)`. This document supersedes that symbol in three ways:
+
+1. **Rename** `TemporalHistorization` → `TemporalShape` per `00 §4.3`'s banned-terms table. The rename is tracked in `implementation/40_refactor_plan.md`; the existing code keeps the legacy symbol behind a `#[deprecated]` until the cutover.
+2. **Add `Type0`**. Kimball's `Type 0` (retain original — no updates ever) is absent in the existing enum; `17` ratifies the full `Type0`–`Type6` set. Addition is non-breaking per I10.
+3. **Lift `valid_from` / `valid_to` payloads**. Existing code carries window columns inside `Type2` / `Type5` / `Type6` variants. `17` keeps per-subtype payloads (§2.2), ratifying the **shape** of each variant's payload rather than a flat single-struct carrier — this is a refinement on the existing enum, not a structural change in Round 1. Q-TEMPORAL-002 records the "flat vs per-subtype" alternative.
+
+None of these changes block adoption; all are MINOR per `30 §2`.
+
+### 1.4 Explicit DEFERRED-for-planner-support status
+
+Per `00 §4.1`'s `TemporalShape` row and `00 §4.1`'s `AsOf` `JoinType` row, this document **ratifies vocabulary and model surface** but **defers planner-side support** for the features listed below. §10 enumerates the complete DEFERRED roster; callers must not read this doc as a contract that the Round-1 planner implements the behaviors described. Callers **can** read this doc as a stable vocabulary and model-layer specification — every `#[non_exhaustive]` enum, every declared field, every advisory-warning code allocated here is authoritative for crate-public-surface docs (`32`, `33`) and for downstream per-DataKind strategy docs (`20`–`25`).
+
+DEFERRED status does **not** mean "ignore the vocabulary until the planner catches up." `parse`, `validate`, and `compile` already operate on `TemporalShape` today (the existing `TemporalHistorization` is parsed end-to-end through compile); this doc strengthens the `validate` / `compile` Preconditions (§9) to match the ratified semantics. DEFERRED items are planner behaviors only.
+
+### 1.5 Invariants `17` directly upholds
+
+- **I1 — canonical layer.** `TemporalShape`'s identifying Dimension references are `SemanticsName`s, never physical column names. The `SemanticsName → physical-column` resolution happens in `15 §4` via `ColumnMapping`; `17`'s rules operate on the canonical-layer names.
+- **I4 — determinism.** Shape-gated planner decisions are fully determined by `(Model, Request)`; no non-deterministic tie-breaking. When shape-propagation through composition is ambiguous (e.g. a `Unionset` of constituents with divergent shapes), the rule is "emit `COMP_E_17NN`, do not pick a shape."
+- **I5 — resolution at compile time.** `temporal_shape:` references to Dimensions are resolved during `compile`; the Manifest carries a `ResolvedTemporalShape` with `SemanticsName` pointers replaced by `(SemanticsName, BindingId)` pairs that index into the `ResolvedExprTable` per `14b §2`.
+- **I8 — Manifest planner-complete.** Every shape-aware planner decision is table-driven from Manifest state; no YAML-time logic survives into `plan`.
+- **I10 — non-exhaustive extensibility.** `TemporalShape`, `ScdSubtype`, and `JoinType::AsOf`-extended `JoinType` are all `#[non_exhaustive]`. Variants may grow (SCD Type 7, non-temporal shapes, bi-temporal shapes) without MAJOR bumps.
+- **I12 — first-class diagnostics.** Every Precondition and advisory in §9 carries a stable `*_E_17NN` / `*_W_17NN` code.
+
+---
+
+## 2. `TemporalShape` — the classification vocabulary
+
+### 2.1 The four top-level variants
+
+`TemporalShape` classifies a `SimpleDataKind` by how its rows record time. Four variants, each with a characteristic identifying Dimension (the Semantics name that carries the time axis) and variant-specific auxiliary fields.
+
+| Variant | Identifying Dim | Characteristic semantics | Grain posture (§4) |
+|---|---|---|---|
+| `Timeseries` | `occurred_at_dim` | Dense regularly-spaced observations at a known cadence. Row existence for every `(entity, time)` combination at the cadence. | Rolls up freely along its declared `Grain`. |
+| `Events` | `occurred_at_dim` | Sparse discrete occurrences; rows exist only where something happened. No regularity assumption. | Rolls up via bucket-then-aggregate; declared `Grain` is the coarsest meaningful bucket. |
+| `Snapshot` | `snapshotted_at_dim` | Periodic full-state capture. Each snapshot is a complete as-of-time image of the underlying entity population; rolling up means choosing which snapshot(s) to read. | Fixed source grain = snapshot cadence; cannot sub-aggregate below it. |
+| `Scd` | per-subtype (see §2.2) | Slowly-changing Dimension table — one or more rows per entity across the entity's history, with subtype-specific preservation rules. | No intrinsic grain; as-of anchoring is the composition mechanism. |
+
+The variants are mutually exclusive per `SimpleDataKind`: a single `SimpleDataKind` has exactly one `TemporalShape` (or none; `TemporalShape` is optional authoring-wise, with "not stated" meaning "no shape declared and no shape-aware planner behavior" — §3.3).
+
+### 2.2 `ScdSubtype` — the full Kimball taxonomy
+
+`Scd` carries a nested `ScdSubtype` discriminator. The full Kimball Type 0–Type 6 set is ratified at this level. Ratifying the full set at vocabulary time is deliberate: subtypes are a closed, well-known taxonomy (no Type 2.5 exists), and enumerating all seven at once prevents MINOR churn as callers encounter uncommon subtypes.
+
+| Subtype | Canonical description | History-preserving? | Window payload? |
+|---|---|---|---|
+| `Type0` | Retain original. Rows, once written, never update. New entities add new rows; existing rows are immutable. | Yes (by refusal-to-update). | No. |
+| `Type1` | Overwrite. Each entity has exactly one row; updates overwrite in place. No history preserved. | No. | No. |
+| `Type2` | Full history via valid windows. Each change inserts a new row with `valid_from` / `valid_to` covering its validity period; prior rows' `valid_to` is updated to the change moment. | Yes. | `valid_from_dim`, `valid_to_dim`, optional `current_flag_dim`. |
+| `Type3` | Limited history via prior-value column. Each row carries one extra column holding the previous value; change overwrites current, shifts previous into the prior column. | Partial (one generation). | `prior_value_dim`. |
+| `Type4` | History table. Current state lives on the primary table; historical versions live in a separate history table referenced by the shape payload. | Yes (externalized). | `history_data_kind_ref`. |
+| `Type5` | Type 4 + mini-dimension. Adds an outrigger mini-dimension to Type 4's history-table shape, typically for high-cardinality changing attributes. Window payload as in Type 2. | Yes. | `valid_from_dim`, `valid_to_dim`, `mini_dim_ref`. |
+| `Type6` | Hybrid. Combines Type 1 (current-value overwrite) + Type 2 (full history) + optionally Type 3 (one prior value) in a single row set. The row carries both a history window and a current-value column. | Yes. | `valid_from_dim`, `valid_to_dim`, optional `current_flag_dim`, optional `current_value_dim`. |
+
+**Rationale for ratifying Type 0 – Type 6 at vocabulary time.** `00 §4.1` named Type 1, Type 2, Type 6 only; `17` fills in the gaps. Encountering an un-ratified subtype in a Model would otherwise force either an `Unknown` catch-all (which collides with I10 non-exhaustive, since `#[non_exhaustive]` already handles MINOR additions) or rejection at parse. Ratifying the full set up front lets `validate` emit a single clean error when authors write an unknown discriminator (`unknown variant "type_8"`) rather than forcing a shape-conflict cascade later.
+
+**Does Round 1 implement all seven?** No. Vocabulary is ratified across the board, but planner-side support is limited:
+
+- `Type1`, `Type2` are the common shapes with a well-defined as-of semantics; they are the targeted shapes for Round-2 planner work.
+- `Type0`, `Type3` have no as-of-join ambiguity but are recognized for advisory purposes (§7.3).
+- `Type4`, `Type5`, `Type6` are ratified at the vocabulary level but their full planner treatment is DEFERRED to a later milestone (§10). `Type4`'s `history_data_kind_ref` is the most structurally involved — it pins a second `DataKind` as the history table — and requires coordination with `16`'s composition surface, tracked as `[TD-SCD-TYPE4-HISTORY-REF]` in §10.
+
+### 2.3 Variant-specific payloads — the Rust enum sketch
+
+Per I10, every variant of `TemporalShape` and every variant of `ScdSubtype` carries its payload as a struct (avoiding bare tuple variants) so future fields are additive. `#[non_exhaustive]` on both enums lets MINOR additions (new subtypes, new top-level shapes, new fields inside payloads) land without breaking downstream matching.
+
+```rust
+/// Historization classification of a `SimpleDataKind`'s time axis.
+///
+/// Declared on a `SimpleDataKind` alongside its `Binding` and `Grain`. Each
+/// variant names the Dimension that carries the time axis and any auxiliary
+/// information the planner needs to reason about shape-dependent behavior.
+///
+/// Non-exhaustive per I10; future variants (e.g. bi-temporal shapes with both
+/// `valid_time` and `system_time`) are additive.
+#[non_exhaustive]
+pub enum TemporalShape {
+    /// Dense, regularly-spaced observations at a known cadence.
+    Timeseries {
+        /// Canonical Semantics name of the temporal Dimension carrying the
+        /// observation timestamp. Must resolve (at compile) to a Dimension
+        /// with `DimensionType::Temporal` (per `13 §4.2`) on the declaring
+        /// DataKind's interface.
+        occurred_at_dim: SemanticsName,
+
+        /// The declared observation cadence. Constrains which `Grain`
+        /// rollups the planner may emit without re-bucketing. MUST be one
+        /// of the grains listed on `occurred_at_dim`'s `grains:` per `13 §4.2`.
+        grain: Grain,
+    },
+
+    /// Sparse discrete occurrences.
+    Events {
+        /// Canonical Semantics name of the temporal Dimension carrying the
+        /// event timestamp. Same resolution rule as `Timeseries.occurred_at_dim`.
+        occurred_at_dim: SemanticsName,
+    },
+
+    /// Periodic full-state capture.
+    Snapshot {
+        /// Canonical Semantics name of the temporal Dimension carrying the
+        /// snapshot timestamp. Must resolve to a Dimension with
+        /// `DimensionType::Temporal` on the declaring DataKind's interface.
+        snapshotted_at_dim: SemanticsName,
+
+        /// Optional declared snapshot cadence. When present, the planner MAY
+        /// validate cadence-aligned rollups; when absent, snapshot selection
+        /// is free-form ("the latest snapshot at or before T").
+        cadence: Option<Grain>,
+    },
+
+    /// Slowly-changing dimension with history.
+    Scd {
+        /// The subtype payload. See `ScdSubtype` for the closed Type0–Type6
+        /// taxonomy and per-subtype fields.
+        subtype: ScdSubtype,
+    },
+}
+
+/// Kimball SCD subtype taxonomy. Type 0 – Type 6 ratified.
+///
+/// Non-exhaustive per I10 — a future Type 7 (dual — current + historic view)
+/// extension is reserved but not in Round 1.
+#[non_exhaustive]
+pub enum ScdSubtype {
+    /// Retain original; no updates after insert. No window columns.
+    Type0,
+
+    /// Overwrite-in-place; one row per entity; no history. No window columns.
+    Type1,
+
+    /// Full history via valid windows. One row per validity period per entity.
+    Type2 {
+        /// Canonical Semantics name of the Dimension carrying the inclusive
+        /// lower bound of the row's validity window.
+        valid_from_dim: SemanticsName,
+
+        /// Canonical Semantics name of the Dimension carrying the exclusive
+        /// upper bound of the row's validity window. Open-ended rows
+        /// conventionally carry `NULL` or a sentinel (e.g. `9999-12-31`);
+        /// the sentinel convention is adapter-side (`registry/temporal_shape_mapping.md`).
+        valid_to_dim: SemanticsName,
+
+        /// Optional Dimension flagging the currently-active row per entity
+        /// (typically `boolean`). Redundant with `valid_to_dim IS NULL / =
+        /// sentinel` but commonly present for indexing.
+        current_flag_dim: Option<SemanticsName>,
+    },
+
+    /// Limited history via a prior-value column.
+    Type3 {
+        /// Canonical Semantics name of the Dimension carrying the previous
+        /// value of the changed attribute. The "current" value lives on the
+        /// Semantics whose history this subtype records; the subtype payload
+        /// identifies the ghost column.
+        prior_value_dim: SemanticsName,
+    },
+
+    /// History externalized to a separate DataKind.
+    Type4 {
+        /// Reference to the top-level `DataKind` holding the history rows.
+        /// Compile resolves to a `DataKindRef`. The referenced kind SHOULD
+        /// itself declare a compatible `TemporalShape::Scd { subtype:
+        /// ScdSubtype::Type2 { .. } }` — Type 2 is the canonical history shape.
+        history_data_kind_ref: DataKindRef,
+    },
+
+    /// Type 4 + mini-dimension outrigger.
+    Type5 {
+        valid_from_dim: SemanticsName,
+        valid_to_dim: SemanticsName,
+        /// Reference to the top-level mini-Dimension DataKind.
+        mini_dim_ref: DataKindRef,
+    },
+
+    /// Hybrid: Type 1 + Type 2 (+ optionally Type 3) in one row set.
+    Type6 {
+        valid_from_dim: SemanticsName,
+        valid_to_dim: SemanticsName,
+        current_flag_dim: Option<SemanticsName>,
+        /// Optional current-value column (the Type-1 component of the hybrid).
+        /// When present, carries the current value duplicated onto every
+        /// history row for the entity.
+        current_value_dim: Option<SemanticsName>,
+    },
+}
+```
+
+**Design notes:**
+
+- **Per-subtype payload vs flat-fields.** The alternative — `Scd { subtype: ScdSubtype, valid_from_dim: SemanticsName, valid_to_dim: SemanticsName, current_flag_dim: Option<SemanticsName>, ... }` with the fields meaningless for `Type0` / `Type1` / `Type3` — was rejected for this draft. Per-subtype payload lets the type system refuse nonsense (you cannot accidentally author `valid_from_dim` on a `Type0` record) and makes future additions (Type 7's dual-view fields) additive inside a single variant. Q-TEMPORAL-002 revisits this.
+- **Payload references are `SemanticsName`s.** Per I1, every time-axis Dimension reference in `TemporalShape` is a canonical Semantics name, not a physical column. Resolution to physical columns happens in `15 §5` via `ColumnMapping`.
+- **Non-exhaustive at every level.** `TemporalShape` is `#[non_exhaustive]`; `ScdSubtype` is `#[non_exhaustive]`; `Type2`, `Type6` payloads are `#[non_exhaustive]` (implicit via struct-variant-in-non-exhaustive-enum, but we are explicit about the field-addition promise). Adding `ScdSubtype::Type7 { ... }` or extending `Type6` with `effective_from: Option<SemanticsName>` is MINOR.
+
+### 2.4 Per-variant identifying Dimension — the contract
+
+Each `TemporalShape` variant names **exactly one** identifying Dimension at the top level (for `Timeseries` / `Events` / `Snapshot`) or per-subtype at the nested level (for `Scd`). The identifying Dimension must:
+
+1. **Be declared on the `SimpleDataKind`'s interface** — either authored there or inherited from Tier-1 per `11 §5`. Failure → `COMP_E_1701 TemporalIdentifyingDimMissing`.
+2. **Carry `DimensionType::Temporal`** per `13 §4.2`. A non-temporal Dimension cannot serve as a time axis. Failure → `COMP_E_1702 TemporalIdentifyingDimNotTemporal`.
+3. **Carry a `DataType` that is one of `Date`, `Time`, `Timestamp`, or `Interval`** (the time-typed subset of `13 §2.1`). `Interval` is unusual as a time axis but permitted for elapsed-time-indexed data. Failure → `COMP_E_1703 TemporalIdentifyingDimUntypedForTime`.
+
+For `Timeseries.grain`:
+
+4. **Must be a member of the identifying Dimension's `grains:` list** per `13 §4.2`. Declaring `grain: Hour` on a `Timeseries` whose `occurred_at_dim.grains: [Day, Month]` is `COMP_E_1704 TimeseriesGrainNotAvailable`.
+
+For `Scd::Type2` / `Type5` / `Type6` window payloads:
+
+5. **`valid_from_dim.DataType` and `valid_to_dim.DataType` must unify** per `13 §5` (strict equality; `11 §3.1`'s global-identity rule makes this a trivial shape-unification check). Failure → `COMP_E_1705 ScdWindowTypeMismatch`.
+6. **`current_flag_dim.DataType`** (when present) **must be `Boolean`**. Failure → `COMP_E_1706 ScdCurrentFlagNotBoolean`.
+
+For `Scd::Type4` / `Type5`:
+
+7. **`history_data_kind_ref` / `mini_dim_ref` must resolve to a declared top-level `DataKind`**. Failure → `COMP_E_1707 ScdRefUnknown`.
+8. **`history_data_kind_ref`, when resolved, SHOULD itself declare `TemporalShape::Scd { subtype: ScdSubtype::Type2 { .. } }`**. Divergence is `PLAN_W_1701 ScdHistoryShapeUnexpected` (advisory, not an error — authors may have legitimate reasons for non-standard history tables).
+
+Per-variant identifying Dimension participation in `Additivity`, composition, and `Request.temporal` is spelled out in §§4, 6, 7, 8.
+
+---
+
+## 3. Declaration site
+
+### 3.1 `TemporalShape` lives on `SimpleDataKind`
+
+Per `11 §5` and `15 §1.1`, a `SimpleDataKind` is the leaf of the data-kind tree: it carries exactly one `Binding`, one declared `SemanticInterface`, and — by `17` — at most one `TemporalShape`. The shape declaration sits alongside the interface (not inside it): conceptually, `TemporalShape` is a Kind-scope property about the DataKind, not a member of its Semantics roster.
+
+```yaml
+# YAML surface (authoritative shape in `32`; shown here for reader orientation).
+datasets:
+  - name: orders
+    dimensions:
+      - { name: order_date,    type: { temporal: { grains: [day, month] } }, data_type: date }
+      - { name: valid_from,    type: { temporal: { grains: [day] } },        data_type: timestamp(6) }
+      - { name: valid_to,      type: { temporal: { grains: [day] } },        data_type: timestamp(6) }
+      - { name: is_current,    data_type: boolean }
+    temporal_shape:
+      scd:
+        type_2:
+          valid_from: valid_from
+          valid_to:   valid_to
+          current_flag: is_current
+    # binding, measures, keys omitted
+```
+
+A `SimpleDataKind` MAY omit `temporal_shape:` entirely. "No shape declared" means the planner performs no shape-aware reasoning on this DataKind — it is neither `Timeseries`, `Events`, `Snapshot`, nor `Scd`. Shape-dependent planner behaviors (as-of joins, snapshot selection) are simply not available for the DataKind. This is the Round-1 default for every pre-existing DataKind that hasn't opted into shape-aware planning.
+
+### 3.2 `ComplexDataKind`s do NOT carry a top-level `TemporalShape`
+
+Per `12 §2` and `16 §5`, a `ComplexDataKind` composes children; it has no binding of its own (`15 §1.2`). `17` inherits the same structural constraint for shape: a `Unionset` / `Grainset` / `Joinset` does not declare its own `TemporalShape`. Instead, the effective shape of a `ComposedSemanticInterface` is **derived from its constituents** per §8's composition rules.
+
+Specifically:
+
+- **Unionset.** Branches must agree on shape (§8.1). The composed surface inherits the common shape. Divergence is `COMP_E_1710 UnionsetShapeConflict`.
+- **Grainset.** Branches must all be `Timeseries` or all `Snapshot` (or all shape-free); mixing shape kinds inside a Grainset is `COMP_E_1711 GrainsetShapeMixed`. The composed surface inherits the common kind; the grain axis is resolved per `22 §…`.
+- **Joinset.** Per-branch shapes are retained; the Joinset surface does not collapse to a single shape. `JoinType::AsOf` traversals (§5) bind specific shape pairs along individual edges.
+- **Implicit `ComposedSemanticInterface` (`16 §11`).** Same as Joinset — per-constituent shapes are retained, and composition-surface rollup / as-of anchoring obeys the per-shape rules in §8.
+
+### 3.3 Implicit "no shape declared" behavior
+
+A `SimpleDataKind` without `temporal_shape:` is treated as **shape-unclassified**. The planner:
+
+- Does NOT reject queries over the DataKind. Every non-shape-dependent operation (filter, group-by, aggregation, `Grain` rollup along the declared temporal Dimension) works as specified in `11`–`16`.
+- Does NOT synthesize a default shape. No heuristic guessing ("this DataKind has an `occurred_at` column, therefore `Events`"); implicit-shape inference is out of scope per §1.2 forward-refs.
+- DOES emit `PLAN_W_1702 ShapeAwareRequestOnUnclassifiedDataKind` when a `Request.temporal` block (§6) is provided targeting an unclassified DataKind. Vocabulary-ratified; advisory-only per I12.
+
+### 3.4 Cross-occurrence shape-unification
+
+`TemporalShape` is authored on a `SimpleDataKind`, not on a Semantics. The shape-unification rules in `11 §5.1` apply to Semantics shape fields (`data_type`, `additivity`, ...), not to DataKind-level `temporal_shape:`. A Semantics name like `occurred_at` may appear on multiple DataKinds (by global identity per `11 §3.1`); each containing DataKind independently states its own `TemporalShape`.
+
+Consequence: the same `occurred_at` Dimension can be the `Timeseries.occurred_at_dim` of DataKind `A` AND the `Events.occurred_at_dim` of DataKind `B` AND the `Scd::Type2.valid_from_dim` of DataKind `C` — each DataKind chooses its own shape, and the Semantics name is shared only at the identity level.
+
+---
+
+## 4. Interaction with `Grain`
+
+### 4.1 The matrix
+
+| Shape | Declared `Grain` | Rollup legality | Sub-aggregation legality |
+|---|---|---|---|
+| `Timeseries { occurred_at_dim, grain: G }` | `G` (the declared cadence) | Rollup to any `G' >= G` in the coarseness order (per `13 §3.2`) is legal; planner emits a coarsening `DateTrunc` projection per `14a §…`. | Sub-aggregation below `G` is **illegal** — the source data is only dense at `G`. `PLAN_E_1710 TimeseriesSubGrainRequested`. |
+| `Events { occurred_at_dim }` | inferred from `occurred_at_dim.grains:` per `13 §4.2` | Rollup to any `grain ∈ occurred_at_dim.grains:` is legal via bucket-then-aggregate; planner emits `DateTrunc(occurred_at_dim, grain)` + aggregate. | Sub-aggregation at a finer grain than the coarsest `grain ∈ occurred_at_dim.grains:` is legal (events are sparse, finer bucketing is meaningful); bounded by `occurred_at_dim`'s declared grain set. |
+| `Snapshot { snapshotted_at_dim, cadence: Some(C) }` | `C` (the declared cadence) | Rollup to `Grain >= C` is **semi-legal**: the planner picks the set of snapshots whose timestamps bucket into the target period and applies a user-chosen reduction (first / last / average — policy per `25 §…`). Default: last snapshot in each period. | Sub-aggregation below `C` is **illegal** — no source data exists between snapshots. `PLAN_E_1711 SnapshotSubCadenceRequested`. |
+| `Snapshot { snapshotted_at_dim, cadence: None }` | free-form | "Latest snapshot at or before `Request.as_of`" semantics per §6.2. No free rollup; the planner selects one snapshot per Request. | Not applicable — single snapshot per Request. |
+| `Scd { subtype: Type0 / Type1 }` | no intrinsic temporal rollup axis | Shape carries no time axis (or carries a trivial one). Request-level rollups on non-temporal Dimensions work per `11`–`16`; time-axis rollups are meaningless. | Not applicable. |
+| `Scd { subtype: Type2 / Type4 / Type5 / Type6 }` | no intrinsic grain; `valid_from` / `valid_to` carry event-point times, not cadence-aligned buckets | Rollup semantics depend on as-of anchoring (§5.2 / §8.3); the SCD surface itself does not carry a rollable `Grain`. A Request over an SCD surface without anchor specification defaults to "current rows" per §6.3. | Not applicable at the SCD layer; applicable downstream after as-of anchoring resolves the surface to one row per entity. |
+| `Scd { subtype: Type3 }` | no intrinsic grain; prior-value carries one-generation-back data | As `Type1` for rollup purposes — the current row's values are authoritative. | Not applicable. |
+
+### 4.2 Rationale for the matrix
+
+The matrix mechanizes four distinct patterns that vanish into one undifferentiated "time" concept without shape awareness:
+
+- **`Timeseries` is grain-bound.** Every row is a cadence-aligned observation. Rolling up means "group N consecutive cadence periods into one"; sub-aggregating means asking for periods that don't exist in the source — planner refuses.
+- **`Events` is grain-free.** Rows are discrete; any `Grain` bucketing is legal as long as the Dimension's `grains:` list includes it. The "grain of an Events DataKind" is the **coarsest meaningful bucket** (typically the coarsest `grain` in `occurred_at_dim.grains:`); finer buckets down to `Minute` or below are legal.
+- **`Snapshot` is cadence-pinned.** A snapshot at `T` is a complete picture of state at `T`; rolling up a week of daily snapshots to a weekly view requires picking *which* day represents the week, and that's a semantic decision (§6.3). The planner refuses to invent that semantics; the default "last snapshot in period" is a per-shape convention ratified in `25 §…`.
+- **`Scd` has no grain.** An SCD surface is a history of entity states with no regular cadence. It has a time dimension (validity windows), but those windows are event-points, not buckets. The "grain" of an SCD kind is provided by the *anchor* — once the planner picks an as-of timestamp, each entity resolves to exactly one row, and the surface behaves like a grain-free `Scd::Type1`.
+
+### 4.3 Interaction with `Grainset`
+
+Per `16 §5.3`, a `Grainset` composes `Simple` children at distinct grains for the planner to pick the cheapest covering grain. When the `Grainset`'s children all declare `TemporalShape::Timeseries` (the intended use case):
+
+- Each child's `Timeseries.grain` must be a distinct value; the `Grainset`'s `levels:` per `22 §…` pair each child with its grain.
+- Rollup from child grain `G_child` to Request grain `G_req` is legal iff `G_req >= G_child` in the coarseness order per `13 §3.2`.
+- Downgrade (picking a coarser-grain child to serve a finer-grain Request) is forbidden per `11 §4.2`'s no-silent-downgrading stance; `PLAN_E_1712 GrainsetDowngradeRequested`.
+
+When the `Grainset`'s children are `Events` or `Snapshot` shapes, `22 §…` ratifies the per-shape `Grainset` strategy; `17` records only that shape-mixing inside one `Grainset` is `COMP_E_1711 GrainsetShapeMixed`.
+
+---
+
+## 5. Interaction with `JoinType` — ratifying `AsOf`
+
+### 5.1 The `AsOf` variant — vocabulary ratification
+
+`16 §4.1` ratified `JoinType::Inner | Left | Right | Full` as the v1 roster; `16 §4.4.2` deferred `JoinType::AsOf` to this doc, gated on `TemporalShape` availability. `17 §5` discharges that gate. The ratified extension:
+
+```rust
+#[non_exhaustive]
+pub enum JoinType {
+    Inner,
+    Left,
+    Right,
+    Full,
+
+    /// Temporal-proximity join. Matches the most recent row on the `to` side
+    /// whose temporal anchor satisfies the anchor condition relative to the
+    /// `from` side's probe timestamp. See `AsOfAnchor` for the per-shape
+    /// anchor specification.
+    ///
+    /// Implementation DEFERRED per `17 §10`. Vocabulary ratified; the planner
+    /// does not yet emit `JoinNode { join_type: AsOf { .. }, .. }` in Round 1.
+    AsOf(AsOfAnchor),
+}
+
+/// The anchor specification carried by `JoinType::AsOf`. Per-shape.
+#[non_exhaustive]
+pub enum AsOfAnchor {
+    /// The `to` side is an `Scd` kind with valid-window payload. Each matched
+    /// `to`-row must satisfy `valid_from <= probe < valid_to` (half-open
+    /// interval; open-ended `valid_to = NULL / sentinel` matches indefinitely).
+    ScdWindow {
+        /// Canonical Semantics name of the `from`-side Dimension carrying the
+        /// probe timestamp (the query's "as of").
+        probe_dim: SemanticsName,
+
+        /// Echoed from the `to`-side Scd shape's `valid_from_dim`.
+        to_valid_from_dim: SemanticsName,
+
+        /// Echoed from the `to`-side Scd shape's `valid_to_dim`.
+        to_valid_to_dim: SemanticsName,
+    },
+
+    /// The `to` side is a `Snapshot` kind. The planner picks, per
+    /// `from`-side row, the `to`-side row whose `snapshotted_at` is the
+    /// latest value `<= probe`.
+    SnapshotLatestAtOrBefore {
+        probe_dim: SemanticsName,
+        to_snapshotted_at_dim: SemanticsName,
+    },
+}
+```
+
+**Vocabulary-ratified, implementation-DEFERRED.** Per §10, the planner's Round-1 implementation does not construct `AsOf` joins; YAML authors MAY NOT (in Round 1) declare an `AsOf` `join_type:` on a `Relationship` — the `32` YAML surface keeps the enum closed at `Inner / Left / Right / Full` in Round 1, admitting `AsOf` in a later MINOR. `16 §4.1`'s comment "`AsOf` — deferred; gated on `TemporalShape` support per `17`" remains accurate — the gate is now in place, but the door is not yet open.
+
+### 5.2 Per-shape-pair legality matrix
+
+The matrix below enumerates which shape pairs on the `from` / `to` sides of a `Relationship` admit `AsOf` traversal. Only pairs marked **Admits `AsOf`** are legal; the planner rejects other combinations with `PLAN_E_1720 AsOfShapePairIllegal`.
+
+| `from` shape | `to` shape | Admits `AsOf`? | Anchor | Notes |
+|---|---|---|---|---|
+| `Events` | `Scd::Type2 / Type5 / Type6` | Yes | `AsOfAnchor::ScdWindow { probe_dim = from.occurred_at_dim, to_valid_from_dim, to_valid_to_dim }` | The canonical "what was the entity state at the time of this event" pattern. |
+| `Events` | `Scd::Type0 / Type1 / Type3 / Type4` | No — use `Inner` / `Left` | — | These subtypes do not carry a valid-window; "as of" resolves to the current row (Type 0 / 1 / 3) or externalizes to a separate history table (Type 4). The planner treats them as bare current-state lookups. `Type4` as-of joins are DEFERRED per §10 with a structural gap; tracked as `[TD-SCD-TYPE4-ASOF]`. |
+| `Events` | `Snapshot` | Yes | `AsOfAnchor::SnapshotLatestAtOrBefore { probe_dim = from.occurred_at_dim, to_snapshotted_at_dim }` | "What was the latest snapshot at the time of this event." Requires at least one snapshot `<=` the probe; unmatched events fall through per the `JoinType`'s outer-join layer (`Left` outer gives NULL-fill; `Inner` drops). |
+| `Timeseries` | `Scd::Type2 / Type5 / Type6` | Yes | `AsOfAnchor::ScdWindow { probe_dim = from.occurred_at_dim, ... }` | Same as Events-↔-SCD; cadence-regular version. |
+| `Timeseries` | `Snapshot` | Yes | `AsOfAnchor::SnapshotLatestAtOrBefore { ... }` | Useful for joining a daily metric stream to a weekly snapshot of reference data. |
+| `Snapshot` | `Scd::Type2` | Yes | `AsOfAnchor::ScdWindow { probe_dim = from.snapshotted_at_dim, ... }` | "At each snapshot moment, what was the entity state." Less common; ratified for completeness. |
+| `Scd::Type2` | `Events` / `Timeseries` / `Snapshot` | No | — | The SCD side is the target of "as of" queries, not the probe side. Reverse the relationship direction or use `Inner`. |
+| `Snapshot ↔ Snapshot` | — | No | — | Two snapshots join on their natural keys at a common `snapshotted_at`; no as-of anchoring. Use `Inner`. |
+| `Events ↔ Events` | — | No | — | Event-to-event join is natural-key based; no as-of anchoring. Use `Inner`. |
+| `Timeseries ↔ Timeseries` at matching grain | — | No | — | Natural key + grain-aligned join; use `Inner`. |
+| Either side shape-unclassified | — | No | — | `AsOf` requires both sides to be ratified shapes. `PLAN_E_1721 AsOfShapeUnclassified`. |
+
+### 5.3 Legal cardinalities per shape pair
+
+`16 §3.5`'s `Cardinality × Additivity` matrix is sharpened when `TemporalShape` is involved:
+
+| Shape pair | Typical `Cardinality` | Notes |
+|---|---|---|
+| `Events ↔ Scd::Type2` (AsOf, forward) | `ManyToOne` | Each event matches one validity window on the SCD side. No fanout. |
+| `Events ↔ Snapshot` (AsOf, forward) | `ManyToOne` | Each event matches one snapshot (the latest at-or-before). No fanout. |
+| `Timeseries ↔ Scd::Type2` (AsOf, forward) | `ManyToOne` | Same as Events; each tick matches one SCD window. |
+| `Snapshot ↔ Snapshot` (Inner, same cadence) | `OneToOne` (per snapshot instant) | The natural pairing when two snapshots share the same cadence. |
+| `Events ↔ Events` (Inner, same entity) | depends on volume — typically `ManyToMany` and warn-worthy | The `PLAN_W_0502 ManyToManyAdvisory` from `16 §3.3.4` applies; `17` adds the shape context. |
+
+Reverse-direction traversal of an `AsOf` `Relationship` is **forbidden**. The probe side and the anchor side are semantically asymmetric; "what events were recorded during this SCD window" is not the mirror of "what was the SCD state at this event time" — the former is a range query that returns `0..N` events per window, the latter is a point query that returns exactly one SCD row per event. The planner rejects reverse traversal with `PLAN_E_1722 AsOfReverseTraversalForbidden`. Authors needing the reverse semantics must either declare a distinct `Relationship` with `Directionality::Forward` (per `16 §2.4`) or express the query through an explicit `Joinset` with a different anchor.
+
+### 5.4 `PlanNode::Join` carriage — DEFERRED
+
+Per `35 §…` (pending), `PlanNode::Join` carries `JoinType` verbatim (`16 §4.3`). The Round-1 IR shape (`35 §…`) does not yet include `AsOfAnchor` materialization; extending `JoinNode` with the anchor payload is MINOR per I10 and lands alongside the planner implementation. The vocabulary ratified here binds `35`'s eventual shape: when `JoinType::AsOf(anchor)` appears on a `JoinNode`, the `anchor` field must be round-trippable into the plan IR per I8.
+
+### 5.5 `Joinset`-level `AsOf` overrides — DEFERRED
+
+`16 §13.3` ratifies per-traversal `JoinType` overrides in `Joinset` declarations. Round-1 overrides are limited to `Inner / Left / Right / Full`; `AsOf` override inside a Joinset traversal is DEFERRED to the same milestone that lands planner-side `AsOf` support. Q-TEMPORAL-003 tracks whether `Joinset` authoring should be extended to accept `AsOf` overrides before or after implicit-composition `AsOf` synthesis.
+
+---
+
+## 6. Interaction with `Request`
+
+### 6.1 The `Request.temporal` block — vocabulary ratification
+
+`00 §4.1`'s `Request` row ratifies an optional `temporal:` block carrying as-of timestamp and time-range overrides, marked DEFERRED and gated on `TemporalShape`. `17 §6` ratifies the block's **shape** and **design-level semantics**; `34 §…` ratifies the planner's consumption. The ratified shape:
+
+```rust
+/// Optional Request-scoped temporal overrides. Consumption by the planner is
+/// DEFERRED per `17 §10`; vocabulary and design-level semantics are ratified.
+#[non_exhaustive]
+pub struct RequestTemporal {
+    /// The as-of timestamp for the Request. Applied:
+    ///   - as the probe timestamp for `AsOf` joins (§5)
+    ///   - as the anchor for "latest snapshot at or before" on Snapshot kinds (§4.1)
+    ///   - as the window-selection point for SCD kinds when the Request has
+    ///     no explicit window filter
+    ///
+    /// When `None`, shape-dependent default-current behavior applies (§6.3).
+    pub as_of: Option<Timestamp>,
+
+    /// Optional time-range override, restricting the Request to a contiguous
+    /// temporal window on the shape's identifying Dimension.
+    ///   - For `Timeseries` / `Events`: filters rows to `[range.start, range.end)`
+    ///     on `occurred_at_dim`.
+    ///   - For `Snapshot`: picks snapshots whose `snapshotted_at` falls in
+    ///     `[range.start, range.end)`.
+    ///   - For `Scd`: selects rows whose validity window **intersects** the
+    ///     range (at least partial overlap).
+    pub range: Option<TimeRange>,
+}
+
+#[non_exhaustive]
+pub struct TimeRange {
+    /// Inclusive lower bound.
+    pub start: Timestamp,
+
+    /// Exclusive upper bound.
+    pub end: Timestamp,
+}
+```
+
+### 6.2 As-of timestamp semantics
+
+When `as_of` is specified on a Request targeting (or traversing) a DataKind with a ratified `TemporalShape`, the semantics per shape:
+
+| Target / traversed shape | `as_of` behavior |
+|---|---|
+| `Timeseries` | No filter effect on the target rows (`as_of` is not a filter here); but it binds the probe timestamp for any `AsOf` join hop involving this kind. |
+| `Events` | Same as `Timeseries`. |
+| `Snapshot { cadence: Some }` | Selects the single snapshot `T` s.t. `T <= as_of` and `T` is the latest in the declared cadence series at or before `as_of`. No snapshot `<= as_of` → `PLAN_E_1730 SnapshotAsOfNoCoveringSnapshot`. |
+| `Snapshot { cadence: None }` | Same as `Some` case — latest snapshot at or before `as_of`. |
+| `Scd::Type0 / Type1 / Type3` | No history to pick from; current row is returned regardless of `as_of`. `PLAN_W_1730 ScdAsOfIgnored` (advisory — author likely intended Type-2-style history behavior). |
+| `Scd::Type2 / Type5 / Type6` | Selects rows where `valid_from <= as_of < valid_to` (half-open interval; open-ended `valid_to` matches). Exactly one row per entity in the well-formed case. |
+| `Scd::Type4` | Picks from `history_data_kind_ref` per `Type2` semantics when `as_of` is historic; picks from the current table when `as_of` is "current" (§6.3). DEFERRED — the cross-DataKind hop is the complicated part. |
+
+### 6.3 Default-current behavior
+
+When `as_of` is `None` and the Request targets a shape-aware DataKind:
+
+- **`Timeseries` / `Events`**: No default-current behavior — these shapes have no "current row" concept. The Request returns all in-range rows per `range` (or all rows if `range` is also `None`).
+- **`Snapshot`**: Default is "latest snapshot" (the snapshot with the maximum `snapshotted_at`). Equivalent to `as_of = SessionContext.now` for most queries.
+- **`Scd::Type0 / Type1 / Type3`**: Current row (trivially, since there is only one per entity).
+- **`Scd::Type2 / Type5 / Type6`**: Default is "current rows" — rows where `current_flag_dim = TRUE` if declared, else rows where `valid_to_dim IS NULL` (the open-ended convention; engine-specific sentinel conventions resolved per `registry/temporal_shape_mapping.md`).
+- **`Scd::Type4`**: Default is the current table (not the history table).
+
+When the default-current lookup rule is ambiguous (e.g. `Type2` with neither `current_flag_dim` declared nor a consistent `valid_to` open-ended convention), the planner emits `PLAN_W_1731 ScdCurrentRowHeuristic` and picks the row with the maximum `valid_from` per entity. This heuristic is **not** a ratified semantics; authors should declare `current_flag_dim` or normalize their `valid_to` sentinel convention.
+
+### 6.4 Time-range override semantics
+
+When `range` is specified, the planner emits a filter appropriate to the target shape (§6.1's `range` subsection). Shape-interaction with `range`:
+
+- **`range` without `as_of` on an SCD kind** returns every row whose validity window intersects `range` — potentially multiple rows per entity. The Request must either include a `filter` pinning to a single row per entity or `group_by` at the entity level and aggregate across windows. `PLAN_W_1732 ScdRangeMultipleRows` on requests that would return >1 row per entity without intent declared.
+- **`range` with `as_of` on an SCD kind** is a *conjunction*: as-of pins to one row per entity, and that row must intersect `range`. Typically degenerate — use one or the other.
+- **`range` on `Snapshot`**: Returns the **sequence** of snapshots in-range. Rollup across that sequence uses the cadence-rollup policy from §4.1.
+
+### 6.5 Shape-dependent planner delegation — DEFERRED
+
+The algorithm that resolves `Request.temporal` against a composed surface with heterogeneous constituent shapes is DEFERRED. Illustrative cases:
+
+- A `Request` spanning `Events A` ↔ `Snapshot B` with `as_of` specified: the events side takes `as_of` as a probe; the snapshots side takes it as a latest-at-or-before selector. Both directions work; composition is clean.
+- A `Request` spanning `Timeseries A` at `grain: Hour` ↔ `Timeseries C` at `grain: Day` with `range` specified: the time-range is applied independently on both sides at their respective grains. Composition is clean.
+- A `Request` with `from: None` implicit composition (`16 §11`) where the owning kinds include one `Scd::Type2` and one `Snapshot` both needing `as_of` interpretation: DEFERRED. Q-TEMPORAL-004.
+
+The planner's shape-aware `Request.temporal` consumer lands in `34 §…` with per-shape resolution per the rules above and with the multi-shape-composition cases settled in the same pass.
+
+---
+
+## 7. Interaction with `Additivity`
+
+### 7.1 Two-axis independence
+
+Per `11 §7.2`, `Additivity` and `TemporalShape` are **independent** inputs to the planner. `Additivity` describes whether a Measure / Metric composes mechanically under rollup; `TemporalShape` describes how the underlying DataKind records time. Neither derives from the other, and neither overrides the other's authored value.
+
+`17` preserves that independence. Specifically, `17` does **not**:
+
+- Default `Additivity` based on `TemporalShape`. Explicit authoring at the Measure / Metric level per `11 §7.2` is always authoritative.
+- Reject shape / additivity combinations as structural errors. Every combination is authoring-legal.
+
+What `17` **does** is enumerate the combinations that are **semantically suspicious** — likely authoring mistakes — and emit advisory warnings (Severity `Warning`, never `Error`). Authors can ignore the advisory; a future opt-in `additivity_confirmed: true` field may suppress it (tracked per `11 §7.3`).
+
+### 7.2 Interaction with `16 §3.5`'s `Cardinality × Additivity` matrix
+
+`16 §3.5` ratified the Cardinality × Additivity matrix for composed surfaces. `17` sharpens that matrix when one or more constituents carries a ratified `TemporalShape`:
+
+- **`Scd::Type2 / Type5 / Type6` on the probe side of an `AsOf` join.** Cardinality is `ManyToOne` (per §5.3); each probe row matches exactly one SCD row. `Additivity` behaves as for any `ManyToOne` forward walk — `Additive` safe, `SemiAdditive` safe, `NonAdditive` safe. The SCD fanout concern is the *reverse* direction (§5.3 forbids reverse traversal).
+- **`Snapshot` on the anchor side of an `AsOf` join.** Same as SCD: `ManyToOne` forward; no fanout; no additional `Additivity` constraints.
+- **`Timeseries` ↔ `Timeseries`** Cartesian risk when grains differ. Pre-`17`, the fanout concern is caught at the Grainset layer (§4.3). `17` does not add new rules here.
+
+No new `PLAN_E_*` codes in the Cardinality × Additivity matrix originate from `17`; the sharpening is entirely in the *advisory* roster below.
+
+### 7.3 Advisory-warning roster
+
+The concrete advisories `17` ratifies. Each is `Severity::Warning` and carries a stable code in `PLAN_W_17NN`. All are advisory: planner proceeds, diagnostic surfaces, query runs.
+
+| Code | Variant | Fires when | Rationale |
+|---|---|---|---|
+| `PLAN_W_1740` | `AdditiveOnSnapshot { measure, data_kind }` | A Measure / Metric with `Additivity::Additive` is queried over a `TemporalShape::Snapshot` DataKind with a group-by that includes `snapshotted_at_dim` (or a rollup of it). | Snapshots capture full state; naively summing stock-like quantities across snapshot-time double-counts. Author likely meant `SemiAdditive { unsafe_axes: [snapshotted_at_dim] }`. |
+| `PLAN_W_1741` | `AdditiveOnScdHistoryPreserving { measure, data_kind, subtype }` | A Measure / Metric with `Additivity::Additive` is queried over a `TemporalShape::Scd` DataKind with subtype `Type2 / Type4 / Type5 / Type6` and a group-by that does not pin to `current_flag_dim = TRUE` or an equivalent. | History-preserving SCD kinds have multiple rows per entity; summing mechanically double-counts across validity windows. Author likely meant to anchor via `Request.temporal.as_of` or filter to current. |
+| `PLAN_W_1742` | `SemiAdditiveUnsafeAxisAbsentFromShape { measure, data_kind, unsafe_axes, shape }` | A Measure / Metric with `Additivity::SemiAdditive { unsafe_axes: [X, ...] }` names an axis `X` that is NOT the shape's identifying Dimension (e.g. `unsafe_axes: [customer_id]` on a `Snapshot` shape where the natural unsafe axis is `snapshotted_at_dim`). | Non-temporal unsafe axes are legal (per `11 §7.4`) but the common SCD / Snapshot case targets the shape-time axis. Advisory prompts the author to verify. |
+| `PLAN_W_1743` | `NonAdditiveOnTimeseriesGrainMismatch { metric, data_kind, request_grain, source_grain }` | A `NonAdditive` Metric is queried over a `Timeseries` DataKind at a request grain coarser than the source grain, and the underlying Measures do not resolve to the queried grain (would require materialization per `11 §6.3.1`). | The `NonAdditive` Metric must be recomputed at the queried grain; the planner emits the recompute plan but advises the author that the layer-crossing is expensive. |
+| `PLAN_W_1744` | `SemiAdditiveOnEvents { measure, data_kind }` | A Measure / Metric with `Additivity::SemiAdditive` is queried over a `TemporalShape::Events` DataKind. | Events are naturally aggregable across time; `SemiAdditive` on an event-based flow-type Measure is unusual. The advisory does not block — some events are naturally stock-like snapshots encoded as events — but nudges the author to verify. |
+
+**What about `Type0 / Type1 / Type3`?** These SCD subtypes carry one row per entity (or one + prior per entity for Type 3); mechanical additivity is safe without anchoring. No advisories originate from them.
+
+### 7.4 Author-side suppression — DEFERRED
+
+`11 §7.3` reserves a future `additivity_confirmed: true` flag for suppressing advisories. `17` does not ratify that flag's shape; it lands alongside the planner's advisory-emission path in `34 §…`. Until then, advisories always emit; consumers may filter them by code at the `Diagnostic` level.
+
+---
+
+## 8. Shape-gated composition rules
+
+`16 §11` ratifies the field-first implicit-composition algorithm. `17 §8` refines that algorithm with shape-aware preconditions: which shape combinations admit implicit composition, which require explicit anchoring, which admit only as-of composition.
+
+### 8.1 Shape compatibility across `Unionset` branches
+
+A `Unionset`'s branches must agree on `TemporalShape`. Compatibility matrix:
+
+| Branch A shape | Branch B shape | Compatible? | Notes |
+|---|---|---|---|
+| `Timeseries { grain: G_A }` | `Timeseries { grain: G_B }` | Iff `G_A == G_B` | Different grains inside a Unionset are semantically incoherent — the union produces a mixed-grain stream. Different grains mean use a `Grainset` instead. |
+| `Events` | `Events` | Yes | `occurred_at_dim` must unify (global identity per `11 §3`); the union inherits it. |
+| `Snapshot { cadence: C_A }` | `Snapshot { cadence: C_B }` | Iff `C_A == C_B` (or both `None`) | Divergent cadences inside a union produce unaligned snapshots. |
+| `Scd { subtype: T }` | `Scd { subtype: T' }` | Iff `T == T'` | Subtype mismatch = structurally different history encoding; cannot be unioned mechanically. |
+| Any shape A | shape-unclassified | No | `COMP_E_1710 UnionsetShapeConflict`. Every branch must agree. |
+| Shape A | Shape B (different variants) | No | Same code. |
+
+The only exception: a `Unionset` whose branches are **all** shape-unclassified is a shape-unclassified `Unionset`. No warnings, no shape-aware behavior, vanilla composition per `16`.
+
+### 8.2 Shape constraints on `Grainset` levels
+
+A `Grainset` composes children at different grains per `22 §…`. Shape constraints:
+
+- All child shapes must be of the **same variant family**. Specifically: all `Timeseries`, or all `Snapshot`, or all shape-unclassified. Mixing variants within a `Grainset` is `COMP_E_1711 GrainsetShapeMixed`.
+- `Timeseries` children within one `Grainset` must have **distinct `grain` values** that each appear in the `Grainset`'s declared `levels:` per `22 §…`.
+- `Snapshot` children within one `Grainset` must agree on cadence or have nested cadences forming a coarseness chain (e.g. daily snapshots at one level and monthly snapshots at another).
+- `Events` children in a `Grainset` are forbidden — `Events` have no fixed grain per §4.1. Use a pre-aggregated `Timeseries` for each rollup level instead. `COMP_E_1712 EventsInGrainset`.
+- `Scd` children in a `Grainset` are forbidden — `Scd` is not a grain-layered concept. `COMP_E_1712 EventsInGrainset` (same variant, different bound carrier — the error struct discriminates via `actual_shape`).
+
+### 8.3 Shape constraints on implicit composition (`16 §11`)
+
+`16 §11.4`'s `RELATIONSHIP_BFS` discovers a path connecting owning DataKinds. `17 §8.3` adds per-edge shape-preconditions:
+
+1. **Edges between two shape-unclassified DataKinds**: pass through to `16`'s rules unchanged.
+2. **Edges between one shape-classified and one shape-unclassified DataKind**: pass through; the classified side contributes its shape-aware behavior, the unclassified side does not.
+3. **Edges that would require `AsOf` traversal** (per §5.2 matrix): in Round 1, `AsOf` is DEFERRED (§10). The planner **does not** silently synthesize an `Inner` join in place of a needed `AsOf`; the Request fails with `PLAN_E_1751 AsOfNotAvailableInRound1`. Authors needing cross-shape composition in Round 1 must either:
+   - Pin the `as_of` via a `filter` on the SCD side (`filter: is_current = TRUE`, effectively degrading `Scd::Type2` to a `Type1`-style current-row view); or
+   - Declare an explicit `Joinset` with a Round-1-supported `JoinType` (`Inner / Left / Right / Full`), accepting that the join will be cartesian across SCD validity windows without the anchoring the Request needs.
+4. **Edges between two `Scd` kinds with different subtypes**: no automatic as-of propagation; requires explicit `Joinset`. `PLAN_E_1752 MultiScdImplicitCompositionForbidden`.
+5. **Multi-hop paths that mix shape-dependent and shape-neutral edges**: the shape-dependent edges gate the path's overall legality; shape-neutral edges pass through.
+
+### 8.4 Rollup vs as-of anchoring across composition
+
+The principle: **rollup** (coarsening along `Grain`) and **as-of anchoring** (pinning to one row per entity via `Request.temporal.as_of`) are distinct operations that apply to different shapes:
+
+- `Timeseries` / `Events`: rollup applies; as-of anchoring does not (they are naturally time-series).
+- `Snapshot`: as-of anchoring applies (pick one snapshot); rollup applies *after* anchoring (compose snapshots across a range).
+- `Scd`: as-of anchoring applies (pick one row per entity per the §6.2 rules); rollup does not apply at the SCD layer (SCD is grain-free per §4.1).
+
+A composition that mixes shapes needs **all** their anchoring / rollup operations satisfied. The planner's shape-aware composition pass (DEFERRED per §10) runs:
+
+1. For each shape-classified constituent, compute its required anchoring (from `Request.temporal` per §6) and rollup (from the Request's `group_by` per `11 §6`).
+2. For each edge, verify the per-edge shape legality per §8.3.
+3. For each constituent, apply anchoring before the composition-level aggregate; apply rollup after.
+4. Emit the composed `PlanNode` tree.
+
+This pass is ratified at the algorithm-level here; implementation is DEFERRED.
+
+### 8.5 `Scd` require as-of anchoring before wide composition
+
+A specific instance worth calling out: `Scd::Type2 / Type4 / Type5 / Type6` DataKinds must be **anchored** (either via `Request.temporal.as_of` or via a filter pinning to `current_flag_dim = TRUE`) before composition widens their surface via implicit `Relationship` traversal. Without anchoring, each SCD row is one validity-window snapshot of an entity, and the composed surface would carry per-entity fanout equal to the number of validity windows. The planner emits `PLAN_W_1750 ScdWideCompositionWithoutAnchor` when it detects this shape; it proceeds (the query is legal; it may simply not be what the author intended).
+
+In Round 2 (planner implementation), the rule hardens: implicit composition over a history-preserving SCD kind **without** an anchor (as-of or filter) will be an `Error` (`PLAN_E_1753 ScdWideCompositionWithoutAnchor`). The Round-1 advisory is the softer precursor, giving authors the chance to observe the shape before the rule tightens.
+
+---
+
+## 9. `validate` / `compile` / `plan` Preconditions
+
+All error codes are in the `17NN` block per the [CONTRADICTION-FOUND] block and Q-TEMPORAL-001.
+
+### 9.1 `validate` Preconditions (structural; accumulate; no catalog access)
+
+Run by `validate` per `10 §3.3`. These check the static shape of `temporal_shape:` blocks independent of name resolution.
+
+| ID | Code | Rule | Failure condition |
+|---|---|---|---|
+| TS-V1 | `VALID_E_1700` | `TemporalShape` authored on a `SimpleDataKind`, not a Complex one. | `temporal_shape:` appears inside a `Unionset` / `Grainset` / `Joinset` declaration. Emits `TemporalShapeOnComplexDataKind { data_kind }`. |
+| TS-V2 | `VALID_E_1701` | `TemporalShape` variant discriminator is one of the ratified names. | Unknown variant key (e.g. `temporal_shape: { bitemporal: { ... } }`). Per-subtype check runs at compile. |
+| TS-V3 | `VALID_E_1702` | `ScdSubtype` discriminator is one of `type_0`–`type_6`. | Unknown subtype key. |
+| TS-V4 | `VALID_E_1703` | Each variant's **required** payload fields are present. | `Timeseries` without `occurred_at_dim` or `grain`; `Events` without `occurred_at_dim`; `Snapshot` without `snapshotted_at_dim`; `Scd::Type2` without `valid_from_dim` or `valid_to_dim`; etc. |
+| TS-V5 | `VALID_E_1704` | Disallowed fields for the declared variant are absent. | `Timeseries { occurred_at_dim, grain, snapshotted_at_dim }` mixes keys across variants. |
+| TS-V6 | `VALID_E_1705` | `Timeseries.grain` is a valid `Grain` variant (`minute`–`year`). | Unknown token. |
+| TS-V7 | `VALID_E_1706` | Only one `temporal_shape:` per `SimpleDataKind`. | Duplicate declaration (typically a YAML authoring mistake). |
+
+### 9.2 `compile` Preconditions (catalog / registry / cross-reference; fail-fast)
+
+Run by `compile` per `10 §3.4`. These require resolved Semantics names and type context.
+
+| ID | Code | Rule | Failure condition |
+|---|---|---|---|
+| TS-C1 | `COMP_E_1701` | Identifying Dimension exists on the declaring DataKind's interface. | `occurred_at_dim` / `snapshotted_at_dim` / SCD window Dim not in the DataKind's declared interface. |
+| TS-C2 | `COMP_E_1702` | Identifying Dimension has `DimensionType::Temporal`. | Dimension exists but is Categorical / Metadata / etc. |
+| TS-C3 | `COMP_E_1703` | Identifying Dimension's `DataType` is time-typed (`Date`, `Time`, `Timestamp`, `Interval`). | Dim has `String` / `Long` / ... |
+| TS-C4 | `COMP_E_1704` | `Timeseries.grain ∈ occurred_at_dim.grains:`. | Grain not in the Dimension's declared grain list. |
+| TS-C5 | `COMP_E_1705` | `valid_from_dim.DataType == valid_to_dim.DataType` for SCD `Type2` / `Type5` / `Type6`. | Strict type mismatch. |
+| TS-C6 | `COMP_E_1706` | `current_flag_dim.DataType == Boolean`. | Non-boolean flag Dimension. |
+| TS-C7 | `COMP_E_1707` | SCD `Type4.history_data_kind_ref` / `Type5.mini_dim_ref` resolves to a declared top-level `DataKind`. | Unknown reference. |
+| TS-C8 | `COMP_E_1708` | `Snapshot.cadence`, when declared, is a `Grain` member of `snapshotted_at_dim.grains:`. | Cadence not in the Dimension's grain list. |
+| TS-C9 | `COMP_E_1709` | Composed-surface shape compatibility (§8.1, §8.2). | Unionset branches disagree; Grainset mixes shapes; Events / Scd in a Grainset; etc. |
+| TS-C10 | `COMP_E_1710` | `UnionsetShapeConflict` (specific shape per §8.1). | See §8.1 matrix. |
+| TS-C11 | `COMP_E_1711` | `GrainsetShapeMixed` (specific to §8.2). | See §8.2. |
+| TS-C12 | `COMP_E_1712` | `EventsInGrainset` / SCD-in-Grainset. | §8.2. |
+
+### 9.3 `plan` Preconditions (Request / Session-Context scoped; fail-fast)
+
+Run by `plan` per `10 §3.5`. These depend on the Request plus Session state.
+
+| ID | Code | Rule | Failure condition |
+|---|---|---|---|
+| TS-P1 | `PLAN_E_1710` | `TimeseriesSubGrainRequested`. | Request group-by grain is finer than the `Timeseries.grain`. |
+| TS-P2 | `PLAN_E_1711` | `SnapshotSubCadenceRequested`. | Request group-by grain finer than `Snapshot.cadence`. |
+| TS-P3 | `PLAN_E_1712` | `GrainsetDowngradeRequested`. | Request asks for grain finer than any child's declared grain. |
+| TS-P4 | `PLAN_E_1720` | `AsOfShapePairIllegal`. | §5.2 matrix violation. |
+| TS-P5 | `PLAN_E_1721` | `AsOfShapeUnclassified`. | One or both sides of the requested `AsOf` traversal is shape-unclassified. |
+| TS-P6 | `PLAN_E_1722` | `AsOfReverseTraversalForbidden`. | §5.3. |
+| TS-P7 | `PLAN_E_1730` | `SnapshotAsOfNoCoveringSnapshot`. | `Request.temporal.as_of` precedes the earliest available snapshot. |
+| TS-P8 | `PLAN_E_1751` | `AsOfNotAvailableInRound1`. | Implicit composition requires `AsOf` but the planner DEFERRED state forbids it. |
+| TS-P9 | `PLAN_E_1752` | `MultiScdImplicitCompositionForbidden`. | §8.3 bullet 4. |
+| TS-P10 | `PLAN_E_1753` | `ScdWideCompositionWithoutAnchor` (Round-2 promotion of `PLAN_W_1750`). | §8.5 Round-2 rule. **Not active in Round 1** — reserved. |
+
+### 9.4 `plan` advisories (warnings; planning proceeds)
+
+| Code | Variant | Fires when |
+|---|---|---|
+| `PLAN_W_1701` | `ScdHistoryShapeUnexpected` | `Scd::Type4.history_data_kind_ref` resolves to a kind whose own shape is not `Scd::Type2 { .. }` (§2.4 rule 8). |
+| `PLAN_W_1702` | `ShapeAwareRequestOnUnclassifiedDataKind` | `Request.temporal` block provided targeting a shape-unclassified DataKind (§3.3). |
+| `PLAN_W_1730` | `ScdAsOfIgnored` | `Request.temporal.as_of` on a `Scd::Type0 / Type1 / Type3` kind — the subtype has no history to pick from. |
+| `PLAN_W_1731` | `ScdCurrentRowHeuristic` | Default-current lookup on an SCD kind without a ratified current-row signal (§6.3). |
+| `PLAN_W_1732` | `ScdRangeMultipleRows` | `Request.temporal.range` on an SCD kind without anchor; multiple rows per entity possible (§6.4). |
+| `PLAN_W_1740`–`PLAN_W_1744` | `AdditiveOnSnapshot` / `AdditiveOnScdHistoryPreserving` / `SemiAdditiveUnsafeAxisAbsentFromShape` / `NonAdditiveOnTimeseriesGrainMismatch` / `SemiAdditiveOnEvents` | §7.3 roster. |
+| `PLAN_W_1750` | `ScdWideCompositionWithoutAnchor` | §8.5 — history-preserving SCD in an implicit composition without anchor. |
+
+### 9.5 Error-severity summary
+
+All `VALID_E_17xx`, `COMP_E_17xx`, `PLAN_E_17xx` are `Severity::Error`; they fail their respective stages per `30 §7`. All `PLAN_W_17xx` are `Severity::Warning`; planning proceeds, advisories flow through to the `Diagnostic` list. No `Severity::Info` codes are reserved for `17` in Round 1.
+
+### 9.6 Code-allocation governance
+
+Per `30 §6.4` and the [CONTRADICTION-FOUND] block:
+
+1. New `17`-subsystem variants append to the next free number in the 17NN block.
+2. The 17NN block is reserved for temporal-shape concerns only; unrelated subsystems do not encroach.
+3. If Option 2 reconciliation (§[CONTRADICTION-FOUND]) is adopted, every `*_E_17NN` / `*_W_17NN` reference in this doc is re-homed to Option 2 codes via a single find-and-replace; error semantics are preserved.
+
+---
+
+## 10. DEFERRED items — explicit roster
+
+The closed list of behaviors whose **vocabulary and model surface** `17` ratifies but whose **implementation** lands in a later milestone.
+
+| ID | Item | Ratified in | Implementation deferred to |
+|---|---|---|---|
+| D1 | `JoinType::AsOf` variant and `AsOfAnchor` payload shape | §5.1 | Planner / adapter milestone; requires `PlanNode::Join` extension in `35`, per-adapter emission in `registry/temporal_shape_mapping.md`. |
+| D2 | `AsOf` anchor selection per shape pair (§5.2 matrix) | §5.2 | Same as D1. |
+| D3 | `Joinset` per-traversal `AsOf` override | §5.5 | Tracked as Q-TEMPORAL-003. |
+| D4 | `Request.temporal` block (vocabulary + per-shape semantics) | §6.1–§6.4 | Planner milestone; `34 §…`. |
+| D5 | `Request.temporal` across composed surfaces with heterogeneous shapes | §6.5 | Q-TEMPORAL-004; gated on composed-shape-resolution algorithm in `34`. |
+| D6 | `PLAN_E_1753 ScdWideCompositionWithoutAnchor` (hard error version) | §8.5 | Round-2; currently `PLAN_W_1750` advisory. |
+| D7 | `Scd::Type4` as-of join traversal | §5.2 `[TD-SCD-TYPE4-ASOF]` | Gated on composition-surface integration in `16`; requires a structural extension to treat `history_data_kind_ref` as a composition hint. |
+| D8 | Snapshot cadence-rollup reducer policies (first / last / average / configurable) | §4.1 | `25 §…` per-strategy catalog. |
+| D9 | `Scd::Type5` mini-dim outrigger planner behavior (join onto `mini_dim_ref` with as-of anchor) | §2.2 | Requires both D1 AsOf and D7 coordination; same milestone. |
+| D10 | `Scd::Type6` current-value duplication detection (`current_value_dim` reconciliation with history rows) | §2.2 | Planner milestone; advisory emission similar to `PLAN_W_1731`. |
+| D11 | Adapter-side SQL emission for `AsOf` joins (Spark `AS OF JOIN`, DuckDB `LATERAL`, DataFusion `RANGE JOIN`, etc.) | §5.4 | `registry/temporal_shape_mapping.md` + per-adapter `36` docs. |
+| D12 | `additivity_confirmed: true` suppression field for §7.3 advisories | §7.4 | `11 §7.3` extension; cross-doc. |
+| D13 | Canonical resolution of default-current when `current_flag_dim` is absent on an SCD kind (i.e. ratified replacement for the §6.3 heuristic) | §6.3 | Q-TEMPORAL-005; planner milestone. |
+| D14 | Non-temporal `TemporalShape` variants (e.g. bi-temporal with `valid_time` + `system_time`) | §1.2 | Post-Round-1; tracked as `[TD-BITEMPORAL]`. |
+
+**DEFERRED scope boundary.** Items outside this roster are **not deferred**: they are either (a) ratified-and-implemented in the existing codebase (all the existing `TemporalHistorization` parse / validate behavior continues to work; rename to `TemporalShape` is a pure refactor), or (b) out of scope per `00 §10` (live manifest hot-reload, row-level security, etc.).
+
+---
+
+## 11. Round-1 audit / open items
+
+Detailed items in `open_questions/17_open_questions.md`. Summary of the questions this doc could not close from ratified foundations alone:
+
+| Q | Title | Blocking? |
+|---|---|---|
+| Q-TEMPORAL-001 | `30 §6.2` code-range reconciliation for 17NN (doc-aligned vs subsystem-aligned allocation) | No — adopt Option 1 per the `[CONTRADICTION-FOUND]` block, coordinate with `30` re-ratification. |
+| Q-TEMPORAL-002 | `Scd { subtype: ScdSubtype }` per-subtype payload vs flat-field carrier | No — per-subtype payload adopted in Round 1; revisit if ergonomic complaints surface. |
+| Q-TEMPORAL-003 | `Joinset` YAML surface admitting `AsOf` overrides pre- or post-implicit-composition `AsOf` support | No — YAML surface lands in `32`. |
+| Q-TEMPORAL-004 | Multi-shape heterogeneous `Request.temporal` resolution algorithm | No — DEFERRED to `34`. |
+| Q-TEMPORAL-005 | Default-current row semantics for SCD kinds without `current_flag_dim` | No — Round-1 uses the `PLAN_W_1731` heuristic; ratified replacement lands with Round-2 planner. |
+| Q-TEMPORAL-006 | Should `Scd::Type0` emit a `PLAN_W_17xx` advisory on every update attempt at the DataKind layer, or is "enforce append-only" a runtime invariant out of scope? | No — Round-1 is silent on runtime enforcement; advisory may be added MINOR. |
+| Q-TEMPORAL-007 | Should `TemporalShape` be hoisted to `ComplexDataKind` for the `Joinset / Grainset` case where the root child determines the composed surface's effective shape? | No — Round-1 rule (§3.2) keeps shape on `Simple` only; hoisting is MINOR per I10. |
+| Q-TEMPORAL-008 | `AsOfAnchor` payload shape: enum with per-anchor-family variants (current) vs tagged struct with optional fields | No — per-family variants adopted; additive extension via I10. |
+
+---
+
+## 12. Ratified Decisions Index
+
+| Q | Section | Decision |
+|---|---|---|
+| Q1 | §2.1 | `TemporalShape` has four top-level variants: `Timeseries { occurred_at_dim, grain }`, `Events { occurred_at_dim }`, `Snapshot { snapshotted_at_dim, cadence }`, `Scd { subtype }`. `#[non_exhaustive]` per I10. |
+| Q2 | §2.2 | `ScdSubtype` ratifies the full Kimball `Type0`–`Type6` taxonomy with per-subtype payload shapes. `#[non_exhaustive]`. |
+| Q3 | §2.3 | Per-subtype payload form chosen over flat-field form (Q-TEMPORAL-002 tracks revisit). |
+| Q4 | §2.4 | Identifying-Dimension Preconditions: declared on interface, `DimensionType::Temporal`, time-typed `DataType`, grain membership for `Timeseries`, type agreement for SCD windows, `Boolean` for `current_flag_dim`, reference resolution for `Type4 / Type5`. |
+| Q5 | §3.1 | `TemporalShape` is authored on a `SimpleDataKind` only. |
+| Q6 | §3.2 | `ComplexDataKind`s do not carry their own `TemporalShape`; shape propagates via composition rules (§8). |
+| Q7 | §3.3 | "No shape declared" is a valid and common state for a `SimpleDataKind`; planner emits no shape-aware behavior. |
+| Q8 | §4.1 | `TemporalShape × Grain` matrix: `Timeseries` is grain-bound; `Events` is grain-free (per `occurred_at_dim.grains:`); `Snapshot` is cadence-pinned; `Scd` has no intrinsic grain. |
+| Q9 | §5.1 | `JoinType::AsOf(AsOfAnchor)` vocabulary ratified; implementation DEFERRED (D1 in §10). |
+| Q10 | §5.2 | Per-shape-pair legality matrix for `AsOf`: `Events ↔ Scd::Type2 / Type5 / Type6` and `Events ↔ Snapshot` and `Timeseries ↔ Scd::Type2 / Type5 / Type6` and `Timeseries ↔ Snapshot` and `Snapshot ↔ Scd::Type2` are legal; others are not. |
+| Q11 | §5.3 | Legal cardinalities per shape pair: the canonical `AsOf` configurations are `ManyToOne` forward; no fanout. |
+| Q12 | §6.1 | `Request.temporal { as_of, range }` block vocabulary ratified; planner consumption DEFERRED (D4 in §10). |
+| Q13 | §6.2 | Per-shape `as_of` semantics: `Snapshot` picks latest-at-or-before; `Scd::Type2 / Type5 / Type6` picks `valid_from <= as_of < valid_to`; `Scd::Type0 / Type1 / Type3` returns current with `PLAN_W_1730` advisory. |
+| Q14 | §6.3 | Default-current rules per shape: `Snapshot` = latest; history-preserving `Scd` = `current_flag_dim = TRUE` or open-ended `valid_to`. |
+| Q15 | §7.1 | `Additivity` and `TemporalShape` are **independent** inputs to the planner; neither derives from the other. |
+| Q16 | §7.3 | Five advisory warnings when the two axes look inconsistent: `AdditiveOnSnapshot`, `AdditiveOnScdHistoryPreserving`, `SemiAdditiveUnsafeAxisAbsentFromShape`, `NonAdditiveOnTimeseriesGrainMismatch`, `SemiAdditiveOnEvents`. |
+| Q17 | §8.1 | Unionset branches must agree on shape (exact-match including cadence / grain / subtype). |
+| Q18 | §8.2 | Grainset branches must share a shape family (all `Timeseries` or all `Snapshot` or all shape-free). `Events` and `Scd` forbidden in Grainset. |
+| Q19 | §8.3 | Implicit composition (`16 §11`) refined: shape-classified edges apply per-shape rules; `AsOf`-requiring edges fail with `PLAN_E_1751` in Round 1. |
+| Q20 | §8.5 | History-preserving SCD kinds in implicit composition without anchor emit `PLAN_W_1750` (Round 1); hardens to `PLAN_E_1753` in Round 2. |
+| Q21 | §9 | Code allocations: `VALID_E_1700`–`1799`, `COMP_E_1700`–`1799`, `PLAN_E_1700`–`1799`, `PLAN_W_1700`–`1799`. `[CONTRADICTION-FOUND]` at head of doc records the `30 §6.2` coordination needed. |
+| Q22 | §10 | DEFERRED-items roster: 14 items whose vocabulary / model surface `17` ratifies but whose planner / adapter implementation lands in a later milestone. |
+
+---
+
+## 13. Cross-References
+
+- `00 §4.1` — `TemporalShape` row (ratified vocabulary referenced here); `AsOf` `JoinType` row (deferred variant ratified here); `Additivity` row (independent-axes interaction per §7).
+- `00 §9` — I1 (canonical layer), I4 (determinism), I5 (compile-time resolution), I8 (Manifest planner-complete), I10 (non-exhaustive), I12 (diagnostics).
+- `11 §5` — shape-vs-resolution-variant boundary; `temporal_shape:` is not a Semantics shape field but a DataKind-level property.
+- `11 §6.1` — Dimension authoring; temporal Dimensions' `grains:` list per `13 §4.2` is what this doc's identifying-Dimension Precondition TS-C4 checks against.
+- `11 §7.2, §7.3` — `Additivity`'s default-`Additive` rule and the rationale for keeping it independent of `TemporalShape`.
+- `13 §2.1` — `DataType` variants; `Date` / `Time` / `Timestamp` / `Interval` are the time-typed subset.
+- `13 §3.2` — `Grain` total coarseness order; referenced by §4.1 / §4.3 / §8.2.
+- `13 §4.2` — `DimensionType::Temporal` and its `grains:` list; TS-C2 / TS-C4.
+- `16 §3.5` — `Cardinality × Additivity` matrix sharpened by §7.2.
+- `16 §4.1`, `§4.4.2` — `JoinType` enum; `AsOf` gating discharged here.
+- `16 §5`, `§5.3` — `ComposedSemanticInterface` and `CompositionKind` surface that §3.2 builds atop.
+- `16 §11` — implicit composition algorithm; §8.3 adds shape-preconditions per-edge.
+- `16 §13` — `Joinset` override surface; §5.5 records the `AsOf` override DEFERRAL.
+- `16 §14` — error-code allocations; `16`'s `COMP_E_04xx` / `VALID_E_04xx` / `PLAN_E_05xx` / `PLAN_W_05xx` ranges are **not** disturbed by `17`'s 17NN allocation.
+- `20`–`25` — per-DataKind strategy catalog; consumes `TemporalShape` for rollup, anchoring, and snapshot selection.
+- `30 §6.2` — subsystem code-range allocation; `[CONTRADICTION-FOUND]` at head of doc records the 17NN coordination.
+- `32` — YAML surface for `temporal_shape:` block and subtype discriminators.
+- `33` — `ResolvedTemporalShape` on `ResolvedDataKind`; Manifest-layer materialization of this doc's model-layer types.
+- `34` — planner's shape-aware strategy dispatch; `Request.temporal` consumption; `AsOf` emission.
+- `35` — `PlanNode::Join` extension for `JoinType::AsOf(anchor)` payload.
+- `36` — per-adapter emission rules for `AsOf` joins / snapshot selection / SCD window predicates.
+- `registry/temporal_shape_mapping.md` — per-engine SCD / Events / Snapshot emission catalog.
+- `open_questions/17_open_questions.md` — Round-1 deferred items (Q-TEMPORAL-001 through Q-TEMPORAL-008).

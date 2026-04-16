@@ -1,6 +1,6 @@
 # Semstrait Architecture
 
-**V1** -- manifest compiler + semantic plan-generation library in Rust.
+Manifest compiler + semantic plan-generation library in Rust.
 
 Resolves semantic models (YAML) into engine-executable artifacts:
 1. Compile YAML into validated `CompiledManifest` (offline)
@@ -19,10 +19,10 @@ Active constraints that guide new code. Historical decisions (D1-D4, D7) archive
 | # | Constraint | Rationale |
 |---|---|---|
 | D5 | Wildcard expansion requires a provider | `storage.paths` -> StorageProvider; `storage.tables` -> CatalogProvider. No silent pass-through. |
-| D6 | `DataKind` has three layers: interface, strategy, binding | Interface = what users query. Strategy (Simple/Grainset/Unionset/Joinset) = plan structure. Binding = physical impl. |
+| D6 | `CompiledDataKind` has three layers: interface, strategy, binding | Interface = what users query. Strategy = plan structure: **Simple** (single-dataset fast path, wraps `Dataset`) vs **Complex** (`Grainset`, `Unionset`, `Joinset`). Binding = physical impl. See `docs/DATASET.md`, `docs/{GRAINSET,UNIONSET,JOINSET}.md`. |
 | D8 | YAML field is `constraints`, not `requires` | Pre-resolution validity gates at step 0, before dataset routing. |
 | E1 | Engine selection at request level | `engine` field in `RawQueryRequest`. Model is engine-agnostic. |
-| E2 | Artifact driven by engine adapter | `EngineAdapter` trait determines output type. DataFusion -> Substrait, DuckDB/Trino -> SQL. |
+| E2 | Artifact driven by engine adapter | `EngineAdapter` trait determines output type. DataFusion -> Substrait. DuckDB/Spark adapters are structural stubs in the current workspace (dialect infrastructure exists, `adapt()` returns `UnsupportedFeature`). |
 | E3 | `PlanBuilder` trait in IR, impls in adapter | Breaks planner <-> adapter coupling. Planner depends only on the trait. |
 | E5 | Semstrait is a plan-generation library | Primary output is `PlanArtifact`. Consumers own execution. |
 | E6 | Primary path: DataFusion + Polaris/Iceberg | Polaris as catalog, DataFusion as compute, Substrait as interchange. |
@@ -37,7 +37,7 @@ semstrait/                       Cargo workspace root
 +-- semstrait-core/              Foundation -- shared primitives (Expr, DataType, Schema)
 +-- semstrait-model/             YAML model parsing and ref resolution
 +-- semstrait-catalog/           CatalogProvider trait + implementations (Iceberg, Unity)
-+-- semstrait-manifest/          ManifestCompiler + Repository (InMemory v1)
++-- semstrait-manifest/          ManifestCompiler + Repository (InMemory + FileSystem)
 +-- semstrait-ir/                PlanNode IR + Substrait bridge + PlanBuilder trait
 +-- semstrait-planner/           SemanticPlanner + DataKindPlanners + Optimizer
 +-- semstrait-adapter/           EngineAdapter trait + SqlEmitter + dialect impls
@@ -79,13 +79,13 @@ semstrait/                       Cargo workspace root
                                  |
 +--------------------------------v------------------------------------+
 |  Planning layer                                                      |
-|  semstrait-planner -- kind planners, Optimizer (empty v1)            |
+|  semstrait-planner -- kind planners, Optimizer (empty by default)    |
 +--------------------------------+------------------------------------+
                                  |
 +--------------------------------v------------------------------------+
 |  IR + Manifest layer                                                 |
 |  semstrait-ir -- PlanNode, Substrait, PlanBuilder trait              |
-|  semstrait-manifest -- ManifestCompiler, InMemoryRepository          |
+|  semstrait-manifest -- ManifestCompiler, Repository (InMem + FileSys) |
 +--------------------------------+------------------------------------+
                                  |
 +--------------------------------v------------------------------------+
@@ -127,7 +127,7 @@ CompiledManifest --- loaded ---->|          |
         v                        |  LogicalPlan (PlanNode IR)
 InMemoryRepository.save()        |          |
                                  |          v (internal)
-                                 |  Optimizer.apply()  <- empty in v1
+                                 |  Optimizer.apply()  <- empty by default
                                  |          |
                                  |          v
                                  |  EngineAdapter.adapt(plan)
@@ -166,24 +166,18 @@ Cross-crate type references -- confirms no cycles.
 
 | Item | Notes |
 |---|---|
-| Spark Substrait support | Spark 3.4+ experimental; default to SQL |
-| Cross-kind metric refs | Prohibited v1; multi-kind planning deferred |
-| Glue/Hive catalogs | Unity done, Glue/Hive deferred |
+| DuckDB / Spark adapter execution | Dialect + adapter shells exist; `adapt()` returns `UnsupportedFeature` |
+| Cross-kind metric refs | Prohibited; multi-kind planning deferred |
+| Glue / Hive catalogs | Iceberg REST and Unity done; Glue/Hive deferred |
 | Two-stage metric aggregation | Metric-level `agg:` with inner/outer grain |
-| Ratio/window structured aggregation | `ratio:` and `window:` YAML tags |
+| Ratio / window structured aggregation | `ratio:` and `window:` YAML tags |
 | Model hash caching | Content hash as manifest cache key |
 
 ---
 
-## Diagram Index
+## Diagrams
 
-| Diagram | Location |
-|---------|----------|
-| D1 -- Crate Layer Architecture | `docs/D1_crate_layer_architecture.svg` |
-| D2 -- System Pipeline | `docs/D2_system_pipeline.svg` |
-| D3 -- Planner Evaluation Order | `crates/semstrait-planner/docs/D3_planner_evaluation_order.svg` |
-| D4 -- PlanNode Substrait Map | `crates/semstrait-ir/docs/D4_plannode_substrait_map.svg` |
-| D5 -- DataKind Interface Binding | `crates/semstrait-planner/docs/D5_kind_interface_binding.svg` |
+The text diagrams above (Crate Layer, System Pipeline) are the authoritative architecture reference.
 
 ---
 

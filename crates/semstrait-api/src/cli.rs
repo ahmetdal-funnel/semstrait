@@ -26,24 +26,24 @@ pub struct Cli {
 pub enum Commands {
     /// Compile YAML model files into a CompiledManifest.
     Compile {
-        /// Path to YAML model file.
+        /// Path or S3 URI to YAML model file.
         #[arg(short, long)]
-        input: PathBuf,
+        input: String,
 
         /// Output path for the compiled manifest JSON.
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Path to catalogs.yaml for catalog connections.
+        /// Path or S3 URI to catalogs.yaml for catalog connections.
         #[arg(short, long)]
-        catalogs: Option<PathBuf>,
+        catalogs: Option<String>,
     },
 
     /// Show the query plan and/or SQL for a query.
     Explain {
-        /// Path to YAML model file.
+        /// Path or S3 URI to YAML model file.
         #[arg(short, long)]
-        model: PathBuf,
+        model: String,
 
         /// Entity to query. If omitted and model has exactly one entity, auto-selects it.
         #[arg(short, long)]
@@ -65,9 +65,9 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Path to catalogs.yaml for catalog connections.
+        /// Path or S3 URI to catalogs.yaml for catalog connections.
         #[arg(short, long)]
-        catalogs: Option<PathBuf>,
+        catalogs: Option<String>,
 
         /// Engine adapter: "datafusion", "ansi" (default: ansi).
         #[arg(short, long)]
@@ -76,9 +76,9 @@ pub enum Commands {
 
     /// Validate a query request against a manifest.
     Validate {
-        /// Path to YAML model file.
+        /// Path or S3 URI to YAML model file.
         #[arg(short, long)]
-        model: PathBuf,
+        model: String,
 
         /// Entity to query. If omitted and model has exactly one entity, auto-selects it.
         #[arg(short, long)]
@@ -92,9 +92,9 @@ pub enum Commands {
         #[arg(long, num_args = 0..)]
         filters: Vec<String>,
 
-        /// Path to catalogs.yaml for catalog connections.
+        /// Path or S3 URI to catalogs.yaml for catalog connections.
         #[arg(short, long)]
-        catalogs: Option<PathBuf>,
+        catalogs: Option<String>,
 
         /// Engine adapter: "datafusion", "ansi" (default: ansi).
         #[arg(short, long)]
@@ -104,9 +104,9 @@ pub enum Commands {
     /// Start the REST API server.
     #[cfg(feature = "rest")]
     Serve {
-        /// Path to YAML model file.
+        /// Path or S3 URI to YAML model file.
         #[arg(short, long)]
-        model: PathBuf,
+        model: String,
 
         /// Port to bind to.
         #[arg(short, long, default_value = "8080")]
@@ -127,15 +127,16 @@ pub enum Commands {
     },
 }
 
-/// Compile a manifest from a YAML model file.
+/// Compile a manifest from a YAML model file or S3 URI.
 ///
 /// If `catalogs_path` is provided, parses `catalogs.yaml` and builds a
 /// `CatalogRegistry` with concrete providers for each named catalog entry.
+/// Both `model` and `catalogs_path` accept local paths or `s3://` URIs.
 async fn compile_from_file(
-    model: &PathBuf,
-    catalogs_path: Option<&PathBuf>,
+    model: &str,
+    catalogs_path: Option<&str>,
 ) -> Result<semstrait_manifest::CompiledManifest, Box<dyn std::error::Error>> {
-    let yaml = tokio::fs::read_to_string(model).await?;
+    let yaml = semstrait_manifest::io::load_text(model).await?;
     let mut compiler = ManifestCompiler::new();
 
     if let Some(cat_path) = catalogs_path {
@@ -154,14 +155,14 @@ async fn compile_from_file(
         .map_err(|e| format!("compilation failed: {}", e))?)
 }
 
-/// Build a `CatalogRegistry` from a `catalogs.yaml` file.
+/// Build a `CatalogRegistry` from a `catalogs.yaml` file or S3 URI.
 ///
 /// Iterates each named catalog entry and constructs the appropriate
 /// `CatalogProvider` based on the entry's `provider_type` and `auth` method.
 async fn build_catalog_registry(
-    catalogs_path: &PathBuf,
+    catalogs_path: &str,
 ) -> Result<semstrait_catalog::CatalogRegistry, Box<dyn std::error::Error>> {
-    let yaml = tokio::fs::read_to_string(catalogs_path).await?;
+    let yaml = semstrait_manifest::io::load_text(catalogs_path).await?;
     let config = semstrait_model::parse_catalogs(&yaml)
         .map_err(|e| format!("failed to parse catalogs.yaml: {}", e))?;
 
@@ -320,7 +321,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             output,
             catalogs,
         } => {
-            let manifest = compile_from_file(&input, catalogs.as_ref()).await?;
+            let manifest = compile_from_file(&input, catalogs.as_deref()).await?;
             let json = serde_json::to_string_pretty(&manifest)?;
             match output {
                 Some(path) => {
@@ -342,7 +343,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             catalogs,
             engine: engine_name,
         } => {
-            let manifest = compile_from_file(&model, catalogs.as_ref()).await?;
+            let manifest = compile_from_file(&model, catalogs.as_deref()).await?;
             let engine = build_engine(manifest, engine_name.as_deref())?;
             let raw = build_raw_request(from, select, filters);
             let result = engine.explain(&raw).await?;
@@ -371,7 +372,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             catalogs,
             engine: engine_name,
         } => {
-            let manifest = compile_from_file(&model, catalogs.as_ref()).await?;
+            let manifest = compile_from_file(&model, catalogs.as_deref()).await?;
             let engine = build_engine(manifest, engine_name.as_deref())?;
             let raw = build_raw_request(from, select, filters);
             let result = engine.validate(&raw);

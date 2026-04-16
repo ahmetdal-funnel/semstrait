@@ -9,6 +9,7 @@ mod compiled;
 mod compiler;
 mod error;
 pub mod function_registry;
+pub mod io;
 mod repository;
 mod steps;
 
@@ -26,6 +27,7 @@ pub use catalog_snapshot::{
 pub use compiled::*;
 pub use compiler::{CompileSource, ManifestCompiler};
 pub use error::{CompileError, RepositoryError};
+pub use io::IoError;
 pub use repository::{FileSystemRepository, InMemoryRepository, Repository};
 
 // Re-export model types needed by downstream crates (planner, tests).

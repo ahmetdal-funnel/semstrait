@@ -1,7 +1,8 @@
 # Grainset Resolution Strategy
 
-**Version:** 1.0 | **Status:** Design
+**Status:** Implemented
 **Scope:** Planner, Manifest (validation + compilation), IR
+**Taxonomy:** Complex kind (multi-dataset). For the Simple kind (single-dataset fast path), see `DATASET.md`. Peers: `UNIONSET.md`, `JOINSET.md`.
 
 ---
 
@@ -124,8 +125,8 @@ Same logic as metadata pruning, but for `Literal` column mapping values. If a fi
 
 ```
 Filter: campaign_category = "search"
-Dataset google_daily:   campaign_category: { literal: "search" }  → MATCH
-Dataset facebook_daily: campaign_category: { literal: "social" }  → EXCLUDE
+Dataset google_daily:   campaign_category: { lit: "search" }  → MATCH
+Dataset facebook_daily: campaign_category: { lit: "social" }  → EXCLUDE
 ```
 
 **1c. Grain eligibility pruning** (new)
@@ -242,7 +243,7 @@ datasets:
   - name: google_daily       # maps: date(day), campaign_id, cost, clicks
     extras:
       column_mapping:
-        campaign_category: { literal: "search" }
+        campaign_category: { lit: "search" }
         date: { column: reporting_date, grain: day }
         campaign_id: adwords_campaign_id
         cost: adwords_cost
@@ -251,7 +252,7 @@ datasets:
   - name: tiktok_daily       # maps: date(day), campaign_id, adgroup_placement, cost, clicks, total_plays
     extras:
       column_mapping:
-        campaign_category: { literal: "social" }
+        campaign_category: { lit: "social" }
         date: { column: stat_date, grain: day }
         campaign_id: tiktok_campaign_id
         adgroup_placement: placement_type
@@ -448,10 +449,10 @@ Kind definition:
   campaign_category dimension (categorical)
 
 Dataset mappings:
-  google_daily:   campaign_category: { literal: "search" }
-  bing_daily:     campaign_category: { literal: "search" }
-  facebook_daily: campaign_category: { literal: "social" }
-  tiktok_daily:   campaign_category: { literal: "social" }
+  google_daily:   campaign_category: { lit: "search" }
+  bing_daily:     campaign_category: { lit: "search" }
+  facebook_daily: campaign_category: { lit: "social" }
+  tiktok_daily:   campaign_category: { lit: "social" }
 
 Query: WHERE campaign_category = 'search'
 
@@ -560,137 +561,9 @@ UnionNode (inputs: all branches, distinct: false)
 
 ---
 
-## 8. Implementation Plan
+## 8. Related Documentation
 
-### Phase 1: Manifest — Validation Changes
-
-**File: `crates/semstrait-manifest/src/steps.rs`**
-
-1. **Replace per-dataset completeness with union coverage** (validate_mappings, ~line 538)
-   - Collect union of all `column_mapping.keys()` across all datasets in the kind
-   - Check every mappable interface name appears in that union
-   - Error message: `"kind '{}': interface name '{}' is not mapped by any dataset"`
-   - Existing stale-key check (per-dataset, lines 528-536) remains unchanged
-
-2. **Add grain compatibility validation** (new step, between 4.8 and 5)
-   - For each temporal dimension in the kind, collect all grain specs from dataset mappings
-   - Validate: if multiple temporal dimensions exist, their grain definitions must be compatible
-   - Validate: each dataset's explicit grain must be in the kind-level `grains` list
-
-### Phase 2: Planner — Literal Pruning
-
-**File: `crates/semstrait-planner/src/planner.rs`**
-
-3. **Add `prune_by_literal_filters()`** alongside existing `prune_by_metadata_filters()`
-   - Same pattern: for each equality filter on a literal dimension, check dataset's literal value
-   - Exclude datasets where literal value doesn't match
-   - Call in `SemanticPlanner::plan()` after metadata pruning (new step 3c)
-
-### Phase 3: Planner — Grainset Rewrite
-
-**File: `crates/semstrait-planner/src/kind/grainset.rs`**
-
-4. **Remove `find_covering_datasets()` and `build_horizontal_join_plan()`**
-   - These implement the FULL JOIN fallback which is being replaced
-
-5. **Replace `find_covering_dataset()` with grain-aware resolution**
-   - New entry point: `resolve()` implements the full algorithm from Section 3
-   - Step 1c: grain eligibility pruning (exclude datasets with coarser grain than requested)
-   - Step 1d: zero-coverage pruning
-   - Step 2: group by grain, assign measures to cheapest grain group
-   - Step 3: build branches per dataset with assigned measures only
-
-6. **Add `build_union_plan()`**
-   - Per-dataset: build branch with DATE_TRUNC + pre-aggregate + NULL-fill project
-   - UNION ALL via `UnionNode { inputs, distinct: false }`
-   - Re-aggregate via `AggNode` with `infer_aggregation()` per measure
-
-7. **Add grain rollup emission**
-   - When dataset native grain < requested grain: emit `Expr::DateTrunc { grain, expr }` in GROUP BY
-   - When native grain = requested grain: no transformation
-   - When native grain > requested grain: unreachable (pruned in step 1c)
-
-**File: `crates/semstrait-planner/src/kind/shared.rs`**
-
-8. **Extract `infer_aggregation()` from unionset.rs to shared.rs**
-   - Used by both grainset and unionset for re-aggregation function inference
-   - SUM for most, MIN/MAX preserved
-
-9. **Extract shared branch-building utilities**
-   - `build_union_branch()` pattern: Scan → DATE_TRUNC → pre-agg → project (NULL-fill)
-   - Parameterize for grainset (grain rollup) and unionset (no grain rollup) use
-
-**File: `crates/semstrait-planner/src/kind/mod.rs`**
-
-10. **Add grain resolution helpers**
-    - `resolve_native_grain(dataset, dim_name, kind) -> Option<TemporalGrain>`: get native grain from WithGrain or default to finest kind-level grain
-    - `validate_grain_request(request_grain, kind_grains) -> Result<(), PlannerError>`: check request grain is in kind's grain list
-    - `needs_date_trunc(native_grain, request_grain) -> bool`: determine if rollup needed
-
-### Phase 4: Planner — Single-Dataset Path Update
-
-11. **Update single-dataset path for grain rollup**
-    - When only one dataset remains after pruning, still apply DATE_TRUNC if request grain > native grain
-    - Modify `build_dataset_plan()` in shared.rs to accept optional grain rollup parameter
-
-### Phase 5: Tests
-
-12. **Unit tests in grainset.rs**
-
-| Test | Scenario |
-|------|----------|
-| `test_single_dataset_no_grain` | Basic: one dataset, no grain specified → Scan-Agg-Project |
-| `test_single_dataset_grain_rollup` | One dataset at day, request month → DATE_TRUNC in plan |
-| `test_multi_dataset_same_grain` | Platform union: 2 datasets same grain → UNION ALL |
-| `test_multi_dataset_different_grains` | Day + month groups, assign measures to cheapest |
-| `test_cross_grain_combination` | Measure in day group + measure in month group → combined |
-| `test_grain_pruning_excludes_coarser` | Month dataset excluded when request=day |
-| `test_grain_disaggregation_error` | Only month dataset, request=day → error |
-| `test_measure_not_available_at_grain` | Measure only at month, request=day, no day fallback → error |
-| `test_null_fill_unmapped_dims` | Dataset missing a dim → NULL in project |
-| `test_null_fill_unmapped_measures` | Measure assigned to other group → NULL in project |
-| `test_literal_pruning` | Literal filter excludes non-matching datasets |
-| `test_shared_measure_across_datasets` | Same measure in multiple datasets at same grain → both contribute via UNION |
-
-13. **Integration tests in manifest**
-
-| Test | Scenario |
-|------|----------|
-| `test_union_coverage_passes` | Multi-dataset, partial per-ds, full union → compiles |
-| `test_union_coverage_fails` | Interface name missing from all datasets → error |
-| `test_grain_compatibility_validation` | Incompatible grain definitions → compile error |
-| `test_paid_media_kind_compiles` | Full paid_media_kind.yaml → compiles successfully |
-
-### Phase 6: Documentation
-
-14. **Update CONTEXT.md** with grainset resolution semantics
-15. **Update MEMORY.md** with design decisions
-
-### Implementation Order
-
-```
-P1 (unblocks compilation):  Steps 1-2  (union coverage + grain validation)
-P2 (unblocks paid_media):   Step 3     (literal pruning)
-P3 (core rewrite):          Steps 4-10 (grainset planner rewrite)
-P4 (completeness):          Step 11    (single-dataset grain rollup)
-P5 (verification):          Steps 12-13 (tests)
-P6 (documentation):         Steps 14-15
-```
-
-### Critical Files
-
-| File | Changes |
-|------|---------|
-| `crates/semstrait-manifest/src/steps.rs` | Union coverage validation, grain compatibility validation |
-| `crates/semstrait-planner/src/planner.rs` | Literal dimension pruning |
-| `crates/semstrait-planner/src/kind/grainset.rs` | Full rewrite: grain groups + UNION ALL |
-| `crates/semstrait-planner/src/kind/shared.rs` | Shared utilities: infer_aggregation, branch building |
-| `crates/semstrait-planner/src/kind/mod.rs` | Grain resolution helpers |
-| `crates/semstrait-planner/src/kind/unionset.rs` | Extract shared code to shared.rs |
-
-### Verification
-
-1. `cargo test --workspace` — all existing tests pass
-2. `cargo clippy --workspace` — 0 warnings
-3. `cargo run -p semstrait-api -- compile -i test_data/paid_media_kind.yaml` — compiles
-4. New grainset planner tests pass all scenarios from Section 4
+- `docs/DATASET.md` — single-dataset (Simple kind) planning; referenced for single-dataset fast path behavior.
+- `docs/UNIONSET.md`, `docs/JOINSET.md` — peer Complex kinds.
+- `crates/semstrait-planner/src/data_kind/grainset.rs` — implementation.
+- `test_data/paid_media_kind.yaml` — working grainset fixture.

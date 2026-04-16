@@ -6,14 +6,14 @@
 //!
 //! # Architecture
 //!
-//! The planner follows the pipeline defined in CONTEXT.md section 5.6:
+//! See `crates/semstrait-planner/README.md` for the full 12-step pipeline. High-level:
 //!
 //! 1. `ConstraintValidator::check()` — validate measure/dimension constraints
 //! 2. `DataKindPlannerRegistry::dispatch()` — route to correct DataKindPlanner
 //! 3. `DataKindPlanner::resolve()` — build PlanFragment
 //! 4. `AdditivityResolver` — handle semi/non-additive measures
 //! 5. Filter injection (dataset, measure, metric, user filters)
-//! 6. `Optimizer::apply()` — identity in v1
+//! 6. `Optimizer::apply()` — identity by default
 
 pub mod error;
 pub mod request;

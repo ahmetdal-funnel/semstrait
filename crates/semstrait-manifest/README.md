@@ -13,7 +13,7 @@ src/
   lib.rs                Public API, re-exports
   compiler.rs           ManifestCompiler orchestrator (load YAML, run pipeline, hash)
   steps.rs              All compilation steps: validation, graph building, expr parsing, emit
-  function_registry.rs  FunctionRegistry: 28 ANSI SQL functions with compile-time arity validation
+  function_registry.rs  FunctionRegistry: ANSI SQL functions with compile-time arity validation
   compiled.rs           Output types: CompiledManifest, CompiledKind, CompiledDataset, etc.
   acceleration.rs       Planner-optimized types: DataKind, CoverageIndex, FieldIndex, GrainMap
   catalog_snapshot.rs   CatalogSnapshot, TableSnapshot, ResolvedColumn, IcebergMetadata
@@ -84,7 +84,7 @@ Parses string expressions into typed `Expr` trees using the DSL parser:
 - Measure expressions: declarative `agg: sum` + horizontal expr (preferred), or legacy `SUM(amount)` (auto-upgraded)
 - Metric expressions: `clicks / impressions` (arithmetic over measure references)
 - Filter expressions: `status = 'active'`, `amount > 100`
-- Computed dimension expressions: compiled via `ExprSource` (inline string or declarative block), validated for no aggregation, function calls checked against `FunctionRegistry` (28 ANSI SQL functions)
+- Computed dimension expressions: compiled via `ExprSource` (inline string or declarative block), validated for no aggregation, function calls checked against `FunctionRegistry`
 - Rejects raw SQL strings — only DSL constructs allowed
 
 **Declarative auto-upgrade:** Legacy measures with inline aggregation (e.g., `expr: "SUM(amount)"`) are auto-upgraded at compile time — the aggregation function is extracted into `agg` and the expr becomes horizontal-only (`Column("amount")`). A deprecation warning diagnostic is emitted.
@@ -96,7 +96,7 @@ Parses string expressions into typed `Expr` trees using the DSL parser:
 
 **Additivity derivation:** When `measure.additivity` is not specified in YAML, compiler derives from `agg`: SUM/COUNT/MIN/MAX → Full, AVG/CountDistinct → Non. Metric additivity is the worst-case of all transitive leaf measure additivity values (Full < Semi < Non).
 
-Model-level `DataType` (I64, F64, Date, String, ...) is converted to core `DataType` (Int64, Float64, Date32, Utf8, ...) via `map_data_type()` during emission.
+Model-level data type strings (`integer`, `float64`, `date`, `string`, ...) are parsed into core `DataType` enum variants during emission.
 
 ### Step 9: Emit
 
@@ -148,9 +148,9 @@ All entity types (datasets, grainsets, unionsets, joinsets) live in a single `da
 
 ```rust
 pub enum CompiledDataKind {
-    Dataset(Box<CompiledDatasetKind>),
-    Grainset(Box<CompiledGrainsetKind>),
+    Simple(Box<CompiledSimpleKind>),       // single dataset, direct query
     Unionset(Box<CompiledUnionsetKind>),
+    Grainset(Box<CompiledGrainsetKind>),
     Joinset(Box<CompiledJoinsetKind>),
 }
 
@@ -162,13 +162,13 @@ impl CompiledDataKind {
 
 ### Compiled Semantic Types
 
-All compiled types use `semstrait_core::DataType` (Arrow-aligned) rather than strings:
+All compiled types use `semstrait_core::DataType` (ANSI SQL logical types) rather than strings:
 
 ```rust
 pub struct CompiledDimension {
     pub name: String,
     pub description: Option<String>,
-    pub data_type: DataType,         // Integer, String, Date, etc. (ANSI logical types)
+    pub data_type: DataType,         // Integer, String, Date, etc.
     pub dim_type: DimensionType,     // Categorical | Temporal | Metadata | Binary | Geo | Bucketed
     pub expr: Option<Expr>,          // computed dimension expression; None = physical column
     pub expr_source: Option<String>, // original YAML string for debugging/display
@@ -176,7 +176,7 @@ pub struct CompiledDimension {
 
 pub struct CompiledMeasure {
     pub name: String,
-    pub data_type: DataType,         // Float64, Int64, Decimal, etc.
+    pub data_type: DataType,         // Number, Integer, Decimal, etc.
     pub agg: Aggregation,            // always present (auto-upgraded from legacy)
     pub expr: Expr,                  // horizontal-only (no aggregation functions)
     pub expr_source: String,         // original string for debugging
@@ -237,12 +237,12 @@ QueryRequest { from: "orders", select: ["date", "revenue"] }
        |
        +-- Check manifest.entities["orders"]      --> CompiledDataKind (unified lookup)
        |
-  2. Kind Dispatch (semstrait-planner, via manifest.resolve() -> &DataKind)
+  2. Kind Dispatch (semstrait-planner, via manifest.entities[name])
        |
-       +-- DataKind::Dataset    --> build_dataset_kind_plan (single-dataset fast path)
-       +-- DataKind::Grainset   --> GrainsetPlanner::resolve()
-       +-- DataKind::Unionset   --> UnionsetPlanner::resolve()
-       +-- DataKind::Joinset    --> JoinsetPlanner::resolve()
+       +-- CompiledDataKind::Simple     --> simple kind plan (single-dataset fast path)
+       +-- CompiledDataKind::Grainset   --> GrainsetPlanner::resolve()
+       +-- CompiledDataKind::Unionset   --> UnionsetPlanner::resolve()
+       +-- CompiledDataKind::Joinset    --> JoinsetPlanner::resolve()
        |
   3. Dataset Routing (within kind planner)
        |
@@ -276,10 +276,10 @@ QueryRequest { from: "orders", select: ["date", "revenue"] }
        |
   6. Type Resolution (planner reads from compiled types)
        |
-       Dimensions:  kind.dimensions[name].data_type       (fallback: Utf8)
-       Measures:    kind.measures[name].data_type          (fallback: Float64)
-       Metrics:     kind.metrics[name].data_type           (fallback: Float64)
-       Scan cols:   resolved_source.schema[col].data_type  (fallback: Utf8)
+       Dimensions:  kind.dimensions[name].data_type       (fallback: String)
+       Measures:    kind.measures[name].data_type          (fallback: Number)
+       Metrics:     kind.metrics[name].data_type           (fallback: Number)
+       Scan cols:   resolved_source.schema[col].data_type  (fallback: String)
 ```
 
 ### Field-Based Resolution (ad-hoc joins)
@@ -325,24 +325,14 @@ kind.metrics["ctr"].expr = Divide(EntityRef("clicks"), EntityRef("impressions"))
 
 Built during `emit()` (step 9) for O(1) planner access. Stored in `manifest.data_kinds`.
 
-### DataKind Enum
+### CompiledDataKind Enum
+
+The four variants of `CompiledDataKind` (shown above) all embed `CompiledInterface` via composition. `CompiledDataKind` provides uniform `interface()` and `bindings()` access regardless of variant.
+
+### CompiledInterface (shared semantic fields)
 
 ```rust
-#[serde(tag = "kind_type")]
-pub enum DataKind {
-    Dataset(Box<DatasetKind>),       // single dataset, direct Scan → Agg → Project
-    Unionset(Box<UnionsetKind>),     // UNION ALL across multiple datasets
-    Grainset(Box<GrainsetKind>),     // grain-based covering dataset selection
-    Joinset(Box<JoinsetKind>),       // BFS join chain from anchor dataset
-}
-```
-
-All variants embed `KindInterface` via composition. `DataKind` implements `SemanticInterface` for uniform access to dimensions, measures, metrics.
-
-### KindInterface (shared semantic fields)
-
-```rust
-pub struct KindInterface {
+pub struct CompiledInterface {
     pub name: String,
     pub dimensions: IndexMap<String, CompiledDimension>,
     pub measures: IndexMap<String, CompiledMeasure>,
@@ -354,22 +344,22 @@ pub struct KindInterface {
 }
 ```
 
-Type resolution methods (`resolve_dim_type`, `resolve_measure_type`, `find_temporal_dimension`) live on `KindInterface` — one implementation, no duplication.
+Type resolution methods (`resolve_dim_type`, `resolve_measure_type`, `find_temporal_dimension`) live on `CompiledInterface` — one implementation, no duplication.
 
-### DatasetKind (single-dataset fast path)
+### CompiledSimpleKind (single-dataset fast path)
 
 ```rust
-pub struct DatasetKind {
-    pub interface: KindInterface,
+pub struct CompiledSimpleKind {
+    pub interface: CompiledInterface,
     pub binding: DatasetBinding,        // single binding
 }
 ```
 
-### GrainsetKind
+### CompiledGrainsetKind
 
 ```rust
-pub struct GrainsetKind {
-    pub interface: KindInterface,
+pub struct CompiledGrainsetKind {
+    pub interface: CompiledInterface,
     pub bindings: Vec<DatasetBinding>,
     pub coverage_index: CoverageIndex,
     pub dimension_index: DimensionIndex,
@@ -378,11 +368,11 @@ pub struct GrainsetKind {
 }
 ```
 
-### UnionsetKind
+### CompiledUnionsetKind
 
 ```rust
-pub struct UnionsetKind {
-    pub interface: KindInterface,
+pub struct CompiledUnionsetKind {
+    pub interface: CompiledInterface,
     pub mode: UnionMode,                // All | Distinct
     pub bindings: Vec<DatasetBinding>,
     pub coverage_index: CoverageIndex,
@@ -391,11 +381,11 @@ pub struct UnionsetKind {
 }
 ```
 
-### JoinsetKind
+### CompiledJoinsetKind
 
 ```rust
-pub struct JoinsetKind {
-    pub interface: KindInterface,
+pub struct CompiledJoinsetKind {
+    pub interface: CompiledInterface,
     pub associativity: JoinAssociativity,
     pub bindings: Vec<DatasetBinding>,
     pub relationships: Vec<CompiledRelationship>,
@@ -416,7 +406,7 @@ pub struct DatasetBinding {
 }
 ```
 
-Multi-dataset kinds (`Grainset`, `Unionset`, `Joinset`) implement `MultiDatasetKind` trait for shared access to `bindings()`, `coverage_index()`, `dimension_index()`, `metric_order()`.
+Multi-dataset kinds (`Grainset`, `Unionset`, `Joinset`) share the same acceleration structures: `coverage_index`, `dimension_index`, `metric_order`.
 
 ### CoverageIndex (bitmap-based field coverage)
 

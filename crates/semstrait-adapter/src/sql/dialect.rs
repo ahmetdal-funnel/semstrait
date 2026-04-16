@@ -136,6 +136,11 @@ impl SqlDialect for DataFusionDialect {
         match dt {
             DataType::Integer => "BIGINT".into(),
             DataType::Number => "DOUBLE".into(),
+            // DF supports TIMESTAMP(p) for p in {0,3,6,9}. Bare TIMESTAMP = nanoseconds.
+            // Our canonical precision maps directly to DF's precision parameter.
+            DataType::Timestamp { precision } => format!("TIMESTAMP({precision})"),
+            // DF only supports BYTEA for binary. BINARY and VARBINARY are unsupported.
+            DataType::Binary => "BYTEA".into(),
             _ => AnsiDialect.type_name(dt),
         }
     }
@@ -186,6 +191,17 @@ impl SqlDialect for DuckDbDialect {
         match dt {
             DataType::Integer => "BIGINT".into(),
             DataType::Number => "DOUBLE".into(),
+            // DuckDB uses precision-specific timestamp type names.
+            // TIMESTAMP = microseconds. Other precisions require explicit suffix.
+            DataType::Timestamp { precision } => match precision {
+                0 => "TIMESTAMP_S".into(),
+                3 => "TIMESTAMP_MS".into(),
+                6 => "TIMESTAMP".into(),
+                9 => "TIMESTAMP_NS".into(),
+                _ => "TIMESTAMP".into(),  // fallback for non-standard precision
+            },
+            // DuckDB's canonical binary type is BLOB.
+            DataType::Binary => "BLOB".into(),
             _ => AnsiDialect.type_name(dt),
         }
     }
@@ -241,6 +257,12 @@ impl SqlDialect for SparkDialect {
         match dt {
             DataType::Integer => "BIGINT".into(),
             DataType::Number => "DOUBLE".into(),
+            // Spark's native string type is STRING, not VARCHAR.
+            DataType::String => "STRING".into(),
+            // Spark TIMESTAMP has no precision parameter. Always microsecond internally.
+            DataType::Timestamp { .. } => "TIMESTAMP".into(),
+            // Spark uses BINARY for byte sequences. VARBINARY is not valid.
+            DataType::Binary => "BINARY".into(),
             _ => AnsiDialect.type_name(dt),
         }
     }

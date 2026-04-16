@@ -5,7 +5,7 @@ use prost::Message;
 /// Engine-ready plan artifact.
 ///
 /// Produced by `EngineAdapter::adapt()`.
-/// - `Sql` for engines that consume SQL strings (DuckDB, Trino, Spark).
+/// - `Sql` for engines that consume SQL strings (DuckDB, Spark).
 /// - `Substrait` for engines that consume Substrait plans natively (DataFusion).
 #[derive(Clone)]
 pub enum PlanArtifact {

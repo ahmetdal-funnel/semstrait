@@ -57,7 +57,7 @@ impl SemanticPlanner {
             return self.plan_ad_hoc(request, manifest);
         }
 
-        // Step 1: Constraint evaluation (step 0 in CONTEXT.md).
+        // Step 1: Constraint evaluation (pre-resolution validity gate).
         ConstraintValidator::check(request, manifest)?;
 
         // Step 2: Resolve entity via CompiledDataKind hierarchy.

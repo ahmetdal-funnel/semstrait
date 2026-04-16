@@ -1,6 +1,7 @@
-# Catalog Resolution — Design Document
+# Catalog Resolution
 
-**Version:** 2.0 | **Scope:** DataFusion + Iceberg REST (via Polaris)
+**Status:** Implemented
+**Scope:** Iceberg REST (via Polaris) + Unity Catalog + Null provider. DataFusion is the primary compute engine.
 
 ---
 
@@ -80,7 +81,7 @@ pub trait CatalogProvider: Send + Sync {
 }
 ```
 
-The default `Ok(None)` means existing catalog implementations (Unity, NullCatalog) work unchanged. Only `IcebergRestCatalog` overrides this in v1.
+The default `Ok(None)` means existing catalog implementations (Unity, NullCatalog) work unchanged. Only `IcebergRestCatalog` overrides this.
 
 ### StorageProvider Trait
 
@@ -280,13 +281,11 @@ Returns the list of successfully registered table names. Failures are skipped (l
 
 ---
 
-## 9. V1 Limitations
+## 9. Current Scope
 
-| Limitation | Rationale |
-|------------|-----------|
-| Iceberg REST only (no Hive Metastore, Glue) | Polaris is the primary target; REST API is standard |
-| DataFusion only (no DuckDB, Trino) | DataFusion is the v1 compute engine |
-| Single namespace per model | Model-level namespace; per-dataset namespaces deferred |
-| No schema evolution tracking | Snapshot captures current state only |
-| Warnings not errors for schema mismatches | Schema drift is common in practice |
-| No partition pruning in planner | Partition info captured but not used for query optimization yet |
+| Scope | Notes |
+|-------|-------|
+| Catalogs | Iceberg REST (via Polaris), Unity Catalog, `NullCatalogProvider` |
+| Storage providers | Local filesystem (`local` feature), S3 stub (`aws` feature), `NullStorageProvider` |
+| Schema drift | Detected via `CatalogSnapshot`; emitted as `PlannerWarning`, not compile error (DL-037, DL-065) |
+| Partition pruning | Partition info captured in snapshot; planner-level pruning is a known future extension |

@@ -1,6 +1,6 @@
 # Function Catalog — Canonical IR to Engine Mapping
 
-**Version:** 2.0 | **Status:** Reference specification for expression rewriting design
+**Status:** Reference specification. Canonical function set, rewriting tiers, and per-engine mappings (DataFusion, DuckDB, Spark). Compile-time arity validation for 28 ANSI SQL functions lives in `FunctionRegistry` (DL-050) and is a separate layer.
 
 ---
 

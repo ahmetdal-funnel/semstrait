@@ -1,12 +1,13 @@
 [package]
 name = "semstrait"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Facade crate for semstrait — semantic model to compute plan compiler"
 
 [dependencies]
 semstrait-core = { workspace = true }
+semstrait-model = { workspace = true }
 semstrait-planner = { workspace = true }
 semstrait-manifest = { workspace = true }
 semstrait-adapter = { workspace = true }
@@ -22,9 +23,10 @@ duckdb = ["semstrait-adapter/duckdb"]
 datafusion = ["semstrait-adapter/datafusion"]
 spark = ["semstrait-adapter/spark"]
 catalog-iceberg = ["semstrait-catalog/iceberg"]
-api-rest = ["semstrait-api/rest"]
-api-cli = ["semstrait-api/cli"]
-api-grpc = ["semstrait-api/grpc"]
+aws = ["semstrait-manifest/aws", "semstrait-catalog/aws"]
+api-rest = ["dep:semstrait-api", "semstrait-api/rest"]
+api-cli = ["dep:semstrait-api", "semstrait-api/cli"]
+api-grpc = ["dep:semstrait-api", "semstrait-api/grpc"]
 
 [dependencies.semstrait-api]
 workspace = true

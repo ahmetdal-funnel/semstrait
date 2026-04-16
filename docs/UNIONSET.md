@@ -1,7 +1,8 @@
 # Unionset Resolution Strategy
 
-**Version:** 1.0 | **Status:** Implemented
+**Status:** Implemented
 **Scope:** Planner, Manifest (validation + compilation), IR
+**Taxonomy:** Complex kind (multi-dataset, UNION ALL / UNION DISTINCT). For the Simple kind (single-dataset fast path), see `DATASET.md`. Peers: `GRAINSET.md`, `JOINSET.md`.
 
 ---
 
@@ -20,17 +21,16 @@ A **unionset** is a collection of datasets that are **vertically stacked** via U
 ### 2.1 Kind with Union Mode
 
 ```yaml
-kind: all_orders
-type: unionset
-  mode: all        # or "unique" for UNION DISTINCT
-
-dimensions:
-  - name: date
-  - name: region
-
-measures:
-  - name: revenue
-    agg: sum
+unionsets:
+  - name: all_orders
+    mode: all        # or "unique" for UNION DISTINCT
+    dimensions:
+      - name: date
+      - name: region
+    measures:
+      - name: revenue
+        agg: sum
+    datasets: [...]
 ```
 
 ### 2.2 Datasets with Partial Mapping
@@ -68,7 +68,7 @@ For each dataset branch, every requested dimension is classified into one of thr
 | Source | Description | Example |
 |--------|-------------|---------|
 | **Physical** | Mapped via column_mapping to a physical column | `date: order_date` |
-| **MetadataLiteral** | Metadata dimension (path/partition extraction) or literal mapping | `platform: { literal: "us" }` |
+| **MetadataLiteral** | Metadata dimension (path/partition extraction) or literal mapping | `platform: { lit: "us" }` |
 | **NullFill** | Not mapped by this dataset | `region` in orders_apac |
 
 This classification determines how each dimension appears in the branch's Scan, Aggregate, and Project nodes.
@@ -171,6 +171,12 @@ A final Aggregate node combines rows from all branches:
 
 The re-aggregation output schema matches the unified schema exactly.
 
+**Re-aggregation skip (distinguishing literals):** When a literal dimension in the GROUP BY has distinct values across all dataset bindings, no rows from different branches can share the same GROUP BY key. In this case, re-aggregation is a no-op and the Aggregate node is omitted. The Union output feeds directly into the PlanFragment.
+
+Example: if `dataset_name` is a literal with values `"adwords"`, `"klaviyo"`, `"bing"` across three branches, and `dataset_name` is in the GROUP BY, then rows from different branches can never merge — re-aggregation is skipped.
+
+This optimization is the cross-binding analog of `has_source_distinguishing_metadata` (used by grainset for multi-source bindings).
+
 ---
 
 ## 4. Detailed Scenarios
@@ -243,7 +249,7 @@ datasets:
         paths: ["bucket/us/orders.parquet"]
       column_mapping:
         date: order_date
-        market: { literal: "domestic" }
+        market: { lit: "domestic" }
         revenue: amount
 ```
 
@@ -340,3 +346,11 @@ UnionNode (inputs: all branches, distinct: true)
 ```
 
 The only difference from UNION ALL is `distinct: true` on the UnionNode. The SQL emitter translates this to `UNION DISTINCT` instead of `UNION ALL`.
+
+---
+
+## 7. Related Documentation
+
+- `docs/DATASET.md` — single-dataset (Simple kind) planning.
+- `docs/GRAINSET.md`, `docs/JOINSET.md` — peer Complex kinds.
+- `crates/semstrait-planner/src/data_kind/unionset.rs` — implementation.

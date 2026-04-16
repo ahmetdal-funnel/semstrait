@@ -1,7 +1,8 @@
 # Joinset Resolution Strategy
 
-**Version:** 1.0 | **Status:** Implemented
+**Status:** Implemented
 **Scope:** Planner, Manifest (validation + compilation), IR
+**Taxonomy:** Complex kind (multi-dataset, JOIN chain from an anchor). For the Simple kind (single-dataset fast path), see `DATASET.md`. Peers: `GRAINSET.md`, `UNIONSET.md`.
 
 ---
 
@@ -20,80 +21,63 @@ A **joinset** is a collection of datasets that are **semantically related** thro
 ### 2.1 Datasets with Distributed Semantics
 
 ```yaml
-kind: order_details
-type: joinset
-  associativity: left
-
-dimensions:
-  - name: order_date
-  - name: customer_name
-  - name: region_name
-
-measures:
-  - name: revenue
-    agg: sum
-
-datasets:
-  - name: orders
-    extras:
-      column_mapping:
-        order_date: created_at
-        revenue: amount
-        customer_id: cust_id        # join key (not a dimension)
-
-  - name: customers
-    extras:
-      column_mapping:
-        customer_name: name
-        id: id                       # join key
-        region_id: region_id         # join key to regions
-
-  - name: regions
-    extras:
-      column_mapping:
-        region_name: name
-        id: id                       # join key
+joinsets:
+  - name: order_details
+    associativity: left
+    dimensions:
+      - name: order_date
+      - name: customer_name
+      - name: region_name
+    measures:
+      - name: revenue
+        agg: sum
+    datasets:
+      - name: orders
+        extras:
+          column_mapping:
+            order_date: created_at
+            revenue: amount
+            customer_id: cust_id        # join key (not a dimension)
+      - name: customers
+        extras:
+          column_mapping:
+            customer_name: name
+            id: id                       # join key
+            region_id: region_id         # join key to regions
+      - name: regions
+        extras:
+          column_mapping:
+            region_name: name
+            id: id                       # join key
+    relationships:
+      - name: orders_customers
+        from: orders
+        to: customers
+        join_type: left
+        columns:
+          - { from: customer_id, to: id }
+        cardinality: many_to_one
+      - name: customers_regions
+        from: customers
+        to: regions
+        join_type: left
+        columns:
+          - { from: region_id, to: id }
+        cardinality: many_to_one
 ```
 
 Each dataset maps only its own columns. Join keys (`customer_id`, `id`, `region_id`) must be in the column_mapping but are not dimensions — they are physical columns used for join conditions.
 
-### 2.2 Relationships
+### 2.2 Relationship properties
 
-```yaml
-relationships:
-  - name: orders_customers
-    from: orders
-    to: customers
-    join_type: left
-    columns:
-      - from: customer_id
-        to: id
-    cardinality: many_to_one
-
-  - name: customers_regions
-    from: customers
-    to: regions
-    join_type: left
-    columns:
-      - from: region_id
-        to: id
-    cardinality: many_to_one
-```
-
-**Relationship properties:**
 - `from` / `to`: dataset names forming a directed edge
-- `join_type`: Inner, Left, Right, or Full — maps directly to IR JoinType
+- `join_type`: `inner`, `left`, `right`, or `full` — maps directly to IR JoinType
 - `columns`: pairs of column names used in the ON condition (supports composite keys)
-- `cardinality`: ManyToOne, OneToMany, ManyToMany — informational for optimization
+- `cardinality`: `many_to_one`, `one_to_many`, `many_to_many` — informational for optimization
 
 ### 2.3 Associativity
 
-```yaml
-type: joinset
-  associativity: left   # controls default join tree construction direction
-```
-
-Associativity is declared at the kind level. Currently used as a declaration; the BFS traversal from the anchor determines actual join order.
+`associativity: left | right | full` is declared at the joinset level (see `2.1` example). Currently used as a declaration; the BFS traversal from the anchor determines actual join order.
 
 ---
 
@@ -272,17 +256,16 @@ Join(Join(Scan(orders), Scan(customers)), Scan(regions))
 ### 4.1 Two-Dataset Join (Orders + Customers)
 
 ```yaml
-kind: order_details
-type: joinset
-
-datasets:
-  - name: orders      # maps: order_date, revenue, customer_id (join key)
-  - name: customers   # maps: customer_name, id (join key)
-
-relationships:
-  - from: orders, to: customers
-    join_type: left
-    columns: [{from: customer_id, to: id}]
+joinsets:
+  - name: order_details
+    datasets:
+      - name: orders      # maps: order_date, revenue, customer_id (join key)
+      - name: customers   # maps: customer_name, id (join key)
+    relationships:
+      - from: orders
+        to: customers
+        join_type: left
+        columns: [{ from: customer_id, to: id }]
 ```
 
 **Query:** `SELECT order_date, customer_name, revenue`
@@ -409,3 +392,12 @@ JoinNode (outer)
 ```
 
 Join tree is left-deep: each new hop is joined as the right child of a new JoinNode whose left child is the accumulated tree.
+
+---
+
+## 7. Related Documentation
+
+- `docs/DATASET.md` — single-dataset (Simple kind) planning.
+- `docs/GRAINSET.md`, `docs/UNIONSET.md` — peer Complex kinds.
+- `crates/semstrait-planner/src/data_kind/joinset.rs` — implementation.
+- `test_data/comprehensive_ecommerce.yaml` — working joinset fixture.

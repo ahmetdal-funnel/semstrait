@@ -26,7 +26,30 @@ Every code change that modifies types, adds/removes abstractions, or changes arc
 
 ## Rust Skills
 
-Use rust-skills for all Rust code changes -- routing, code review, design analysis. Load rust-router first to determine which skills apply.
+All Rust skills are enabled by default for this workspace. For any Rust-touching task:
+
+1. **Always** load `rust-router` first to analyze intent and route to specific skills.
+2. **Always** consult `coding-guidelines` (naming, rustfmt, clippy) and `m15-anti-pattern` (code review) before finalizing changes.
+3. Load on-demand when triggers apply:
+
+| Area | Skills |
+|---|---|
+| Compile errors, ownership, borrow, lifetime | `m01-ownership`, `m03-mutability` |
+| Smart pointers, RAII, resource lifecycle | `m02-resource`, `m12-lifecycle` |
+| Generics, traits, dyn, type-driven design | `m04-zero-cost`, `m05-type-driven` |
+| Error handling (`Result`/`Option`/panics) | `m06-error-handling`, `m13-domain-error` |
+| Async, concurrency, `Send`/`Sync` | `m07-concurrency` |
+| Domain modeling, DDD, invariants | `m09-domain` |
+| Performance, benchmarks, profiling | `m10-performance` |
+| Crates, features, workspace, FFI | `m11-ecosystem`, `unsafe-checker` |
+| Learning / onboarding / analogies | `m14-mental-model` |
+| Crate/std version and API lookup | `rust-learner`, `rust-daily` |
+| Domain-specific (web, CLI, cloud-native, fintech, embedded, IoT, ML) | `domain-web`, `domain-cli`, `domain-cloud-native`, `domain-fintech`, `domain-embedded`, `domain-iot`, `domain-ml` |
+| Codebase navigation via LSP | `rust-code-navigator`, `rust-symbol-analyzer`, `rust-call-graph`, `rust-trait-explorer`, `rust-deps-visualizer` |
+| Safe refactors | `rust-refactor-helper` |
+| Authoring new skills from docs | `rust-skill-creator` |
+
+Never skip `rust-router` — it is the dispatcher. If a Rust task feels trivial, still run the router once to confirm no deeper skill applies.
 
 ## Memory & Context Recall
 

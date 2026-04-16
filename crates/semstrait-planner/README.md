@@ -14,7 +14,7 @@ The planner follows a 12-step pipeline (synchronous, not async):
 ResolvedQueryRequest + CompiledManifest
        |
   1. ConstraintValidator::check()     pre-resolution validity gate
-  2. Entity resolution                 manifest.resolve(name) -> &DataKind
+  2. Entity resolution                 manifest.entities[name] -> &CompiledDataKind
   3. Binding pruning                   metadata + literal filter pruning
   4. DataKind dispatch                 route to planner by variant
   5. PlannerContext                    manifest + plan_builder + catalog + session
@@ -24,33 +24,27 @@ ResolvedQueryRequest + CompiledManifest
   9. ORDER BY                         SortNode from request.order_by
  10. LIMIT                            FetchNode from request.limit
  11. Build LogicalPlan                root + output_names
- 12. Optimizer::apply()               identity in v1 (zero passes)
+ 12. Optimizer::apply()               identity by default (zero passes registered)
        |
        v
   LogicalPlan
 ```
 
-### Diagram: Planner Evaluation Order
-
-![Planner Evaluation Order](docs/D3_planner_evaluation_order.svg)
-
-Shows the step-by-step evaluation within `SemanticPlanner::plan()` -- constraint checks, kind dispatch, additivity resolution, filter stacking, and optimizer application.
-
 ---
 
 ## DataKind Dispatch
 
-The planner resolves entities via `manifest.resolve(name)`, which returns a `&DataKind` from the pre-computed `data_kinds` map. Dispatch is variant-based:
+The planner resolves entities via `manifest.entities[name]`, which returns a `CompiledDataKind`. Dispatch is variant-based:
 
 ```
-DataKind::Dataset   -->  DatasetPlanner::resolve()    (via KindPlannerRegistry)
-DataKind::Grainset  -->  GrainsetPlanner::resolve()  (via KindPlannerRegistry)
-DataKind::Unionset  -->  UnionsetPlanner::resolve()  (via KindPlannerRegistry)
-DataKind::Joinset   -->  JoinsetPlanner::resolve()   (via KindPlannerRegistry)
+CompiledDataKind::Simple    -->  simple kind plan (single-dataset fast path)
+CompiledDataKind::Grainset  -->  GrainsetPlanner::resolve()
+CompiledDataKind::Unionset  -->  UnionsetPlanner::resolve()
+CompiledDataKind::Joinset   -->  JoinsetPlanner::resolve()
 ```
 
-All kind planners receive `&DataKind` and extract the variant-specific struct (`GrainsetKind`, etc.) which embeds:
-- **`KindInterface`** -- shared semantic fields (dimensions, measures, metrics, filters, keys, domain)
+All kind planners extract the variant-specific struct (`CompiledGrainsetKind`, etc.) which embeds:
+- **`CompiledInterface`** -- shared semantic fields (dimensions, measures, metrics, filters, keys, domain)
 - **`DatasetBinding`** -- per-dataset physical mapping (`ResolvedColumnMapping`, `resolved_sources`)
 - **Acceleration indices** -- `CoverageIndex`, `DimensionIndex`, `GrainMap`, etc.
 
@@ -65,14 +59,14 @@ Before dispatch, the planner narrows bindings via two pruning passes:
 
 ## Kind Planners
 
-Each `DataKind` variant dispatches to a dedicated planner that builds the initial `PlanFragment`:
+Each `CompiledDataKind` variant dispatches to a dedicated planner that builds the initial `PlanFragment`:
 
-| DataKind Variant | Strategy | Planner |
-|-----------------|----------|---------|
-| `Dataset` | Single-dataset fast path (Scan → Agg → Project) | `DatasetPlanner` (dataset.rs) |
-| `Grainset` | Route to cheapest covering dataset by grain | `GrainsetPlanner` |
-| `Unionset` | UNION ALL with NULL-fill for missing columns | `UnionsetPlanner` |
-| `Joinset` | BFS join chain from anchor dataset | `JoinsetPlanner` |
+| Variant | Strategy | Module |
+|---------|----------|--------|
+| `Simple` | Single-dataset fast path (Scan -> Agg -> Project) | `data_kind/simple.rs` |
+| `Grainset` | Route to cheapest covering dataset by grain | `data_kind/grainset.rs` |
+| `Unionset` | UNION ALL with NULL-fill for missing columns | `data_kind/unionset.rs` |
+| `Joinset` | BFS join chain from anchor dataset | `data_kind/joinset.rs` |
 
 ### Computed Dimension Handling
 
@@ -96,7 +90,7 @@ Expression resolution in `resolver.rs`:
 
 Measure decomposition in `decomposer.rs`:
 - `decompose_measure()` — declarative path (agg tag + horizontal expr)
-- `decompose_metric()` — recursive metric decomposition via KindInterface
+- `decompose_metric()` — recursive metric decomposition via CompiledInterface
 
 Computed dimension flow:
 1. Expression resolved via `PhysicalResolver::new().resolve_expr()` (semantic → physical column names)
@@ -104,11 +98,7 @@ Computed dimension flow:
 3. Computed dim NOT added to GROUP BY (AggNode groups only physical dims)
 4. Computed dim emitted as ProjectNode expression (post-aggregation, alongside measure/metric aliases)
 
-### Diagram: Kind Interface Binding
-
-![Kind Interface Binding](docs/D5_kind_interface_binding.svg)
-
-Shows the three layers of a Kind: the **interface** (`KindInterface` -- dimensions, measures, metrics, constraints) that users query; the **strategy** (enum variant) that determines plan structure; and the **binding** (`DatasetBinding` -- column mappings, resolved sources) that connects to physical data.
+Shows the three layers of a Kind: the **interface** (`CompiledInterface` -- dimensions, measures, metrics, constraints) that users query; the **strategy** (enum variant) that determines plan structure; and the **binding** (`DatasetBinding` -- column mappings, resolved sources) that connects to physical data.
 
 ---
 
@@ -116,35 +106,35 @@ Shows the three layers of a Kind: the **interface** (`KindInterface` -- dimensio
 
 ```
 src/
-├── lib.rs                      re-exports, public API
-├── planner.rs                  SemanticPlanner orchestrator
-├── request.rs                  ResolvedQueryRequest, QueryFilter, OrderByClause
-├── error.rs                    PlannerError enum
-│
-├── resolver.rs                 ExprResolver trait + PhysicalResolver + MappingResolver
-├── decomposer.rs               DecomposedMeasure, decompose_measure, decompose_metric
-├── validator.rs                ConstraintValidator (pre-resolution validity gate)
-├── optimizer.rs                OptimizerPass trait + Optimizer
-├── additivity.rs               AdditivityResolver
-├── entity_resolver.rs          entity resolution from field names (ad-hoc queries)
-├── ad_hoc_join.rs              ad-hoc join resolution (FROM-less queries)
-├── simplify.rs                 plan simplification passes
-│
-├── expr/
-│   └── mod.rs                  dimension partitioning, column ref collection, grain utils
-│
-├── kind/
-│   ├── mod.rs                  KindPlanner trait, Registry, PlanFragment, PlannerContext
-│   ├── plan_builder.rs         shared plan-building utilities (Scan, Agg, Project construction)
-│   ├── dataset.rs              DatasetPlanner (single-dataset fast path)
-│   ├── grainset.rs             GrainsetPlanner (grain-aware routing + UNION ALL)
-│   ├── unionset.rs             UnionsetPlanner (UNION ALL with NULL-fill)
-│   └── joinset.rs              JoinsetPlanner (BFS join chain + field resolution)
-│
-└── tests/
-    ├── mod.rs
-    ├── helpers.rs              shared test fixtures (manifests, requests, DataKind builders)
-    └── integration.rs          end-to-end planning pipeline tests
+  lib.rs                      re-exports, public API
+  planner.rs                  SemanticPlanner orchestrator
+  request.rs                  ResolvedQueryRequest, QueryFilter, OrderByClause
+  error.rs                    PlannerError enum
+
+  resolver.rs                 ExprResolver trait + PhysicalResolver + MappingResolver
+  decomposer.rs               DecomposedMeasure, decompose_measure, decompose_metric
+  validator.rs                ConstraintValidator (pre-resolution validity gate)
+  optimizer.rs                OptimizerPass trait + Optimizer
+  additivity.rs               AdditivityResolver
+  entity_resolver.rs          entity resolution from field names (ad-hoc queries)
+  ad_hoc_join.rs              ad-hoc join resolution (FROM-less queries)
+  simplify.rs                 plan simplification passes
+
+  expr/
+    mod.rs                    dimension partitioning, column ref collection, grain utils
+
+  data_kind/
+    mod.rs                    kind dispatch, PlanFragment, PlannerContext
+    plan_layers.rs            shared plan-building utilities (Scan, Rename, Agg, Project)
+    simple.rs                 simple kind plan (single-dataset fast path)
+    grainset.rs               GrainsetPlanner (grain-aware routing + UNION ALL)
+    unionset.rs               UnionsetPlanner (UNION ALL with NULL-fill)
+    joinset.rs                JoinsetPlanner (BFS join chain + field resolution)
+
+  tests/
+    mod.rs
+    helpers.rs                shared test fixtures (manifests, requests, builders)
+    integration.rs            end-to-end planning pipeline tests
 ```
 
 ---
@@ -190,7 +180,7 @@ Filters are layered in a specific order (inner to outer):
 
 ## Dependencies
 
-- `semstrait-core` -- `ConsumerProfile`, `Expr`, `DataType`
+- `semstrait-core` -- `Expr`, `DataType`, `Grain`
 - `semstrait-ir` -- `PlanNode`, `LogicalPlan`, `NodeMeta`
-- `semstrait-manifest` -- `CompiledManifest`, `DataKind`, `KindInterface`, `DatasetBinding`
+- `semstrait-manifest` -- `CompiledManifest`, `CompiledDataKind`, `CompiledInterface`, `DatasetBinding`
 - `semstrait-catalog` -- `CatalogProvider` (optional, for schema checks)

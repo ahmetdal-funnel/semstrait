@@ -178,6 +178,12 @@ impl ColumnMapping {
         ColumnMapping::Inherited
     }
 
+    /// Default value for `DatasetExtras.column_mapping` when the field is absent.
+    /// Simple kinds have no parent to inherit from, so default is Auto (identity).
+    pub fn default_auto() -> Self {
+        ColumnMapping::Auto
+    }
+
     /// Get the underlying map. Panics if `Auto` or `Inherited` (must be expanded before use).
     pub fn as_map(&self) -> &HashMap<String, ColumnMappingValue> {
         match self {
@@ -309,6 +315,29 @@ impl Serialize for ColumnMappingValue {
     }
 }
 
+/// Coerce a serde_yaml::Value to its string representation.
+///
+/// Handles the case where YAML scalars like `lit: 0` or `lit: true` are parsed
+/// as non-string types. Converts them to canonical string form for storage
+/// in `LiteralValue::String`.
+fn yaml_value_to_string(v: &serde_yaml::Value) -> String {
+    match v {
+        serde_yaml::Value::String(s) => s.clone(),
+        serde_yaml::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i.to_string()
+            } else if let Some(f) = n.as_f64() {
+                f.to_string()
+            } else {
+                n.to_string()
+            }
+        }
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Null => "null".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
 impl<'de> Deserialize<'de> for ColumnMappingValue {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -322,7 +351,7 @@ impl<'de> Deserialize<'de> for ColumnMappingValue {
 
         #[derive(Deserialize)]
         struct LiteralHelper {
-            lit: String,
+            lit: serde_yaml::Value,
         }
 
         // Deserialize into a generic value first, then try each variant.
@@ -346,7 +375,8 @@ impl<'de> Deserialize<'de> for ColumnMappingValue {
             }
             // Try Literal (has required "lit" key)
             if let Ok(lit) = serde_yaml::from_value::<LiteralHelper>(value.clone()) {
-                return Ok(ColumnMappingValue::Literal(LiteralValue::String(lit.lit)));
+                let string_val = yaml_value_to_string(&lit.lit);
+                return Ok(ColumnMappingValue::Literal(LiteralValue::String(string_val)));
             }
             // Anchored: catch-all object with string → string entries
             if let Ok(map) = serde_yaml::from_value::<HashMap<String, String>>(value) {
@@ -505,4 +535,89 @@ pub(crate) fn build_semantic_interface(
         metrics: vec_to_btreemap_unique(metrics, |m| m.name().to_string(), container_name, "metric")?,
         filters: vec_to_btreemap_unique(filters, |f| f.name.clone(), container_name, "filter")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literal_string_value() {
+        let yaml = r#"lit: "search""#;
+        let v: ColumnMappingValue = serde_yaml::from_str(yaml).unwrap();
+        match v {
+            ColumnMappingValue::Literal(LiteralValue::String(s)) => assert_eq!(s, "search"),
+            other => panic!("expected Literal(String), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn literal_unquoted_string_value() {
+        let yaml = "lit: web";
+        let v: ColumnMappingValue = serde_yaml::from_str(yaml).unwrap();
+        match v {
+            ColumnMappingValue::Literal(LiteralValue::String(s)) => assert_eq!(s, "web"),
+            other => panic!("expected Literal(String('web')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn literal_integer_value() {
+        let yaml = "lit: 0";
+        let v: ColumnMappingValue = serde_yaml::from_str(yaml).unwrap();
+        match v {
+            ColumnMappingValue::Literal(LiteralValue::String(s)) => assert_eq!(s, "0"),
+            other => panic!("expected Literal(String('0')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn literal_negative_integer_value() {
+        let yaml = "lit: -42";
+        let v: ColumnMappingValue = serde_yaml::from_str(yaml).unwrap();
+        match v {
+            ColumnMappingValue::Literal(LiteralValue::String(s)) => assert_eq!(s, "-42"),
+            other => panic!("expected Literal(String('-42')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn literal_float_value() {
+        let yaml = "lit: 3.14";
+        let v: ColumnMappingValue = serde_yaml::from_str(yaml).unwrap();
+        match v {
+            ColumnMappingValue::Literal(LiteralValue::String(s)) => assert_eq!(s, "3.14"),
+            other => panic!("expected Literal(String('3.14')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn literal_bool_value() {
+        let yaml = "lit: true";
+        let v: ColumnMappingValue = serde_yaml::from_str(yaml).unwrap();
+        match v {
+            ColumnMappingValue::Literal(LiteralValue::String(s)) => assert_eq!(s, "true"),
+            other => panic!("expected Literal(String('true')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn literal_null_value() {
+        let yaml = "lit: null";
+        let v: ColumnMappingValue = serde_yaml::from_str(yaml).unwrap();
+        match v {
+            ColumnMappingValue::Literal(LiteralValue::String(s)) => assert_eq!(s, "null"),
+            other => panic!("expected Literal(String('null')), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn simple_mapping() {
+        let yaml = "physical_col";
+        let v: ColumnMappingValue = serde_yaml::from_str(yaml).unwrap();
+        match v {
+            ColumnMappingValue::Simple(s) => assert_eq!(s, "physical_col"),
+            other => panic!("expected Simple, got {other:?}"),
+        }
+    }
 }

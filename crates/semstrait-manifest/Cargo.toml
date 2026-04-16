@@ -1,6 +1,6 @@
 [package]
 name = "semstrait-manifest"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Manifest compiler and repository for semstrait semantic models"
@@ -19,10 +19,12 @@ chrono = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 
+# S3 loading (feature-gated)
+aws-config = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+tokio = { workspace = true }
+
 [features]
 default = []
 iceberg = ["semstrait-catalog/iceberg"]
-aws = ["semstrait-catalog/aws", "iceberg"]
-
-[dev-dependencies]
-tokio = { workspace = true }
+aws = ["semstrait-catalog/aws", "iceberg", "dep:aws-config", "dep:aws-sdk-s3"]

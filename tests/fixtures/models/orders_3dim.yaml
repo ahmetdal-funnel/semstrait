@@ -21,7 +21,7 @@ semantic_model:
       measures:
         - name: revenue
           data_type: float64
-          expr: "SUM(amount)"
+          agg: sum
       datasets:
         - name: orders_daily
           extras:

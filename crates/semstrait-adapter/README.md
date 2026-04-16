@@ -19,17 +19,15 @@ pub trait EngineAdapter: Send + Sync {
 - `adapt()` — converts LogicalPlan to `PlanArtifact::Substrait` or `PlanArtifact::Sql`.
 - `debug_sql()` — always available ANSI SQL for debugging. Default impl uses `AnsiSqlEmitter`.
 
-Connectors never reference adapters (DL-056). Adapter and connector are independent.
-
 ---
 
 ## Adapters
 
-| Adapter | Output | Feature | V1 Status |
-|---------|--------|---------|-----------|
-| `DataFusionAdapter` | `PlanArtifact::Substrait` | `datafusion` | Primary V1 engine |
-| `DuckDbAdapter` | `AdaptError::UnsupportedFeature` | `duckdb` | V1 unsupported (dialect infra exists) |
-| `SparkAdapter` | `AdaptError::UnsupportedFeature` | `spark` | V1 unsupported (dialect infra exists) |
+| Adapter | Output | Feature | Status |
+|---------|--------|---------|--------|
+| `DataFusionAdapter` | `PlanArtifact::Substrait` | `datafusion` | Implemented — primary supported engine |
+| `DuckDbAdapter` | `AdaptError::UnsupportedFeature` | `duckdb` | Structural stub — dialect infra exists, `adapt()` returns `UnsupportedFeature` |
+| `SparkAdapter` | `AdaptError::UnsupportedFeature` | `spark` | Structural stub — dialect infra exists, `adapt()` returns `UnsupportedFeature` |
 
 ---
 
@@ -69,8 +67,8 @@ src/
     ├── mod.rs              engine re-exports
     ├── ansi.rs             AnsiAdapter (always available)
     ├── datafusion/         DataFusionAdapter + DataFusionPlanBuilder
-    ├── duckdb/             DuckDbAdapter (V1: unsupported)
-    └── spark/              SparkAdapter (V1: unsupported)
+    ├── duckdb/             DuckDbAdapter (stub — returns UnsupportedFeature)
+    └── spark/              SparkAdapter (stub — returns UnsupportedFeature)
 ```
 
 ---

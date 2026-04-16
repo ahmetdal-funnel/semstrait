@@ -499,6 +499,8 @@ pub struct ComplexExtras {
 /// Extras for standalone SimpleDataKind (no complex-level defaults).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatasetExtras {
+    #[serde(default = "ColumnMapping::default_auto")]
+    pub column_mapping: ColumnMapping,
     #[serde(default)]
     pub catalog: Option<CatalogRef>,
     #[serde(default)]

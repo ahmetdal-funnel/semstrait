@@ -1,6 +1,6 @@
 [package]
 name = "semstrait-api"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "API layer: gRPC, REST, and CLI entry points for semstrait"

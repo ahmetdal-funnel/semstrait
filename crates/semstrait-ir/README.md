@@ -61,10 +61,6 @@ Converts `Expr` ↔ Substrait `Expression` for round-trip fidelity.
 
 ---
 
-## Diagram: PlanNode to Substrait Mapping
-
-![PlanNode Substrait Map](docs/D4_plannode_substrait_map.svg)
-
 Each `PlanNode` variant maps to a specific Substrait `Rel` type. Semantic annotations (`AggregateRole`, `FilterSource`, `AdditivityAnnotation`, `KindRef`) are serialized into `AdvancedExtension.detail` using the URN `urn:semstrait:annotations:v1`. Non-semstrait consumers safely ignore these extensions.
 
 ---
