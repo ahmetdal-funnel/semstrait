@@ -23,9 +23,9 @@ use semstrait_manifest::acceleration::DatasetBinding;
 
 // Re-export expression/metadata utilities so kind submodules can use `super::`.
 pub(crate) use crate::expr::{
-    collect_column_refs, extract_metadata_value_binding, extract_metadata_value_source,
-    grain_to_temporal, partition_dimensions_iface, resolve_guards, resolve_native_grain_binding,
-    split_computed_dims,
+    collect_all_metadata_dims, collect_column_refs, extract_metadata_value_binding,
+    extract_metadata_value_source, grain_to_temporal, partition_dimensions_iface,
+    resolve_guards, resolve_native_grain_binding, split_computed_dims,
 };
 
 pub use simple::SimplePlanner;

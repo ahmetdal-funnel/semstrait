@@ -185,7 +185,7 @@ semantic_model:
                       col: dataset_name
                       list:
                         - lit: "adwords"
-                        - lit: "facebook"
+                        - lit: "facebookads"
                         - lit: "bing"
                         - lit: "tiktok"
                         - lit: "klaviyo"
@@ -202,7 +202,7 @@ semantic_model:
                         - condition:
                             eq:
                               - dataset_name
-                              - lit: "facebook"
+                              - lit: "facebookads"
                           then:
                             case:
                               when:

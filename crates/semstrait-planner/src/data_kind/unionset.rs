@@ -11,7 +11,7 @@ use crate::decomposer;
 use crate::resolver::PhysicalResolver;
 use super::plan_layers;
 use super::plan_layers::{infer_aggregation_iface, collect_known_values, has_distinguishing_known_values};
-use super::{partition_dimensions_iface, DataKindPlanner, PlanFragment, PlannerContext, PrunedView};
+use super::{collect_all_metadata_dims, DataKindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
 use indexmap::IndexMap;
 use semstrait_ir::{
@@ -52,10 +52,13 @@ impl DataKindPlanner for UnionsetPlanner {
         let pb = ctx.plan_builder;
 
         // ── Classify requested fields into measures and metrics ───────
-        let (metadata_dims, _) = partition_dimensions_iface(&request.dimensions, iface);
+        // Use all interface metadata dims for known_values — computed dims may
+        // reference metadata dims not in the user's SELECT, and the re-agg skip
+        // check needs full coverage to correctly identify distinguishing values.
+        let all_metadata_dims = collect_all_metadata_dims(iface);
         let per_binding_known: Vec<std::collections::HashMap<String, String>> = bindings
             .iter()
-            .map(|b| collect_known_values(b, &metadata_dims))
+            .map(|b| collect_known_values(b, &all_metadata_dims))
             .collect();
         let skip_reagg = has_distinguishing_known_values(&per_binding_known, &request.dimensions);
 

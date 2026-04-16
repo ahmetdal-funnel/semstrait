@@ -255,10 +255,15 @@ fn build_layered_plan(
     let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
     let (physical_dims, computed_dims) = super::split_computed_dims(&regular_dims, iface);
 
+    // All metadata dims from the interface — for SR-10 known_values in expression
+    // simplification. This is broader than `metadata_dims` (user-requested only),
+    // because computed dims may reference metadata dims not in the user's SELECT.
+    let all_metadata_dims = super::collect_all_metadata_dims(iface);
+
     // ── D1: Computed dimension resolution ──────────────────────────
     // Full: all computed dims must be resolvable (error handled downstream).
     // Partial: track unresolvable computed dims in null_computed for null-fill.
-    let known_values_binding = collect_known_values(binding, &metadata_dims);
+    let known_values_binding = collect_known_values(binding, &all_metadata_dims);
     let mut resolvable_computed: Vec<(String, semstrait_core::Expr)> = Vec::new();
     let mut null_computed: HashSet<String> = HashSet::new();
 
@@ -270,9 +275,16 @@ fn build_layered_plan(
             }
             CoverageMode::Partial { .. } => {
                 // Partial mode: check if all dependencies are available in this binding.
+                // Simplify first: substitute known_values + simplify prunes dead CASE
+                // branches, eliminating column refs that belong to other bindings.
+                // E.g., bing's market CASE drops the facebook-specific `country` ref.
+                let guard_resolved = resolve_guards(expr);
+                let substituted = crate::simplify::substitute(&guard_resolved, &known_values_binding);
+                let simplified = crate::simplify::simplify(&substituted);
+
                 let mut refs = Vec::new();
                 let mut seen = HashSet::new();
-                collect_column_refs(expr, &mut refs, &mut seen);
+                collect_column_refs(&simplified, &mut refs, &mut seen);
                 let all_available = refs.iter().all(|r| {
                     mapping.physical.contains_key(r)
                         || mapping.literals.contains_key(r)
@@ -570,7 +582,7 @@ fn build_layered_plan(
 
     let agg_output = if binding.resolved_sources.len() <= 1 {
         // ── Single-source path ────────────────────────────────────
-        let known_values = collect_known_values(binding, &metadata_dims);
+        let known_values = collect_known_values(binding, &all_metadata_dims);
         let mut scan = build_scan_node_binding(binding, &scan_columns, &sem_types, pb);
 
         // D8: Inject entity-level filters right after scan (physical names).
@@ -597,7 +609,7 @@ fn build_layered_plan(
 
         for source in &binding.resolved_sources {
             let known_values = collect_known_values_for_source(
-                source, &mapping.literals, &metadata_dims,
+                source, &mapping.literals, &all_metadata_dims,
             );
 
             // Scan for this specific source.
@@ -653,7 +665,7 @@ fn build_layered_plan(
         let per_source_known: Vec<HashMap<String, String>> = binding
             .resolved_sources
             .iter()
-            .map(|s| collect_known_values_for_source(s, &mapping.literals, &metadata_dims))
+            .map(|s| collect_known_values_for_source(s, &mapping.literals, &all_metadata_dims))
             .collect();
         if has_distinguishing_known_values(&per_source_known, &reagg_dims) {
             union

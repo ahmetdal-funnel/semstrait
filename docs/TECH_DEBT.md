@@ -135,3 +135,19 @@ semstrait-core                     (pure data types, zero I/O)
 2. Move `io.rs` content from manifest to the new crate
 3. Update manifest, api, and facade to depend on `semstrait-io`
 4. Remove `aws-sdk-s3` and `aws-config` from manifest's Cargo.toml
+
+---
+
+## TD-009: Computed dimension expressions with unreachable metadata values not detected at compile time
+
+**Phase:** SR-10 (Static Pushdown)
+**Severity:** Low
+**Location:** `crates/semstrait-planner/src/simplify.rs`, model YAML validation
+
+**Problem:** When a computed dimension's CASE expression references metadata dimension values that don't match actual extraction results (e.g., expression checks `dataset_name = 'facebook'` but the catalog namespace is `facebookads`), the CASE silently falls through to the else branch (producing `''`). No compile-time or plan-time warning is raised.
+
+**Example:** `alpinestars_eu_ad_platform_v2.yaml` — the `market` expression uses `lit: "facebook"` but metadata extraction from the facebookads Polaris namespace at token 5 yields `"facebookads"`.
+
+**Current mitigation:** Plan output is inspectable via `explain --output plan`; the collapsed `'' AS market` is visible.
+
+**Remediation:** Add a compiler validation pass that cross-references literal values in computed dimension CASE conditions against known metadata extraction results from resolved sources. Emit a `COMPILE_W001`-level warning when a CASE branch's metadata condition can never be true for any resolved source.

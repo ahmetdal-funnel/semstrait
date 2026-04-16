@@ -10,7 +10,7 @@ use crate::resolver::PhysicalResolver;
 use super::collect_column_refs;
 use super::plan_layers;
 use super::plan_layers::{build_scan_node_binding, build_semantic_type_map, collect_known_values, resolve_semantic_type, collect_semantic_refs, build_expression_project};
-use super::{partition_dimensions_iface, split_computed_dims, DataKindPlanner, PlanFragment, PlannerContext, PrunedView};
+use super::{collect_all_metadata_dims, partition_dimensions_iface, split_computed_dims, DataKindPlanner, PlanFragment, PlannerContext, PrunedView};
 use crate::request::ResolvedQueryRequest;
 use indexmap::IndexMap;
 use semstrait_ir::{
@@ -360,7 +360,10 @@ fn build_join_plan(
     // ── Partition dimensions ────────────────────────────────────────
     let (metadata_dims, regular_dims) = partition_dimensions_iface(&request.dimensions, iface);
     let (physical_dims, computed_dims) = split_computed_dims(&regular_dims, iface);
-    let known_values = collect_known_values(anchor, &metadata_dims);
+    // All metadata dims from the interface for SR-10 known_values — computed dims
+    // may reference metadata dims not in the user's SELECT.
+    let all_metadata_dims = collect_all_metadata_dims(iface);
+    let known_values = collect_known_values(anchor, &all_metadata_dims);
 
     // Helper: find the physical column for a semantic name across joined bindings.
     let mapping_for_field = |field_name: &str| -> Option<String> {

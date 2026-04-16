@@ -34,6 +34,31 @@ pub(crate) fn partition_dimensions_iface(
     (metadata, regular)
 }
 
+/// Collect ALL metadata dimensions from the interface, regardless of user selection.
+///
+/// Used for SR-10 static pushdown: computed dimension expressions may reference
+/// metadata dimensions that are not in the user's SELECT. Expression simplification
+/// (`substitute` + `simplify`) needs known values for ALL metadata dims so that
+/// CASE branches referencing them can be constant-folded correctly.
+///
+/// This is distinct from `partition_dimensions_iface` which only returns user-requested
+/// metadata dims (needed for schema projection / rename layer).
+pub(crate) fn collect_all_metadata_dims(
+    iface: &CompiledInterface,
+) -> Vec<(String, MetadataDimension)> {
+    iface
+        .dimensions
+        .iter()
+        .filter_map(|(name, dim)| {
+            if let DimensionType::Metadata(meta) = &dim.dim_type {
+                Some((name.clone(), meta.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Separate computed dimensions from regular ones.
 ///
 /// Computed dimensions have `expr: Some(...)` and are emitted as ProjectNode
