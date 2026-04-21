@@ -406,6 +406,20 @@ Items that are in scope for the design but explicitly deferred to a later docume
 
 ## 11. Relationship to Existing Documents
 
+The living session-handoff for this exercise is [`STATUS.md`](STATUS.md) (sibling to this file). It tracks the current spec phase, active reconciliation items, deferred topics, and the next-session starting point. Every spec session starts by reading this document, then `STATUS.md`.
+
+Project-root entry-points:
+
+| File | Role |
+|---|---|
+| [`../../AGENTS.md`](../../AGENTS.md) | Tool-neutral project-mode signpost (Cursor / Claude Code / Codex); points here + `STATUS.md` |
+| [`../../CLAUDE.md`](../../CLAUDE.md) | Workstyle + per-topic routing table (spec work routed here first; legacy code docs secondary) |
+| [`../../CONTEXT.md`](../../CONTEXT.md) | Thin pointer to `AGENTS.md` |
+| [`../../README.md`](../../README.md) | Describes **current code**, not target spec; top banner directs spec readers here |
+| [`../../DECISION_LOG.md`](../../DECISION_LOG.md) | Records code-state constraints; spec supersedes as migration phases land |
+
+Legacy doc migration (current code → target spec):
+
 | Existing | Role after this exercise |
 |---|---|
 | `docs/ARCHITECTURE.md` | Becomes a short summary pointing into `design/foundations/` + `design/apis/` |
@@ -417,7 +431,7 @@ Items that are in scope for the design but explicitly deferred to a later docume
 | `docs/TECH_DEBT.md` | Kept. Deviation tracking mechanism to be finalized in `implementation/40_refactor_plan.md` (I9). |
 | `DECISION_LOG.md` | Kept. Records ratifications as design docs land; entry numbering continues. |
 | Crate `README.md`s | Kept, trimmed to "what's in this crate"; link into `design/apis/3x_*.md` for the contract. |
-| `CLAUDE.md` | Updated in Stage 3 to route agents into `docs/design/` first when semstrait work is indicated. |
+| `CLAUDE.md` | Updated — routes spec work to `docs/design/` first; legacy code routing preserved below as secondary table. |
 
 ## 12. Next Up
 

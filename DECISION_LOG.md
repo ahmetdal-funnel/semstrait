@@ -1,5 +1,7 @@
 # Decision Log — Active Constraints
 
+> **Note**: Active constraints below describe **current code**. The spec tree under [`docs/design/`](docs/design/) is the source of truth for **target-state** decisions. Spec-ratified decisions will supersede entries here as migration phases land; see [`docs/design/implementation/41_deprecations.md`](docs/design/implementation/41_deprecations.md) for the retirement schedule and [`docs/design/STATUS.md`](docs/design/STATUS.md) for the current phase.
+
 Architectural decisions that code must respect. Historical entries are archived — consult git history for original narratives.
 
 ---

@@ -1,3 +1,9 @@
+## Project mode
+
+`semstrait` is currently in **`spec-driven-dev` mode**. The authoritative specification for the target architecture lives under [`docs/design/`](docs/design/). The current code does not yet match the spec; a phased migration ([`docs/design/implementation/40_refactor_plan.md`](docs/design/implementation/40_refactor_plan.md)) is planned but not yet executed.
+
+See [`AGENTS.md`](AGENTS.md) for the tool-neutral project-mode signpost.
+
 ## Workstyle
 
 Never bypass the workstyle:
@@ -5,7 +11,29 @@ Never bypass the workstyle:
 2. **Present results** -- show findings and proposed solution to the human
 3. **Wait for confirmation** -- do NOT apply code changes until the human approves the fix
 
-## Documentation Routing
+For spec / design work specifically: describe, clean, and name what the code actually implements. Do not fabricate parallel abstractions. Any new concept in the spec tree must ground in current code or be explicitly flagged as a proposed extension. See [`docs/design/STATUS.md`](docs/design/STATUS.md) §7 for recurring failure modes.
+
+## Documentation Routing — Spec & Design Work (primary)
+
+Any session touching design, specification, or open Q&A MUST read, in this exact order:
+
+1. [`docs/design/00_overview.md`](docs/design/00_overview.md) — the spec contract (canonical vocabulary, document map, invariants)
+2. [`docs/design/STATUS.md`](docs/design/STATUS.md) — living session-handoff (current phase, active items, deferred topics)
+
+Then route by topic:
+
+| Working on | Read first (after `00_overview.md` + `STATUS.md`) |
+|---|---|
+| Cross-cutting foundations (pipeline, names, types, expressions, composition, temporal shape) | `docs/design/foundations/` (see `00_overview.md §6.2`) |
+| DataKind variants (Dataset / Grainset / Unionset / Joinset), applicability matrix | `docs/design/data-kinds/` (see `00_overview.md §6.3`) |
+| Per-crate public API contracts | `docs/design/apis/` (see `00_overview.md §6.4`) |
+| Refactor plan, deprecations, migration notes | `docs/design/implementation/` (see `00_overview.md §6.5`) |
+| Per-engine mapping catalogs (types, functions, temporal, joins) | `docs/design/registry/` (see `00_overview.md §6.6`) |
+| Open questions for any doc `N` | `docs/design/open_questions/N_open_questions.md` |
+
+## Documentation Routing — Code & Refactor Work (legacy / reference-only)
+
+Legacy documentation describes the **current code state**, not the target spec. It remains useful for understanding what the code does today, but it is not authoritative for target-state decisions. The spec tree under `docs/design/` supersedes everything below as phases of the migration land.
 
 Before modifying any crate, read its `README.md`. For cross-crate changes, also read `docs/ARCHITECTURE.md`.
 
@@ -19,6 +47,8 @@ Before modifying any crate, read its `README.md`. For cross-crate changes, also 
 | Semantic model scoping, ref/override | `docs/SEMANTIC_RESOLUTION.md` |
 | Computed dimensions, expressions | `docs/COMPUTED_EXPRESSIONS.md` |
 | Known tech debt | `docs/TECH_DEBT.md` |
+
+When spec and legacy disagree, prefer the spec and file a note under `docs/design/STATUS.md` §2 (active reconciliation items).
 
 ## Documentation Update Rule
 

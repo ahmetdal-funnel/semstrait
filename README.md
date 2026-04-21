@@ -1,5 +1,7 @@
 # semstrait
 
+> **Note**: This README describes the **current code state** on branch `feature/base-semastrait-dev`. For the **target design and specification** (active on branch `feature/spec-driven-dev`), start at [`docs/design/00_overview.md`](docs/design/00_overview.md) and [`docs/design/STATUS.md`](docs/design/STATUS.md). Sections below will diverge from the spec until the phased migration ([`docs/design/implementation/40_refactor_plan.md`](docs/design/implementation/40_refactor_plan.md)) lands. See [`AGENTS.md`](AGENTS.md) for the project-mode signpost.
+
 A **manifest compiler + semantic plan-generation library** written in Rust.
 
 semstrait resolves semantic models (defined in YAML) into engine-executable artifacts:

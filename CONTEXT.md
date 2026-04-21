@@ -1,10 +1,11 @@
-# Documentation Routing
+# Context
 
-The routing table that maps work areas to the right document lives in **`CLAUDE.md`**.
+The authoritative project-mode signpost is [`AGENTS.md`](AGENTS.md) (tool-neutral: Cursor / Claude Code / Codex).
 
-Quick rules:
-- Any single crate → that crate's `README.md`
-- Cross-crate changes, constraints, DAG → `docs/ARCHITECTURE.md`
-- Active architectural decisions → `DECISION_LOG.md`
+Quick links:
 
-See `CLAUDE.md` for the complete routing table and workstyle rules.
+- **Spec / design work** → [`docs/design/00_overview.md`](docs/design/00_overview.md) (mandatory first read) + [`docs/design/STATUS.md`](docs/design/STATUS.md) (session-handoff)
+- **Code / refactor work** → [`CLAUDE.md`](CLAUDE.md) for the full routing table
+- **Active architectural decisions (current code)** → [`DECISION_LOG.md`](DECISION_LOG.md)
+
+The project is in `spec-driven-dev` mode. The target architecture lives under `docs/design/`; current code does not yet match the spec.
