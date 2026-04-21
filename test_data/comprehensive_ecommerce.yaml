@@ -17,6 +17,7 @@
 #
 # Query scenarios documented in test comments in e2e_pipeline_test.rs.
 
+
 semantic_model:
   name: ecommerce_analytics
   description: "Comprehensive e-commerce analytics model for full feature coverage testing"
