@@ -28,7 +28,7 @@ refined-by:
 
 # 15. Mapping and Binding
 
-> **Status:** ratified. `15` fixes the shape and compile-time resolution of the link between a `SimpleDataKind`'s `SemanticInterface` and its physical backing — the `Binding`, the `ColumnMapping`, the `PhysicalSource` list, and the `Coverage` recorded at the Binding level. All concrete structures, error variants, and flow steps described below are authoritative for `3x` API docs and for the per-DataKind-variant strategy docs `20`–`25`. Open reconciliation items are parked in `docs/design/open_questions/15_open_questions.md`.
+> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`../data-kinds/26_nesting_matrix.md`](../data-kinds/26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
 
 ## 1. Purpose and Scope
 

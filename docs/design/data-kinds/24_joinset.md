@@ -26,7 +26,7 @@ refined-by:
 
 # 24. Joinset
 
-> **Status:** draft (Round 1). This document specializes `16`'s `ComposedSemanticInterface` for `CompositionKind::Joinset`: it ratifies the author-facing contract for declaring a relationship-driven joined surface with a mandatory root anchor and either an implicit or explicit traversal path. `23_unionset.md` and `22_grainset.md` are peer-level specializations; together with `21_dataset.md` and `20_taxonomy.md` they tile the `ComplexDataKind` space. Round-1 open items are parked in `open_questions/24_open_questions.md`. `17_temporal_shape.md` is a parallel draft; forward-refs to `17 §5` mark `JoinType::AsOf` activation rules that will land with `17`.
+> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md) + [`../open_questions/joinset_shape_semantics.md`](../open_questions/joinset_shape_semantics.md). This document predates that spec and is pending refactor.
 
 ## 1. Purpose and Scope
 

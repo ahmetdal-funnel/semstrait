@@ -17,7 +17,7 @@ refined-by:
 
 # 25. Applicability Matrix
 
-> **Status:** ratified (Round 1). `25` is a **cross-reference-only** doc. It does NOT introduce new rules, re-specify existing ones, or carve per-variant exceptions. It indexes which foundation rule (`10`–`17`) applies to which `DataKind` variant (`Simple` / `Grainset` / `Unionset` / `Joinset`), plus a pointer into each variant's planner strategy. Wherever two authoritative docs appear to disagree on a cell, the cell carries a `[CROSS-DOC-FIX-NEEDED]` tag; the flagged item is parked in `§1.3` and, where a planner-level decision is implicated, in `open_questions/25_open_questions.md`.
+> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
 
 ---
 

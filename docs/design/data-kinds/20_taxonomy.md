@@ -24,7 +24,7 @@ refined-by:
 
 # 20. DataKind Taxonomy
 
-> **Status:** ratified. `20` is the entry point for the `data-kinds/` sub-tree. It fixes the variant-level abstraction (`DataKind = Simple | Complex(Unionset | Grainset | Joinset)`), the minimal trait surface every variant exposes, and the invariants that hold *across* all variants. Per-variant specifics — block shape beyond `12`, resolution algorithms, planner strategies — are ratified in `21`–`24`. The cross-cut between variants and foundation rules is ratified in `25`. Round-1 open items are parked in `open_questions/20_open_questions.md`.
+> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
 
 ## Table of Contents
 

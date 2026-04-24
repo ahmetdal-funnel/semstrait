@@ -1,5 +1,5 @@
 ---
-prereqs: [10, 11, 13, 14, 14a, 14b, 15, 16, 17, 20, 30, 31]
+prereqs: [10, 11, 13, 14, 14a, 14b, 15, 16, 17, 20, 30, 31, 31b]
 authoritative-for:
   - the `semstrait-manifest` public-API surface — crate boundary, module layout, re-export posture
   - the `Manifest` struct: top-level field roster, `#[non_exhaustive]` status, serde/persistence posture
@@ -14,12 +14,14 @@ authoritative-for:
   - `Repository` trait — persistence surface (`save` / `load` / `list`); `async fn load` is the I11b gated entry
   - `InMemoryRepository`, `FileSystemRepository` — the two bundled impls
   - `CatalogProvider::check_schema_drift` — the I11b gated entry for drift validation (pointer forward to `37`)
-  - per-crate async posture at Manifest layer (compile-time async; post-compile sync)
+  - the `semstrait-manifest::io` convenience submodule — `load_manifest` / `dump_manifest` free functions composing `31b` transport (§16.5)
+  - per-crate async posture at Manifest layer (compile-time async; post-compile sync for accessors)
   - determinism / I4 upholds at the Manifest byte level
   - Serde / persistence-format policy (shape-stable; encoder adapter-selectable via `Repository`)
   - stability tier: MINOR vs. MAJOR cases per `30 §2` for every public leaf in this doc
-  - crate boundaries — no planner code, no I/O except through provider traits, no raw SQL
+  - crate boundaries — no planner code, no I/O except through provider traits and `core::io`, no raw SQL
 refined-by:
+  - 31b (`semstrait-core::io` — transport vocabulary used by §16.5 and future `Repository` impls)
   - 34 (`semstrait-planner` — consumes `Manifest` synchronously at plan time; never re-resolves)
   - 35 (`semstrait-ir` — consumes `ResolvedExprTable` entries while lowering to `PlanNode`s)
   - 36 (`semstrait-adapter` — consumes `PhysicalExpr` from `ResolvedExprTable` entries at `adapt`)
@@ -30,7 +32,7 @@ refined-by:
 
 # 33. semstrait-manifest
 
-> **Status:** ratified. `33` fixes the public surface of `semstrait-manifest` — the crate that owns the `compile` stage and the resolved `Manifest` artifact. Every type discussed here is already ratified upstream (`14b` for `ResolvedExprTable`; `15` for `ResolvedBinding`; `16` for `ResolvedRelationship`; `17` for `ResolvedTemporalShape`; `20`–`24` for `ResolvedDataKind`); `33` adds no new vocabulary. It adds crate-level visibility decisions, the `compile` function signature, the `CompileError` / `CompileErrors` error types, the `Repository` persistence trait, and the determinism / stability / serde-posture guarantees that make the Manifest a planner-complete, engine-agnostic artifact (per I4 / I8). Round-1 open items are parked in `open_questions/33_open_questions.md`.
+> **Note.** Root-shape authoritative spec: [`32_semstrait_model.md`](32_semstrait_model.md) + [`../data-kinds/26_nesting_matrix.md`](../data-kinds/26_nesting_matrix.md) + [`32b_catalogs_yaml.md`](32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
 
 ## Table of Contents
 
@@ -1036,15 +1038,59 @@ Per `30 §12`: any symbol slated for removal passes through `#[deprecated]` for 
 
 ### 16.2 What `semstrait-manifest` DOES contain
 
-The `compile` function and its sub-passes; the `Manifest` struct and every `Resolved*` type; the `CompileError` / `CompileErrors` types with stable codes in the `COMP_E_*` / `EXPR_E_*` / `IO_E_*` ranges; the `Repository` trait and the two bundled impls; determinism discipline (BTreeMap everywhere, timestamp canonicalization, `canonical_bytes()`).
+The `compile` function and its sub-passes; the `Manifest` struct and every `Resolved*` type; the `CompileError` / `CompileErrors` types with stable codes in the `COMP_E_*` / `EXPR_E_*` / `IO_E_*` ranges; the `Repository` trait and the two bundled impls; the convenience `::io` submodule (§16.5); determinism discipline (BTreeMap everywhere, timestamp canonicalization, `canonical_bytes()`).
 
 ### 16.3 Dependency direction
 
-Depends on exactly three workspace crates: `semstrait-core` (for `DataType`, `PhysicalExpr`, `CompileError` core variants, `Diagnostic`, `FunctionRegistry`, `ResolvedExprTable`); `semstrait-model` (for `SemanticModel` and Model-layer names); `semstrait-catalog` (for the `CatalogProvider` / `FileSystem` trait surfaces and `Schema` / `PartitionColumn`). Per I7, no upward dep on `semstrait-planner`, `-ir`, `-adapter`, `-api`, or `-facade`.
+Depends on exactly three workspace crates: `semstrait-core` (for `DataType`, `PhysicalExpr`, `CompileError` core variants, `Diagnostic`, `FunctionRegistry`, `ResolvedExprTable`, and the `io` transport traits from `31b`); `semstrait-model` (for `SemanticModel` and Model-layer names); `semstrait-catalog` (for the `CatalogProvider` / `FileSystem` trait surfaces and `Schema` / `PartitionColumn`). Per I7, no upward dep on `semstrait-planner`, `-ir`, `-adapter`, `-api`, or `-facade`.
 
 ### 16.4 Async boundary discipline
 
-Two and only two `async fn`s cross this crate's public boundary: `compile` (I11a) and `Repository::{save, load, list, delete}` (I11b). Everything else (accessors, iterators, lookups) is synchronous. The boundary is enforceable by a doc-comment discipline (every `async fn` MUST carry an I11 justification) and a CI audit (tracked as `[TD-33-CLIPPY-ASYNC-GUARD]`).
+Three async surfaces cross this crate's public boundary: `compile` (I11a), `Repository::{save, load, list, delete}` (I11b), and the `::io` convenience wrappers (§16.5, composing `31b` transport). Everything else (accessors, iterators, lookups) is synchronous. The boundary is enforceable by a doc-comment discipline (every `async fn` MUST carry an I11 justification) and a CI audit (tracked as `[TD-33-CLIPPY-ASYNC-GUARD]`).
+
+### 16.5 Manifest-level I/O convenience wrappers (`semstrait-manifest::io`)
+
+A small feature-gated submodule exposes one-shot load / dump helpers that compose `semstrait-core::io` (`31b`) with manifest byte-level encoding, for callers that want single-function ergonomics rather than constructing a full `Repository`:
+
+```rust
+use semstrait_core::io::{Source, Sink};
+
+pub mod io {
+    pub async fn load_manifest<S: Source + ?Sized>(
+        src: &S,
+        encoding: ManifestEncoding,
+    ) -> Result<Manifest, ManifestLoadError>;
+
+    pub async fn dump_manifest<S: Sink + ?Sized>(
+        m: &Manifest,
+        sink: &S,
+        encoding: ManifestEncoding,
+    ) -> Result<(), ManifestDumpError>;
+
+    #[non_exhaustive]
+    pub enum ManifestLoadError {
+        Io(IoError),
+        Decode { encoding: ManifestEncoding, reason: String },
+        FormatVersion { found: ManifestFormatVersion, expected: ManifestFormatVersion },
+    }
+
+    #[non_exhaustive]
+    pub enum ManifestDumpError {
+        Io(IoError),
+        Encode { encoding: ManifestEncoding, reason: String },
+    }
+}
+```
+
+**Binary transport.** The manifest is a binary artifact (MessagePack by default, JSON as the human-inspectable alternative, both carried at byte level). `load_manifest` calls `src.read_raw().await?` (returning `Bytes`) and hands the result to the encoding's decoder; `dump_manifest` encodes to `Bytes` and calls `sink.write_raw(bytes).await`. Unlike the model wrappers (`32 §10.4`), there is no UTF-8 validation step — manifest bytes are not required to be valid UTF-8 and are never materialized as a `String`.
+
+**Relationship to `Repository`.** `Repository` is the full-fat persistence contract with content-addressable IDs (`ManifestId`), sibling `.meta.json` files, and format-version checks. `manifest::io` is the lightweight "I have a `Source` pointing at manifest bytes; give me a `Manifest`" path. A `FileSystemRepository` (or future `S3Repository`) internally uses the same `core::io` transport via the `object_store`-backed back-ends (`31b §8`); callers that only need one-shot load / dump skip the Repository machinery entirely.
+
+**Error roster.** `ManifestLoadError` / `ManifestDumpError` are `#[non_exhaustive]` enums over `IoError` and the encoding's decode / encode errors, each implementing `IntoDiagnostic`. Stable codes: `manifest.load.io`, `manifest.load.decode`, `manifest.load.format-version`, `manifest.dump.io`, `manifest.dump.encode`. Because `IoError` itself is `#[non_exhaustive]` (`31b §7`), adding `IoError` variants propagates as a MINOR through this layer.
+
+**Feature flag.** Gated behind `manifest`'s `io` feature (default off), which forwards to `semstrait-core/io`. `aws` feature forwards to `semstrait-core/io-aws`.
+
+**Migration note.** Pre-`31b` the manifest crate shipped a `load_text` helper for loading YAML *model* text. Under the ratified layout that utility is superseded by `semstrait-core::io` + `semstrait-model::io::load_model` (`32 §10.4`). Removal of `semstrait-manifest::io::load_text` is the closing step of `TD-008`.
 
 ---
 

@@ -21,7 +21,7 @@ refined-by:
 
 # 10. Resolution Pipeline — Per-Stage Contract
 
-> **Status:** ratified. Per-stage contracts (§3.1–§3.6), `Diagnostic` layout (§5.1), and both diagrams (§2, §7) complete. One open item remains: §6 trait-method sub-tables, blocked on finalizing `CatalogProvider` / `FileSystem` / `EngineAdapter` trait surfaces in `37` and `36`; the §6 matrix at trait-level granularity is authoritative as-is.
+> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`../data-kinds/26_nesting_matrix.md`](../data-kinds/26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
 
 ## 1. Purpose and Scope
 

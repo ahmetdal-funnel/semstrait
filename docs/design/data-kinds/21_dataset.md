@@ -21,7 +21,7 @@ refined-by:
 
 # 21. SimpleDataKind (Dataset)
 
-> **Status:** ratified (Round 1). `21` fixes the shape of the `SimpleDataKind` Rust type, the variant-specific consumer contract for `Binding` (on top of `15`'s mechanics), and the canonical 5-layer plan strategy (`SimpleStrategy`) that every other `DataKind` variant composes. Open reconciliation items surfaced during drafting are parked in `docs/design/open_questions/21_open_questions.md`.
+> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
 
 ## 1. Purpose and Scope
 

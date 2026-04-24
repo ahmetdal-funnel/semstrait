@@ -24,7 +24,7 @@ refined-by:
 
 # 23. Unionset
 
-> **Status:** ratified. `23` fixes the shape and planner contract for the `Unionset` ComplexDataKind: UNION ALL (or UNION DISTINCT) composition of heterogeneous children under a shared `SemanticInterface` declared on the Unionset itself, with per-child Coverage driving NULL-fill. All concrete structures, error variants, and planner sub-steps below are authoritative for `3x` API docs, for the applicability matrix in `25`, and for the planner strategy's registration surface. Open reconciliation items are parked in `docs/design/open_questions/23_open_questions.md`.
+> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
 
 ---
 

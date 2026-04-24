@@ -22,7 +22,7 @@ refined-by:
 
 # 22. Grainset
 
-> **Status:** ratified. Grainset is the `ComplexDataKind` that presents N semantically-equivalent children at different grains as a single queryable surface, and routes a Request to the cheapest child whose grain and Coverage admit the Request. §§2–4 fix the struct, the YAML surface, and the child-selection algorithm; §5 pins the interaction with `TemporalShape`; §§7–9 allocate the error-code roster in the `22xx` range per `30 §6.2`; §10 fixes the plan shape. Round-1 open items live in `open_questions/22_open_questions.md`.
+> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
 
 ---
 

@@ -113,28 +113,44 @@ Tracked issues from code reviews during Phase J (Type System Hardening & Data St
 ## TD-008: Generic I/O utilities placed in semstrait-manifest
 
 **Phase:** Phase 3 (API cleanup + S3 loading)
-**Severity:** Low
+**Severity:** Low — **Status: RESOLVED by design in [`docs/design/apis/31b_semstrait_core_io.md`](design/apis/31b_semstrait_core_io.md); migration tracked as `[TD-008-MIGRATE]`.**
 **Location:** `crates/semstrait-manifest/src/io.rs` — `load_text()`, `IoError`
 
 **Problem:** `load_text()` is a generic text-loading utility (local filesystem + S3) that is not manifest-specific. It lives in `semstrait-manifest` pragmatically because both consumers (`semstrait-api/cli.rs` and `semstrait/builder.rs`) already depend on manifest, and the `aws` feature flag passthrough already exists.
 
-**Why not semstrait-core:** Core is zero-dep foundation (no I/O, no async, no network). Adding `tokio` + `aws-sdk-s3` would contaminate all 9 downstream crates.
-
-**Trigger to extract:** When 3+ I/O utilities accumulate (e.g., `load_bytes`, `load_yaml_multi`, `write_artifact`), extract `semstrait-manifest::io` into a dedicated `semstrait-io` crate at the same DAG level as `semstrait-model` and `semstrait-catalog`:
+**Ratified target placement (supersedes the original remediation).** Transport traits and generic byte-blob back-ends live in `semstrait-core::io` behind a feature flag, not in a separate `semstrait-io` crate. Back-ends thin-wrap the `object_store` crate (Apache Arrow) for the actual Local / InMemory / S3 machinery — hand-rolled adapters replaced by battle-tested `object_store::ObjectStore` impls.
 
 ```
-semstrait-core                     (pure data types, zero I/O)
-    ├── semstrait-model
-    ├── semstrait-catalog
-    ├── semstrait-io     ← NEW    (load_text, S3, local fs — generic I/O)
-    └── semstrait-ir
+semstrait-core                     (pure data types)
+├── core::io (feature "io",  default ON)   ← Source/Sink + FromIoBytes/IntoIoBytes
+│                                             + Location + IoError;
+│                                             backends::{memory,local,s3}
+│                                             each back-end is a thin wrapper
+│                                             over object_store::ObjectStore;
+│                                             transport-only; no domain wrappers
+├── semstrait-model
+│       └── model::io   (feature "io")     ← load_model / dump_model
+│                                             load_catalogs / dump_catalogs
+│                                             over core::io
+└── semstrait-manifest
+        └── manifest::io (feature "io")    ← load_manifest / dump_manifest
+                                              over core::io (binary: Bytes path,
+                                              not String)
 ```
 
-**Remediation:**
-1. Create `crates/semstrait-io/` with `tokio` + `aws-sdk-s3` (behind `aws` feature)
-2. Move `io.rs` content from manifest to the new crate
-3. Update manifest, api, and facade to depend on `semstrait-io`
-4. Remove `aws-sdk-s3` and `aws-config` from manifest's Cargo.toml
+**Why `object_store`.** `object_store` (Apache Arrow project) already implements Local / InMemory / S3 with atomic-replace, retry, credential chain, multipart uploads, and proxy support. Adopting it eliminates ~300 LOC of hand-rolled glue, aligns `semstrait` with the broader Arrow / DataFusion ecosystem, and makes future GCS / Azure / HTTP back-ends ~30 LOC each (all supported natively by `object_store`, each gated by its own feature flag). `object_store` is an *internal* dependency — not re-exported on public signatures except the one `S3SourceBuilder::with_object_store_builder` escape hatch. See `31b §1.4` for the adoption rationale.
+
+**Why not a separate `semstrait-io` crate (revised rationale).** `Source` / `Sink` are small, stable trait vocabulary shared by every upstream crate; a sibling crate would add a build edge without any additional isolation. The original zero-dep concern is addressed by making `io` a default-on feature and `io-aws` strictly opt-in: `--no-default-features` on core restores the zero-runtime-dep posture.
+
+**Why not in manifest any longer.** With three consumers (`model::io`, `manifest::io`, future adapter bundle export), the utility is no longer manifest-specific, and the `io.rs` module currently creates an upward dependency pressure that blocks `model` from loading YAML without pulling the entire manifest crate.
+
+**Migration (`[TD-008-MIGRATE]`):**
+1. Add `object_store` (Apache Arrow) with `default-features = false` as an opt-in dep on `semstrait-core`; gated by `io`. Enable `object_store/aws` under `io-aws`.
+2. Land `semstrait-core::io` module per `31b` spec — `Source`, `Sink`, `FromIoBytes`, `IntoIoBytes`, `Location`, `IoError`, `backends::memory::InMemory`, `backends::local::LocalFile`, `backends::s3::{S3Source, S3SourceBuilder}`. Each back-end is a thin wrapper over the corresponding `object_store` impl.
+3. Introduce `semstrait-model::io` with `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` per `32 §10.4` and `32b §5.4`. These call `src.read::<String>()` (YAML is UTF-8 text).
+4. Introduce `semstrait-manifest::io` convenience wrappers per `33 §16.5`. These call `src.read_raw()` (manifest is binary — MessagePack / JSON bytes).
+5. Migrate `semstrait-api/cli.rs` and `semstrait/builder.rs` call sites from `semstrait-manifest::io::load_text` → `semstrait-model::io::load_model` (for YAML loading) or direct `Location::from_str(path)?.read::<String>()` (for raw text).
+6. Remove `semstrait-manifest::io::load_text` and drop `aws-sdk-s3` / `aws-config` direct deps from `crates/semstrait-manifest/Cargo.toml` (they come in transitively via `semstrait-core` / `object_store/aws` behind `io-aws`).
 
 ---
 

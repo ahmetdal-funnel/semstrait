@@ -9,11 +9,12 @@ authoritative-for:
   - the constraint-DSL toolkit types (`MeasureConstraints`, `DimensionConstraints`, `AggregationConstraints`) exposed at `semstrait-core`
   - the cross-cutting `Diagnostic` / `Severity` / `Location` types and the shared `CompileError` / `ValidateError` enums that live in `semstrait-core`
   - reserved-tag helpers (`is_reserved_tag`) and other pure-function utilities
-  - feature-flag surface (`serde`, `schemars`) and dependency posture (no I/O, no async, no engine deps)
+  - feature-flag surface (`serde`, `schemars`, `io`, `io-aws`) and dependency posture — under default features core pulls `tokio`; under `--no-default-features` it retains the original zero-runtime-dep shape
   - mapping of design invariants I1, I2, I5, I6, I7, I10, I11, I12 to concrete crate-level guarantees
 refined-by:
-  - 32 (`semstrait-model` consumes `CompileError`/`ValidateError`, adds `ParseError` next to the Model types)
-  - 33 (`semstrait-manifest` consumes `ResolvedExprTable` carrying `PhysicalExpr`)
+  - 31b (`semstrait-core::io` — text-blob transport module, amends §1.3 / §2 / §11 / §12 of this doc)
+  - 32 (`semstrait-model` consumes `CompileError`/`ValidateError`, adds `ParseError` next to the Model types; adds `io` wrappers over `31b`)
+  - 33 (`semstrait-manifest` consumes `ResolvedExprTable` carrying `PhysicalExpr`; adds `io` wrappers over `31b`)
   - 34 (`semstrait-planner` consumes the sealed `FunctionRegistry` and resolved `PhysicalExpr`s at plan time)
   - 36 (`semstrait-adapter` contributes `RegistryExtension` impls; consults canonical specs at `adapt`)
   - 40 (`implementation/40_refactor_plan.md` — current code vs target layout delta is tracked here)
@@ -46,12 +47,15 @@ refined-by:
 - **Engine identity and dialect.** `EngineArtifact`, `EngineAdapter`, `Dialect`, `DialectId`, `EnginePlan`, `SqlArtifact`, `AdaptError` all live in `semstrait-adapter` (per `36`).
 - **Catalog and filesystem.** `CatalogProvider`, `FileSystem`, `Repository`, `CatalogSnapshot` all live in `semstrait-catalog` (per `37`).
 - **Name resolution, scope chains, shape unification.** The algorithms live in `semstrait-model` (`validate`) and `semstrait-manifest` (`compile`); `semstrait-core` exposes only the `CompileError` / `ValidateError` variants those algorithms raise.
+- **Domain load / dump wrappers.** `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` live in `semstrait-model::io` (`32 §10.4`). `load_manifest` / `dump_manifest` live in `semstrait-manifest::io` (`33`). `semstrait-core::io` owns only the text-blob transport (`Source`, `Sink`, `Location`, `IoError`, back-ends); the domain crates own the format.
 
 ### 1.3 Design posture — minimum-viable shared crate
 
-`semstrait-core` is deliberately **minimal**. It exists to solve one problem: keep `DataType`, `Expr`, `Diagnostic`, and `FunctionRegistry` definable without pulling in the model / manifest / planner / adapter crates. If a type is not needed by two or more downstream crates, it does not belong here. If a type transitively depends on async, I/O, or engine identity, it does not belong here.
+`semstrait-core` is deliberately **minimal**. It exists to solve one problem: keep `DataType`, `Expr`, `Diagnostic`, and `FunctionRegistry` definable without pulling in the model / manifest / planner / adapter crates. If a type is not needed by two or more downstream crates, it does not belong here. Engine-identity deps (datafusion, arrow, duckdb, substrait) are rejected outright.
 
 The crate is the **leaf** of the semstrait workspace DAG (I7): it depends on nothing in the workspace and every other crate depends on it.
+
+**I/O amendment (ratified in `31b`).** The `io` module provides the shared transport vocabulary that every downstream load / dump wrapper composes. Under default features (`io` ON), `semstrait-core` pulls `tokio`. Under `--no-default-features`, the crate retains its original zero-runtime-dep posture. Cloud SDKs (`aws-sdk-s3`, future `gcs` / `azure`) sit behind additional opt-in flags. The "no async, no I/O in core" blanket from earlier drafts is replaced by: "text-blob transport is a first-class core concern; domain-specific wrappers are not."
 
 ## 2. Module Layout
 
@@ -70,8 +74,13 @@ semstrait-core
 │                        //   AggregationConstraints
 ├── diagnostic           // Diagnostic, Severity, Location, ByteSpan, SourceId,
 │                        //   IntoDiagnostic
-└── error                // CompileError, ValidateError (shared cross-stage enums)
+├── error                // CompileError, ValidateError (shared cross-stage enums)
+└── io                   // Source, Sink, Location, IoError + backends::{memory, local, s3}
+                         //   (feature "io", default ON; s3 under "io-aws")
+                         //   Full spec: 31b
 ```
+
+The `io` module is the transport layer that every crate above composes into its own typed load / dump wrappers (`32 §10.4` for model + catalogs, `33` for manifest). Domain-specific functions (`load_model`, `load_manifest`, …) are NOT in core — they live in the crate that owns the corresponding type. Core owns the transport; consumers own the format. Full surface lives in `31b`.
 
 **Split rationale:**
 
@@ -826,27 +835,31 @@ Per `30`'s trait-surface rules: every public trait that can be externally implem
 
 ## 11. Feature Flags
 
-v1 has **no mandatory feature flags**. All features below are optional and OFF by default.
+v1 has a small, axis-orthogonal flag set. The `io`-family flags were added in the `31b` ratification; they amend the original "no runtime-only deps" posture (see §12).
 
-| Feature | Gates | Reason off-by-default |
-|---|---|---|
-| `serde` | `Serialize` / `Deserialize` on every public type (`Expr`, `SemanticExpr`, `PhysicalExpr`, `ExprSource`, `ExprBlock`, all support enums, `DataType`, `Grain`, `TypeClass`, `*Constraints`, `Diagnostic`, `Severity`, `Location`, `ByteSpan`, `SourceId`, `CanonicalFn`, `FunctionSpec`, `FnSignature`, `ParamType`, `ReturnTypeRule`, `FunctionCategory`, `CompileError`, `ValidateError`) | keeps the crate's dependency footprint minimal for consumers that only need the types (e.g. test harnesses that manipulate `Expr` in memory); `semstrait-model` / `semstrait-manifest` enable it transitively |
-| `schemars` | JSON schema derivations on the same types | consumers needing JSON-Schema emission pay a second compile cost; off by default per `30` |
+| Feature | Default | Gates | Reason |
+|---|---|---|---|
+| `serde` | OFF | `Serialize` / `Deserialize` on every public type (`Expr`, `SemanticExpr`, `PhysicalExpr`, `ExprSource`, `ExprBlock`, all support enums, `DataType`, `Grain`, `TypeClass`, `*Constraints`, `Diagnostic`, `Severity`, `Location`, `ByteSpan`, `SourceId`, `CanonicalFn`, `FunctionSpec`, `FnSignature`, `ParamType`, `ReturnTypeRule`, `FunctionCategory`, `CompileError`, `ValidateError`) | keeps the crate's dependency footprint minimal for consumers that only need the types (e.g. test harnesses that manipulate `Expr` in memory); `semstrait-model` / `semstrait-manifest` enable it transitively |
+| `schemars` | OFF | JSON schema derivations on the same types | consumers needing JSON-Schema emission pay a second compile cost; off by default per `30` |
+| `io` | **ON** | The `io` module — `Source` / `Sink` / `FromIoBytes` / `IntoIoBytes` / `Location` / `IoError` + `backends::memory` + `backends::local`; pulls `tokio`, `bytes`, `object_store` (Local + InMemory features), `dashmap` | ergonomic common case for every downstream crate that wants transport; disable with `default-features = false` for pure-type consumers (see `31b §9.1`) |
+| `io-aws` | OFF | `Location::S3` variant + `backends::s3::{S3Source, S3SourceBuilder}`; enables `object_store/aws` which transitively pulls the AWS config / credential crates | cloud SDK footprint stays opt-in; enabled explicitly by CLI / `semstrait-api` / `semstrait-facade` |
 
-**Delta with current code.** Today `semstrait-core`'s `Expr` / `DataType` / constraint types derive `Serialize` / `Deserialize` unconditionally. Moving these behind `#[cfg(feature = "serde")]` is a migration item tracked under `[TD-CORE-SERDE-GATING]` in `implementation/40_refactor_plan.md` — not a v1 blocker, but required before the crate is published.
+No other I/O features in v1. Future `io-http`, `io-gcs`, `io-azure` land additively behind the same gating pattern (all three are already supported by `object_store` — the work per feature is ~30 LOC of trait delegation plus a feature flag).
 
-No other feature flags in v1. `async`, `tokio`, and `arrow-feature` gating are explicitly rejected — they violate I11 and would fragment the crate's API across feature combinations.
+**Delta with current code.** Today `semstrait-core`'s `Expr` / `DataType` / constraint types derive `Serialize` / `Deserialize` unconditionally, and there is no `io` module. Moving `serde` behind `#[cfg(feature = "serde")]` is tracked under `[TD-CORE-SERDE-GATING]` in `implementation/40_refactor_plan.md`. The `io` module is a net-new addition; the existing `crates/semstrait-manifest/src/io.rs` is folded into `semstrait-core::io::backends::{local, s3}` via `object_store` wrapping per the `31b` ratification and `TD-008` migration.
+
+No other feature flags in v1. `arrow-feature` gating is explicitly rejected — engine-specific data-plane deps violate I11 and fragment the API.
 
 ## 12. Dependency Posture
 
 ### 12.1 External dependencies
 
-Minimal. A canonical `Cargo.toml` target:
+A canonical `Cargo.toml` target after the `31b` ratification:
 
 ```toml
 [dependencies]
-thiserror = "^"            # error enum derivations
-nonzero_ext = "^"          # NonZero usize for ByteSpan tightening (optional)
+thiserror = "^"                         # error enum derivations
+nonzero_ext = "^"                       # NonZero usize for ByteSpan tightening (optional)
 
 [dependencies.serde]
 version = "^"
@@ -857,17 +870,39 @@ features = ["derive"]
 version = "^"
 optional = true
 
+[dependencies.tokio]                    # I/O runtime; gated by "io"
+version = "^"
+optional = true
+features = ["rt", "fs", "io-util", "macros"]
+
+[dependencies.bytes]                    # zero-copy byte buffers for Source::read_raw / Sink::write_raw
+version = "^"
+optional = true
+
+[dependencies.dashmap]                  # (region, endpoint) → AmazonS3 client cache for Location dispatch
+version = "^"
+optional = true
+
+[dependencies.object_store]             # back-end wrapper (Apache Arrow); gated by "io"
+version = "^"
+optional = true
+default-features = false                # enable only what's needed per feature
+
 [features]
-default = []
-serde = ["dep:serde"]
+default  = ["io"]
+serde    = ["dep:serde"]
 schemars = ["dep:schemars", "serde"]
+io       = ["dep:tokio", "dep:bytes", "dep:dashmap", "dep:object_store"]
+io-aws   = ["io", "object_store/aws"]
 ```
 
-**No runtime-only dependencies.** No `tokio`, `async-trait`, `futures`, `reqwest`, `hyper`, `sqlx`.
+**Runtime dependency posture.** Under default features, `semstrait-core` pulls `tokio`, `bytes`, `dashmap`, and `object_store` (with its `Local` + `InMemory` back-ends compiled; no cloud SDKs unless `io-aws` is enabled). Under `--no-default-features`, the crate retains its historical zero-runtime-dep shape — only `thiserror` (and the optional `nonzero_ext`) remain. Pure-type consumers take the `--no-default-features` path.
 
-**No I/O dependencies.** No `std::fs` imports, no `reqwest`, no `aws-sdk-*`, no `object_store`.
+**`object_store` as internal detail.** Consumers never see `object_store::ObjectStore`, `object_store::Path`, or any of its error types on a public signature. The one escape hatch is `S3SourceBuilder::with_object_store_builder(object_store::aws::AmazonS3Builder)` — callers opting into advanced S3 configuration implicitly opt into `object_store` evolution. See `31b §1.4` for the adoption rationale and SR-IO-8 for the encapsulation rule.
 
-**No engine-identity dependencies.** No `datafusion`, no `arrow`, no `spark-*`, no `duckdb`, no `substrait`. These live in `semstrait-adapter` and its per-engine crates.
+**No other runtime deps.** No `async-trait` (stable async-fn-in-trait suffices), no `futures` beyond what `tokio` re-exports, no `reqwest`, no `hyper`, no `sqlx`, no direct `aws-sdk-s3` / `aws-config` (they come in transitively via `object_store/aws`).
+
+**No engine-identity dependencies.** No `datafusion`, no `arrow`, no `spark-*`, no `duckdb`, no `substrait`. These live in `semstrait-adapter` and its per-engine modules.
 
 ### 12.2 Internal (workspace) dependencies
 
@@ -882,11 +917,11 @@ Concrete crate-level guarantees mapping to `00 §9` invariants:
 | **I1** — no raw SQL in canonical layer | `Expr` is a typed AST; no `String`-as-SQL fields. Every `Column.name`, `EntityRef.name`, `FunctionCall.name` is an identifier, not SQL text. `ExprSource::Inline(String)` is the sole string-form input and it is deliberately a YAML-surface type, not a Manifest-layer type — consumers convert it into `Expr` before it crosses any stage boundary. |
 | **I2** — physical types belong to adapters | `DataType` variants are engine-neutral per `13 §2`. No `arrow::*` / `spark::*` / `datafusion::*` types are visible on any public surface. |
 | **I5** — name resolution is compile-time | `SemanticExpr` and `PhysicalExpr` are wrapper-only; they expose no `resolve` method. `EntityRef.name` remains a `String` at the `semstrait-core` layer — resolution is performed by `semstrait-manifest::compile` and stored in the Manifest's `ResolvedExprTable`. No runtime resolver trait is exported here. |
-| **I6** — plan hot path is synchronous | **No `pub async fn` exists on `semstrait-core`.** A CI lint (`cargo clippy -- -D clippy::async_fn_in_trait`) + a `forbid_async_fn!` macro audit guard the crate. Adding an `async fn` to any public surface is a CI failure, not a review-time catch. |
+| **I6** — plan hot path is synchronous | No `pub async fn` exists on the plan hot path: `SemanticExpr`, `PhysicalExpr`, `FunctionRegistry`, `IntoDiagnostic`, validate / resolve / plan surfaces. The only `async fn`s at `semstrait-core` live in `io` (`Source::read`, `Sink::write`, `Location`'s impls) — I/O is explicitly outside the plan hot path. A CI lint enforces: no `async fn` outside `semstrait_core::io::*`. |
 | **I7** — strict DAG | `Cargo.toml` contains zero `semstrait-*` entries in `[dependencies]`. A CI check greps the manifest and fails on any workspace-internal entry. |
 | **I10** — extensibility | Every `pub enum` and `pub struct` (with the `30`-documented newtype-over-stable exception) carries `#[non_exhaustive]`. The exception set: `CanonicalFn`, `SemanticExpr`, `PhysicalExpr`, `ByteSpan`, `WhenClause`. An `integration-test` over `cargo public-api` enforces the `#[non_exhaustive]` rule. |
-| **I11** — no downward I/O surprises | No `std::fs`, no `std::net`, no `tokio`, no `reqwest` anywhere in the crate. The dependency audit (§12.1) is enforced in CI via `cargo deny`. |
-| **I12** — first-class diagnostics | `IntoDiagnostic` is the sole error-rendering trait at API boundaries; every public error enum implements it and every variant maps to a stable `code()` string. No `Display` output reaches API consumers without first passing through `IntoDiagnostic`. |
+| **I11** — no downward I/O surprises | Transport primitives (`io::Source`, `io::Sink`, `io::Location`, `io::backends::{memory, local, s3}`) live on `semstrait-core` under the `io` feature flag (ratified in `31b`). Domain-specific load / dump (`load_model`, `load_manifest`) do not — they live in the crate that owns the typed artifact. `reqwest`, `hyper`, raw `std::net` sockets remain rejected; cloud SDKs (`aws-sdk-s3`) sit behind opt-in `io-aws`. The dependency audit (§12.1) is enforced in CI via `cargo deny`. |
+| **I12** — first-class diagnostics | `IntoDiagnostic` is the sole error-rendering trait at API boundaries; every public error enum implements it and every variant maps to a stable `code()` string. `IoError` per `31b §6` participates uniformly. No `Display` output reaches API consumers without first passing through `IntoDiagnostic`. |
 
 ## 14. Public API Surface Sketch
 
@@ -1002,6 +1037,29 @@ pub use crate::error::{CompileError, ValidateError};
 pub use crate::is_reserved_tag;
 ```
 
+### 14.11 `io` (feature `io`, default ON)
+
+Full spec: `31b`. This section is a re-export sketch only.
+
+```
+pub use self::io::{
+    Source, Sink,                       // §31b §3–§4 — byte-blob transport traits
+    FromIoBytes, IntoIoBytes,           // §31b §5 — byte↔typed conversion traits
+    Location,                           // §31b §6 — polymorphic back-end dispatch
+    IoError,                            // §31b §7 — #[non_exhaustive] error enum
+};
+
+pub mod io::backends::memory  { pub struct InMemory; }
+pub mod io::backends::local   { pub struct LocalFile; }
+#[cfg(feature = "io-aws")]
+pub mod io::backends::s3 {
+    pub struct S3Source;
+    pub struct S3SourceBuilder;         // §31b §8.3 — custom S3 configuration
+}
+```
+
+Internally every back-end thin-wraps `object_store` (Apache Arrow project); `object_store` types never appear on a public signature except the one documented escape hatch (`S3SourceBuilder::with_object_store_builder`). See `31b §1.4` for the adoption rationale and SR-IO-8 for the encapsulation rule.
+
 ## 15. Ratified Decisions Index
 
 `31` introduces no new vocabulary and no new types — every type above is ratified upstream in `13`, `14`, `14a`, or `11 §8`. The ratifications below concern **placement**, **visibility**, and **boundary** decisions unique to `semstrait-core` as a crate:
@@ -1020,6 +1078,7 @@ pub use crate::is_reserved_tag;
 | R10 | Zero internal workspace dependencies; CI-enforced manifest audit | Concrete I7 guarantee. `semstrait-core` is the root of the workspace DAG. | §12.2 |
 | R11 | `MeasureConstraints` retains its legacy name for v1 | Renames are scheduled with the broader Manifest-schema revision pass per `11 §8.4.3` / `[TD-CONSTRAINT-RENAME]`. `31` ratifies keeping the current name stable; rename is a v2 concern. | §6.1 |
 | R12 | `Aggregation` enum has **5 variants** (`Sum`, `Avg`, `Count`, `Min`, `Max`); `CountDistinct` is encoded via `Expr::Aggregate.distinct: bool` | Ratifies `14 §3.2` over the prompt's "6 canonical aggregates" framing. Adding a `CountDistinct` variant would duplicate the `distinct: bool` field already on `Expr::Aggregate`. Parked as Q1 in open questions for any second look. | §3.5 |
+| R13 | `io` module added to `semstrait-core` — byte-blob transport via `Source` / `Sink` + `FromIoBytes` / `IntoIoBytes` conversion traits + `Location` + `IoError` + `backends::{memory, local, s3}` | Ratified in `31b`. Domain-specific load / dump wrappers live in the owning crate (`32 §10.4`, `33 §16.5`). Back-ends thin-wrap `object_store` (Apache Arrow) — not re-exported publicly except the one documented `S3SourceBuilder::with_object_store_builder` escape hatch. Under default features, core pulls `tokio`, `bytes`, `dashmap`, and `object_store` (Local + InMemory features); under `--no-default-features`, the crate retains its zero-runtime-dep posture. Supersedes R9's "no `pub async fn` anywhere" — async is permitted inside `io`. | §11 / §12 / `31b` |
 
 ---
 
