@@ -1,16 +1,15 @@
 ---
-prereqs: [00, 11, 13, 16]
+prereqs: [00, 11, 13, 16, 18]
 authoritative-for:
-  - `TemporalShape` classification vocabulary — the four top-level variants `Timeseries`, `Events`, `Snapshot`, `Scd`, their per-variant payloads, and the `#[non_exhaustive]` enum sketch
-  - `ScdSubtype` sub-enumeration — the seven Kimball subtypes `Type0`–`Type6` ratified as canonical, their per-subtype payload shapes, and the history-preserving / non-history-preserving split
-  - the per-variant identifying Dimension rule — which binding Dimension carries the time axis for each variant
-  - the declaration site — `TemporalShape` is authored exclusively on `SimpleDataKind` and composes outward via the rules in §3
+  - `TemporalShape` **planner-level semantics** — what each shape *means* for request execution (struct shape owned by `18 §3`)
+  - the declaration site prose — `TemporalShape` is authored exclusively on `SimpleDataKind` (a `Dataset` leaf) and composes outward via the rules in §3 (shape-only cascade, grain does not — see SR-E-7 / SR-E-8)
   - the `TemporalShape × Grain` interaction matrix (§4) — which shapes roll up under `Grain`, which are grain-fixed, which have no intrinsic grain
-  - the `JoinType::AsOf` variant as the ratified (but implementation-DEFERRED) extension to `16 §4.1`'s `JoinType` enum — shape, semantics, legal shape pairs
-  - as-of anchor selection rules per shape pair — `SCD ↔ Events` uses `AsOf(valid_from, valid_to)`; `Snapshot ↔ Events` uses `AsOf(snapshotted_at)` with latest-at-or-before semantics
-  - the `Request.temporal` block — as-of timestamp, time-range override, and default-current behavior (vocabulary ratified; planner consumption DEFERRED)
+  - the `JoinType::AsOf` variant as a **post-v1 deferred** extension to `18 §2.3`'s `JoinType` enum (v1 `JoinType` roster is `{Inner, Left, Right, Full}`; `AsOf` remains specced here for forward reference)
+  - as-of anchor selection rules per shape pair — kept here as forward-reference design
+  - the `Request.temporal` block — vocabulary ratified; planner consumption DEFERRED
   - the `TemporalShape × Additivity` advisory-warning roster — independent-axes rule (§7.1) and the concrete advisories (§7.3)
-  - shape-gated composition rules (§8) refining `16 §11` — per-shape rollup / as-of-anchoring preconditions for implicit and explicit composition
+  - shape-gated composition rules (§8) refining `16 §11`
+  - historical reference for the full Kimball SCD subtype taxonomy (`Type0`–`Type6`) — the v1 roster is trimmed to `{Type1, Type2}` per `18 §3.3`; retained here as the post-v1 forward-reference discussion
   - the 17-subsystem `validate` / `compile` / `plan` Precondition catalog and error-code allocations (`VALID_E_1700`–`1799`, `COMP_E_1700`–`1799`, `PLAN_E_1700`–`1799`, `PLAN_W_1700`–`1799`), coordinated with `30 §6.2` per `[CONTRADICTION-FOUND]` below
   - the DEFERRED-items roster (§10) — the closed list of planner behaviors gated on this doc whose vocabulary and model surface are ratified but whose implementation lands in a later milestone
 refined-by:
@@ -29,7 +28,16 @@ refined-by:
 
 # 17. Temporal Shape
 
-> **Status:** ratified — vocabulary, model-surface shape, and design-level interactions are authoritative. Planner-side implementation of shape-aware behavior (as-of joins, snapshot-selection, SCD window resolution, `Request.temporal` consumption) is **DEFERRED** to a later milestone as declared in `00 §4.1` (`TemporalShape` row) and `00 §4.1` (`AsOf` `JoinType` row). Round-1 drafting open items are parked in `open_questions/17_open_questions.md`.
+> **Struct ownership (2026-04-17 consolidation).** The v1 authoring-layer `TemporalShape` struct, `TemporalShapeKind` enum, per-variant `*Body` structs (`TimeseriesBody`, `EventsBody`, `SnapshotBody`, `ScdBody`), and the trimmed `ScdType` v1 roster `{Type1, Type2}` are ratified in [`18_entities.md §3`](./18_entities.md#3-temporalshape). This doc owns the *planner-level semantics* on top — shape-propagation rules, grain interactions, additivity advisories, shape-gated composition, and the post-v1 `AsOf` forward-reference design. Key deltas the reader should keep in mind while reading body prose:
+>
+> - **`TemporalShape` is a struct** (`{ kind: TemporalShapeKind, grain: Option<Grain> }`), not a bare enum. Per-variant payload lives in `*Body` structs (see `18 §3.1`). Body prose below that treats `TemporalShape` as a flat enum is pre-consolidation vocabulary.
+> - **`ScdType` v1 roster is `{Type1, Type2}`** per `18 §3.3`. The Kimball `Type0`–`Type6` material in §2 below is retained as post-v1 forward-reference; Type0 / Type3 / Type4 / Type5 / Type6 are NOT in the v1 authoring surface.
+> - **`ScdBody` is flat** (`{ scd_type, valid_from, valid_to }`) — no per-subtype sub-struct, no `current_flag_dim` / `prior_value_dim` / `history_data_kind_ref` in v1.
+> - **YAML shape** — `extras.temporal.<variant>: { <fields> }` + sibling `grain:` per `18 §3.2`.
+> - **`grain:` rules** — required on leaf `Dataset`, forbidden on `ComplexDataKind` (SR-E-6 / SR-E-7 in `18 §11`); Grainset children each author their own (SR-E-8).
+> - **`JoinType::AsOf`** — descoped for v1; `18 §2.3` roster is `{Inner, Left, Right, Full}`. The `AsOf` design in §5 below remains the forward-reference spec.
+>
+> **Status:** partially ratified — §3 / §4 shape-propagation rules, §7 additivity interactions, §8 shape-gated composition, and §9 diagnostic catalog are authoritative. §2 SCD taxonomy (full Kimball treatment), §5 AsOf design, and §6 Request.temporal are forward-reference / post-v1. Round-1 drafting open items live in `open_questions/17_open_questions.md`.
 
 ## [CONTRADICTION-FOUND] — code-range coordination with `30 §6.2`
 
@@ -136,137 +144,17 @@ The variants are mutually exclusive per `SimpleDataKind`: a single `SimpleDataKi
 - `Type0`, `Type3` have no as-of-join ambiguity but are recognized for advisory purposes (§7.3).
 - `Type4`, `Type5`, `Type6` are ratified at the vocabulary level but their full planner treatment is DEFERRED to a later milestone (§10). `Type4`'s `history_data_kind_ref` is the most structurally involved — it pins a second `DataKind` as the history table — and requires coordination with `16`'s composition surface, tracked as `[TD-SCD-TYPE4-HISTORY-REF]` in §10.
 
-### 2.3 Variant-specific payloads — the Rust enum sketch
+### 2.3 Variant-specific payloads — canonical shape pointer
 
-Per I10, every variant of `TemporalShape` and every variant of `ScdSubtype` carries its payload as a struct (avoiding bare tuple variants) so future fields are additive. `#[non_exhaustive]` on both enums lets MINOR additions (new subtypes, new top-level shapes, new fields inside payloads) land without breaking downstream matching.
+> **Canonical shape lives in [`18 §3`](./18_entities.md#3-temporalshape).** The v1 authoring-layer struct is `TemporalShape { kind: TemporalShapeKind, grain: Option<Grain> }`, per-variant payloads live in `TimeseriesBody` / `EventsBody` / `SnapshotBody` / `ScdBody`, and the v1 `ScdType` roster is trimmed to `{Type1, Type2}`. The full `Type0`–`Type6` Kimball taxonomy documented in §2.2 above is **post-v1 forward-reference** — it describes what each subtype *means* semantically, but only `Type1` / `Type2` are in the v1 enum roster. Readers who need the authoritative struct / enum shape for v1 authoring should go to `18 §3`.
+>
+> The Rust enum sketch that previously lived at this section level was removed on 2026-04-17 to eliminate the duplicate-struct-definition hazard the consolidation pass was chartered to close. Git history preserves the pre-consolidation sketch; callers who want to read it should `git log docs/design/foundations/17_temporal_shape.md` or consult `DECISION_LOG.md`.
 
-```rust
-/// Historization classification of a `SimpleDataKind`'s time axis.
-///
-/// Declared on a `SimpleDataKind` alongside its `Binding` and `Grain`. Each
-/// variant names the Dimension that carries the time axis and any auxiliary
-/// information the planner needs to reason about shape-dependent behavior.
-///
-/// Non-exhaustive per I10; future variants (e.g. bi-temporal shapes with both
-/// `valid_time` and `system_time`) are additive.
-#[non_exhaustive]
-pub enum TemporalShape {
-    /// Dense, regularly-spaced observations at a known cadence.
-    Timeseries {
-        /// Canonical Semantics name of the temporal Dimension carrying the
-        /// observation timestamp. Must resolve (at compile) to a Dimension
-        /// with `DimensionType::Temporal` (per `13 §4.2`) on the declaring
-        /// DataKind's interface.
-        occurred_at_dim: SemanticsName,
+**Design rationale (still applicable to `18`'s shape).** These notes motivated the per-subtype struct-payload design and apply equally to the `18 §3` ratification:
 
-        /// The declared observation cadence. Constrains which `Grain`
-        /// rollups the planner may emit without re-bucketing. MUST be one
-        /// of the grains listed on `occurred_at_dim`'s `grains:` per `13 §4.2`.
-        grain: Grain,
-    },
-
-    /// Sparse discrete occurrences.
-    Events {
-        /// Canonical Semantics name of the temporal Dimension carrying the
-        /// event timestamp. Same resolution rule as `Timeseries.occurred_at_dim`.
-        occurred_at_dim: SemanticsName,
-    },
-
-    /// Periodic full-state capture.
-    Snapshot {
-        /// Canonical Semantics name of the temporal Dimension carrying the
-        /// snapshot timestamp. Must resolve to a Dimension with
-        /// `DimensionType::Temporal` on the declaring DataKind's interface.
-        snapshotted_at_dim: SemanticsName,
-
-        /// Optional declared snapshot cadence. When present, the planner MAY
-        /// validate cadence-aligned rollups; when absent, snapshot selection
-        /// is free-form ("the latest snapshot at or before T").
-        cadence: Option<Grain>,
-    },
-
-    /// Slowly-changing dimension with history.
-    Scd {
-        /// The subtype payload. See `ScdSubtype` for the closed Type0–Type6
-        /// taxonomy and per-subtype fields.
-        subtype: ScdSubtype,
-    },
-}
-
-/// Kimball SCD subtype taxonomy. Type 0 – Type 6 ratified.
-///
-/// Non-exhaustive per I10 — a future Type 7 (dual — current + historic view)
-/// extension is reserved but not in Round 1.
-#[non_exhaustive]
-pub enum ScdSubtype {
-    /// Retain original; no updates after insert. No window columns.
-    Type0,
-
-    /// Overwrite-in-place; one row per entity; no history. No window columns.
-    Type1,
-
-    /// Full history via valid windows. One row per validity period per entity.
-    Type2 {
-        /// Canonical Semantics name of the Dimension carrying the inclusive
-        /// lower bound of the row's validity window.
-        valid_from_dim: SemanticsName,
-
-        /// Canonical Semantics name of the Dimension carrying the exclusive
-        /// upper bound of the row's validity window. Open-ended rows
-        /// conventionally carry `NULL` or a sentinel (e.g. `9999-12-31`);
-        /// the sentinel convention is adapter-side (`registry/temporal_shape_mapping.md`).
-        valid_to_dim: SemanticsName,
-
-        /// Optional Dimension flagging the currently-active row per entity
-        /// (typically `boolean`). Redundant with `valid_to_dim IS NULL / =
-        /// sentinel` but commonly present for indexing.
-        current_flag_dim: Option<SemanticsName>,
-    },
-
-    /// Limited history via a prior-value column.
-    Type3 {
-        /// Canonical Semantics name of the Dimension carrying the previous
-        /// value of the changed attribute. The "current" value lives on the
-        /// Semantics whose history this subtype records; the subtype payload
-        /// identifies the ghost column.
-        prior_value_dim: SemanticsName,
-    },
-
-    /// History externalized to a separate DataKind.
-    Type4 {
-        /// Reference to the top-level `DataKind` holding the history rows.
-        /// Compile resolves to a `DataKindRef`. The referenced kind SHOULD
-        /// itself declare a compatible `TemporalShape::Scd { subtype:
-        /// ScdSubtype::Type2 { .. } }` — Type 2 is the canonical history shape.
-        history_data_kind_ref: DataKindRef,
-    },
-
-    /// Type 4 + mini-dimension outrigger.
-    Type5 {
-        valid_from_dim: SemanticsName,
-        valid_to_dim: SemanticsName,
-        /// Reference to the top-level mini-Dimension DataKind.
-        mini_dim_ref: DataKindRef,
-    },
-
-    /// Hybrid: Type 1 + Type 2 (+ optionally Type 3) in one row set.
-    Type6 {
-        valid_from_dim: SemanticsName,
-        valid_to_dim: SemanticsName,
-        current_flag_dim: Option<SemanticsName>,
-        /// Optional current-value column (the Type-1 component of the hybrid).
-        /// When present, carries the current value duplicated onto every
-        /// history row for the entity.
-        current_value_dim: Option<SemanticsName>,
-    },
-}
-```
-
-**Design notes:**
-
-- **Per-subtype payload vs flat-fields.** The alternative — `Scd { subtype: ScdSubtype, valid_from_dim: SemanticsName, valid_to_dim: SemanticsName, current_flag_dim: Option<SemanticsName>, ... }` with the fields meaningless for `Type0` / `Type1` / `Type3` — was rejected for this draft. Per-subtype payload lets the type system refuse nonsense (you cannot accidentally author `valid_from_dim` on a `Type0` record) and makes future additions (Type 7's dual-view fields) additive inside a single variant. Q-TEMPORAL-002 revisits this.
-- **Payload references are `SemanticsName`s.** Per I1, every time-axis Dimension reference in `TemporalShape` is a canonical Semantics name, not a physical column. Resolution to physical columns happens in `15 §5` via `ColumnMapping`.
-- **Non-exhaustive at every level.** `TemporalShape` is `#[non_exhaustive]`; `ScdSubtype` is `#[non_exhaustive]`; `Type2`, `Type6` payloads are `#[non_exhaustive]` (implicit via struct-variant-in-non-exhaustive-enum, but we are explicit about the field-addition promise). Adding `ScdSubtype::Type7 { ... }` or extending `Type6` with `effective_from: Option<SemanticsName>` is MINOR.
+- **Per-subtype payload vs flat-fields.** The alternative — `Scd { subtype: ScdSubtype, valid_from_dim: SemanticsName, valid_to_dim: SemanticsName, current_flag_dim: Option<SemanticsName>, ... }` with the fields meaningless for `Type0` / `Type1` / `Type3` — was rejected. Per-subtype payload lets the type system refuse nonsense (you cannot accidentally author `valid_from_dim` on a `Type0` record) and makes future additions (post-v1 Type 7 dual-view fields) additive inside a single variant. Q-TEMPORAL-002 in `open_questions/17_open_questions.md` revisits the flat-struct alternative.
+- **Payload references are `SemanticsName`s.** Per I1, every time-axis Dimension reference in `TemporalShape` is a canonical Semantics name, not a physical column. Resolution to physical columns happens in `15 §4` via `SemanticMapping`.
+- **Non-exhaustive at every level.** `TemporalShape`, `TemporalShapeKind`, and `ScdType` are each `#[non_exhaustive]` per I10. Adding `ScdType::Type3` (post-v1 promotion), extending `TemporalShapeKind` with bi-temporal variants, or growing `ScdBody` with a sentinel-aware `valid_to` marker is MINOR.
 
 ### 2.4 Per-variant identifying Dimension — the contract
 
@@ -384,29 +272,18 @@ When the `Grainset`'s children are `Events` or `Snapshot` shapes, `22 §…` rat
 
 ## 5. Interaction with `JoinType` — ratifying `AsOf`
 
-### 5.1 The `AsOf` variant — vocabulary ratification
+### 5.1 The `AsOf` variant — vocabulary ratification (forward-reference)
 
-`16 §4.1` ratified `JoinType::Inner | Left | Right | Full` as the v1 roster; `16 §4.4.2` deferred `JoinType::AsOf` to this doc, gated on `TemporalShape` availability. `17 §5` discharges that gate. The ratified extension:
+The v1 `JoinType` roster is ratified in [`18_entities.md §2.3`](./18_entities.md#2-3-jointype) as `{Inner, Left, Right, Full}`; `AsOf` is **post-v1 deferred**. `16 §4.4.2` parked the `AsOf` variant behind this doc's `TemporalShape` vocabulary; `17 §5` discharges that gate by specifying what the variant *would look like* when it lands in a post-v1 MINOR.
+
+The `AsOfAnchor` enum below is the carrier type for the eventual `JoinType::AsOf(AsOfAnchor)` variant; it is **not** part of the v1 authoring surface, does not appear in `18 §2.3`, and is not emitted by the Round-1 planner. Its shape is pinned here so the post-v1 extension is a pure additive change:
 
 ```rust
-#[non_exhaustive]
-pub enum JoinType {
-    Inner,
-    Left,
-    Right,
-    Full,
-
-    /// Temporal-proximity join. Matches the most recent row on the `to` side
-    /// whose temporal anchor satisfies the anchor condition relative to the
-    /// `from` side's probe timestamp. See `AsOfAnchor` for the per-shape
-    /// anchor specification.
-    ///
-    /// Implementation DEFERRED per `17 §10`. Vocabulary ratified; the planner
-    /// does not yet emit `JoinNode { join_type: AsOf { .. }, .. }` in Round 1.
-    AsOf(AsOfAnchor),
-}
-
-/// The anchor specification carried by `JoinType::AsOf`. Per-shape.
+/// Forward-reference (post-v1). Anchor specification that would be carried
+/// by `JoinType::AsOf(AsOfAnchor)` when the variant lands. Per-shape.
+///
+/// Implementation DEFERRED per `17 §10`. Vocabulary ratified so that the
+/// eventual addition to `18 §2.3`'s `JoinType` enum is purely additive.
 #[non_exhaustive]
 pub enum AsOfAnchor {
     /// The `to` side is an `Scd` kind with valid-window payload. Each matched
@@ -434,7 +311,7 @@ pub enum AsOfAnchor {
 }
 ```
 
-**Vocabulary-ratified, implementation-DEFERRED.** Per §10, the planner's Round-1 implementation does not construct `AsOf` joins; YAML authors MAY NOT (in Round 1) declare an `AsOf` `join_type:` on a `Relationship` — the `32` YAML surface keeps the enum closed at `Inner / Left / Right / Full` in Round 1, admitting `AsOf` in a later MINOR. `16 §4.1`'s comment "`AsOf` — deferred; gated on `TemporalShape` support per `17`" remains accurate — the gate is now in place, but the door is not yet open.
+**Vocabulary-ratified, implementation-DEFERRED.** Per §10, the planner's Round-1 implementation does not construct `AsOf` joins; YAML authors MAY NOT (in Round 1) declare an `AsOf` `join_type:` on a `Relationship` — `18 §2.3`'s roster stays `{Inner, Left, Right, Full}` in v1, with `AsOf` admitted in a later MINOR per the post-v1 plan. The gate `16 §4.4.2` / `18 §2.3` parked on `TemporalShape` availability is now in place, but the door is not yet open.
 
 ### 5.2 Per-shape-pair legality matrix
 

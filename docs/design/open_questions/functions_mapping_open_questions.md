@@ -11,6 +11,8 @@ depends-on:
 
 > Unresolved items surfaced during Round-2 drafting of the functions-mapping catalog. Each entry links to a location in the mapping doc where the question currently resolves to 🟡 / `TD-FUNCS-MAPPING-*` placeholder. Questions migrate out of this file as they are answered by adapter implementation, empirical verification, or a `14a`-level ratification.
 
+> **Index pointer.** For a one-file view of every open question across all registry sidecars (functions / join-types / temporal-shape), see [`registry_open_questions.md`](registry_open_questions.md). That index is pure navigation — the full question bodies stay here.
+
 ---
 
 ## Q-FUNCS-MAP-001 — `position` vs `strpos` vs `locate`: which is canonical?

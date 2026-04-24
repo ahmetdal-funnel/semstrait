@@ -1,16 +1,16 @@
 ---
-prereqs: [00, 10, 11, 12, 15, 20, 21, 22, 23, 24, 32, 32c]
+prereqs: [00, 10, 11, 12, 15, 18, 20, 21, 22, 23, 24, 32]
 authoritative-for:
   - the nesting matrix — which parent data-kind variant may contain which nested variants
   - the three nesting rules R1 (leaves don't nest), R2 (no same-variant self-nesting), R3 (`ComplexDataKind` requires ≥ 2 children)
   - the Nested-form structural-only rule — nested data kinds carry no `SemanticInterface`, no `ai_context`
   - the nested addressing scheme for diagnostics (`<plural-tag>[<name>]` dotted paths)
 refined-by:
-  - 22 (`data-kinds/22_grainset.md` — per-level nesting semantics; also owns the Grainset-child grain requirement fully specified at `32c §3.4`)
+  - 22 (`data-kinds/22_grainset.md` — per-level nesting semantics; Grainset-child grain requirement specified at `18 §3.4` / SR-E-8)
   - 23 (`data-kinds/23_unionset.md` — per-branch nesting semantics)
-  - 24 (`data-kinds/24_joinset.md` — per-member nesting semantics; relationship-field shape at `32c §2`)
+  - 24 (`data-kinds/24_joinset.md` — per-member nesting semantics; relationship-field shape at `18 §2`)
   - 32 (`apis/32_semstrait_model.md` — SR-4 / SR-10 structural-rule enforcement)
-  - 32c (`apis/32c_entities.md` — canonical entity types; SR-E-8 Grainset-child grain-required rule)
+  - 18 (`foundations/18_entities.md` — canonical entity types; SR-E-8 Grainset-child grain-required rule)
 ---
 
 # 26. Nesting Matrix
@@ -132,7 +132,7 @@ pub struct JoinsetBody {
     pub datasets:      Vec<NestedDataset>,
     pub grainsets:     Vec<NestedGrainset>,
     pub unionsets:     Vec<NestedUnionset>,
-    pub relationships: Vec<Relationship>,       // unified shape (`32c §2`)
+    pub relationships: Vec<Relationship>,       // unified shape (`18 §2`)
     // no `joinsets:` field
 }
 ```
@@ -283,11 +283,11 @@ Two adjacent rules are enforced at the **entity** layer rather than the nesting 
 
 | Adjacent rule | Where it lives | Diagnostic |
 |---|---|---|
-| Grainset children MUST each author `extras.temporal.grain:` explicitly — shape can cascade, grain cannot. | `32c §3.4` (SR-E-8) | `validate.grainset-child-grain-required` |
-| `TemporalShape.grain:` is forbidden at any `ComplexDataKind` level (only shape cascades, not grain). | `32c §3.3` (SR-E-7) | `validate.temporal-grain-on-complex` |
-| Joinset `relationships:` use the unified `Relationship` shape (same struct as root `relationships:`) — `Cardinality` required, `Directionality` defaults to `bidirectional`. | `32c §2` | — |
+| Grainset children MUST each author `extras.temporal.grain:` explicitly — shape can cascade, grain cannot. | `18 §3.4` (SR-E-8) | `validate.grainset-child-grain-required` |
+| `TemporalShape.grain:` is forbidden at any `ComplexDataKind` level (only shape cascades, not grain). | `18 §3.3` (SR-E-7) | `validate.temporal-grain-on-complex` |
+| Joinset `relationships:` use the unified `Relationship` shape (same struct as root `relationships:`) — `Cardinality` required, `Directionality` defaults to `bidirectional`. | `18 §2` | — |
 
-Full `SR-E-*` entity-level invariant roster is at `32c §11`.
+Full `SR-E-*` entity-level invariant roster is at `18 §11`.
 
 ---
 

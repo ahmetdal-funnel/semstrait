@@ -17,7 +17,7 @@ refined-by:
 
 # 25. Applicability Matrix
 
-> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
+> **Reconciliation (Phase-3 / 2026-04-17 consolidation).** The per-variant authoring shape is ratified across [`../apis/32_semstrait_model.md §3`](../apis/32_semstrait_model.md), [`../foundations/18_entities.md`](../foundations/18_entities.md), and [`26_nesting_matrix.md`](./26_nesting_matrix.md) (R1 / R2 / R3 structural rules). The cross-variant matrix below remains authoritative as the index of which foundation rules apply to which variant; where body text cites `ColumnMapping` or pre-`18` struct names, apply the renames per `18 §10` (`SemanticMapping`) and `18 §2` (unified `Relationship`). `JoinType::AsOf` cells are forward-reference only (v1 roster excludes AsOf).
 
 ---
 

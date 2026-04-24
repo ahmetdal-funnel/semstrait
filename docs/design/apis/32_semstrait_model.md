@@ -1,5 +1,5 @@
 ---
-prereqs: [00, 10, 11, 12, 13, 14, 14a, 15, 16, 17, 20, 21, 22, 23, 24, 25, 26, 30, 31, 31b]
+prereqs: [00, 10, 11, 12, 13, 14, 14a, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 30, 31, 31b]
 authoritative-for:
   - the root YAML shape for a `semstrait` model — `semantic_model:` wrapper, per-variant plural arrays, shared Semantics pools, `relationships:`
   - the in-memory `SemanticModel` root type — per-variant typed maps, shared pools as `BTreeMap`, `relationships` as `Vec`
@@ -11,16 +11,16 @@ authoritative-for:
   - deterministic-ordering guarantees at the root level (I4)
   - crate boundaries for `semstrait-model`
 refined-by:
-  - 32c (`apis/32c_entities.md` — canonical entity types: `Relationship`, `TemporalShape`, `Dimension` / `Measure` / `Metric`, filter taxonomy, `AiContext`, `Keys`, `SemanticMapping` value shape, root-pool reference / override grammar)
-  - 31b (`apis/31b_semstrait_core_io.md` — `Source` / `Sink` / `Location` / `IoError` transport vocabulary that §10.4 composes)
   - 32b (`apis/32b_catalogs_yaml.md` — catalog YAML grammar and reference syntax)
-  - 21 (`data-kinds/21_dataset.md` — per-kind YAML for Dataset leaves)
-  - 22 (`data-kinds/22_grainset.md` — per-kind YAML for Grainset)
-  - 23 (`data-kinds/23_unionset.md` — per-kind YAML for Unionset)
-  - 24 (`data-kinds/24_joinset.md` — per-kind YAML for Joinset)
-  - 26 (`data-kinds/26_nesting_matrix.md` — nesting matrix)
-  - 15 (`foundations/15_mapping_and_binding.md` — `SemanticMapping` authoring grammar and the `Binding` process)
-  - 33 (`apis/33_semstrait_manifest.md` — how the `SemanticModel` tree lowers to `Manifest`)
+  - 33 (`apis/33_semstrait_manifest.md` — how the `SemanticModel` tree lowers to a `Manifest`)
+# Upstream cross-references (see `prereqs:` above and §11 "Pointers to Child Docs"
+# for full context): 18 (entity struct shapes), 15 (SemanticMapping compile
+# semantics), 16 (composition), 17 (temporal-shape planner semantics), 21-24
+# (per-DataKind YAML), 26 (nesting matrix), 31b (I/O transport). Per 00 §8
+# directionality rule, those are prerequisites rather than downstream refinements;
+# they are deliberately omitted from `refined-by:` to keep the field semantically
+# pure. Section 11 of this doc is the authoritative human-facing navigation aid
+# for the full cross-reference web.
 ---
 
 # 32. `semstrait-model` — Root YAML Contract
@@ -62,12 +62,12 @@ semantic_model:
   joinsets:   [ ... ]                  # see 24_joinset.md
 
   # ── Shared Semantics pools — one map per carrier ────────────────
-  # Full entity shapes + ref/override grammar — 32c §1.
-  dimensions: [ ... ]                  # see 32c §4
-  measures:   [ ... ]                  # see 32c §5
-  metrics:    [ ... ]                  # see 32c §6
+  # Full entity shapes + ref/override grammar — 18 §4–§9.
+  dimensions: [ ... ]                  # see 18 §4
+  measures:   [ ... ]                  # see 18 §6
+  metrics:    [ ... ]                  # see 18 §7
 
-  # ── Cross-entity relationships — see 32c §2 for full grammar ────
+  # ── Cross-entity relationships — see 18 §2 for full grammar ────
   relationships:
     - name: orders_to_customers
       from: orders
@@ -204,7 +204,7 @@ pub struct JoinsetBody {
     pub grainsets:     Vec<NestedGrainset>,
     pub unionsets:     Vec<NestedUnionset>,
     /// Joinset-local relationships. Unified `Relationship` shape — same
-    /// struct as `SemanticModel.relationships`. See `32c §2`.
+    /// struct as `SemanticModel.relationships`. See `18 §2`.
     pub relationships: Vec<Relationship>,
 }
 
@@ -212,7 +212,7 @@ pub struct JoinsetBody {
 pub enum UnionMode { All, Unique }   // `All` is the default
 ```
 
-The full nesting matrix is at `26 §1`; structural rules (R1 leaves don't nest; R2 no same-variant self-nesting; R3 ComplexDataKind ≥ 2 children) are at `26 §2`. `Relationship` and `UnionMode` rosters are at `32c §2` and §4.2 respectively.
+The full nesting matrix is at `26 §1`; structural rules (R1 leaves don't nest; R2 no same-variant self-nesting; R3 ComplexDataKind ≥ 2 children) are at `26 §2`. `Relationship` shape is ratified at `18 §2`; `UnionMode` roster at `23 §4.1` (variant-local).
 
 ### 3.3 Concrete types — Public and Nested forms
 
@@ -387,7 +387,7 @@ pub struct StorageConfig {
 }
 ```
 
-YAML tag names mirror field names 1:1. `TemporalShape` uses the collapsed variant-wrapper form ratified in `32c §3.2`:
+YAML tag names mirror field names 1:1. `TemporalShape` uses the collapsed variant-wrapper form ratified in `18 §3.2`:
 
 ```yaml
 extras:
@@ -417,13 +417,13 @@ extras:
 | `temporal.<variant>:` (shape) | Leaf `Dataset`; inherited from any ancestor | Any ancestor complex data kind |
 | `temporal.grain:` | Leaf `Dataset` only — **forbidden** on ComplexDataKinds (SR-E-7) | Never inherited (SR-E-8: Grainset children must author explicitly) |
 
-Setting a field at a scope with no eligible descendant is a structural warning (dead config, not fatal). Entity-level invariants (SR-E-6 through SR-E-8) live at `32c §11`.
+Setting a field at a scope with no eligible descendant is a structural warning (dead config, not fatal). Entity-level invariants (SR-E-6 through SR-E-8) live at `18 §11`.
 
 ### 4.2 Variant-intrinsic fields that are NOT in `Extras`
 
-- `UnionMode` is a direct field on `UnionsetBody`. Always required; default `All`. Roster `{All, Unique}` — see `32c §2` adjacency references for full discussion.
-- `relationships` on `JoinsetBody` is the variant's intrinsic structural field — never overridable through extras. Uses the unified `Relationship` shape per `32c §2`.
-- `SemanticInterface` (dimensions / measures / metrics / keys / filters) is authored directly on every Public form, never in extras. Entry grammar (inline vs `ref`, override scope) lives at `32c §1`.
+- `UnionMode` is a direct field on `UnionsetBody`. Always required; default `All`. Roster `{All, Unique}` — see `23 §4.1` for the full enum and `16 §5` for composition semantics.
+- `relationships` on `JoinsetBody` is the variant's intrinsic structural field — never overridable through extras. Uses the unified `Relationship` shape per `18 §2`.
+- `SemanticInterface` (dimensions / measures / metrics / keys / filters) is authored directly on every Public form, never in extras. Entry grammar (inline vs `ref`, override scope) lives at `18 §1`.
 
 ---
 
@@ -442,19 +442,7 @@ extras:
   semantic_mapping: auto
 ```
 
-**Explicit map.** The author provides a `{ semantic_name: <SemanticMappingValue> }` mapping. Each entry's value is one of **three variants** (full specification at `32c §10`):
-
-```rust
-#[non_exhaustive]
-pub enum SemanticMappingValue {
-    /// Bare physical column name (the common case).
-    Column(String),
-    /// Row-independent literal broadcast across every row.
-    Literal(LiteralValue),
-    /// `PhysicalExpr` tree — cast, compute, or multi-column transform.
-    Expr(PhysicalExpr),
-}
-```
+**Explicit map.** The author provides a `{ semantic_name: <SemanticMappingValue> }` mapping. Each entry's value is one of **three variants** — the full `SemanticMappingValue` enum (shape + roster + `LiteralValue` grammar) is ratified in [`18 §10`](../foundations/18_entities.md#10-semanticmapping-value-shape) and consumed by the `Binding` process in [`15 §5`](../foundations/15_mapping_and_binding.md#5-semanticmapping-value-compile-semantics):
 
 ```yaml
 extras:
@@ -474,7 +462,7 @@ extras:
           unit: hour
 ```
 
-Single-string values dispatch to `Column`; mapping values with `literal:` / `expr:` keys dispatch to `Literal` / `Expr`. Full value grammar is at `32c §10`; `PhysicalExpr` is at `14`.
+Single-string values dispatch to `Column`; mapping values with `literal:` / `expr:` keys dispatch to `Literal` / `Expr`. `PhysicalExpr` grammar is at `14 §3`.
 
 ### 5.2 Leaf-only effective scope
 
@@ -511,7 +499,7 @@ Root-level invariants enforced at `parse` and the `validate` stage. Each rule ha
 
 SR-* numbering is append-only. Adding a rule is a MINOR change per `30 §2`.
 
-Entity-level invariants (`SR-E-*`) — reference-site overrides, Semantics orphan policy, relationship cardinality, TemporalShape grain placement, filter-kind disjointness — live at `32c §11`. SR-E-* is a separate, independently-numbered series that extends the root-level SR-* roster.
+Entity-level invariants (`SR-E-*`) — reference-site overrides, Semantics orphan policy, relationship cardinality, TemporalShape grain placement, filter-kind disjointness — live at `18 §11`. SR-E-* is a separate, independently-numbered series that extends the root-level SR-* roster.
 
 ---
 
@@ -533,7 +521,7 @@ Given the same input YAML plus the same environment, `parse` produces a byte-ide
 | `GrainsetBody.{datasets, unionsets, joinsets}` | `Vec<Nested*>` | YAML author order |
 | `UnionsetBody.{datasets, grainsets, joinsets}` | `Vec<Nested*>` | YAML author order |
 | `JoinsetBody.{datasets, grainsets, unionsets}` | `Vec<Nested*>` | YAML author order |
-| `JoinsetBody.relationships` | `Vec<Relationship>` | YAML author order (unified shape per `32c §2`) |
+| `JoinsetBody.relationships` | `Vec<Relationship>` | YAML author order (unified shape per `18 §2`) |
 | `iter_all` / `iter_public` / `iter_simple` / `iter_complex` | iterators | Alphabetical by `(variant-tag, name)`; variants in fixed order: Dataset, Grainset, Unionset, Joinset |
 
 `HashMap` is banned from the entire public surface. A CI check fails on any public `HashMap<_, _>` reachable from `SemanticModel`.
@@ -789,7 +777,7 @@ Per I11. `io` is default-off so the historical pure-type consumer of `semstrait-
 
 | Scope | Doc | What lives there |
 |---|---|---|
-| **Canonical entities** | [`./32c_entities.md`](./32c_entities.md) | **`Relationship`, `TemporalShape`, `Dimension` / `Measure` / `Metric`, filter taxonomy, `AiContext`, `Keys`, `SemanticMapping` value shape, root-pool reference / override grammar, `SR-E-*` entity-level rules. Authoritative for every entity embedded in 32.** |
+| **Canonical entities** | [`../foundations/18_entities.md`](../foundations/18_entities.md) | **`Relationship`, `RelationshipId`, `JoinType`, `Cardinality`, `Directionality`, `TemporalShape`, `ScdType`, `Dimension` / `Measure` / `Metric`, `DimensionType` + body structs, `Additivity`, filter taxonomy, `AiContext`, `Keys`, `SemanticMappingValue` shape, root-pool reference / override grammar, `SR-E-*` entity-level rules. Authoritative for every entity struct shape embedded in 32.** |
 | Dataset interior | [`../data-kinds/21_dataset.md`](../data-kinds/21_dataset.md) | Per-Dataset YAML: `dimensions:`, `measures:`, `metrics:`, `filters:`, `keys:`, leaf-only `extras` semantics |
 | Grainset interior | [`../data-kinds/22_grainset.md`](../data-kinds/22_grainset.md) | Per-Grainset YAML: child composition, grain-axis, `temporal:` in extras |
 | Unionset interior | [`../data-kinds/23_unionset.md`](../data-kinds/23_unionset.md) | Per-Unionset YAML: children, `mode:`, coverage |

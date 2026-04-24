@@ -20,6 +20,8 @@ depends-on:
 
 > Items surfaced during Round-1 drafting of the Grainset specification. Each entry restates the question, lists its ratified references, and records the Round-1 default `22` currently uses. Entries migrate out of this file as later docs (`17`, `20`, `23`–`25`, `33`, `34`) make decisions that confirm or amend `22`'s defaults.
 
+> **Status summary (2026-04-17).** Q-GRN-004 (Grainset-of-Grainset nesting) and Q-GRN-006 (single-child Grainset degeneracy) are **CLOSED** by the structural-rules ratification in `data-kinds/26_nesting_matrix.md` (R2 bans same-variant self-nesting; R3 requires ≥ 2 children on every `ComplexDataKind`). Both entries retain their original bodies for resolution context; readers seeking only live items can skim past their closure banners.
+
 ---
 
 ## Q-GRN-001 — Inheritance default for child `grain`: finest vs declared
@@ -107,6 +109,8 @@ depends-on:
 
 ## Q-GRN-004 — Grainset-of-Grainset nesting
 
+**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `data-kinds/26_nesting_matrix.md §R2`: no same-variant self-nesting at any depth. Grainset-of-Grainset is forbidden structurally (not just via `COMP_E_2207`). `[TD-GRAINSET-NESTED]` is retired — admitting nested Grainsets becomes a post-v1 matrix relaxation, not a Round-2 item.
+
 **Question.** `22 §3.4` / `COMP_E_2207` currently forbids a `Grainset` as a child of another `Grainset` (`[TD-GRAINSET-NESTED]`). Should Round 2 admit nested Grainsets? What is the semantic?
 
 **Refs.**
@@ -156,6 +160,8 @@ depends-on:
 ---
 
 ## Q-GRN-006 — Single-child Grainset degeneracy: lint or accept?
+
+**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `data-kinds/26_nesting_matrix.md §R3`: every `ComplexDataKind` (including `Grainset`) REQUIRES ≥ 2 children. Single-child is now a structural rejection, not a silent-accept. This unifies the policy across `Unionset`, `Grainset`, and `Joinset` (all three require ≥ 2 children). `[TD-GRAINSET-SINGLE-CHILD]` and the parallel `[TD-UNIONSET-SINGLE-CHILD]` are retired.
 
 **Question.** A Grainset with exactly one child is structurally valid per `22 §2` but semantically degenerate — it is a one-child wrapper that adds nothing over the underlying DataKind. Should Round 1 accept silently, emit a lint, or reject?
 

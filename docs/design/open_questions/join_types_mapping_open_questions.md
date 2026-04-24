@@ -8,6 +8,8 @@ scope: Unresolved questions surfaced while drafting `registry/join_types_mapping
 
 Each entry is self-contained and includes the context, options considered, and the Round-1 position adopted in `registry/join_types_mapping.md`. Entries resolve once empirical adapter-harness data or adapter-implementation review retires them. None of these questions blocks Round-1 ratification of the registry — all are coordination items with canonical deferrals (`16 §4.3` / `17 §10`) or adapter implementation (`35` / `36` / adapter crates).
 
+> **Index pointer.** For a one-file view of every open question across all registry sidecars (functions / join-types / temporal-shape), see [`registry_open_questions.md`](registry_open_questions.md). That index is pure navigation — the full question bodies stay here.
+
 ---
 
 ## Q-JOIN-MAP-001 — Explicit `INNER` keyword vs bare `JOIN`

@@ -11,7 +11,7 @@ authoritative-for:
 refined-by:
   - 13 (types and grain — `Grain` axis values referenced by Grainset levels)
   - 14 (expressions — `ExprSource` referenced by Joinset `path.on.*` predicates, Unionset branch filters)
-  - 15 (mapping and binding — `Binding` / `ColumnMapping` inside Simple leaves; Unionset coverage)
+  - 15 (mapping and binding — compile-time `Binding` / `SemanticMapping` inside Simple leaves; Unionset coverage)
   - 16 (composition — `Relationship` and `JoinType` referenced by Joinset `path:`)
   - 17 (temporal shape — `TemporalShape` constraints on Grainset level eligibility)
   - 20–25 (strategies — per-DataKind-variant resolution semantics)
@@ -19,6 +19,8 @@ refined-by:
 
 # 12. Nesting Policy
 
+> **Reconciliation (Phase-3 / 2026-04-17 consolidation).** The nesting-matrix rules (§2) are refined by `../data-kinds/26_nesting_matrix.md`, which adds explicit structural rules **R1** (self-nesting bans per-variant), **R2** (no same-variant self-nesting at any depth), and **R3** (every `ComplexDataKind` requires ≥ 2 children). Where body sections cite `ColumnMapping`, read `SemanticMapping` per `./18_entities.md §10`.
+>
 > **Status:** ratified. All nesting legality, block shape, cardinality, and Precondition rules are authoritative as of this revision. Joinset N-ary support is explicitly deferred as TECH_DEBT (§5.2).
 
 ## 1. Purpose and Scope

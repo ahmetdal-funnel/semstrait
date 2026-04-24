@@ -21,7 +21,21 @@ refined-by:
 
 # 21. SimpleDataKind (Dataset)
 
-> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
+> **Reconciliation (Phase-3, 2026-04-17).** The v1 authoring-layer canonical shape for `Dataset` (a.k.a. `SimpleDataKind` in the taxonomy) is ratified across:
+>
+> - [`../apis/32_semstrait_model.md §3`](../apis/32_semstrait_model.md) — top-level YAML tag (`datasets:`), per-entry `DatasetBody` struct shape, `#[serde(flatten)]` composition.
+> - [`../foundations/18_entities.md`](../foundations/18_entities.md) — canonical entity types consumed by `DatasetBody`: `SemanticInterface`, `Extras`, `TemporalShape`, `SemanticMapping`, `Keys`, `AiContext`, inline-vs-`ref` grammar for Dimensions / Measures / Metrics / filters.
+> - [`26_nesting_matrix.md`](./26_nesting_matrix.md) — nesting rules (R1 / R2 / R3).
+> - [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md) — `CatalogRef` grammar consumed via `extras.catalog:`.
+>
+> This document retains authority for:
+>
+> - The `SimpleStrategy` 5-layer plan shape (§4) — L1 Scan → L2 Rename → L3 Expression → L4 Aggregate → L5 Project.
+> - Per-layer emission / skip rules for the Dataset planner strategy.
+> - Multi-`PhysicalSource` fan-out semantics when a single `Dataset`'s storage glob expands to N sources.
+> - `VALID_E_21NN` / `COMP_E_21NN` / `PLAN_E_21NN` error-code allocations.
+>
+> Body sections that describe the Rust struct shape, YAML surface, or `Binding` / `ColumnMapping` vocabulary predate the `18` ratification (formerly `32c` before the 2026-04-17 promotion to the foundations layer); read those sections as historical context and cross-ref `32` / `18` for the v1 authoring shape. `ColumnMapping` → `SemanticMapping` / `ColumnMappingValue` → `SemanticMappingValue` rename per `18 §10`.
 
 ## 1. Purpose and Scope
 
@@ -408,7 +422,7 @@ Consolidated per-layer skip predicates. Applied top-to-bottom after the logical 
 
 ### 5.1 YAML surface
 
-A `SimpleDataKind` carries an optional `temporal_shape:` block. The shape kinds ratified in `17` are `Timeseries`, `Events`, `Snapshot`, and `SCD` (plus SCD subtypes `Type1`, `Type2`, `Type6` at the v1 surface — full Type1–Type6 in `17`). Each carries its own identifying-Dimension field (`event_time:`, `snapshotted_at:`, `valid_from:` / `valid_to:`, etc. per `17`).
+A `SimpleDataKind` (a `Dataset` leaf) carries an optional `extras.temporal:` block per `18 §3`. The v1 shape kinds are `Timeseries`, `Events`, `Snapshot`, and `Scd` (collapsed wrapper — `extras.temporal.<variant>:` per `18 §3.2`); the v1 `ScdType` roster is **`{Type1, Type2}`** per `18 §3.3`. Each variant carries its own identifying-Dimension field (`occurred_at:` for `Timeseries` / `Events`, `snapshotted_at:` for `Snapshot`, `valid_from:` / `valid_to:` for `Scd`). `Type0` / `Type3` / `Type4` / `Type5` / `Type6` in `17`'s Kimball SCD taxonomy are **post-v1 deferred** — not in the v1 authoring surface.
 
 Example:
 

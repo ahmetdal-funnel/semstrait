@@ -25,8 +25,8 @@ The registry solves this with a clean separation:
 |---|---|---|
 | [`types_mapping.md`](types_mapping.md) | Canonical `DataType` ↔ DataFusion / Spark / DuckDB native types, cast semantics, per-engine gaps | Stub pending ratification of adapter surface (`34` / `36` / `37`) |
 | [`functions_mapping.md`](functions_mapping.md) | Canonical function catalog ↔ engine function names, rewrite tiers, arity/signature differences, aliases, rewrite rules | Draft — tracks `foundations/14a_function_catalog.md` |
-| [`temporal_shape_mapping.md`](temporal_shape_mapping.md) | Per-engine mapping of `TemporalShape` variants (Timeseries, Events, Snapshot, SCD Type 0–6) and the `AsOf` rewrite-tier matrix | Draft — tracks `foundations/17_temporal_shape.md` |
-| [`join_types_mapping.md`](join_types_mapping.md) | Canonical `JoinType` ↔ engine-native join syntax, `AsOf` support matrix, cardinality-informed emission | Draft — tracks `foundations/16_composition.md` and `apis/35_semstrait_ir.md` |
+| [`temporal_shape_mapping.md`](temporal_shape_mapping.md) | Per-engine mapping of `TemporalShape` variants (Timeseries, Events, Snapshot, SCD). v1 `ScdType` roster is `{Type1, Type2}` per `foundations/18_entities.md §3.3`; SCD `Type0`/`Type3`/`Type4`/`Type5`/`Type6` are post-v1 deferred. The `AsOf` rewrite-tier matrix is documented as forward-reference (v1 `JoinType` roster excludes `AsOf`). | Draft — tracks `foundations/17_temporal_shape.md` + `foundations/18_entities.md §3` |
+| [`join_types_mapping.md`](join_types_mapping.md) | Canonical `JoinType` ↔ engine-native join syntax. v1 roster: `{Inner, Left, Right, Full}` per `foundations/18_entities.md §2`. `AsOf` support matrix is forward-reference / post-v1 deferred. Cardinality-informed emission rules unchanged. | Draft — tracks `foundations/16_composition.md` + `foundations/18_entities.md §2` + `apis/35_semstrait_ir.md` |
 
 ## Engine coverage policy
 
@@ -43,3 +43,7 @@ Additional engines (future: Substrait-native, ClickHouse, BigQuery, Snowflake, T
 Registry documents are **Living**: they track adapter implementation reality. Each entry SHOULD cite the adapter crate and version where it was verified (e.g. "DuckDB 1.1.x"). Breaking changes in an engine (a rename, a semantics change between engine major versions) are documented as additional rows or dated annotations, not destructive edits.
 
 Canonical specs under `foundations/` may reference the registry but never depend on its specific contents. A canonical variant is defined by the semantic it carries, not by any single engine's mapping.
+
+## Open questions
+
+Open items surfaced against any registry catalog live in the corresponding `open_questions/<catalog>_open_questions.md` sidecar. For a one-file view of every registry open question across all catalogs, see [`../open_questions/registry_open_questions.md`](../open_questions/registry_open_questions.md) — a navigation-only aggregate index. The per-sidecar files remain authoritative for the detailed bodies.

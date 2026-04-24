@@ -24,7 +24,24 @@ refined-by:
 
 # 20. DataKind Taxonomy
 
-> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
+> **Reconciliation (Phase-3, 2026-04-17).** The concrete per-variant Rust-struct / YAML-surface shape is ratified across:
+>
+> - [`../apis/32_semstrait_model.md §3`](../apis/32_semstrait_model.md) — top-level plural YAML tags (`datasets:`, `grainsets:`, `unionsets:`, `joinsets:`) and the `DatasetBody` / `GrainsetBody` / `UnionsetBody` / `JoinsetBody` struct shapes.
+> - [`../foundations/18_entities.md`](../foundations/18_entities.md) — canonical entity types consumed by every data-kind variant: `SemanticInterface`, `Extras`, `TemporalShape`, `SemanticMapping`, `Keys`, `AiContext`, inline-vs-`ref` grammar for Dimensions / Measures / Metrics / filters, `Relationship` (unified struct).
+> - [`26_nesting_matrix.md`](./26_nesting_matrix.md) — nesting rules (R1 / R2 / R3).
+> - [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md) — `CatalogRef` grammar consumed via `extras.catalog:`.
+>
+> This document retains authority for:
+>
+> - The `DataKind` sum-type shape (§2) and `Simple | Complex` split.
+> - The `DataKindBase` common-fields struct and the per-variant `*Body` pattern.
+> - Shared trait surface — sealed hierarchy of `SemanticsCarrier` / `SimpleDataKind` / `ComplexDataKind` / variant-specific traits.
+> - Shared invariants (§4) that hold for every variant: naming, lifecycle, coverage-surface presence, grain posture, nesting-rules citation.
+> - The `Strategy` trait surface and dispatch contract (§5).
+> - Per-stage responsibility skeleton (§6) shared across all variants.
+> - Shared error-code roster `*_E_20NN`; reservation of `21NN`–`25NN` sub-ranges.
+>
+> Body sections below that describe pre-`18` YAML shape (formerly `32c` before the 2026-04-17 promotion — e.g., `data_kinds:` singular tag, non-flattened body structs, `ColumnMapping`) are historical. `ColumnMapping` → `SemanticMapping` rename per `18 §10`.
 
 ## Table of Contents
 

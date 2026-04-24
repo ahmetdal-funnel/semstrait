@@ -1,16 +1,15 @@
 ---
-prereqs: [00, 11, 13, 14, 14a, 14b]
+prereqs: [00, 11, 13, 14, 14a, 14b, 18]
 authoritative-for:
-  - the `Binding` struct shape (one per `SimpleDataKind`, `binding_id`, `sources`, `column_mapping`, `coverage`) and its identity / uniqueness rules
+  - compile-time `Binding` process (one per `Dataset` leaf, `binding_id`, `sources`, compile-resolved `semantic_mapping`, `coverage`) and its identity / uniqueness rules
   - `BindingId` as a `u32` newtype, its allocation discipline, and `(DataKindId, BindingId)` global-uniqueness rule
   - the `PhysicalSource` sum type (`File`, `Table`, `Snapshot`) and the `Schema`, `PartitionColumn`, `CatalogRef` shapes it carries
   - the `FileFormat` enumeration (`Parquet`, `Csv`, `Json`, `Orc`, `Avro`) and the per-format schema-resolution strategy
   - glob-expansion algorithm, ordering determinism, and error model (no-match / catalog-unreachable / partial-schema)
-  - the `ColumnMapping` structure and its value variants (`Column`, `Literal`, `Computed`, `Metadata`)
-  - `ColumnMapping` completeness rule (every Semantics covered exactly once; extras rejected)
+  - `SemanticMapping` completeness rule at `compile` — every Semantics covered exactly once; extras rejected (struct shape owned by `18 §10`)
   - `Coverage` at Binding level (`Native`, `NullFill`, `Derived`); scope boundary with `16`'s composition-level Coverage
-  - the Manifest-layer `ResolvedColumnMapping` shape (pre-split flat HashMaps per value variant) and its planner-speed contract
-  - `MetadataDimension` extraction semantics (`path.token: N` 0-indexed; `partition.level: N` 1-indexed) and their error conditions
+  - the Manifest-layer `ResolvedColumnMapping` shape (pre-split flat maps per value category) and its planner-speed contract — name retained at the Manifest surface per `33 §5.3`
+  - `MetadataDimension` extraction semantics (`path.token: N` 0-indexed; `partition.level: N` 1-indexed) — the runtime recipe and error conditions; authored as `SemanticMappingValue::Expr` at the v1 surface per `[TD-MAP-METADATA-FOLD]`, extracted to the Manifest-layer `ResolvedColumnMapping.metadata` category at `compile`
   - schema-reconciliation rules (widening silent; narrowing warns; incompatible errors; cross-source type agreement)
   - the compile-time resolution flow for bindings (the sub-steps inside `compile` that produce a `ResolvedBinding`)
   - error-code allocation `COMP_E_0300–0399` (schema/binding) and `COMP_E_0200–0299` (catalog/source resolution for binding-owned variants)
@@ -28,7 +27,13 @@ refined-by:
 
 # 15. Mapping and Binding
 
-> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`../data-kinds/26_nesting_matrix.md`](../data-kinds/26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
+> **Struct ownership (2026-04-17 consolidation).** The v1 authoring-layer `SemanticMappingValue` enum roster (`{Column(String), Literal(LiteralValue), Expr(PhysicalExpr)}`), the `LiteralValue` enum, and the `semantic_mapping:` YAML block shape are ratified in [`18_entities.md §10`](./18_entities.md#10-semanticmapping-value-shape). This doc owns the *Binding process* on top — compile-time resolution, per-source `Coverage`, `PhysicalSource` / `Schema` / `FileFormat` taxonomy, glob expansion, schema reconciliation, and the Manifest-layer `ResolvedColumnMapping` materialization.
+>
+> **Rename cascade (body).** `ColumnMapping` → `SemanticMapping` (container), `ColumnMappingValue` → `SemanticMappingValue` (enum), `Computed` → `Expr` (variant). The v1 roster at the authoring surface is 3-variant: the `Metadata(MetadataDimension)` variant from the pre-consolidation 4-variant roster is **folded into `Expr`** (`PhysicalExpr`). The `MetadataDimension` extraction recipe (§5.5) is retained as the compile-time mechanic: the YAML sugar (`{ metadata: { path: ..., token: ... } }` or equivalent) is synthesized into a `PhysicalExpr` at `compile`, and at the Manifest layer it re-indexes into `ResolvedColumnMapping.metadata` for planner ergonomics (see §7.2). The `ResolvedColumnMapping` Manifest-layer name is retained per `33 §5.3` — a future symmetry rename to `ResolvedSemanticMapping` is tracked but is not part of this consolidation.
+>
+> **`auto` default.** An absent `semantic_mapping:` block on a `Dataset`'s `extras` is equivalent to `semantic_mapping: auto` per `18 §10.3` — every Semantic 1:1 to a physical column of the same name; explicit entries narrow the default.
+>
+> **`[TD-MAP-METADATA-FOLD]`** — Tech-debt marker. The exact YAML sugar for metadata-extraction expressions authored under `SemanticMappingValue::Expr` (whether `{ metadata: {...} }`, a `meta(...)` function in the `14a` catalog, or something else) is a follow-up ratification item; the runtime extraction mechanics in §5.5 are unchanged and the compile-time synthesis into a `PhysicalExpr` is what lands in `ResolvedColumnMapping.metadata`.
 
 ## 1. Purpose and Scope
 
@@ -40,7 +45,7 @@ Everything that sits **below the `SemanticInterface` boundary for a single `Simp
 
 - The `Binding` — the single-instance join between Semantics and Physical, owned by exactly one `SimpleDataKind`.
 - The `PhysicalSource` roster — the 1-or-more resolved targets the Binding points at (a file path, a catalog table, an Iceberg snapshot).
-- The `ColumnMapping` — the Semantics-name-keyed recipe table.
+- The `SemanticMapping` — the Semantics-name-keyed recipe table.
 - The per-source `Coverage` — which Semantics each source actually provides.
 - The Manifest-layer counterpart `ResolvedColumnMapping` — the flattened, pre-indexed form the planner consumes at query time.
 - The compile-time resolution flow that moves a Model-level binding declaration into a `ResolvedBinding` living on a `ResolvedDataKind`.
@@ -50,7 +55,7 @@ Everything that sits **below the `SemanticInterface` boundary for a single `Simp
 
 - **`ComplexDataKind` composition.** `Unionset`, `Grainset`, and `Joinset` do not carry their own `Binding`s; they aggregate the `Binding`s of their constituent `SimpleDataKind`s. The composition mechanics, `ComposedSemanticInterface` shape, and per-composition `Coverage` (which constituent provides each field on the unified surface) all live in `foundations/16_composition.md`. `15` is explicit about the boundary in §6.4.
 - **DataKind lifecycle.** How `ResolvedBinding`s attach to `ResolvedDataKind`s during `compile`, and the post-compile guarantees about their ordering inside the `Manifest`, are ratified in `foundations/20_taxonomy.md` and the crate contract in `apis/33_semstrait_manifest.md`. `15 §10` enumerates the steps inside `compile` that produce a `ResolvedBinding`; it does not ratify their position in the `compile` driver.
-- **Expression resolution.** `ColumnMappingValue::Computed { expr: PhysicalExpr }` stores a compiled `PhysicalExpr`. The substitution algorithm that produces that `PhysicalExpr` from a `SemanticExpr` (via the `FunctionRegistry` in `14a` and the cross-DataKind walk in `14b`) is owned by `14b`. `15 §5.3` describes only the **storage site** and the **wrapper-invariant contract** the stored `PhysicalExpr` must satisfy.
+- **Expression resolution.** `SemanticMappingValue::Expr(PhysicalExpr)` stores a compiled `PhysicalExpr`. The substitution algorithm that produces that `PhysicalExpr` from a `SemanticExpr` (via the `FunctionRegistry` in `14a` and the cross-DataKind walk in `14b`) is owned by `14b`. `15 §5.3` describes only the **storage site** and the **wrapper-invariant contract** the stored `PhysicalExpr` must satisfy.
 - **Catalog-provider shape.** The `CatalogProvider` trait surface, the `FileSystem` trait surface, their async posture, and their error enums are ratified in `apis/37_semstrait_catalog.md`. `15 §3.2` uses `CatalogRef` as an **opaque handle** into that surface; consumers of `15` never reach into the catalog crate directly.
 - **Per-engine dialect specifics.** Nothing in `15` branches on engine identity (I3). A `PhysicalSource` carries a logical `DataType`-bearing `Schema`; conversion to an engine-specific type is adapter territory (`36`, I2).
 
@@ -59,7 +64,7 @@ Everything that sits **below the `SemanticInterface` boundary for a single `Simp
 `15`'s posture is **compile-once, store-flat, plan-fast**:
 
 - **Compile-once.** Every glob is expanded, every catalog table is fetched, every physical schema is reconciled against every declared `DataType`, every `SemanticExpr` on the semantic side is compiled into a `PhysicalExpr` over columns/literals, every per-source coverage bit is decided — all before the `Manifest` is sealed. I5 demands it, I8 requires it to make plan-time O(1), and I4 demands it reproducibly.
-- **Store-flat.** The Model-layer `ColumnMapping` is an enum-valued map keyed by `SemanticsName`. The Manifest-layer `ResolvedColumnMapping` splits it into four parallel flat maps — one per variant — so the planner's per-Semantics lookup is a single HashMap probe with no enum match in the hot path (I6).
+- **Store-flat.** The Model-layer `SemanticMapping` is an enum-valued map keyed by `SemanticsName`. The Manifest-layer `ResolvedColumnMapping` splits it into four parallel flat maps — one per variant — so the planner's per-Semantics lookup is a single HashMap probe with no enum match in the hot path (I6).
 - **Plan-fast.** The planner never re-resolves anything in `15`'s scope. It reads `ResolvedBinding`, picks sources based on Coverage (Unionset §6.1; Grainset `17`), and emits `PlanNode`s. No catalog call, no filesystem call, no expression compilation.
 
 ### 1.4 Reference implementations — where `15` sits in the peer-group landscape
@@ -67,7 +72,7 @@ Everything that sits **below the `SemanticInterface` boundary for a single `Simp
 The brief is: pick a name for every concept we can't avoid having, and resist importing vocabulary that would re-open ratified decisions. Peers:
 
 - **dbt metricflow.** `data_source.sql_table` / `data_source.sql_query` + `identifiers` + `measures` + `dimensions` — a single model-side block that couples a physical table to a set of Semantics. `15`'s `Binding` is the direct analog. metricflow has no analog for `MetadataDimension` (it does not pattern-match on S3 paths); it relies on the upstream warehouse to have the data already in shape. `15` keeps `MetadataDimension` because semstrait compiles over lake-native paths with partition-encoded metadata (`year=.../month=...`).
-- **Cube.js.** `cube.sql_table` / `cube.sql` + `dimensions` + `measures` + `segments` + `pre_aggregations`. The `cube.sql` escape hatch is raw SQL; I1 forbids that here, so `ColumnMappingValue::Computed` carries a typed `PhysicalExpr` instead. Cube's `partition_granularity` is a roll-up concept ratified here by `Grain` + per-source `Coverage`, not by a Binding-level knob.
+- **Cube.js.** `cube.sql_table` / `cube.sql` + `dimensions` + `measures` + `segments` + `pre_aggregations`. The `cube.sql` escape hatch is raw SQL; I1 forbids that here, so `SemanticMappingValue::Expr` carries a typed `PhysicalExpr` instead. Cube's `partition_granularity` is a roll-up concept ratified here by `Grain` + per-source `Coverage`, not by a Binding-level knob.
 - **LookML.** `view.sql_table_name` + `view.derived_table` + per-dimension `sql:`. LookML's `${TABLE}.column` and `${other_view.field}` patterns are what `SemanticExpr` bare identifiers replace (resolved per `14 §4.3` / `14b`). LookML's `sql_trigger` / PDT machinery is outside `15`'s scope entirely.
 - **Iceberg catalog.** The `Snapshot` variant of `PhysicalSource` is directly inspired by Iceberg's snapshot model — `metadata.current-snapshot-id` pins reproducibility (I4) against a moving warehouse state. Iceberg's partition-transform vocabulary (`year`, `month`, `day`, `hour`, `bucket[N]`, `truncate[N]`) informs `PartitionColumn` but is **not** replicated on it — partition-transform awareness is a planner concern (pruning), not a Binding concern.
 
@@ -77,13 +82,13 @@ The peers supply structural precedent and error-case nudges; nothing in the peer
 
 | Invariant | Where `15` keeps it |
 |---|---|
-| **I1** — no raw SQL in canonical layer | `ColumnMappingValue::Computed` carries `PhysicalExpr` (an `Expr` tree), never a string. The YAML surface for computed entries parses through `14 §4` into `SemanticExpr`, then compiles to `PhysicalExpr` per `14b`. |
+| **I1** — no raw SQL in canonical layer | `SemanticMappingValue::Expr` carries `PhysicalExpr` (an `Expr` tree), never a string. The YAML surface for computed entries parses through `14 §4` into `SemanticExpr`, then compiles to `PhysicalExpr` per `14b`. |
 | **I2** — physical types via adapters only | `PhysicalSource.schema.columns[_].data_type` is logical `DataType` (per `13 §2`). The `14a` registry's promotion lattice is what decides widen/narrow; no Arrow/Spark/DuckDB type leaks into the Manifest. |
 | **I3** — no engine branching in canonical layer | `PhysicalSource` is engine-agnostic. No variant, no field, no error code in `15` names an engine. Adapters read `PhysicalSource` at `adapt` time and decide how to register it with their engine (`36`). |
 | **I4** — Manifest is deterministic | Glob expansion sorts by lexical order of resolved absolute identifier (§3.5). Catalog-fetch results are sorted by fully-qualified name before being folded into the Manifest. Ties are impossible by construction. |
-| **I5** — resolution is compile-time | All Binding work (glob expansion, catalog fetch, schema resolution, ColumnMapping well-formedness, PhysicalExpr compilation, Coverage derivation) happens in `compile`. Plan-time reads only `ResolvedColumnMapping` and a pre-sorted `ResolvedPhysicalSource` list. |
+| **I5** — resolution is compile-time | All Binding work (glob expansion, catalog fetch, schema resolution, SemanticMapping well-formedness, PhysicalExpr compilation, Coverage derivation) happens in `compile`. Plan-time reads only `ResolvedColumnMapping` and a pre-sorted `ResolvedPhysicalSource` list. |
 | **I8** — Manifest is planner-complete | The Manifest stores `ResolvedBinding`, `ResolvedColumnMapping`, and the per-source `ResolvedPhysicalSource` list. No planner step re-fetches a schema, re-expands a glob, or re-compiles a Computed expression. |
-| **I10** — non-exhaustive public sum types | `PhysicalSource`, `FileFormat`, `ColumnMappingValue`, `CoverageVariant`, `CompileError` (all `15`-owned variants) carry `#[non_exhaustive]`. Adding a new file format, a new coverage variant, a new binding-error kind is MINOR per `30 §2`. |
+| **I10** — non-exhaustive public sum types | `PhysicalSource`, `FileFormat`, `SemanticMappingValue`, `CoverageVariant`, `CompileError` (all `15`-owned variants) carry `#[non_exhaustive]`. Adding a new file format, a new coverage variant, a new binding-error kind is MINOR per `30 §2`. |
 
 I6 / I11 apply transitively — `15` describes the compile-time surface, which is the only place async / I/O is allowed per I11; the Manifest forms that `15` produces is then consumed synchronously by the planner.
 
@@ -100,12 +105,12 @@ Model-layer shape:
 pub struct Binding {
     pub binding_id: BindingId,
     pub sources: Vec<PhysicalSource>,
-    pub column_mapping: ColumnMapping,
+    pub semantic_mapping: SemanticMapping,
     pub coverage: Option<Coverage>,
 }
 ```
 
-Every field is populated by `compile`; the Model-layer YAML surface in `semstrait-model` uses a parallel `BindingSpec` type whose fields are unresolved (glob patterns, declarative `SourceRef`s, and `ExprSource` values inside `ColumnMappingSpec`). The resolution flow in §10 consumes a `BindingSpec` and produces a `Binding` (and, by the time it lands in the Manifest, a `ResolvedBinding` — §7).
+Every field is populated by `compile`; the Model-layer YAML surface in `semstrait-model` uses a parallel `BindingSpec` type whose fields are unresolved (glob patterns, declarative `SourceRef`s, and `ExprSource` values inside `SemanticMappingSpec`). The resolution flow in §10 consumes a `BindingSpec` and produces a `Binding` (and, by the time it lands in the Manifest, a `ResolvedBinding` — §7).
 
 The `#[non_exhaustive]` tag is present to allow a future `post_binding_hook: Option<PhysicalExpr>` or similar Semantics-adjacent extension to be added as a MINOR per `30 §4`.
 
@@ -359,62 +364,47 @@ When a Model's binding spec is a file glob without an explicit `format:`, the fo
 
 Mixed-format globs are not supported: every path resolved from one glob must infer to the same format, or `CompileError::MixedFormatsInGlob { pattern }` fires (COMP_E_0304). The decision is ratified against the peer-group norm — metricflow and Cube both require format homogeneity per source.
 
-## 5. `ColumnMapping`
+## 5. `SemanticMapping`
 
 ### 5.1 Structure
 
-`ColumnMapping` is the per-Binding Semantics-name-keyed recipe table:
+The `SemanticMappingValue` enum roster, its `LiteralValue` payload, and the `auto` default are ratified in [`18 §10`](./18_entities.md#10-semanticmapping-value-shape) — v1 roster `{Column(String), Literal(LiteralValue), Expr(PhysicalExpr)}`. `15` owns the container `SemanticMapping` (the per-Binding Semantics-name-keyed recipe table) and the compile-time semantics of each variant:
 
 ```rust
-pub struct ColumnMapping {
-    pub entries: BTreeMap<SemanticsName, ColumnMappingValue>,
+pub struct SemanticMapping {
+    pub entries: BTreeMap<SemanticsName, SemanticMappingValue>,
 }
-
-#[non_exhaustive]
-pub enum ColumnMappingValue {
-    Column {
-        name: ColumnName,
-    },
-    Literal {
-        value: LiteralValue,
-        data_type: DataType,
-    },
-    Computed {
-        expr: PhysicalExpr,
-    },
-    Metadata(MetadataDimension),
-}
+// SemanticMappingValue: owned by `18 §10`.
 ```
 
-`BTreeMap` keying is deliberate: it gives the Model-layer shape a deterministic iteration order (alphabetical on `SemanticsName`) which feeds straight into the `ResolvedExprTable` ordering ratified by `14b §4`. The Manifest-layer `ResolvedColumnMapping` (§7) uses `HashMap` for O(1) lookup — the ordering fence is paid at Manifest-construction time, not at plan time.
+`BTreeMap` keying is deliberate: it gives the Model-layer shape a deterministic iteration order (alphabetical on `SemanticsName`) which feeds straight into the `ResolvedExprTable` ordering ratified by `14b §4`. The Manifest-layer `ResolvedColumnMapping` (§7) splits entries into per-category flat maps for O(1) lookup — the ordering fence is paid at Manifest-construction time, not at plan time.
 
-### 5.2 `ColumnMappingValue::Column`
+### 5.2 `SemanticMappingValue::Column` — compile semantics
 
-The most common case: the Semantics value is a direct column reference:
+The most common case: the Semantics value is a direct physical column reference. The variant carries a bare `String` (the physical column name) per `18 §10`:
 
-- `name: ColumnName` — must resolve to a column in **every** `PhysicalSource` in the Binding whose `Coverage` for this Semantics is `Native` (§6). Sources with `NullFill` do not require the column.
-- No per-source divergence in spelling: `ColumnName` is a single value; cross-source name-mapping is not supported at the Binding layer (it is a `Coverage` / NullFill question).
+- The string MUST resolve to a column in **every** `PhysicalSource` in the Binding whose `Coverage` for this Semantics is `Native` (§6). Sources with `NullFill` do not require the column.
+- No per-source divergence in spelling: the column name is a single value; cross-source name-mapping is not supported at the Binding layer (it is a `Coverage` / NullFill question).
+- The compile stage wraps a `Column(name)` whose physical `DataType` does not exactly match the Semantics's declared `data_type` with a `Cast` — the wrapped form is re-homed into `ResolvedColumnMapping.computed` per §9.1 rather than `ResolvedColumnMapping.columns`.
 
-### 5.3 `ColumnMappingValue::Literal`
+### 5.3 `SemanticMappingValue::Literal` — compile semantics
 
-A typed constant:
+A typed constant per `18 §10.2`. The `LiteralValue` enum carries the type tag implicitly via its discriminant (`Null`, `Bool`, `Int`, `Float`, `Decimal`, `String`, `Date`, `Timestamp`).
 
-- `value: LiteralValue` — the canonical literal enum (`14 §3.2`): `Null`, `Bool(bool)`, `Integer(i64)`, `Decimal(d128)`, `Float(f64)`, `String(String)`, `Binary(Vec<u8>)`, `Date(NaiveDate)`, `Timestamp(DateTime<Utc>)`, etc. per `13 §2`.
-- `data_type: DataType` — the logical type the literal is cast to at emit time. Required (not inferred) so that mixed-sources mappings (e.g. some sources carry the column Natively as `Integer`, other sources use this Literal fallback for NullFill pushdown) present a single canonical type to the rest of the pipeline.
+**Literal validation at compile.** The `LiteralValue`'s discriminant is validated against the Semantics's declared `DataType` for representability:
 
-**Literal validation.** At compile time, the `data_type` is validated against the `LiteralValue` for representability:
-- `LiteralValue::Integer(i)` with `data_type = Byte` → validate `i ∈ [-128, 127]`; else `CompileError::LiteralOverflow { name, value, data_type }` (COMP_E_0305).
-- `LiteralValue::Null` with any non-nullable declared Semantics → `CompileError::NullLiteralForNonNullableSemantics { name }` (COMP_E_0306).
-- `LiteralValue::String(s)` with `data_type = Date`/`Timestamp` → requires RFC 3339 parse success; else `CompileError::LiteralParseFailed { name, value, target_type }` (COMP_E_0307).
+- `LiteralValue::Int(i)` against a Semantics declared as `Byte` → validate `i ∈ [-128, 127]`; else `CompileError::LiteralOverflow { name, value, data_type }` (COMP_E_0305).
+- `LiteralValue::Null` against a non-nullable declared Semantics → `CompileError::NullLiteralForNonNullableSemantics { name }` (COMP_E_0306).
+- `LiteralValue::String(s)` against a Semantics declared as `Date`/`Timestamp` → requires RFC 3339 parse success; else `CompileError::LiteralParseFailed { name, value, target_type }` (COMP_E_0307).
 
-### 5.4 `ColumnMappingValue::Computed`
+### 5.4 `SemanticMappingValue::Expr` — compile semantics
 
-An author-written expression, already compiled to `PhysicalExpr` by `14b §3`:
+An author-written expression, compiled to `PhysicalExpr` by `14b §3`:
 
-- `expr: PhysicalExpr` — honors `PhysicalExpr`'s wrapper invariants from `14 §3.3`: no `EntityRef`, no `Aggregate`, `Column` allowed. Type inference (`14 §5`) has already run; `expr.inferred_type()` is populated.
+- The wrapped `PhysicalExpr` honors the wrapper invariants from `14 §3.3`: no `EntityRef`, no `Aggregate`, `Column` allowed. Type inference (`14 §5`) has already run; `expr.inferred_type()` is populated.
 - `expr.referenced_columns()` — every column name it reads must exist in every `PhysicalSource` in the Binding whose `Coverage` for this Semantics is `Derived` (§6). Sources with `NullFill` do not require the columns.
 
-The YAML-to-`PhysicalExpr` compilation pathway for Computed entries is:
+The YAML-to-`PhysicalExpr` compilation pathway for `Expr` entries:
 
 ```
 YAML ExprSource  (14 §4)
@@ -422,41 +412,43 @@ YAML ExprSource  (14 §4)
    → PhysicalExpr  (columns resolved against this Binding's PhysicalSource schemas)
 ```
 
-The compile stage invokes `14b::resolve_to_physical(semantic_expr, binding_context)` per Computed entry. `binding_context` supplies (a) the cross-source reconciled schema over which `Column` identifiers resolve, (b) the `FunctionRegistry` (via `14a`), (c) the substitution map for `@entity_ref` identifiers into same-Binding Computed / Column entries. The output is a `PhysicalExpr` with `inferred_type` set; §9.1 then compares `inferred_type` against the declared Semantics `DataType` and emits a `Cast` at the Semantics boundary if needed.
+The compile stage invokes `14b::resolve_to_physical(semantic_expr, binding_context)` per `Expr` entry. `binding_context` supplies (a) the cross-source reconciled schema over which `Column` identifiers resolve, (b) the `FunctionRegistry` (via `14a`), (c) the substitution map for `@entity_ref` identifiers into same-Binding `Expr` / `Column` entries. The output is a `PhysicalExpr` with `inferred_type` set; §9.1 then compares `inferred_type` against the declared Semantics `DataType` and emits a `Cast` at the Semantics boundary if needed.
 
-**Cross-reference to `14b §5` cycle detection.** `Computed`-entries within a single `ColumnMapping` can refer to other Semantics via `EntityRef`. The `14b §5` Tarjan-SCC pass runs over the Binding's Computed entries and detects same-Binding cycles (`e1 → e2 → e1`). `CompileError::ComputedCycle { binding_id, cycle }` (owned by `14b §8.3`, re-surfaced via `15 §11`) is the failure.
+**Cross-reference to `14b §5` cycle detection.** `Expr`-entries within a single `SemanticMapping` can refer to other Semantics via `EntityRef`. The `14b §5` Tarjan-SCC pass runs over the Binding's `Expr` entries and detects same-Binding cycles (`e1 → e2 → e1`). `CompileError::ComputedCycle { binding_id, cycle }` (owned by `14b §8.3`, re-surfaced via `15 §11`) is the failure. (The error name `ComputedCycle` is retained for continuity with `14b`; it covers the `Expr` variant.)
 
-### 5.5 `ColumnMappingValue::Metadata`
+### 5.5 `MetadataDimension` extraction — compile mechanic for `Expr` entries
 
-A physical-metadata extraction:
+The v1 authoring surface folds metadata extraction into `SemanticMappingValue::Expr` per `18 §10` and `[TD-MAP-METADATA-FOLD]`; this section is the compile-time mechanic that produces the synthesized `PhysicalExpr` from the YAML metadata sugar. The exact YAML sugar shape is tracked in the `[TD-MAP-METADATA-FOLD]` marker; the extraction *semantics* below are unchanged.
 
-- `Metadata(MetadataDimension)` — the full `MetadataDimension` per `13 §4.7`, carrying optional `path: PathExtraction { token: usize }` and `partition: PartitionExtraction { level: usize }`. At most one of the two is `Some`; both `None` is a YAML validation error caught by `11 §6.1`.
+- The YAML describes a `MetadataDimension` per `13 §4.7`, carrying optional `path: PathExtraction { token: usize }` (0-indexed) and `partition: PartitionExtraction { level: usize }` (1-indexed). At most one of the two is `Some`; both `None` is a YAML validation error caught by `11 §6.1`.
+- The compile stage synthesizes a `PhysicalExpr` that extracts the path token or partition column at runtime — this is the stored form in `SemanticMappingValue::Expr` at the model layer.
+- At the Manifest layer, the synthesized metadata expression is re-homed into `ResolvedColumnMapping.metadata` (a separate category from `ResolvedColumnMapping.computed`) so the planner can distinguish path-derived from column-derived `Expr` entries for emission-site pushdown — see §7.2.
 - Result type of the extraction: always `DataType::String` from path tokens; for partitions, the declared `PartitionColumn.data_type` (the catalog's declared partition type, which Iceberg reports explicitly and which Hive-style paths report as `String` by convention with a logical type hint in the catalog).
 
-Detailed mechanics, exhaustively described in §8.
+Detailed runtime mechanics, exhaustively described in §8.
 
 ### 5.6 Completeness: coverage of the `SemanticInterface`
 
 Per `11 §6`, a `SimpleDataKind`'s `SemanticInterface` is the complete named surface (Dimensions, Measures, Metrics, Filters, Keys). `15` ratifies the rule:
 
-**Every Semantics name in the `SemanticInterface` MUST appear exactly once as a key in `ColumnMapping.entries`.**
+**Every Semantics name in the `SemanticInterface` MUST appear exactly once as a key in `SemanticMapping.entries`.**
 
 - A name in the interface but missing from `entries` → `CompileError::MissingBindingEntry { semantics, binding_id }` (COMP_E_0308). Fail-fast.
 - A name in `entries` but not in the interface → `CompileError::SpuriousBindingEntry { name, binding_id }` (COMP_E_0309). Fail-fast.
 - A name duplicated in `entries` — the YAML parser rejects duplicate keys at a lower layer (`32`) via standard YAML duplicate-key handling; at the `15` level, `BTreeMap` is an unambiguous map and duplication is structurally impossible.
 
-**Edge case: Semantics with a `Constraint` that derives its value (e.g. `Measure(Count, Key)` per `11 §8.4`).** Per `11 §8.4`, a count-like Measure declared with `Constraint::DerivesFrom(Key)` does not require a physical column; it counts the Key's rows. `ColumnMapping` still includes an entry for that Semantics — proposal: `ColumnMappingValue::Computed { expr: PhysicalExpr(Count(Column(<key_column>))) }` where the key column is the `ColumnMapping`'s entry for the referenced Key. The `compile` stage synthesizes the `Computed` entry from the `Constraint::DerivesFrom` spec — authors do not need to re-declare it. **Proposed (Round 1):** this is a compile-stage synthesis, not a YAML-surface convenience; the Model's authored `ColumnMapping` can omit the key-derived Measure entry, and the compile stage fills it in before the completeness check runs. See `open_questions/15_open_questions.md` Q-MAP-003.
+**Edge case: Semantics with a `Constraint` that derives its value (e.g. `Measure(Count, Key)` per `11 §8.4`).** Per `11 §8.4`, a count-like Measure declared with `Constraint::DerivesFrom(Key)` does not require a physical column; it counts the Key's rows. `SemanticMapping` still includes an entry for that Semantics — proposal: `SemanticMappingValue::Expr { expr: PhysicalExpr(Count(Column(<key_column>))) }` where the key column is the `SemanticMapping`'s entry for the referenced Key. The `compile` stage synthesizes the `Computed` entry from the `Constraint::DerivesFrom` spec — authors do not need to re-declare it. **Proposed (Round 1):** this is a compile-stage synthesis, not a YAML-surface convenience; the Model's authored `SemanticMapping` can omit the key-derived Measure entry, and the compile stage fills it in before the completeness check runs. See `open_questions/15_open_questions.md` Q-MAP-003.
 
-**Edge case: `ComputedDimension` (per `14 §1.2`).** These ALWAYS map to `ColumnMappingValue::Computed`; they never have a `Column`-valued entry. The YAML parse enforces this at `32`.
+**Edge case: `ComputedDimension` (per `14 §1.2`).** These ALWAYS map to `SemanticMappingValue::Expr`; they never have a `Column`-valued entry. The YAML parse enforces this at `32`.
 
 **Edge case: Name case.** `SemanticsName` preserves the author's case (`14 §4.3`); the parser does no case folding. Mapping-key mismatches due to case errors (`"customer_id"` declared, `"CustomerID"` mapped) → `SpuriousBindingEntry` + `MissingBindingEntry` pair.
 
 ### 5.7 Shape constraints
 
-- `ColumnMappingValue::Column` is the **common path**; it should account for the majority of entries in any real Model. Complex variants exist for the edge cases.
-- `ColumnMappingValue::Computed` is for author-declared computed Semantics (`14 §1.2`) AND for the synthesized Measures from §5.6 and for the `Cast`-wrapped Column cases from §9.1. The cardinality of Computed entries should be bounded by the sum of authored-computed-Semantics + cast-wrapped Semantics in the `SemanticInterface`.
-- `ColumnMappingValue::Metadata` is for explicit Metadata-typed Semantics authored with the `metadata:` block (`13 §4.7`). Never synthesized.
-- `ColumnMappingValue::Literal` is a rarely-used fallback — it captures NullFill-style "this source does not have this column, use a constant" patterns, but the more common NullFill pattern uses `Coverage::NullFill` (§6) which does not need a Literal entry (the planner emits a `NULL` cast itself).
+- `SemanticMappingValue::Column` is the **common path**; it should account for the majority of entries in any real Model. Complex variants exist for the edge cases.
+- `SemanticMappingValue::Expr` is for author-declared computed Semantics (`14 §1.2`) AND for the synthesized Measures from §5.6 and for the `Cast`-wrapped Column cases from §9.1. The cardinality of Computed entries should be bounded by the sum of authored-computed-Semantics + cast-wrapped Semantics in the `SemanticInterface`.
+- `SemanticMappingValue::Metadata` is for explicit Metadata-typed Semantics authored with the `metadata:` block (`13 §4.7`). Never synthesized.
+- `SemanticMappingValue::Literal` is a rarely-used fallback — it captures NullFill-style "this source does not have this column, use a constant" patterns, but the more common NullFill pattern uses `Coverage::NullFill` (§6) which does not need a Literal entry (the planner emits a `NULL` cast itself).
 
 ## 6. `Coverage` at Binding Level
 
@@ -484,25 +476,25 @@ pub enum CoverageVariant {
 ```
 
 - `source_index` indexes into `Binding.sources` (0-based).
-- `semantics` is the `SemanticsName` in the Binding's `ColumnMapping`.
-- **Default when absent:** `Native`. The `HashMap` stores only the non-default entries (`NullFill` and `Derived`) and cross-source `Native` with a `Computed` mapping. A missing entry means "this source provides this Semantics via the direct-column mechanism of the `ColumnMappingValue`". This is the common case and the storage is sparse.
+- `semantics` is the `SemanticsName` in the Binding's `SemanticMapping`.
+- **Default when absent:** `Native`. The `HashMap` stores only the non-default entries (`NullFill` and `Derived`) and cross-source `Native` with a `Computed` mapping. A missing entry means "this source provides this Semantics via the direct-column mechanism of the `SemanticMappingValue`". This is the common case and the storage is sparse.
 
 Variants:
 
-- **`Native`** — the source has a physical column (for `Column` / `Computed` variants with all referenced columns present) or the Semantics is a `Literal` / `Metadata` extraction that is uniformly applicable (all sources have the same partition structure for `Metadata::Partition`; all paths match the same token shape for `Metadata::Path`).
-- **`NullFill`** — the source does NOT have the physical column(s) that `ColumnMappingValue::Column` / `::Computed` requires. At plan time, the planner emits a `Project[Cast(Null, declared_type) AS semantics]` at the branch covering this source (Unionset pattern; `23`). For non-Unionset consumers, `NullFill` on any source is a `CompileError::UnusableNullFillInNonUnionContext { binding_id, source_index, semantics }` (COMP_E_0310) — the v1 behavior: NullFill is meaningful only when the binding is consumed by a Unionset or Grainset constituent that tolerates it; in a bare Dataset / Joinset consumer, a NullFill source is a Model bug.
-- **`Derived`** — the source has the *upstream* columns that a `Computed` expression needs, but not necessarily the direct Semantics column. Used for Computed entries whose expression's `referenced_columns` are all present on this source. (For simple `Column`-valued Semantics, `Derived` is indistinguishable from `Native` and is not used — the planner short-circuits to `Native`.)
+- **`Native`** — the source has a physical column (for `Column` / `Expr` variants whose referenced columns are all present) or the Semantics is a `Literal` / metadata-synthesized `Expr` extraction that is uniformly applicable (all sources have the same partition structure for partition-metadata extraction; all paths match the same token shape for path-metadata extraction).
+- **`NullFill`** — the source does NOT have the physical column(s) that `SemanticMappingValue::Column` / `::Expr` requires. At plan time, the planner emits a `Project[Cast(Null, declared_type) AS semantics]` at the branch covering this source (Unionset pattern; `23`). For non-Unionset consumers, `NullFill` on any source is a `CompileError::UnusableNullFillInNonUnionContext { binding_id, source_index, semantics }` (COMP_E_0310) — the v1 behavior: NullFill is meaningful only when the binding is consumed by a Unionset or Grainset constituent that tolerates it; in a bare Dataset / Joinset consumer, a NullFill source is a Model bug.
+- **`Derived`** — the source has the *upstream* columns that an `Expr` expression needs, but not necessarily the direct Semantics column. Used for `Expr` entries whose expression's `referenced_columns` are all present on this source. (For simple `Column`-valued Semantics, `Derived` is indistinguishable from `Native` and is not used — the planner short-circuits to `Native`.)
 
 ### 6.2 Computation at compile time
 
 `Coverage` is populated during §10 step 5 of the resolution flow. The algorithm per `(source_index, semantics)`:
 
-1. Look up `ColumnMapping.entries[semantics]` → `ColumnMappingValue`.
+1. Look up `SemanticMapping.entries[semantics]` → `SemanticMappingValue`.
 2. Dispatch on variant:
-   - `Column { name }` — check `Binding.sources[source_index].schema.columns` for `name`. Present → `Native`. Absent → `NullFill`.
-   - `Literal { ... }` — always `Native`. (Literals do not depend on source schemas.)
-   - `Computed { expr }` — check every name in `expr.referenced_columns()` against the source's schema. All present → `Derived` (since the Semantics is computed, not directly present). Any missing → `NullFill`.
-   - `Metadata(m)` — check applicability of the extraction:
+   - `Column(name)` — check `Binding.sources[source_index].schema.columns` for `name`. Present → `Native`. Absent → `NullFill`.
+   - `Literal(_)` — always `Native`. (Literals do not depend on source schemas.)
+   - `Expr(expr)` (author-written compute) — check every name in `expr.referenced_columns()` against the source's schema. All present → `Derived` (since the Semantics is computed, not directly present). Any missing → `NullFill`.
+   - `Expr(expr)` (metadata-synthesized per §5.5) — check applicability of the extraction:
      - `m.path.is_some()`: `PhysicalSource::File` only; `Table` / `Snapshot` → `NullFill` (the token is meaningless for table sources).
      - `m.partition.is_some()`: `PhysicalSource::{File, Table, Snapshot}` with `partitions.len() >= m.partition.as_ref().unwrap().level`; else `NullFill`.
      - Both `None`: structurally rejected at YAML-parse time; unreachable here.
@@ -535,7 +527,7 @@ s3://b/year=2024/month=02/data.parquet   schema: {customer_id, total, channel}
 s3://b/year=2024/month=03/data.parquet   schema: {customer_id, total, channel}
 ```
 
-`ColumnMapping`:
+`SemanticMapping`:
 ```
 customer_id → Column { name: "customer_id" }
 total       → Column { name: "total" }
@@ -561,7 +553,7 @@ Branch 2 (file 2):  Project[customer_id, total, channel]
 
 ### 7.1 Motivation
 
-The Model-layer `ColumnMapping` is a single `BTreeMap<SemanticsName, ColumnMappingValue>`. At plan time, the planner's hot-loop lookup pattern is "given a Semantics name, jump straight to the physical recipe." Matching the sum-type at every lookup is wasteful when the per-variant shape is known; a flat per-variant HashMap is faster and avoids the planner carrying an enum match in its hottest inner loop.
+The Model-layer `SemanticMapping` is a single `BTreeMap<SemanticsName, SemanticMappingValue>`. At plan time, the planner's hot-loop lookup pattern is "given a Semantics name, jump straight to the physical recipe." Matching the sum-type at every lookup is wasteful when the per-variant shape is known; a flat per-variant HashMap is faster and avoids the planner carrying an enum match in its hottest inner loop.
 
 Per I8 and the `Resolved*` prefix convention (`00 §4.1`), the Manifest stores `ResolvedColumnMapping`, a denormalized / pre-indexed form:
 
@@ -588,18 +580,18 @@ The four top-level HashMaps are **disjoint**: a given `SemanticsName` appears in
 
 ### 7.3 Construction
 
-The compile stage produces `ResolvedColumnMapping` from the Model-layer `ColumnMapping` via a single pass:
+The compile stage produces `ResolvedColumnMapping` from the Model-layer `SemanticMapping` (the v1 3-variant roster per `18 §10`) via a single pass that further classifies `Expr` entries by provenance:
 
 ```
-for (semantics, value) in model.column_mapping.entries:
+for (semantics, value) in model.semantic_mapping.entries:
     match value:
-        Column { name }             → resolved.columns.insert(semantics, name)
-        Literal { value, data_type} → resolved.literals.insert(semantics, ResolvedLiteral { value, data_type })
-        Computed { expr }           → resolved.computed.insert(semantics, expr)
-        Metadata(m)                 → resolved.metadata.insert(semantics, m)
+        Column(name)                → resolved.columns.insert(semantics, name)
+        Literal(lit)                → resolved.literals.insert(semantics, ResolvedLiteral::from(lit))
+        Expr(expr) if was_metadata  → resolved.metadata.insert(semantics, recover_metadata(expr))
+        Expr(expr)                  → resolved.computed.insert(semantics, expr)
 ```
 
-`expr` is the already-compiled `PhysicalExpr` (with `inferred_type` populated per §9.1) so no further expression work happens here.
+`was_metadata` is a compile-side provenance flag: the §5.5 YAML sugar synthesizes an `Expr(PhysicalExpr)` but tags the entry so the Manifest materialization can re-home it into `metadata` rather than `computed`. The re-homing is a planner-ergonomic split (so emission-site pushdown can distinguish path-derived from column-derived expressions); it has no semantic weight for correctness. `expr` is the already-compiled `PhysicalExpr` (with `inferred_type` populated per §9.1) so no further expression work happens here.
 
 ### 7.4 Planner access pattern
 
@@ -744,7 +736,7 @@ When a Semantics declares `data_type: Integer` in its `SemanticInterface` and th
 | Declared × Physical (per `14 §6.4` subset relevant here) | Action | Diagnostic |
 |---|---|---|
 | Same logical type | Pass-through. | — |
-| Widening numeric (e.g. declared `Long`, physical `Integer`) | Emit `PhysicalExpr(Cast(Column, declared_type))` on the fly at the Semantics boundary; the `ColumnMappingValue::Column` entry is rewritten to `ColumnMappingValue::Computed { expr: Cast(Column, declared) }` during compile. | `COMP_I_0301 ImplicitWideningCast` (info-level). |
+| Widening numeric (e.g. declared `Long`, physical `Integer`) | Emit `PhysicalExpr(Cast(Column, declared_type))` on the fly at the Semantics boundary; the `SemanticMappingValue::Column` entry is rewritten to `SemanticMappingValue::Expr { expr: Cast(Column, declared) }` during compile. | `COMP_I_0301 ImplicitWideningCast` (info-level). |
 | Narrowing numeric (e.g. declared `Integer`, physical `Long`) | Emit the same `Cast` wrapping as above. | `COMP_W_0302 ImplicitNarrowingCast` (warning-level, advises the author to double-check — narrowing a real `i64` that overflows `i32` is an engine-level runtime error, not a compile one). |
 | Precision widening (Decimal → wider Decimal) | Emit `Cast`. | `COMP_I_0301`. |
 | Precision narrowing (Decimal → narrower Decimal) | Emit `Cast`. | `COMP_W_0302`. |
@@ -755,11 +747,11 @@ When a Semantics declares `data_type: Integer` in its `SemanticInterface` and th
 
 The full cast matrix lives in `14 §6.4`; §9.1 is the physical-to-semantic reconciliation slice of that matrix. `15` does not re-ratify the matrix; it sites the hook where the matrix is consulted.
 
-**Where `Cast` lives.** After reconciliation, a `ColumnMappingValue::Column { name: "amount" }` over a physical `Long` with a declared Semantics `Integer` is rewritten to `ColumnMappingValue::Computed { expr: Cast(Column("amount"), DataType::Integer) }`. The Manifest-layer `ResolvedColumnMapping.computed` stores the `Cast`-wrapped `PhysicalExpr`; no separate "cast-needed" flag exists. This keeps the planner's code path uniform (every non-literal/non-metadata Semantics is either a direct Column read or an expression evaluation).
+**Where `Cast` lives.** After reconciliation, a `SemanticMappingValue::Column { name: "amount" }` over a physical `Long` with a declared Semantics `Integer` is rewritten to `SemanticMappingValue::Expr { expr: Cast(Column("amount"), DataType::Integer) }`. The Manifest-layer `ResolvedColumnMapping.computed` stores the `Cast`-wrapped `PhysicalExpr`; no separate "cast-needed" flag exists. This keeps the planner's code path uniform (every non-literal/non-metadata Semantics is either a direct Column read or an expression evaluation).
 
 ### 9.2 `Computed`-entry type inference reconciliation
 
-For `ColumnMappingValue::Computed { expr }`, the `expr.inferred_type()` (from `14 §5`) is compared to the declared Semantics `DataType`:
+For `SemanticMappingValue::Expr { expr }`, the `expr.inferred_type()` (from `14 §5`) is compared to the declared Semantics `DataType`:
 
 | Inferred × Declared | Action |
 |---|---|
@@ -772,7 +764,7 @@ The wrapping lives on the Manifest-layer `PhysicalExpr` in `ResolvedColumnMappin
 
 ### 9.3 Cross-source type agreement
 
-A Binding's `sources` may comprise multiple `PhysicalSource`s, each with its own `schema`. A Semantics referencing a physical column `c` through `ColumnMappingValue::Column { name: c }` requires:
+A Binding's `sources` may comprise multiple `PhysicalSource`s, each with its own `schema`. A Semantics referencing a physical column `c` through `SemanticMappingValue::Column { name: c }` requires:
 
 - **Every source where Coverage is `Native`** must have `c` in its schema.
 - The `DataType` of `c` MUST be identical across all such sources.
@@ -796,7 +788,7 @@ The Semantics-level nullability (from `11 §6` / `14 §5.2`) is compared against
 
 ### 9.5 Reconciliation site in `compile`
 
-The reconciliation happens in §10 step 4 (ColumnMapping completeness + reconciliation), after the sources and their schemas are in place but before the Coverage pass (§10 step 5). Steps 2–3 build the cross-source reconciled schema view; step 4 consults it per-Semantics.
+The reconciliation happens in §10 step 4 (SemanticMapping completeness + reconciliation), after the sources and their schemas are in place but before the Coverage pass (§10 step 5). Steps 2–3 build the cross-source reconciled schema view; step 4 consults it per-Semantics.
 
 ## 10. Compile-Time Resolution Flow
 
@@ -829,7 +821,7 @@ Per source, resolve the schema through §4's per-format strategy:
 
 Populate `Schema.columns` (logical `DataType`s, nullability).
 
-### 10.4 Step 4 — `ColumnMapping` well-formedness and reconciliation
+### 10.4 Step 4 — `SemanticMapping` well-formedness and reconciliation
 
 1. **Completeness check (§5.6):**
    - Missing Semantics → `COMP_E_0308 MissingBindingEntry`.
@@ -839,7 +831,7 @@ Populate `Schema.columns` (logical `DataType`s, nullability).
    - `Literal`: validate representability (§5.3 error list).
    - `Computed`: invoke `14b::resolve_to_physical`. Use the cross-source reconciled schema as the column-lookup context. Check `expr.referenced_columns` across sources per §9.3. Reconcile `expr.inferred_type` vs declared Semantics `DataType` per §9.2.
    - `Metadata`: validate applicability per §8's error conditions across sources. `COMP_E_0311`–`COMP_E_0314`.
-3. **Synthesize compile-derived entries** for Constraints that require a `ColumnMappingValue::Computed` (§5.6 edge case — e.g. `Measure(Count, DerivesFrom(Key))`). These entries are added to the Model-layer `ColumnMapping` struct in-place during the reconciliation pass, then flow through step 4.2's Computed branch.
+3. **Synthesize compile-derived entries** for Constraints that require a `SemanticMappingValue::Expr` (§5.6 edge case — e.g. `Measure(Count, DerivesFrom(Key))`). These entries are added to the Model-layer `SemanticMapping` struct in-place during the reconciliation pass, then flow through step 4.2's Computed branch.
 
 ### 10.5 Step 5 — `Coverage` derivation
 
@@ -877,7 +869,7 @@ Some steps CAN collect multiple errors before returning (step 4's completeness c
 
 ### 11.1 Binding-owned `CompileError` variants
 
-All compile-time error variants introduced or re-surfaced by `15`, with proposed stable codes per `30 §6.2`. The `COMP_E_0200-0299` sub-range (catalog/source resolution) hosts source-level errors; the `COMP_E_0300-0399` sub-range (schema/binding) hosts ColumnMapping / reconciliation errors.
+All compile-time error variants introduced or re-surfaced by `15`, with proposed stable codes per `30 §6.2`. The `COMP_E_0200-0299` sub-range (catalog/source resolution) hosts source-level errors; the `COMP_E_0300-0399` sub-range (schema/binding) hosts SemanticMapping / reconciliation errors.
 
 | Code | Variant | Sub-range | Trigger |
 |---|---|---|---|
@@ -886,11 +878,11 @@ All compile-time error variants introduced or re-surfaced by `15`, with proposed
 | `COMP_E_0302` | `GlobExpansionFailed { binding_id, pattern, cause }` | 0300–0399 | filesystem / catalog raised during glob enumeration |
 | `COMP_E_0303` | `UnrecognizedFileFormat { path }` | 0300–0399 | file extension does not map to a known `FileFormat` |
 | `COMP_E_0304` | `MixedFormatsInGlob { pattern }` | 0300–0399 | glob resolved to files with different inferred formats |
-| `COMP_E_0305` | `LiteralOverflow { name, value, data_type }` | 0300–0399 | `ColumnMappingValue::Literal` value does not fit the declared type |
+| `COMP_E_0305` | `LiteralOverflow { name, value, data_type }` | 0300–0399 | `SemanticMappingValue::Literal` value does not fit the declared type |
 | `COMP_E_0306` | `NullLiteralForNonNullableSemantics { name }` | 0300–0399 | `LiteralValue::Null` declared on a non-nullable Semantics |
 | `COMP_E_0307` | `LiteralParseFailed { name, value, target_type }` | 0300–0399 | string literal failed to parse into target temporal type |
-| `COMP_E_0308` | `MissingBindingEntry { semantics, binding_id }` | 0300–0399 | Semantics in interface, absent from `ColumnMapping` |
-| `COMP_E_0309` | `SpuriousBindingEntry { name, binding_id }` | 0300–0399 | `ColumnMapping` key not in Semantics |
+| `COMP_E_0308` | `MissingBindingEntry { semantics, binding_id }` | 0300–0399 | Semantics in interface, absent from `SemanticMapping` |
+| `COMP_E_0309` | `SpuriousBindingEntry { name, binding_id }` | 0300–0399 | `SemanticMapping` key not in Semantics |
 | `COMP_E_0310` | `UnusableNullFillInNonUnionContext { binding_id, source_index, semantics }` | 0300–0399 | NullFill derived for a Binding whose owning DataKind is not tolerance-consumed |
 | `COMP_E_0311` | `MetadataTokenOutOfRange { binding_id, source_index, token_index, path }` | 0300–0399 | path token index ≥ segment count |
 | `COMP_E_0312` | `MetadataTokenOnNonFileSource { binding_id, source_index, semantics }` | 0300–0399 | `path.token` Semantics on Table/Snapshot source |
@@ -930,7 +922,7 @@ These are reported by the owning doc's code ranges; `15` ensures its error-repor
 Every `15`-owned `CompileError` SHOULD carry a `Diagnostic.location: Option<Location>` pointing into the Model YAML source:
 
 - Binding-shaped errors (`NoSourcesMatched`, `GlobExpansionFailed`, `CatalogUnavailable`) → point at the YAML `binding:` block or its `sources:` sub-key.
-- ColumnMapping-shaped errors (`MissingBindingEntry`, `SpuriousBindingEntry`, `IncompatiblePhysicalType`) → point at the specific `column_mapping[<name>]:` entry.
+- SemanticMapping-shaped errors (`MissingBindingEntry`, `SpuriousBindingEntry`, `IncompatiblePhysicalType`) → point at the specific `semantic_mapping[<name>]:` entry.
 - Reconciliation-shaped errors (`CrossSourceTypeDisagreement`, `CrossSourceTypeDisagreement`) → point at the Binding; the `types: Vec<(usize, DataType)>` field enumerates per-source divergence.
 
 The precise `Location` / `ByteSpan` shape is ratified in `30 §5` and `32 §?` (SourceId variant). `15` stipulates only the semantic target.
@@ -988,7 +980,7 @@ A Q-numbered roll-up of every choice `15` ratifies in Round 1. Each entry cross-
 
 | # | Decision | Ratified in | Status |
 |---|---|---|---|
-| R1 | `Binding` is a struct with `binding_id`, `sources`, `column_mapping`, `coverage` fields; `#[non_exhaustive]`. | §2.1 | ✓ |
+| R1 | `Binding` is a struct with `binding_id`, `sources`, `semantic_mapping`, `coverage` fields; `#[non_exhaustive]`. | §2.1 | ✓ |
 | R2 | `BindingId(pub u32)` is unique within a Manifest (per-compile scope), not across Manifests. | §2.2 | ? Q-MAP-001 |
 | R3 | `PhysicalSource` has three variants: `File`, `Table`, `Snapshot`. Enum is `#[non_exhaustive]`. | §3.1 | ✓ |
 | R4 | Every `PhysicalSource` variant carries `schema: Schema` and `partitions: Vec<PartitionColumn>`. | §3.1 | ✓ |
@@ -1004,9 +996,9 @@ A Q-numbered roll-up of every choice `15` ratifies in Round 1. Each entry cross-
 | R14 | JSON schema resolution: declared-first, then sample-inference (scalar-only). | §4.4 | ? Q-MAP-004 |
 | R15 | Format is inferred from file extension when glob spec has no explicit format. | §4.5 | ✓ |
 | R16 | Mixed formats in one glob are a compile error (`COMP_E_0304`). | §4.5 | ✓ |
-| R17 | `ColumnMapping.entries` is a `BTreeMap<SemanticsName, ColumnMappingValue>`. | §5.1 | ✓ |
-| R18 | `ColumnMappingValue` has four variants: `Column`, `Literal`, `Computed`, `Metadata`. Enum is `#[non_exhaustive]`. | §5.1 | ✓ |
-| R19 | Every Semantics in `SemanticInterface` appears exactly once in `ColumnMapping`. | §5.6 | ✓ |
+| R17 | `SemanticMapping.entries` is a `BTreeMap<SemanticsName, SemanticMappingValue>`. | §5.1 | ✓ |
+| R18 | `SemanticMappingValue` has four variants: `Column`, `Literal`, `Computed`, `Metadata`. Enum is `#[non_exhaustive]`. | §5.1 | ✓ |
+| R19 | Every Semantics in `SemanticInterface` appears exactly once in `SemanticMapping`. | §5.6 | ✓ |
 | R20 | Derived Measures synthesized from `Constraint::DerivesFrom(Key)` are filled in at compile time. | §5.6 | ? Q-MAP-003 |
 | R21 | `Coverage` keyed on `(source_index, semantics)`. Default `Native` is not stored. | §6.1 | ✓ |
 | R22 | `CoverageVariant`: `Native`, `NullFill`, `Derived`; enum `#[non_exhaustive]`. | §6.1 | ✓ |
@@ -1021,7 +1013,7 @@ A Q-numbered roll-up of every choice `15` ratifies in Round 1. Each entry cross-
 | R31 | Hive-style partition extraction yields raw value (post-`=`), typed `String`. | §8.2.1 | ? Q-MAP-009 |
 | R32 | Partitioning agreement is strict across Binding sources for referenced levels. | §8.2.2 | ✓ |
 | R33 | Widening casts emit `COMP_I_0301`; narrowing emit `COMP_W_0302`. | §9.1 | ✓ |
-| R34 | `Cast` is wrapped into `ColumnMappingValue::Computed`; no separate cast-needed flag. | §9.1 | ✓ |
+| R34 | `Cast` is wrapped into `SemanticMappingValue::Expr`; no separate cast-needed flag. | §9.1 | ✓ |
 | R35 | Computed-entry type inference reconciles via `Cast` wrap or `COMP_E_0316`. | §9.2 | ✓ |
 | R36 | Cross-source type agreement is strict (`COMP_E_0317`). | §9.3 | ✓ |
 | R37 | Nullability mismatch is a warning (`COMP_W_0306`), not an error. | §9.4 | ? Q-MAP-010 |
@@ -1043,7 +1035,7 @@ Explicit non-goals of `15`. Authors searching for these topics should look elsew
 - **Statistics-driven optimization** — `15` never surfaces row counts, histograms, or cardinality estimates. These are future planner concerns.
 - **Write paths** — every `PhysicalSource` variant is read-oriented. Write-side semantics (materialized-view refresh, pre-aggregation persistence) are outside semstrait's mandate per `00 §10`.
 - **Multi-format heterogeneous sources in one Binding** — a Binding's glob resolves to one format; mixed Parquet + CSV in one glob is rejected by `COMP_E_0304`. A Unionset of two Bindings, each with its own format, is the supported pattern.
-- **Column renaming across sources** — a `ColumnMappingValue::Column { name }` resolves to a single physical name across every source. Per-source name mapping is a `Coverage` / NullFill question; semstrait's v1 answer is "rename upstream, in your ingestion job."
+- **Column renaming across sources** — a `SemanticMappingValue::Column { name }` resolves to a single physical name across every source. Per-source name mapping is a `Coverage` / NullFill question; semstrait's v1 answer is "rename upstream, in your ingestion job."
 
 ## 15. Summary of Vocabulary Anchors
 
@@ -1061,8 +1053,8 @@ For quick lookup when other docs reference `15`:
 | `FileFormat` | `enum` Parquet/Csv/Json/Orc/Avro §4.1 |
 | `CsvOptions` | struct §4.2 |
 | `JsonOptions` | struct §4.3 |
-| `ColumnMapping` | struct holding `BTreeMap<SemanticsName, ColumnMappingValue>` §5.1 |
-| `ColumnMappingValue` | `enum` Column/Literal/Computed/Metadata §5.1 |
+| `SemanticMapping` | struct holding `BTreeMap<SemanticsName, SemanticMappingValue>` §5.1 |
+| `SemanticMappingValue` | `enum` Column/Literal/Computed/Metadata §5.1 |
 | `Coverage` | struct holding `HashMap<CoverageKey, CoverageVariant>` §6.1 |
 | `CoverageVariant` | `enum` Native/NullFill/Derived §6.1 |
 | `ResolvedBinding` | struct §7.6 |

@@ -17,6 +17,8 @@ depends-on:
 
 > Items surfaced during Round-1 drafting of the temporal-shape foundations doc. Each entry restates the question, lists its ratified references, and records the Round-1 default `17` currently uses. Entries migrate out of this file as later docs (`20`–`25`, `32`–`35`, `registry/temporal_shape_mapping.md`) make decisions that either confirm or amend `17`'s defaults.
 
+> **Status summary (2026-04-17).** Of 8 questions, **3 are CLOSED** (Q-TEMPORAL-002, -005, -006 — all ratified by the `18`-entity consolidation pass: v1 `ScdType` roster trimmed to `{Type1, Type2}`, flat-field `ScdBody` shape, `valid_to IS NULL` as the open-ended-window signal, no `current_flag_dim` in v1, `Type0` descoped). The closed entries are retained in place for full resolution context; readers seeking only live items can skim past their closure banners or jump directly to Q-TEMPORAL-001 / -003 / -004 / -007 / -008. See the Summary table at the end of this file for the at-a-glance status roster.
+
 ---
 
 ## Q-TEMPORAL-001 — `30 §6.2` code-range reconciliation for the 17NN block
@@ -57,6 +59,8 @@ depends-on:
 ---
 
 ## Q-TEMPORAL-002 — `Scd` payload shape: per-subtype vs flat-fields
+
+**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `foundations/18_entities.md §3.3`: **Option B (flat fields)** is the v1 shape, combined with the v1 `ScdType` roster trim to **`{Type1, Type2}`**. `ScdBody` carries `{ scd_type: ScdType, valid_from: SemanticsName, valid_to: SemanticsName }`. There is no longer a per-subtype payload divergence to model, because the four subtypes that had distinct payloads (`Type3` / `Type4` / `Type5` / `Type6`) are descoped from v1. Option A (per-subtype) and Option C (hybrid window-struct) are post-v1 concerns — if the roster re-expands to include history-preserving subtypes with divergent shapes, the question reopens.
 
 **Question.** `17 §2.3` adopts a nested `Scd { subtype: ScdSubtype }` form where `ScdSubtype` carries per-subtype payloads (e.g. `Type2 { valid_from_dim, valid_to_dim, current_flag_dim: Option<_> }`, `Type3 { prior_value_dim }`, `Type4 { history_data_kind_ref }`, etc.). The alternative — a **flat** `Scd { subtype: ScdSubtype, valid_from_dim: Option<SemanticsName>, valid_to_dim: Option<SemanticsName>, prior_value_dim: Option<SemanticsName>, history_data_kind_ref: Option<DataKindRef>, current_flag_dim: Option<SemanticsName>, ... }` where fields are present-or-absent per subtype — was mentioned in the authoring brief. Which is canonical?
 
@@ -176,6 +180,8 @@ depends-on:
 
 ## Q-TEMPORAL-005 — Default-current row semantics for SCD without `current_flag_dim`
 
+**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `foundations/18_entities.md §3.3`: v1 `ScdBody` does not carry a `current_flag_dim` field at all — the v1 roster `{Type1, Type2}` uses `valid_from` / `valid_to` exclusively. Default-current selection on `Type2` is the `valid_to IS NULL` convention (the open-ended-window signal); max-`valid_from` per entity is retained as a secondary fallback heuristic with `PLAN_W_1731` advisory. `current_flag_dim` re-enters the spec only if a future roster extension (e.g., `Type6`) reintroduces it. The sentinel-aware Option B and refuse-without-signal Option C stay deferred.
+
 **Question.** `17 §6.3` specifies that default-current selection on an `Scd::Type2 / Type5 / Type6` kind looks for `current_flag_dim = TRUE` when the flag Dim is declared, else falls back to the `valid_to_dim IS NULL` (open-ended) convention. When neither signal is available — the author declared a `Type2` SCD with no `current_flag_dim` and uses a sentinel value for `valid_to` — the planner emits `PLAN_W_1731 ScdCurrentRowHeuristic` and picks the row with the maximum `valid_from` per entity. Is this heuristic ratified semantics, or a placeholder?
 
 **Refs.**
@@ -208,6 +214,8 @@ depends-on:
 ---
 
 ## Q-TEMPORAL-006 — Append-only enforcement for `Scd::Type0`
+
+**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `foundations/18_entities.md §3.3`: **`Scd::Type0` is not in the v1 roster**. The v1 `ScdType` roster is trimmed to `{Type1, Type2}`, `#[non_exhaustive]`. The append-only-enforcement question is moot for v1; it re-enters the spec only if a future roster extension re-includes `Type0`. The "out of scope for the semantic layer" disposition (Option A) remains the design guidance for any future reintroduction.
 
 **Question.** `Scd::Type0` — "retain original; no updates after insert" — is a runtime-behavior promise: once a row is written, it is never re-written. Should semstrait validate this at query time (emit an advisory if an `UPDATE`-like plan is synthesized over a `Type0` kind), at ingest time (out of scope for the semantic layer), or neither?
 
@@ -302,11 +310,11 @@ depends-on:
 | Q | Title | Round-1 position | Blocking? |
 |---|---|---|---|
 | Q-TEMPORAL-001 | 17NN code-range reconciliation with `30 §6.2` | Option A (doc-aligned). `[CONTRADICTION-FOUND]` records coordination. | No |
-| Q-TEMPORAL-002 | SCD per-subtype vs flat-field payload | Option A (per-subtype). Matches existing code. | No |
+| Q-TEMPORAL-002 | SCD per-subtype vs flat-field payload | **CLOSED** — `18 §3.3` ratifies Option B (flat fields) with v1 roster `{Type1, Type2}`. | No |
 | Q-TEMPORAL-003 | Joinset `AsOf` override pre- or post-implicit | Implicit-first (Option B). DEFERRED. | No |
 | Q-TEMPORAL-004 | Multi-shape heterogeneous `Request.temporal` | DEFERRED; Option A likely. | No |
-| Q-TEMPORAL-005 | Default-current without `current_flag_dim` | Option A heuristic with `PLAN_W_1731` advisory. | No |
-| Q-TEMPORAL-006 | `Type0` append-only enforcement | Option A — out of scope for semstrait. | No |
+| Q-TEMPORAL-005 | Default-current without `current_flag_dim` | **CLOSED** — `18 §3.3` drops `current_flag_dim` from v1; `valid_to IS NULL` is the current-row signal. | No |
+| Q-TEMPORAL-006 | `Type0` append-only enforcement | **CLOSED** — `18 §3.3` descopes `Type0` from v1 roster. | No |
 | Q-TEMPORAL-007 | `ComplexDataKind` shape hoisting | Option A — no hoisting. MINOR later. | No |
 | Q-TEMPORAL-008 | `AsOfAnchor` per-family vs tagged | Option A — per-family enum. | No |
 

@@ -1,31 +1,40 @@
 ---
-prereqs: [00, 10, 11, 13, 14, 14b, 15, 16, 17, 30, 31, 32]
+prereqs: [00, 10, 11, 13, 14, 14b]
 authoritative-for:
   - the shared Semantics pools (`dimensions:`, `measures:`, `metrics:`) at the root level and their per-DataKind reference / override grammar
-  - the `Relationship` struct — unified shape used at both root `relationships:` and `JoinsetBody.relationships`
+  - the `Relationship` struct and its companion `RelationshipId` newtype — unified shape used at both root `relationships:` and `JoinsetBody.relationships`
   - `JoinType`, `Cardinality`, `Directionality`, `JoinKeyExprPair`
-  - the `TemporalShape` type hierarchy — `TemporalShape` struct, `TemporalShapeKind` enum, per-variant `*Body` structs, `ScdType`, `Grain`
+  - the `TemporalShape` type hierarchy — `TemporalShape` struct, `TemporalShapeKind` enum, per-variant `*Body` structs, `ScdType` (v1 roster `{Type1, Type2}`); `Grain` is consumed via `TemporalShape.grain` but the `Grain` enum itself is owned by `13 §3.1`
   - the `Dimension` struct and `DimensionType` roster
   - the `Measure` struct, `AggregationType` roster, `AdditivityType` roster
   - the `Metric` struct
   - the filter taxonomy — `DataKindFilter` (DataKind-level, user-facing predicate) vs `AggregationFilter` (Measure / Metric-level, conditional aggregation)
   - the `AiContext` struct
   - the `Keys` struct (`primary`, `unique`, `foreign`) with bare-name entries
+  - the `SemanticMapping` / `SemanticMappingValue` value shape at the model-authoring layer
   - the orphan-binding policy for root-pool Semantics
+  - the `SR-E-*` structural-rule codes for entity-level validation
 refined-by:
+  - 15 (`foundations/15_mapping_and_binding.md` — the compile-time `Binding` process that consumes `SemanticMapping` values ratified in §10)
+  - 16 (`foundations/16_composition.md` — how `Relationship` drives implicit composition, `ComposedSemanticInterface` construction, `Joinset` path synthesis)
+  - 17 (`foundations/17_temporal_shape.md` — planner-level semantics of `TemporalShape` variants; shape × grain rollup matrix; `AsOf` forward-reference design)
+  - 20 (`data-kinds/20_taxonomy.md` — DataKind lifecycle hooks consuming these entity types)
+  - 21 / 22 / 23 / 24 (`data-kinds/*.md` — per-variant YAML carriage of the entity types ratified here)
+  - 25 (`data-kinds/25_applicability_matrix.md` — per-variant × entity-type cross-cuts)
+  - 26 (`data-kinds/26_nesting_matrix.md` — SR-E-8 Grainset-child grain rule)
+  - 30 (`apis/30_api_contracts.md` — error-code allocation for `SR-E-*`)
   - 32 (`apis/32_semstrait_model.md` — root YAML shape; hosts `relationships:` and the shared pools this doc ratifies; SR-* enforcement)
   - 32b (`apis/32b_catalogs_yaml.md` — catalog grammar)
-  - 14 (`foundations/14_expressions.md` — `SemanticExpr` / `PhysicalExpr` grammar this doc's `expr:` fields reference)
-  - 14b (`foundations/14b_expression_resolution.md` — compile-time resolution of `SemanticExpr` names, override merging)
-  - 15 (`foundations/15_mapping_and_binding.md` — the `Binding` process that consumes `semantic_mapping` + the ratified Semantics shapes)
-  - 16 (`foundations/16_composition.md` — how `Relationship` drives implicit composition, `Joinset` path synthesis)
-  - 17 (`foundations/17_temporal_shape.md` — planner-level semantics of `TemporalShape` variants; shape × grain rollup matrix)
-  - 21 / 22 / 23 / 24 (`data-kinds/*.md` — per-variant YAML carriage of the entity types ratified here)
+  - 33 (`apis/33_semstrait_manifest.md` — Manifest-layer `Resolved*` counterparts of the types ratified here)
+  - 34 (`apis/34_semstrait_planner.md` — planner consumption of resolved entity types)
+  - 35 (`apis/35_semstrait_ir.md` — `PlanNode::Join` carriage of `JoinType`)
 ---
 
-# 32c. Canonical Entity Types
+# 18. Canonical Entity Types
 
-`32c` is the consolidated specification for the ratified entity types that populate a `SemanticModel`: shared Semantics pools, relationships, temporal shapes, dimensions / measures / metrics, filters, AI context, and keys. `32` fixes the root YAML shape and the `DataKind` hierarchy; `32c` fixes the entity shapes nested inside.
+`18` is the consolidated specification for the ratified entity types that populate a `SemanticModel`: shared Semantics pools, relationships, temporal shapes, dimensions / measures / metrics, filters, AI context, keys, and the model-authoring `SemanticMapping` value shape. `32` fixes the root YAML shape and the `DataKind` hierarchy (an apis-layer concern); `18` fixes the entity shapes nested inside (a foundations-layer concern — these types cross-cut every DataKind variant, Manifest, Planner, and IR surface).
+
+> **Reader's note (structural placement).** This doc originally landed as `apis/32c_entities.md` in the late-April 2026 entity-ratification pass. It was promoted to the foundations layer (`foundations/18_entities.md`) in the 2026-04-17 consolidation pass because the types it defines are structurally foundational — they cross-cut every `2x` data-kind variant, every `3x` api surface, and every planner/adapter consumer. Per the directionality rule in `00 §8`, canonical definitions belong in the lowest-numbered doc that owns them; the promotion places entity types in their correct layer. Section numbering is unchanged from `32c` — every `18 §N` was `32c §N` in the prior revision.
 
 Every struct in this document is `#[non_exhaustive]` and every enum is `#[non_exhaustive]` per I10, unless a specific note overrides.
 
@@ -173,6 +182,16 @@ pub struct Relationship {
     pub description: Option<String>,
 }
 ```
+
+Companion identity newtype — stable `u32` handle used by Manifest indices and compile-time graph walks:
+
+```rust
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RelationshipId(pub u32);
+```
+
+`RelationshipId` is allocated at `compile` in declaration order over the root-level `relationships:` list. It is the key type for the `Manifest.relationship_index`, for `RelationshipGraph` traversal in `14b`, and for `RelationshipPath` in `16 §6`. `PartialOrd` / `Ord` are derived so downstream code (`14b`'s BFS neighbor iteration, `Manifest` indices keyed by `(DataKindId, RelationshipId)`) can rely on natural `u32` ordering without unwrapping the newtype. Its one-copy-only home is this doc; `14b`, `16`, and `33` all reference it from here.
 
 ### 2.2 YAML shape
 
@@ -405,27 +424,15 @@ grainsets:
             grain: hour
 ```
 
-### 3.5 `Grain` roster (unchanged from `13 §3`)
+### 3.5 `Grain` — pointer only
 
-```rust
-#[non_exhaustive]
-pub enum Grain {
-    Second,
-    Minute,
-    Hour,
-    Day,
-    Week,
-    Month,
-    Quarter,
-    Year,
-}
-```
+The `Grain` enum is owned by [`13 §3.1`](./13_types_and_grain.md#31-enum); the v1 roster is `{Minute, Hour, Day, Week, Month, Quarter, Year}` with total coarseness order in declaration order (finest first). `18 §3` consumes `Grain` through the optional `TemporalShape.grain` field and the `TimeseriesBody.grain` / `SnapshotBody.cadence` payloads; it does not redefine the enum. Non-temporal grains (geographic, entity) are a deferred extensibility axis per `13`.
 
-Total coarseness order is the variant declaration order (finest first). Non-temporal grains (geographic, entity) are a deferred extensibility axis per `13`.
+> **Note (2026-04-17 consolidation).** An earlier draft of this section inlined a `pub enum Grain` block that accidentally introduced a `Second` variant not present in `13 §3.1`. Per the precedence rule in `00 §4.4` + the directionality rule in `00 §8`, `13` is the canonical home; the divergent roster has been removed. Any future addition to `Grain` (e.g., `Second`) must land in `13 §3.1` first.
 
 ### 3.6 Forward reference to `17`
 
-Planner-level semantics — the shape × grain rollup matrix, snapshot pin policies, SCD as-of anchoring — live in `17`. `32c §3` ratifies the shape of the type and its YAML carriage; `17` ratifies what each shape *means* for request execution.
+Planner-level semantics — the shape × grain rollup matrix, snapshot pin policies, SCD as-of anchoring — live in `17`. `18 §3` ratifies the shape of the type and its YAML carriage; `17` ratifies what each shape *means* for request execution.
 
 ---
 

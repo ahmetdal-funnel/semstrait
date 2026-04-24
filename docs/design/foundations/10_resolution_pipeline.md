@@ -11,7 +11,7 @@ refined-by:
   - 11 (names and scopes — details of name/scope resolution inside compile)
   - 13 (types and grain — types referenced across stages)
   - 14 (expressions — ExprSource→Expr compilation inside compile)
-  - 15 (mapping and binding — Binding and ColumnMapping resolution inside compile)
+  - 15 (mapping and binding — compile-time `Binding` process and `SemanticMapping` resolution inside compile)
   - 16 (composition — Relationship resolution and ComposedSemanticInterface construction inside compile)
   - 17 (temporal shape — shape resolution inside compile; shape-gating inside plan)
   - 20–25 (DataKind strategy dispatch inside plan)
@@ -200,7 +200,7 @@ Every subsection in §3 uses this fixed template. Fields are authoritative for t
   - `Repository` — forbidden (Manifest persistence is the caller's concern, not a compile-time I/O entry).
 - **Sync/async** — `async`. This is the pipeline's only async stage. All I/O via `CatalogProvider` and `FileSystem` is async; the orchestrator awaits everything before returning the `Manifest`.
 - **EngineAdapter interaction** — none. The adapter is a query-time concern; its injection points are at `plan` / `optimize` / `adapt`. `compile` does not know about engines.
-- **Forward-refs** — `33` (`Manifest` structural shape, `CompileError` variants, orchestration details), `37` (`CatalogProvider` and `FileSystem` trait surfaces), `11` (name resolution mechanics), `14` (`ExprSource` → `Expr` compilation rules, `FunctionRegistry`), `15` (`Binding`, `ColumnMapping`, `PhysicalSource` resolution), `16` (Relationship graph and `ComposedSemanticInterface` construction), `17` (`TemporalShape` resolution).
+- **Forward-refs** — `33` (`Manifest` structural shape, `CompileError` variants, orchestration details), `37` (`CatalogProvider` and `FileSystem` trait surfaces), `11` (name resolution mechanics), `14` (`ExprSource` → `Expr` compilation rules, `FunctionRegistry`), `15` (compile-time `Binding`, `SemanticMapping`, `PhysicalSource` resolution), `16` (Relationship graph and `ComposedSemanticInterface` construction), `17` (`TemporalShape` resolution).
 
 ### 3.4 `plan`
 

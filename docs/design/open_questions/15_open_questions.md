@@ -14,6 +14,8 @@ depends-on:
 
 # Open Questions — `foundations/15_mapping_and_binding.md`
 
+> **Reconciliation (Phase-3 / 2026-04-17 consolidation).** When this doc says `ColumnMapping` / `ColumnMappingValue` / `ColumnMappingValue::Computed` / `ColumnMappingValue::Metadata`, read **`SemanticMapping` / `SemanticMappingValue`** with the v1 roster `{Column(String), Literal(LiteralValue), Expr(PhysicalExpr)}` per [`../foundations/18_entities.md §10`](../foundations/18_entities.md) (promoted from the earlier `apis/32c_entities.md` home in the same pass). The `Metadata` variant is folded into `Expr` under the tech-debt marker `[TD-MAP-METADATA-FOLD]` in [`../foundations/15_mapping_and_binding.md`](../foundations/15_mapping_and_binding.md); see §1's reconciliation banner there for the sketched authoring path. The `Computed` variant was renamed to `Expr`. The Manifest-layer `ResolvedColumnMapping` name is intentionally **retained** at the `33 §5.3` surface pending a follow-up rename decision, so `Q-MAP-006` ("`ResolvedColumnMapping.computed` storage") remains authoritative for the Resolved layer.
+
 > Items surfaced during Round-1 drafting of the mapping-and-binding foundations doc. Each entry restates the question, lists its ratified references, and records the Round-1 default `15` currently uses. Entries migrate out of this file as later docs (`16`, `33`, `37`, per-DataKind `21`–`25`) make decisions that either confirm or amend `15`'s defaults.
 
 ---

@@ -1,5 +1,5 @@
 ---
-prereqs: [10, 11, 13, 14, 14a, 14b, 15, 16, 17, 20, 30, 31, 31b]
+prereqs: [10, 11, 13, 14, 14a, 14b, 15, 16, 17, 18, 20, 30, 31, 31b]
 authoritative-for:
   - the `semstrait-manifest` public-API surface — crate boundary, module layout, re-export posture
   - the `Manifest` struct: top-level field roster, `#[non_exhaustive]` status, serde/persistence posture
@@ -371,7 +371,7 @@ pub struct ResolvedBinding {
     pub sources: Vec<ResolvedPhysicalSource>,
 
     /// Flattened O(1)-lookup form of the author-declared
-    /// `ColumnMapping`. Per §5.3.
+    /// `SemanticMapping` (Model-layer; ratified in `18 §10`). Per §5.3.
     pub column_mapping: ResolvedColumnMapping,
 }
 ```
@@ -424,7 +424,9 @@ pub enum ResolvedPhysicalSource {
 
 ### 5.3 `ResolvedColumnMapping`
 
-Flattened from the Model-layer `ColumnMapping` per `15 §9`. Four disjoint category-maps so plan-time code can look up any Semantics's resolution in O(log n):
+Flattened from the Model-layer `SemanticMapping` (ratified in `18 §10`) per `15 §9`. Four disjoint category-maps so plan-time code can look up any Semantics's resolution in O(log n):
+
+> **Naming note.** `33` keeps the Manifest-layer name `ResolvedColumnMapping` unchanged even though the Model-layer source was renamed from `ColumnMapping` → `SemanticMapping` in the 2026-04-17 consolidation. Rationale: (a) `Resolved…` types are already namespaced under `manifest::binding`, so the prefix disambiguates without repeating the Model-layer term; (b) renaming this field would be a BREAKING public-API change on a frozen surface; (c) the four-bucket shape (`columns` / `literals` / `computed` / `metadata`) is itself a Manifest-layer refinement of `SemanticMappingValue`'s three-variant roster, with metadata-synthesized `Expr` entries re-homed into `metadata` per `15 §7.3`.
 
 ```rust
 #[non_exhaustive]
@@ -610,7 +612,7 @@ Both indices duplicate information available by walking `resolved_datakinds` and
 
 ### 8.1 Manifest-layer shape
 
-Refines `16 §3`'s Model-layer `Relationship` for the Manifest layer. Structural shape is nearly identical in v1; the Manifest-layer variant exists so future MINOR extensions (catalog-side back-refs, optimizer hints) don't force a Model-layer rev.
+Refines the Model-layer `Relationship` (ratified in `18 §2`) for the Manifest layer. Structural shape is nearly identical in v1; the Manifest-layer variant exists so future MINOR extensions (catalog-side back-refs, optimizer hints) don't force a Model-layer rev.
 
 ```rust
 #[non_exhaustive]
@@ -618,17 +620,17 @@ pub struct ResolvedRelationship {
     pub id: RelationshipId,
     pub from: DataKindName,
     pub to: DataKindName,
-    pub keys: Vec<KeyPair>,
+    pub keys: Vec<JoinKeyExprPair>,
     pub cardinality: Cardinality,
     pub join_type: JoinType,
     pub directionality: Directionality,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct RelationshipId(pub u32);
+// RelationshipId: ratified in `18 §2.1` as `pub struct RelationshipId(pub u32)`
+// with `#[non_exhaustive]` + `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]`.
 ```
 
-Every `RelationshipId` is Manifest-unique; IDs are not stable across recompiles (same rationale as `BindingId`, per `14b §4.2` Q6). `KeyPair`, `Cardinality`, `JoinType`, `Directionality` are ratified in `16 §3` and re-exported via `manifest::relationship`.
+Every `RelationshipId` is Manifest-unique; IDs are not stable across recompiles (same rationale as `BindingId`, per `14b §4.2` Q6). `JoinKeyExprPair`, `Cardinality`, `JoinType`, and `Directionality` are ratified in `18 §2.3`–`§2.6` and re-exported via `manifest::relationship`. (Historical note: the Model-layer `KeyPair` name is retired in favor of `JoinKeyExprPair` per `18 §2.6`.)
 
 ### 8.2 `ResolvedRelationshipGraph`
 

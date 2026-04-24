@@ -1,9 +1,9 @@
 ---
-prereqs: [00, 10, 11, 13, 14, 14a]
+prereqs: [00, 10, 11, 13, 14, 14a, 18]
 authoritative-for:
   - the `ResolvedExprTable` data structure — keying, entry shape, ordering, serialization posture
   - the compile-time `SemanticExpr → PhysicalExpr` substitution algorithm (post-order walk, per-binding, per-Semantics)
-  - cross-DataKind path resolution — BFS over the `Relationship` graph, shortest-path semantics, ambiguity detection
+  - cross-DataKind path resolution — BFS over the `Relationship` graph (struct shape owned by `18 §2`), shortest-path semantics, ambiguity detection
   - `PathSignature` — shape and attachment to `ResolvedExprEntry`
   - reference-graph cycle detection across the transitive `EntityRef` closure
   - bottom-up type inference driving `inferred_type` annotation on every resolved node
@@ -12,7 +12,7 @@ authoritative-for:
   - the ordering of resolution sub-passes inside the `compile` stage (where 14b sits within `10 §3.3`)
   - the compile-stage error surface for expression resolution (EXPR_E_02xx sub-range)
 refined-by:
-  - 15 (binding — `column_mapping[].expr` values are resolved through this algorithm before they land in a `ResolvedExprEntry`)
+  - 15 (binding — `SemanticMapping` `Expr`-variant values are resolved through this algorithm before they land in a `ResolvedExprEntry`; see `18 §10`)
   - 16 (composition — the `PathSignature` stored here is the input to plan-time join-subgraph materialization)
   - 20–25 (per-DataKind plan-time consumption of `ResolvedExprTable` lookups)
   - 33 (manifest — on-disk serialization shape of `ResolvedExprTable`)
@@ -21,6 +21,8 @@ refined-by:
 
 # 14b. Expression Resolution
 
+> **Struct ownership (2026-04-17 consolidation).** `Relationship`, `RelationshipId`, and `SemanticMappingValue` struct shapes are ratified in [`18 §2` / §10](./18_entities.md). This doc owns the *compile-time resolution algorithm* on top — `SemanticExpr → PhysicalExpr` substitution, cross-DataKind BFS over the `Relationship` graph, cycle detection, type inference, `PathSignature` construction, and the `ResolvedExprTable` shape. Where body sections below cite `ColumnMapping` / `column_mapping[].expr`, read `SemanticMapping` / `SemanticMappingValue::Expr` per `18 §10`. The algorithm is unaffected by the rename.
+>
 > This document ratifies the compile-time expression-resolution pass that turns
 > every author-declared `SemanticExpr` into a fully substituted, type-annotated
 > `PhysicalExpr` stored in the Manifest's `ResolvedExprTable`. It finalizes
@@ -183,7 +185,7 @@ The Manifest (`33`) binds the byte-level encoding. `14b` ratifies only the shape
 
 A Semantics can be defined once in author text and **still** produce multiple resolved PhysicalExpr variants, one per Binding that can source it. This happens structurally in two ways:
 
-1. **ComplexDataKind unionset** (`22`): multiple SimpleDataKinds expose the same Semantics name; each has its own Binding; each Binding can produce a different `PhysicalExpr` (different `ColumnMapping`, different physical source). Planner picks among them at source selection time.
+1. **ComplexDataKind unionset** (`22`): multiple SimpleDataKinds expose the same Semantics name; each has its own Binding; each Binding can produce a different `PhysicalExpr` (different `SemanticMapping`, different physical source). Planner picks among them at source selection time.
 2. **Per-Binding `expr:` override on Semantics occurrences** (`11 §6`): the same Semantics name appearing on two SimpleDataKinds can carry different author-declared `expr:` trees on each occurrence; each occurrence's Binding contributes its own resolved entry.
 
 A single-key table `SemanticsName → PhysicalExpr` cannot represent either case without losing information. The two-dimensional key is therefore the minimal faithful encoding.
@@ -271,7 +273,7 @@ Inputs are all read-only except `recursion`, which carries the DFS visited-set u
 1. Start from the Semantics's merged `expr:` tree (per `11 §6.3`'s occurrence merge). This tree is a `SemanticExpr`.
 2. Walk the tree **post-order**. For each node, call the variant-specific rule in §3.3–§3.9. Each rule returns a `PhysicalExpr` subtree annotated with an `inferred_type` and a list of `referenced_columns` contributed by that subtree.
 3. At `EntityRef { name }` sites, consult §3.6: either recurse in-place (same kind) or trigger cross-kind resolution (§4), splicing the target's resolved `PhysicalExpr` at the call site.
-4. At `Column(name)` sites, validate against the binding's `ColumnMapping` / physical schema (§3.5).
+4. At `Column(name)` sites, validate against the binding's `SemanticMapping` / physical schema (§3.5).
 5. At `FunctionCall { name, args }` sites, consult the `FunctionRegistry` (§3.8, §6.3).
 6. When the post-order walk returns a fully-substituted `PhysicalExpr` at the root, compute the Semantics-boundary reconciliation (§7) — possibly wrapping the root in a `Cast`.
 7. Emit a `ResolvedExprEntry` containing the resolved expression, its `inferred_type`, its flat `referenced_columns`, its `path_signature` (if any cross-kind walks occurred), and its `provenance`.
@@ -313,15 +315,15 @@ This variant appears in a `PhysicalExpr` authored inside a Binding's `column_map
 
 Contract:
 
-- Look up `name` in `binding.resolve_column(name)` — the binding's `ColumnMapping` indexes its exposed semantic-slot names over the physical source's schema.
+- Look up `name` in `binding.resolve_column(name)` — the binding's `SemanticMapping` indexes its exposed semantic-slot names over the physical source's schema.
 - If `name` is not a semantic slot name exposed by the binding: this is a compile-stage error `CompileError::UnknownReference { name, scope: Scope::Binding(binding.name) }` (§11.1).
-- If `name` is a semantic slot, substitute per its `ColumnMapping[].expr`:
+- If `name` is a semantic slot, substitute per its `SemanticMapping` entry (for `SemanticMappingValue::Expr`, the carried `PhysicalExpr`):
   - Simple column form (`expr: column_name`): becomes `PhysicalExpr::Column(physical_col_name)`, with `inferred_type` looked up in `binding.source.schema()[physical_col_name].data_type`.
   - Computed form (`expr: {sum: [...]}`, etc.): the binding's `expr:` is itself a PhysicalExpr authored inline, already compiled by §9's ordering; the referenced subtree is cloned and spliced.
 - If the physical column does not exist in the binding's `PhysicalSource` schema: `CompileError::UnresolvedColumn { name, binding: binding.name }` (§11.4).
 - `referenced_columns` for a leaf `Column` is a one-element vector `[physical_col_name]`; for a computed form it is the union of the subtree's referenced columns.
 
-**Q4 decision (leaf vs. computed disambiguation).** The binding's `ColumnMapping[].expr` is **always** a `PhysicalExpr` per `14 §3.6`. 14b resolves that subtree eagerly during the same pass — there is no separate "bind-later" mode. Rationale: (a) keeps I5 tight (all resolution at compile time), (b) one resolution algorithm handles both Semantic-side and binding-side expressions uniformly, (c) ordering constraints (a binding's `column_mapping[].expr` can reference only that binding's own columns) are enforced by the scope chain (§3.5).
+**Q4 decision (leaf vs. computed disambiguation).** A `SemanticMappingValue::Expr(PhysicalExpr)` carries a `PhysicalExpr` per `14 §3.6` and `18 §10`. 14b resolves that subtree eagerly during the same pass — there is no separate "bind-later" mode. Rationale: (a) keeps I5 tight (all resolution at compile time), (b) one resolution algorithm handles both Semantic-side and binding-side expressions uniformly, (c) ordering constraints (a binding's `SemanticMapping` `Expr` entry can reference only that binding's own columns) are enforced by the scope chain (§3.5).
 
 ### 3.5 Scope and identifier resolution at the walk
 
@@ -471,15 +473,15 @@ pub struct DataKindNode {
     pub incident_relationships: Vec<RelationshipId>,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct RelationshipId(pub u32);
+// RelationshipId: ratified in `18 §2.1` as `pub struct RelationshipId(pub u32)`
+// with `#[non_exhaustive]` + `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]`.
 ```
 
 - Built once at `compile` time, after `validate` (so all Relationship endpoints are known-valid).
 - `incident_relationships` is sorted by `RelationshipId` (ascending) so neighbor iteration is stable.
 - `by_kind` is a pre-computed adjacency, keyed by `DataKindName`, values sorted by `RelationshipId`.
 
-**Q6 decision.** `RelationshipId` is a newtype over `u32`, assigned in parsed-Model iteration order. Stable within a compile; not stable across edits (same rationale as `BindingId`, §2.1).
+**Q6 decision.** `RelationshipId` is a newtype over `u32` per `18 §2.1`, assigned in parsed-Model iteration order. Stable within a compile; not stable across edits (same rationale as `BindingId`, §2.1). The `Ord` / `PartialOrd` derivations `14b` relies on for deterministic path ordering are compatible with the `18 §2.1` roster (the struct's `u32` payload gives natural lex order).
 
 ### 4.3 The BFS
 
@@ -929,7 +931,7 @@ Plan-time join materialization reads `path_signature` + the Joinset's declared j
 
 Per `12 §4`, nested kinds carry their own Bindings (locally scoped inside the outer kind). 14b treats nested-kind Bindings as first-class: each contributes its own `BindingId` and produces its own `ResolvedExprTable` entries.
 
-Scope resolution (§3.5) handles nested-kind visibility correctly: a nested-kind Semantics referencing an outer-kind column uses the outer Binding's `ColumnMapping` (visible via the scope chain); an outer-kind Semantics referencing a nested-kind Semantics uses the nested Binding.
+Scope resolution (§3.5) handles nested-kind visibility correctly: a nested-kind Semantics referencing an outer-kind column uses the outer Binding's `SemanticMapping` (visible via the scope chain); an outer-kind Semantics referencing a nested-kind Semantics uses the nested Binding.
 
 ### 8.6 Table-size summary
 
@@ -1169,7 +1171,7 @@ One narrowing reconciliation warning:
 - **`13` (types and grain)** — canonical `DataType` set, widening / narrowing lattice, literal typing. 14b's §6 and §7 both read from `13`'s type vocabulary.
 - **`14` (expressions)** — the `Expr` AST, `SemanticExpr` / `PhysicalExpr` wrapper invariants, boundary-reconciliation policy (§6.4), parse-and-validate errors. 14b resolves every `14` forward reference pointing at "compile-time resolution", "`ResolvedExprTable`", "substitution algorithm", "cross-DataKind path pre-resolution", "cycle detection". §7.3's draft error variants are renamed here per Q10 in §12.
 - **`14a` (function catalog)** — `FunctionRegistry` API, `FnSignature` polymorphism, `ReturnTypeRule`. 14b consumes the sealed registry at every `FunctionCall` node and propagates the five function-resolution error variants (`EXPR_E_0301`–`0303`, `0304`–`0306`) without extending them.
-- **`15` (binding)** — `ColumnMapping` authoring shape, binding-side `expr:` semantics, physical-schema validation. 14b realizes the validation: every `Column(name)` in a resolved `PhysicalExpr` is checked against the binding's schema in §3.4 / §10.
+- **`15` (binding)** — `SemanticMapping` compile-time Binding process, `Expr`-variant semantics, physical-schema validation. 14b realizes the validation: every `Column(name)` in a resolved `PhysicalExpr` is checked against the binding's schema in §3.4 / §10.
 - **`16` (composition)** — plan-time join-subgraph materialization. `PathSignature` from 14b is its input; the planner composes join nodes from `path_signature.paths` per `16 §4`.
 - **`20–25` (data-kind specifications)** — plan-time consumers. Each DataKind spec uses `ResolvedExprTable::lookup(name, binding_id)` at plan time and relies on 14b's completeness contract (`§2.3`).
 - **`33` (manifest)** — Manifest's on-disk encoding. 14b binds the shape of `ResolvedExprTable` and its entries; `33` binds the byte-level encoding including versioning and backward-compat rules.

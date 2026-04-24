@@ -4,9 +4,9 @@ authoritative-for:
   - scope-chain structure and the four named scope levels (Root / Kind / Nested-kind / Binding)
   - Semantics identity rule (global identity, unified namespace, per-level uniqueness, free introduction)
   - YAML declaration form for Semantics occurrences (single-form rule, scalar shorthand, field-driven semantics)
-  - shape-vs-resolution-variant boundary (which fields unify across occurrences vs. may differ per DataKind)
-  - Semantics element catalog (Dimension, Measure, Metric, Filter, Key — definitions and roles)
-  - `Additivity` enum, classification semantics, SemiAdditive axis-encoding shape, and planner contract
+  - shape-vs-resolution-variant boundary (which fields unify across occurrences vs. may differ per DataKind) — *role-and-field-layout* rules (struct shapes for `Dimension` / `Measure` / `Metric` are ratified in `18 §4` / `§5` / `§6`)
+  - Semantics element catalog roles and responsibilities (Dimension, Measure, Metric, Filter, Key — roles; struct shapes live in `18 §4`–`§9`)
+  - `Additivity` / `SemiAdditive` planner contract — where each variant is legal, what the planner does with it (enum definition owned by `18 §5`)
   - identifier grammar (ASCII-only, snake-case-friendly minimum-viable form)
   - `Constraint` framework: generic carrier-agnostic concept, per-carrier `constraints:` DSL, kind sub-block toolkit, v1 realized (Measure, Metric) vs reserved (Dimension, Filter, Key, DataKind) carriers, evaluation lifecycle (§8)
   - cross-kind reference rule (Relationship-required invariant; compile pre-validation, plan walks)
@@ -17,7 +17,7 @@ refined-by:
   - 12 (nesting policy — nesting matrix, inline-only enforcement, per-Complex block shape)
   - 13 (types and grain — `DataType` variants and `Grain` specification)
   - 14 (expressions — `Expr` / `ExprSource`, `FunctionRegistry`, expression-level scope validation)
-  - 15 (mapping and binding — `Binding`, `ColumnMapping`, `PhysicalSource`, binding coverage)
+  - 15 (mapping and binding — compile-time `Binding` process, `SemanticMapping` authoring, `PhysicalSource`, binding coverage)
   - 16 (composition — `Relationship`, `ComposedSemanticInterface`, cross-kind walk semantics)
   - 17 (temporal shape — `TemporalShape`'s independent role in candidate selection and rollup, per §7)
   - 20–25 (strategies — per-DataKind-variant resolution and `Constraint` evaluation)
@@ -25,6 +25,8 @@ refined-by:
 
 # 11. Names and Scopes
 
+> **Struct ownership (2026-04-17 consolidation).** Struct shapes for the Semantics catalog (`Dimension`, `Measure`, `Metric`, `AdditivityType`, `SemiAdditive`, `AiContext`, `Keys`) are ratified in [`18 §4`–`§9`](./18_entities.md). This doc owns the *scope chain*, the *identity and lookup rules*, the *planner contract for `Additivity`*, the *`Constraint` evaluation lifecycle*, and the *cross-kind reference invariant*. Where body sections below cite `ColumnMapping`, read `SemanticMapping` per `18 §10`; where they cite `DimensionType::{Categorical,Continuous,...}`, read `DimensionType` per `18 §4.2`. Scope-chain and lookup content is unaffected.
+>
 > **Status:** ratified across all sections. §8 (Constraint) realizes the generic per-carrier framework with Measure and Metric as v1 carriers; Dimension, Filter, Key, DataKind are reserved carriers for future-design extensions.
 
 ## 1. Purpose and Scope
@@ -50,7 +52,7 @@ refined-by:
 - Which container types may nest which child types, and in what forms — `12`.
 - `DataType` variants and `Grain` axes — `13`.
 - `Expr` / `ExprSource` grammar, function registry, expression-level name resolution mechanics — `14`.
-- `Binding`, `ColumnMapping`, `PhysicalSource`, and binding-coverage rules — `15`.
+- `Binding`, `SemanticMapping`, `PhysicalSource`, and binding-coverage rules — `15` (struct shape for `SemanticMapping` lives in `18 §10`).
 - `Relationship`, `ComposedSemanticInterface`, and cross-kind-walk semantics at plan time — `16`.
 - `TemporalShape` and its effect on `Additivity` defaults — `17`.
 - Per-DataKind-variant strategies (Grainset rollup choice, Unionset branch assembly, Joinset path walking) and `Constraint` evaluation — `20`–`25`.
@@ -70,7 +72,7 @@ Four named levels, strictly tree-shaped (no DAG). Every declaration and every re
 | Root scope | Model root | optional Tier-1 Semantics shape declarations; top-level DataKind containers; global `Relationship` block | — (Model root is a container, not queryable) |
 | Kind scope | a top-level DataKind | the DataKind's declared `SemanticInterface` (Dimensions / Measures / Metrics / Filters / Keys); local-to-kind resolution variants (per §5) | yes — the DataKind's interface is the consumer-facing contract |
 | Nested-kind scope | an inline nested DataKind under a top-level Complex | strategy-specific structural configuration; further nested children; optional non-Semantics structural label | no — nested kinds declare no interface |
-| Binding scope | a Simple leaf's `Binding` | `ColumnMapping` to `PhysicalSource`(s) | no — purely physical realization |
+| Binding scope | a Simple leaf's `Binding` | `SemanticMapping` to `PhysicalSource`(s) | no — purely physical realization |
 
 **Tree shape — no referenced children.** A Complex DataKind's children are always **inline**; there is no `ref:` form that points to a top-level DataKind as a member of another Complex. Reuse across top-level DataKinds happens through (a) Semantics naming (global identity makes `revenue` in two different DataKinds the same logical thing), (b) `PhysicalSource` reuse at the Binding layer (ratified in `15`), and (c) `Relationship` declarations at Model root (ratified in `16`). No scope-level reuse mechanism exists, by design — it would turn the scope tree into a DAG and complicate every rule that follows.
 
@@ -302,7 +304,7 @@ The only resolution-variant field is `expr`. Each top-level DataKind occurrence 
 
 A Semantics may have:
 
-- **zero** `expr:` occurrences (resolution comes from `ColumnMapping` in the Simple leaf Bindings, `15`),
+- **zero** `expr:` occurrences (resolution comes from `SemanticMapping` in the Simple leaf Bindings, `15`),
 - **one** `expr:` at Model root (Tier-1 default, used by every top-level DataKind that doesn't supply its own),
 - **one** `expr:` per top-level DataKind (DataKind-local variant overriding any Tier-1 default),
 - **or a mix** of the above.
@@ -364,7 +366,7 @@ Semantics registry: cost
     influencer_spend    → expr: negotiated_fee_usd
 ```
 
-If a DataKind omits its own `expr:` for `cost`, the Tier-1 default is used when present; else resolution falls through to direct `ColumnMapping` in the Simple leaf Bindings (15).
+If a DataKind omits its own `expr:` for `cost`, the Tier-1 default is used when present; else resolution falls through to direct `SemanticMapping` in the Simple leaf Bindings (15).
 
 ### 5.4 Defaults for omitted shape fields
 
@@ -374,7 +376,7 @@ Default values applied when a shape field is omitted on every occurrence of a Se
 |---|---|---|
 | `additivity` | Measure, Metric | `Additive` |
 | `description` | all | empty string |
-| `expr` | all (it's a resolution-variant field) | none (resolution falls through to direct `ColumnMapping` — 15) |
+| `expr` | all (it's a resolution-variant field) | none (resolution falls through to direct `SemanticMapping` — 15) |
 
 Shape fields with NO default — must be stated in at least one occurrence, else `CompileError::SemanticShapeIncomplete`:
 
@@ -964,7 +966,7 @@ Given a reference to Semantics `S` from a scope `Sc` in top-level DataKind `K`:
    b. If not, search the Relationship graph for a path from K to a DataKind in which `S` is bound. Record the path.
    c. If no path exists, `CompileError::UnresolvedCrossKindReference`.
    d. If multiple paths exist and `16`'s disambiguation rules do not select a unique one, `CompileError::AmbiguousCrossKindPath`.
-4. **Variant selection** — choose the DataKind-local `expr:` for `S` if K declares one; else the Tier-1 default if present; else bind directly to the physical column via `ColumnMapping` (15).
+4. **Variant selection** — choose the DataKind-local `expr:` for `S` if K declares one; else the Tier-1 default if present; else bind directly to the physical column via `SemanticMapping` (15).
 
 ### 11.2 Expression-level references
 
@@ -1023,7 +1025,7 @@ Name-related Preconditions and their stage of execution.
 | N-C1 | Shape unification across occurrences (§5.1) | any shape field disagrees across occurrences of a name |
 | N-C2 | Element-type consistency | a name appears as Dimension in one occurrence and Measure in another |
 | N-C3 | Kind-scope interface membership (§11.1 step 2) | an `expr` or `constraint` references a name not in the enclosing Kind's interface |
-| N-C4 | Binding-required rule | a Semantics is registered but has no physical binding anywhere (no `ColumnMapping` and no `expr`) |
+| N-C4 | Binding-required rule | a Semantics is registered but has no physical binding anywhere (no `SemanticMapping` entry and no `expr`) |
 | N-C5 | Cross-kind reference: path exists (§9.1) | reference crosses to Semantics bound only in another DataKind with no Relationship path |
 | N-C6 | Cross-kind reference: path unique (§9.1) | multiple Relationship paths exist and `16`'s disambiguation cannot pick |
 | N-C7 | Key member is a Dimension (§6.5) | a Key names a non-Dimension Semantics |
@@ -1077,7 +1079,7 @@ Validation point: `N-V1` in `validate` (§12.1). Regex-level check only; no sema
 - **12** — refines the nesting matrix (which Complex can contain which child) and the inline-only enforcement for nested children. `11`'s scope chain + tree-shape invariant constrains what `12` may legally permit.
 - **13** — defines `DataType` variants and `Grain` axes referenced by shape fields in §5. A Semantics's `data_type` is one of `13`'s variants.
 - **14** — defines `ExprSource` / `Expr`, the `FunctionRegistry`, and expression-level resolution rules (§11.2 points to `14` for function-name resolution).
-- **15** — defines `Binding`, `ColumnMapping`, `PhysicalSource`, and the no-empty (binding-required) Precondition details. `11 §12 N-C4` forward-refs to `15` for the concrete check.
+- **15** — defines `Binding`, `SemanticMapping`, `PhysicalSource`, and the no-empty (binding-required) Precondition details. `11 §12 N-C4` forward-refs to `15` for the concrete check.
 - **16** — defines `Relationship`, `ComposedSemanticInterface`, and cross-kind-walk semantics. `11 §9` references `16` for path-selection disambiguation.
 - **17** — defines `TemporalShape` and the defaults driving `Additivity` (§7.2).
 - **20–25** — per-DataKind-variant strategies; `Constraint` evaluation semantics at plan time.

@@ -23,6 +23,8 @@ depends-on:
 
 > Items surfaced during Round-1 drafting of the Unionset specification. Each entry restates the question, lists its ratified references, and records the Round-1 default `23` currently uses. Entries migrate out of this file as later docs (`17`, `20`, `24`, `25`, `30`, `33`–`35`) make decisions that confirm or amend `23`'s defaults.
 
+> **Status summary (2026-04-17).** Q-UNI-002 (`UnionMode::Distinct` v1 or deferred) and Q-UNI-009 (single-child Unionset acceptance) are **CLOSED**. Q-UNI-002 is ratified by `foundations/18_entities.md §2` with v1 roster `{All, Unique}` (the former `Distinct` renamed to `Unique`); Q-UNI-009 is ratified by `data-kinds/26_nesting_matrix.md §R3` (every `ComplexDataKind` requires ≥ 2 children). Both retain their original bodies for resolution context.
+
 ---
 
 ## Q-UNI-001 — Error-code allocation: `*_E_23NN` per doc vs `30 §6.2` cross-subsystem ranges
@@ -53,6 +55,8 @@ depends-on:
 ---
 
 ## Q-UNI-002 — `UnionMode::Distinct` in v1 or deferred?
+
+**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `foundations/18_entities.md §2` (adjacency reference): v1 `UnionMode` roster is **`{All, Unique}`**, `#[non_exhaustive]`, default `All`. The previous spelling `Distinct` is renamed to `Unique` (authors who need SQL-`DISTINCT` semantics at Union-level select `Unique`; the three-valued-logic NULL-collision caveat documented in `23 §4.3` still applies as `PLAN_W_2303`). The "defer Distinct to post-v1" alternative is rejected; `Unique` is supported in v1.
 
 **Question.** `23 §2.1` ratifies a `UnionMode` enum with two variants: `All` (default) and `Distinct`. Distinct semantics in the presence of NULL-fill are subtle (per `23 §4.3`'s three-valued-logic note): rows from different children differing only in NULL-fill positions do NOT dedupe under `DISTINCT`. Should Round 1 ship `Distinct` at all, or defer it to a later milestone?
 
@@ -222,6 +226,8 @@ depends-on:
 ---
 
 ## Q-UNI-009 — Single-child Unionset acceptance: reject (Round-1) vs silent accept vs warning
+
+**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `data-kinds/26_nesting_matrix.md §R3`: every `ComplexDataKind` (including `Unionset`) REQUIRES ≥ 2 children. Rejection stands (via R3 + `VALID_E_2302`); the "silent accept" alternative from `22 Q-GRN-006` (now also closed by R3) no longer creates asymmetry. All three Complex variants (`Unionset`, `Grainset`, `Joinset`) share the ≥ 2 children rule. `[TD-UNIONSET-SINGLE-CHILD]` is retired.
 
 **Question.** `23 §8.1` fires `VALID_E_2302 UnionsetSingleChild` on a Unionset with exactly one child. The rationale: "semantically the child itself; authors should replace." Is rejection right, or should Round 1 be more permissive (silent accept or warning)?
 

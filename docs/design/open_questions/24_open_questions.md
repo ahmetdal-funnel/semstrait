@@ -234,6 +234,85 @@ depends-on:
 
 ---
 
+## Post-v1 shape-hint clusters (folded in 2026-04-17)
+
+> The following two clusters were previously parked in a standalone sidecar `joinset_shape_semantics.md`. That file was folded into this one on 2026-04-17 as part of the documentation-consolidation pass (H6). Neither cluster is blocking for v1; both describe *authoring-shape hints* the v1 Joinset body deliberately omits. Historical references to `open_questions/joinset_shape_semantics.md` resolve into this section.
+
+### Q-24-09 — `JoinAssociativity` hint (deferred) — `TD-JOINSET-ASSOCIATIVITY-PARK`
+
+**Background.** Earlier drafts of the Joinset shape carried an `associativity:` field on the body — values such as `left`, `right`, `star`, `snowflake` — as a hint to the planner about how to order joins when the declared `relationships:` graph had multiple valid topological walks.
+
+**v1 decision (ratified 2026-04-17).** Dropped. `JoinAssociativity` does NOT exist in the v1 Joinset body. `32 §14` records this as `TD-JOINSET-ASSOCIATIVITY-PARK`.
+
+**v1 behavior.** The Joinset walks its `relationships:` in YAML author order (`32 §7` / `18 §2`). When there is a choice, the planner picks the canonical left-deep traversal starting from the first-referenced member in the first `Relationship` entry. No cross-cutting hint shapes the walk. For the explicit-binary-join case that is v1 Joinset's only ratified arity, shape choices are degenerate anyway — there is exactly one join to emit.
+
+**Deferred sub-questions.**
+
+| Sub-ID | Question |
+|---|---|
+| Q-24-09.a | When v1's binary-only restriction lifts (`TD-NESTING-NARY-JOIN` / Q-24-01), does `associativity:` re-enter as a field, or does an ordering convention on `relationships:` suffice? |
+| Q-24-09.b | If re-introduced, what values are legal? Candidates: `left` (left-deep), `right` (right-deep), `bushy` (planner chooses), `hinted` (planner uses author order). |
+| Q-24-09.c | Is associativity advisory (planner may override for cost) or binding (planner must respect)? |
+| Q-24-09.d | Interaction with `AsOf` joins (`17 §*`, Q-24-04 deferred): does AsOf carry its own shape-hint axis, or is it orthogonal? |
+
+**Reference implementations.**
+
+- **Cube.js** — no shape hint; join graph discovered at query time from declared relationships.
+- **dbt_metricflow** — join-path resolution hints via `join_path:` on Metric definitions; implicit associativity.
+- **LookML** — explicit `join` block per pair; implicit left-deep walk from the base `view:`.
+
+v1 aligns with the Cube.js / LookML pattern (implicit from author-order). Re-introducing an explicit hint is a future decision when N-ary Joinsets (Q-24-01) land.
+
+**Current position in `24`.** No `associativity:` field in the v1 Joinset body; `TD-JOINSET-ASSOCIATIVITY-PARK` carries the deferral. Revisit bundled with Q-24-01 (`TD-NESTING-NARY-JOIN`).
+
+**Next step.** Bundle the decision with the N-ary lift: a shape-dedicated session, once N-ary support is on deck, re-opens both this cluster and Q-24-10 jointly.
+
+---
+
+### Q-24-10 — Star / Snowflake / 3NF shape-tag vocabulary (deferred) — `TD-JOINSET-SHAPE-VOCAB`
+
+**Background.** During Q&A on the joinset YAML, a candidate field was considered that would let authors mark a Joinset as a specific canonical analytical shape:
+
+```yaml
+joinsets:
+  - name: fact_sales_star
+    shape: star              # or: snowflake, 3nf, data_vault, galaxy
+    relationships: [ ... ]
+```
+
+The intent was to let the planner apply shape-specific optimizations (fact-table detection, conformed-dimension lookup, etc.) without deriving the shape from the `relationships:` graph.
+
+**v1 decision.** Deferred. Not in the v1 body.
+
+**v1 behavior.** Shape is derived at plan time from the `relationships:` graph + per-member `Cardinality`, when a shape-optimizing pass needs it. The planner does not require a declared shape and emits the same `PlanNode::Join` tree regardless.
+
+**Deferred sub-questions.**
+
+| Sub-ID | Question |
+|---|---|
+| Q-24-10.a | Is the `shape:` tag advisory (for diagnostics / tooling) or operationally meaningful (drives a planner pass)? |
+| Q-24-10.b | What shape vocabulary is canonical? Candidates: `star`, `snowflake`, `galaxy`, `3nf`, `data_vault`, `one_big_table`, `junk_dimension_hub`. Open-ended strings vs a closed enum. |
+| Q-24-10.c | If authored, is it validated against the declared relationships (e.g. `star` requires exactly one `many_to_one`-spine from one member to all others)? |
+| Q-24-10.d | Does shape interact with `constraints:` at the joinset level (e.g. a star schema implicitly allows certain dimension rollups)? |
+| Q-24-10.e | Does shape interact with the applicability matrix (`25`) — e.g. specific shapes enable specific aggregation patterns that flat graphs do not? |
+
+**Shape vocabulary — reference implementations.**
+
+- **Star schema** — one fact, many conforming dimensions, single-depth joins from fact.
+- **Snowflake** — like star, with dimensions normalized (multi-level dimension hierarchies).
+- **Galaxy / fact constellation** — multiple fact tables sharing conforming dimensions.
+- **3NF / normalized** — arbitrary graph over normalized entities.
+- **Data Vault** — hubs / satellites / links canonical shape.
+- **One Big Table (OBT)** — denormalized, single wide member with no joins.
+
+For v1, the Joinset represents explicit joins over ≥ 2 members with a declared graph. Shape classification can be layered on post-v1 without breaking the v1 body.
+
+**Current position in `24`.** No `shape:` field; `TD-JOINSET-SHAPE-VOCAB` carries the deferral. Coordination with Q-24-09.
+
+**Next step.** Re-open jointly with Q-24-09 when the N-ary Joinset arity lifts (Q-24-01).
+
+---
+
 ## Summary
 
 | ID | Title | Round-1 default | Tracking marker |
@@ -246,3 +325,5 @@ depends-on:
 | Q-24-06 | Self-referential Joinsets | Forbidden | `TD-COMPOSITION-SELFJOIN` |
 | Q-24-07 | Per-hop filter annotations | No | — |
 | Q-24-08 | Structural `NullFill` for outer joins | No (JoinType-only) | — |
+| Q-24-09 | `JoinAssociativity` hint | Dropped (no field in v1 body) | `TD-JOINSET-ASSOCIATIVITY-PARK` |
+| Q-24-10 | Star / snowflake / 3NF shape-tag vocabulary | Deferred (no field in v1 body) | `TD-JOINSET-SHAPE-VOCAB` |

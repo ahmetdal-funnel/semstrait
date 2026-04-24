@@ -4,10 +4,9 @@ authoritative-for:
   - canonical `DataType` variant set (14 scalar types, width-differentiated numerics, engine-neutral naming) and YAML grammar
   - shape-unification rules for `data_type:` across Semantics occurrences
   - the authoritative engine type-mapping catalog lives in `registry/types_mapping.md` (pointer from §2.3)
-  - shape-unification rules for `data_type:` across Semantics occurrences
   - `Grain` enum (7 temporal variants) and total coarseness order used by `12 §4.2`
-  - `DimensionType` discriminator set (6 variants) and per-variant payload shape
-  - `Metadata` Dimension authoring shape (`path` segment and `partition` level extraction)
+  - `DimensionType` *planner-level and authoring-level semantics* — what each variant means and where it fits (enum roster + body struct shapes ratified in `18 §4.1`)
+  - `Metadata` Dimension v1 authoring forms (`path.token:N` 0-indexed, `partition.level:N` 1-indexed) and their runtime-extraction forward-reference to `15 §8`
   - Key vs. Dimension separation of concerns (why Keys are NOT a `DimensionType`)
   - structural Preconditions run by `validate` and `compile` that concern types and grains
 refined-by:
@@ -21,7 +20,9 @@ refined-by:
 
 # 13. Types and Grain
 
-> **Status:** ratified. Canonical scalar `DataType` set, `Grain` total order, `DimensionType` discriminator set, and `Metadata` Dimension shape are all content-complete. Complex types (arrays, structs, maps, JSON/VARIANT) are explicitly out of scope for v1 (§2.5).
+> **Struct ownership (2026-04-17 consolidation).** The `DimensionType` enum roster and its payload structs (`TemporalDimensionBody`, `BucketedDimensionBody`, `BucketSpec`, `BucketBound`, `MetadataDimensionBody`) are ratified in [`18 §4.1`](./18_entities.md#4-1-dimensiontype-roster). This doc owns the *planner-level and authoring-level semantics* of each variant — what the role means, v1 vs. post-v1 shape boundary, and cross-references to `15 §8` (metadata runtime), `12 §4.4` (Grainset temporal-grain eligibility), and `17` (`TemporalShape` gating).
+>
+> **Status:** ratified. Canonical scalar `DataType` set, `Grain` total order, and the `DimensionType` semantics layer (per-variant roles) are all content-complete. Complex types (arrays, structs, maps, JSON/VARIANT) are explicitly out of scope for v1 (§2.5).
 
 ## 1. Purpose and Scope
 
@@ -34,8 +35,8 @@ refined-by:
 - The **engine type-mapping catalog** — delegated to `docs/design/registry/types_mapping.md`. §2.3 carries a short summary and pointer; the registry is the authoritative catalog for DataFusion / Spark / DuckDB mappings, cast rules, and per-engine quirks. DataFusion is the primary implementation target; Spark and DuckDB calibrate the canonical set against broader analytical-engine conventions.
 - The **shape-unification rules** for `data_type:` across Semantics occurrences (§2.4).
 - `Grain` (§3) — 7 temporal variants with a total coarseness order used by `12 §4.2`.
-- The **`DimensionType` discriminator** (§4) — 6 variants with per-variant payload.
-- The **Metadata Dimension shape** (§4.6) — structured `path` / `partition` extractors.
+- The **`DimensionType` discriminator** (§4) — *planner-level and authoring-level semantics* of each of the six variants (enum roster and body struct shapes ratified in `18 §4.1`).
+- The **Metadata Dimension v1 authoring forms** (§4.7) — `path.token:N` and `partition.level:N`; runtime extraction is owned by `15 §8`.
 - The **Key vs. Dimension** separation (§5) — explicit rationale against collapsing Keys into `DimensionType`.
 - **Structural Preconditions** (§6) covering type and grain checks.
 
@@ -283,163 +284,54 @@ Adding non-temporal grains is I10-non-breaking.
 
 ## 4. DimensionType Discriminator
 
-A Dimension's `type:` discriminator selects which payload fields are meaningful. Six variants, ratified here.
+The `DimensionType` enum roster and per-variant body structs (`TemporalDimensionBody`, `BucketedDimensionBody`, `BucketSpec`, `BucketBound`, `MetadataDimensionBody`) are ratified in [`18 §4.1`](./18_entities.md#4-1-dimensiontype-roster). Six variants — `Temporal(TemporalDimensionBody)`, `Categorical`, `Binary`, `Geo`, `Bucketed(BucketedDimensionBody)`, `Metadata(MetadataDimensionBody)` — with the payload-bearing variants (`Temporal` / `Bucketed` / `Metadata`) carrying the fields the planner uses; `Categorical` / `Binary` / `Geo` are payload-free in v1 per the sub-shape-polish posture (see `18 §4.1`'s "Sub-shape polish" note for post-v1 extensions like `CategoricalBody::enum_values` / `GeoBody::{lat,lon}`).
 
-```rust
-#[non_exhaustive]
-pub enum DimensionType {
-    Temporal(TemporalDimension),
-    Categorical(CategoricalDimension),   // default
-    Metadata(MetadataDimension),
-    Binary(BinaryDimension),
-    Geo(GeoDimension),
-    Bucketed(BucketedDimension),
-}
-```
+This section owns the **planner-level and authoring-level semantics** of each variant — what the role means, where each type fits in the resolution pipeline, what the v1 v. post-v1 boundary is.
 
-Default when `type:` is omitted: `Categorical(CategoricalDimension { enum_values: None })`. This matches existing code.
+### 4.1 Default and `type:` authoring
 
-### 4.1 Authoring form
+Default when `type:` is omitted: `Categorical`. Authoring YAML is shown in `18 §4.2`.
 
-```yaml
-dimensions:
-  - name: order_date
-    data_type: date
-    type:
-      temporal:
-        grains: [day, month, year]
+The `type:` block is a single-key map — exactly one discriminator name with its payload (or bare name for unit variants). Zero or multiple keys = `ParseError::DimensionTypeMalformed`.
 
-  - name: channel
-    data_type: string
-    type:
-      categorical:
-        enum: [web, mobile, retail]       # optional
+### 4.2 Temporal — planner semantics
 
-  - name: customer_segment
-    data_type: string
-    type:
-      metadata:
-        partition:
-          level: 1                         # Hive-style partition key index
+- `TemporalDimensionBody.grains` (see `18 §4.1`) declares which `Grain` levels the source data supports. When a DataKind is a Grainset (`12 §4.4`), `levels[].grain` must be a subset of this list.
+- When empty, the Dimension is temporal only in data type (a `date` column not intended for rollup). Temporal-with-empty-`grains` is legal but disables grain-based rollup for this Dimension. Planner treats it as "temporal for filter/grouping, not for rollup."
+- Interaction with `TemporalShape` (17): a DataKind's `TemporalShape` may further constrain which grains are **planner-eligible** (e.g. `Snapshot` fixes a source grain). That gating lives in `17`; `13` specifies only the per-Dimension authoring shape.
 
-  - name: is_active
-    data_type: boolean
-    type:
-      binary:
-        type: boolean
-```
+### 4.3 Categorical (default) — planner semantics
 
-The `type:` block is a single-key map — exactly one discriminator name with its payload. A `type:` block with zero or multiple keys is `ParseError::DimensionTypeMalformed`.
+- Unit variant in v1. The planner treats the Dimension as an open-ended categorical grouping/filter axis.
+- Post-v1: a `CategoricalBody { enum_values: Option<Vec<String>> }` extension is tracked as a sub-shape polish (`18 §4.1`). When present, `enum_values` would give the planner a cardinality hint (Joinset cost estimation, forward to `20–25`) and let the validator check Filter values against the enum at `validate` time. Shape-unification of `enum_values` would follow `11 §5.1` (shape-locked across occurrences).
 
-### 4.2 Temporal
+### 4.4 Binary — planner semantics
 
-```rust
-pub struct TemporalDimension {
-    /// Grain axes this Dimension's underlying source supports.
-    /// At least one grain required.
-    pub grains: Vec<Grain>,
-}
-```
-
-- `grains:` declares which `Grain` levels the source data supports. When a DataKind is a Grainset (`12 §4.4`), `levels[].grain` must be a subset of this list.
-- When absent, the Dimension is temporal only in data type (a `date` column not intended for rollup). Temporal-without-`grains` is legal but disables grain-based rollup for this Dimension. Planner treats it as "temporal for filter/grouping, not for rollup."
-- Interaction with `TemporalShape` (17): a DataKind's `TemporalShape` may further constrain which grains are **planner-eligible** (e.g. `Snapshot` fixes a source grain). That gating lives in `17`; `13` specifies only the authoring shape.
-
-### 4.3 Categorical (default)
-
-```rust
-pub struct CategoricalDimension {
-    /// Optional finite value set. None = open-ended categorical.
-    pub enum_values: Option<Vec<String>>,
-}
-```
-
-- `enum_values:` is optional. When present, it declares a closed set — the planner MAY use it for cardinality hints in Joinset cost estimation (forward to `20–25`), and the validator MAY check Filter values against the enum at `validate` time.
-- Consumers of the interface cannot be blocked on open-ended Categorical; declaring a set is purely informative.
-- `enum_values:` is shape-locked (§2.4's unification rules): two occurrences must declare the same set, or one must omit it. Conflict = `CompileError::SemanticShapeConflict`.
-
-### 4.4 Binary
-
-```rust
-pub struct BinaryDimension {
-    pub binary_type: BinaryType,
-}
-
-#[non_exhaustive]
-pub enum BinaryType {
-    /// True/false.
-    Boolean,
-    /// Single bit, 0/1 encoded (rare; warehouse-heavy).
-    Bit,
-    /// Two-valued string, typically "yes"/"no" or "Y"/"N".
-    String,
-}
-```
-
-- `Binary` at the Dimension layer is the **axis role** (two-valued grouping axis), not to be confused with `DataType::Binary` (raw bytes). The Dimension's `data_type:` is usually `Boolean` or `String`; `type: binary` annotates the intent.
+- Unit variant in v1. `Binary` at the Dimension layer is the **axis role** (two-valued grouping axis), not to be confused with `DataType::Binary` (raw bytes). The Dimension's `data_type:` is usually `Boolean` or `String`; `type: binary` annotates the intent.
 - Useful when a two-valued string column (`active_flag: 'Y' | 'N'`) should be treated as a boolean axis at the semantic layer — the adapter translates to `CASE WHEN active_flag = 'Y' THEN TRUE ELSE FALSE END` in the projection.
+- Post-v1: a `BinaryBody { binary_type: BinaryType }` extension (`{Boolean, Bit, String}`) would pin the underlying encoding and is tracked as a sub-shape polish.
 
-### 4.5 Geo
+### 4.5 Geo — planner semantics
 
-```rust
-pub struct GeoDimension {
-    /// Physical column name for latitude.
-    pub lat: String,
-    /// Physical column name for longitude.
-    pub lon: String,
-}
-```
-
-- Declares a two-column geo point. `data_type:` on the Dimension itself is typically `String` or `Double` (the "representative" column used in selection lists); `lat` / `lon` are physical column references used when a geo function is invoked (ratified in `14`).
+- Unit variant in v1. Declares a geo-typed Dimension; the `data_type:` on the Dimension itself is typically `String` or `Double`.
 - Geo Dimensions do NOT have a non-temporal `Grain` rollup mechanism in v1. Geographic grain (city → region → country) belongs to the deferred TD-GRAIN-NON-TEMPORAL.
+- Post-v1: a `GeoBody { lat: String, lon: String }` extension carrying physical column references for two-column geo points is tracked as a sub-shape polish; consuming geo functions (ratified in `14`) would read those fields.
 
-### 4.6 Bucketed
+### 4.6 Bucketed — planner semantics
 
-```rust
-pub struct BucketedDimension {
-    /// Physical column name being bucketed.
-    pub column: String,
-    /// Inclusive-start, exclusive-end ranges; labeled per bucket.
-    pub buckets: Vec<Bucket>,
-}
-
-pub struct Bucket {
-    pub name: String,
-    pub start: f64,
-    pub end: f64,
-}
-```
-
-- Declares a numeric column mapped to named buckets at query time. The planner emits `CASE WHEN <column> >= <start> AND <column> < <end> THEN '<name>' ... END` in the projection.
+- `BucketedDimensionBody.buckets` (see `18 §4.1`) is a `Vec<BucketSpec>` with `BucketSpec { name, lower: Option<BucketBound>, upper: Option<BucketBound> }` and `BucketBound::{Int, Float, Decimal, Date, Timestamp}` covers the v1 bound types.
+- Semantics: `lower` is inclusive (`>=`), `upper` is exclusive (`<`); `None` on either side means open-ended. The planner emits `CASE WHEN <col> [>= lower] [AND <col> < upper] THEN '<name>' ... END` in the projection. The physical column targeted is resolved via `SemanticMapping` (15) rather than being authored on the Dimension body in v1.
 - `buckets:` must be non-empty and non-overlapping (checked at `validate`: `ValidateError::BucketsOverlap`). Gaps between buckets are permitted (values in gaps become `NULL`).
 - `data_type:` on the Dimension is typically `String` (the bucket label).
 
-### 4.7 Metadata
+### 4.7 Metadata — planner semantics
 
-```rust
-pub struct MetadataDimension {
-    /// Path-segment extraction (source file/table path tokenizer).
-    pub path: Option<PathExtraction>,
-    /// Hive-style partition value extraction (key=value parts).
-    pub partition: Option<PartitionExtraction>,
-}
-
-pub struct PathExtraction {
-    /// 0-indexed position of the path segment to extract.
-    pub token: usize,
-}
-
-pub struct PartitionExtraction {
-    /// 1-indexed partition key level.
-    pub level: usize,
-}
-```
-
-- Exactly one of `path:` / `partition:` must be present. Both present or both absent = `ValidateError::MetadataDimensionMalformed`.
-- **`path.token: N`** — tokenizes the source path on `/` and returns the 0-indexed segment. Example: path `s3://bucket/month=01/data.parquet` with `token: 2` returns `"month=01"` (raw, no key=value parsing).
-- **`partition.level: N`** — extracts the **value** from a Hive-style `key=value` partition at 1-indexed level `N`. Example: partition `year=2024/month=01` with `level: 1` returns `"2024"`.
-- The structured `path:` / `partition:` form defined above is the sole supported authoring shape. `11 §6.1.1`'s field catalog entry for `metadata:` references this section as authoritative.
-- `data_type:` is typically `String` (extracted values are text); authors may declare `Integer` / `Long` / `Date` with implicit casting at query time.
+- `MetadataDimensionBody { source: MetadataSource }` (see `18 §4.1`; `MetadataSource` full grammar is a sub-shape-polish item). The authoring-time forms the v1 surface must cover are **path-segment extraction** and **Hive-style partition-value extraction**; the runtime extraction mechanic is owned by `15 §8`.
+- **Path-segment extraction (`path.token: N`)** — tokenizes the source path on `/` and returns the 0-indexed segment. Example: path `s3://bucket/month=01/data.parquet` with `token: 2` returns `"month=01"` (raw, no key=value parsing). `15 §8.1` owns the runtime rules and error codes.
+- **Partition-value extraction (`partition.level: N`)** — extracts the value from a Hive-style `key=value` partition at 1-indexed level `N`. Example: partition `year=2024/month=01` with `level: 1` returns `"2024"`. `15 §8.2` owns the runtime rules and error codes.
+- Exactly one of `path:` / `partition:` must be present in the authored `MetadataSource`. Both present or both absent = `ValidateError::MetadataDimensionMalformed`.
+- `11 §6.1.1`'s field catalog entry for `metadata:` references `18 §4.1`'s `MetadataDimensionBody` and this section for the per-variant semantics.
+- `data_type:` is typically `String` (extracted values are text); authors may declare `Integer` / `Long` / `Date` with implicit casting at query time per `15 §9`.
 
 ## 5. Keys and Dimensions — Separation of Concerns
 

@@ -22,7 +22,21 @@ refined-by:
 
 # 22. Grainset
 
-> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
+> **Reconciliation (Phase-3, 2026-04-17).** The v1 authoring-layer canonical shape for `Grainset` is ratified across:
+>
+> - [`../apis/32_semstrait_model.md §3`](../apis/32_semstrait_model.md) — top-level YAML tag (`grainsets:`), `GrainsetBody` struct shape.
+> - [`../foundations/18_entities.md`](../foundations/18_entities.md) — shared entity types consumed by `GrainsetBody`.
+> - [`26_nesting_matrix.md`](./26_nesting_matrix.md) — nesting rules. Notably **R3** (every `ComplexDataKind` requires ≥ 2 children, auto-closing `Q-GRN-006`) and **R2** (no Grainset-of-Grainset self-nesting, auto-closing `Q-GRN-004`).
+> - **SR-E-8** (`18 §11`): every Grainset child MUST author its own `extras.temporal.grain:` explicitly — no inheritance from the Grainset parent.
+>
+> This document retains authority for:
+>
+> - The request-grain extraction algorithm (§4) and child-eligibility / child-selection rules.
+> - The v1 cost function (source-count proxy) and declaration-order tie-break.
+> - `GrainsetStrategy` plan-shape contract — single chosen-child delegation, not a union across candidates.
+> - `VALID_E_22NN` / `COMP_E_22NN` / `PLAN_E_22NN` error-code allocations.
+>
+> Rust-struct and YAML-surface body sections predate `18` (formerly `32c` before the 2026-04-17 promotion); read them as historical. `ColumnMapping` → `SemanticMapping` rename per `18 §10`.
 
 ---
 

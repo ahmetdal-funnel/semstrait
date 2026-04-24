@@ -1,15 +1,13 @@
 ---
-prereqs: [00, 10, 11, 12, 13, 14, 14a, 14b, 15]
+prereqs: [00, 10, 11, 12, 13, 14, 14a, 14b, 15, 18]
 authoritative-for:
-  - the `Relationship` type — its fields, placement, and authoring contract
-  - `Cardinality` — enum shape and per-variant planning implications
-  - `JoinType` — enum shape and per-variant semantics on `PlanNode::Join`
-  - `Directionality` — traversal polarity of a `Relationship`
+  - `Relationship` **composition semantics** — placement (global top-level), scope visibility, traversal rules, per-variant fanout analysis (struct shape owned by `18 §2`)
   - `ComposedSemanticInterface` — the unified queryable surface presented to the planner
   - `CompositionKind` — discriminator for the four flavours of composed surface
   - `UnifiedSemantics` — namespace-aware merge of constituent `SemanticInterface`s
   - `FieldProvenance` / `FieldOwnership` — per-field ownership on a composed surface
   - `CompositionCoverage` — extends `15 §6`'s `Coverage` to the composition level
+  - `RelationshipPath` — the composition-level chain of `RelationshipId` traversals
   - explicit vs implicit composition — the boundary, the authoring contract
   - materialization policy — what lives in the Manifest vs what the planner synthesizes
   - field-first resolution — the planner algorithm when `Request.from` is `None`
@@ -31,6 +29,8 @@ refined-by:
 
 # 16. Composition
 
+> **Struct ownership (2026-04-17 consolidation).** The `Relationship` struct, `RelationshipId` newtype, `JoinType`, `Cardinality`, `Directionality`, and `JoinKeyExprPair` are ratified in [`18_entities.md §2`](./18_entities.md#2-relationship). This doc owns the *composition semantics* on top — placement, scope, traversal, fanout analysis, `ComposedSemanticInterface` construction, field-first resolution. The struct-shape lands in `18`; what the planner does with it lands here. Where body sections below cite `KeyPair`, read `JoinKeyExprPair` (`18 §2.6`); where they cite `ColumnMapping`, read `SemanticMapping` (`18 §10`).
+>
 > This document ratifies how multiple `DataKind`s appear as a **single queryable
 > surface**: the `Relationship` edge-type that binds top-level `DataKind`s,
 > the `ComposedSemanticInterface` the planner works against, the
@@ -152,18 +152,7 @@ should use when traversing it. It is the semstrait type-system analogue of
 a foreign-key association, lifted to the semantic layer so keys are
 `Semantics`, not SQL columns.
 
-```rust
-#[non_exhaustive]
-pub struct Relationship {
-    pub id: RelationshipId,           // stable, Manifest-wide unique (14b §4.2)
-    pub from: DataKindRef,            // source side — a top-level DataKind
-    pub to: DataKindRef,              // target side — a top-level DataKind
-    pub keys: Vec<KeyPair>,           // join columns (SemanticsName on each side)
-    pub cardinality: Cardinality,     // §3
-    pub join_type: JoinType,          // §4
-    pub directionality: Directionality, // §2.4
-}
-```
+> **Struct shape**: the `Relationship` struct itself — including its fields (`name`, `from`, `to`, `join_type`, `keys`, `filter`, `cardinality`, `directionality`, `description`), the companion `RelationshipId` newtype, the `JoinKeyExprPair` hybrid equi-key grammar, and the `JoinType` / `Cardinality` / `Directionality` enums — is defined in [`18_entities.md §2`](./18_entities.md#2-relationship). This doc ratifies the *composition semantics* on top (placement, scope, traversal, fanout analysis). Where the body prose below uses `KeyPair`, read `JoinKeyExprPair` per `18 §2.6`.
 
 ### 2.1 Placement — global, top-level
 
@@ -297,13 +286,7 @@ plan time when the planner emits the join.
 
 ### 2.4 `Directionality`
 
-```rust
-#[non_exhaustive]
-pub enum Directionality {
-    Bidirectional, // forward (from → to) and reverse (to → from) both walkable — default
-    Forward,       // only forward walkable; reverse traversal errors at plan time
-}
-```
+Enum defined in [`18 §2.5`](./18_entities.md#25-directionality). v1 variants: `Bidirectional` (default — forward and reverse both walkable) and `Forward` (forward only; reverse traversal errors at plan time).
 
 Governs whether the planner may traverse the `Relationship` in both
 directions (§2.4.3) or only the forward direction (`from` → `to`).
@@ -377,15 +360,7 @@ substitutes the effective form per-direction at plan emission.
 
 ## 3. `Cardinality`
 
-```rust
-#[non_exhaustive]
-pub enum Cardinality {
-    OneToOne,
-    OneToMany,
-    ManyToOne,
-    ManyToMany,
-}
-```
+Enum defined in [`18 §2.4`](./18_entities.md#24-cardinality--required-at-every-site). v1 variants: `OneToOne`, `OneToMany`, `ManyToOne`, `ManyToMany`.
 
 Declared on every `Relationship`. `Cardinality` is **planning metadata**,
 not a runtime enforcement — `semstrait` does not scan data to verify that
@@ -491,17 +466,7 @@ Multiple rows on each side match multiple rows on the other.
 
 ## 4. `JoinType`
 
-```rust
-#[non_exhaustive]
-pub enum JoinType {
-    Inner,
-    Left,
-    Right,
-    Full,
-    // Semi / Anti — deferred; see §4.3
-    // AsOf  — deferred; gated on TemporalShape (17); see §4.3
-}
-```
+Enum defined in [`18 §2.3`](./18_entities.md#23-jointype). v1 variants: `Inner`, `Left`, `Right`, `Full`. `Semi` / `Anti` are deferred (see §4.3 below). `AsOf` is deferred and gated on `17 TemporalShape` (see §4.3 and `17 §5`).
 
 The join-kind carried by a `Relationship`. Lowers directly to
 `PlanNode::Join`'s `join_type` field in `35`.
@@ -623,9 +588,7 @@ reconciled under `UnifiedSemantics`, with per-field ownership
 
 ### 5.2 `traversed_paths`
 
-```rust
-pub struct RelationshipPath(pub Vec<RelationshipId>); // 14b §4.5
-```
+The `RelationshipPath` struct is owned by [`14b §4.5`](./14b_expression_resolution.md#45-pathsignature) — a `#[derive(Ord, PartialOrd, Eq, PartialEq)]` newtype over `Vec<RelationshipId>`. `16` consumes that shape; it does not redefine it.
 
 For `CompositionKind::Joinset` and `CompositionKind::Relationship`, this
 records the `RelationshipId` chain that produced the composition. Shape

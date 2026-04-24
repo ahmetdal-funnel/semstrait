@@ -24,7 +24,22 @@ refined-by:
 
 # 23. Unionset
 
-> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md). This document predates that spec and is pending refactor.
+> **Reconciliation (Phase-3, 2026-04-17).** The v1 authoring-layer canonical shape for `Unionset` is ratified across:
+>
+> - [`../apis/32_semstrait_model.md §3`](../apis/32_semstrait_model.md) — top-level YAML tag (`unionsets:`), `UnionsetBody` struct shape.
+> - [`../foundations/18_entities.md`](../foundations/18_entities.md) — shared entity types consumed by `UnionsetBody`.
+> - **`UnionMode` v1 roster** is `{All, Unique}`, `#[non_exhaustive]`, default `All`. `UnionMode::Distinct` from this doc's authoring was renamed to `Unique` and `Q-UNI-002` (Distinct activation) is auto-closed. See `18 §2` adjacency references.
+> - [`26_nesting_matrix.md`](./26_nesting_matrix.md) — nesting rules. Notably **R3** (every `ComplexDataKind` requires ≥ 2 children, auto-closing `Q-UNI-009`).
+> - `union_mode` is authored as a direct field on `UnionsetBody` (not inside `extras`) per `32 §4.2`.
+>
+> This document retains authority for:
+>
+> - `UnionsetStrategy` plan-shape contract (per-child NULL-fill projection, column-type reconciliation, branch pruning).
+> - Coverage-driven branch-pruning rules and the `PLAN_W_2301` advisory.
+> - Re-aggregation-after-Union rules (shared with `22 Grainset` per `20 §5`).
+> - `VALID_E_23NN` / `COMP_E_23NN` / `PLAN_E_23NN` error-code allocations.
+>
+> Rust-struct and YAML-surface body sections predate `18` (formerly `32c`); read them as historical. `Distinct` in body text = `Unique` in v1; `ColumnMapping` → `SemanticMapping` rename per `18 §10`.
 
 ---
 
@@ -928,7 +943,7 @@ For this Model + Request, compile emits no errors. At plan time, no errors fire.
 Round-1 open questions surfaced while drafting `23` are parked in `docs/design/open_questions/23_open_questions.md`. Questions span:
 
 - The error-code allocation scheme (`*_E_23NN` per doc vs. `30 §6.2`'s cross-subsystem reservation).
-- Whether `UnionMode::Distinct` should remain v1 or be deferred.
+- ~~Whether `UnionMode::Distinct` should remain v1 or be deferred.~~ **CLOSED by `18 §2`** — v1 roster is `{All, Unique}`; the variant formerly named `Distinct` was renamed to `Unique` and kept in v1.
 - Whether the composition-level Coverage override (`ChildCoverageOverride.provides`) is the right shape, vs. richer per-Semantics `Native`/`Derived`/`NullFill` declaration.
 - Whether `Avg` re-aggregation should be an error (`PLAN_E_2304`) or a `Lossy` warning (`PLAN_W_2302`) by default.
 - The strict-mode posture for the §6 `TemporalShape`-mismatch advisories (warnings vs. errors).

@@ -26,7 +26,26 @@ refined-by:
 
 # 24. Joinset
 
-> **Note.** Root-shape authoritative spec: [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) + [`26_nesting_matrix.md`](./26_nesting_matrix.md) + [`../apis/32b_catalogs_yaml.md`](../apis/32b_catalogs_yaml.md) + [`../open_questions/joinset_shape_semantics.md`](../open_questions/joinset_shape_semantics.md). This document predates that spec and is pending refactor.
+> **Reconciliation (Phase-3, 2026-04-17).** The v1 authoring-layer canonical shape for `Joinset` is ratified across:
+>
+> - [`../apis/32_semstrait_model.md §3`](../apis/32_semstrait_model.md) — top-level YAML tag (`joinsets:`), `JoinsetBody` struct shape.
+> - [`../foundations/18_entities.md §2`](../foundations/18_entities.md) — canonical `Relationship` struct (unified across root-level `relationships:` and `JoinsetBody.relationships`). Key decisions:
+>   - `JoinsetBody.relationships: Vec<Relationship>` — no separate `JoinRelationship` / `Path` / `JoinHop` type. The unified struct carries `{ from, to, join_type, keys, filter?, cardinality, directionality, ai_context? }`.
+>   - `JoinType` v1 roster: `{Inner, Left, Right, Full}`, `#[non_exhaustive]`. **`AsOf` is descoped for v1** (post-v1 deferred per `17`).
+>   - Join keys shape: `keys: [{from: <SemanticExpr>, to: <SemanticExpr>}, …]` equi-pair list + optional `filter: <SemanticExpr>` residual predicate.
+>   - `cardinality:` is required at every Relationship authoring site (SR-E-4).
+>   - `directionality:` is part of the struct (`forward` | `bidirectional`, default `bidirectional`).
+> - [`26_nesting_matrix.md`](./26_nesting_matrix.md) — nesting rules. Notably **R3** (every `ComplexDataKind` requires ≥ 2 children).
+> - [`../open_questions/24_open_questions.md#post-v1-shape-hint-clusters-folded-in-2026-04-17`](../open_questions/24_open_questions.md#post-v1-shape-hint-clusters-folded-in-2026-04-17) — Q-24-09 (`JoinAssociativity`) + Q-24-10 (star / snowflake / 3NF shape-tag vocabulary), folded from the former `joinset_shape_semantics.md` sidecar on 2026-04-17.
+>
+> This document retains authority for:
+>
+> - The **anchor** contract (§3) — mandatory single root child, FROM-clause semantics, fan-out reference frame.
+> - The **join-path** contract (§4) — explicit-path vs implicit-path authoring modes and their interaction with the Relationship graph.
+> - `JoinsetStrategy` planner contract (§5) — lowering to `PlanNode::Join` sequences in anchor-outward order; per-hop `JoinType` / `Cardinality` propagation.
+> - `VALID_E_24NN` / `COMP_E_24NN` / `PLAN_E_24NN` / `PLAN_W_24NN` error-code allocations.
+>
+> Rust-struct and YAML-surface body sections predate `18` (formerly `32c`); `JoinRelationship` / `ExplicitPath` / `JoinHop` in body text are pre-unification vocabulary — read the `Relationship` shape from `18 §2`. `AsOf` sections are forward-reference only; v1 does not emit `AsOf` joins. `ColumnMapping` → `SemanticMapping` rename per `18 §10`.
 
 ## 1. Purpose and Scope
 
