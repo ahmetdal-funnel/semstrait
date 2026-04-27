@@ -386,7 +386,7 @@ The planner does NOT walk `Coverage` at plan time beyond a pre-indexed lookup �
 Rationale:
 
 - `ComposedSemanticInterface` carries per-field `FieldProvenance` and per-`(ConstituentRef, SemanticsName)` `CompositionCoverage` (`16 §7` / `§8`). A Simple has no constituents, so these fields would be trivially empty — the type-level distinction keeps the API honest.
-- Request-side field-first resolution (`16 §11`) may form an implicit `ComposedSemanticInterface` **at plan time** when a Request's Semantics span multiple top-level DataKinds connected by declared `Relationship`s. This is a **plan-time synthesis**, not a DataKind-level interface exposure — the individual DataKinds still expose their variant-determined interface at the Manifest layer. (Open question Q3 in `open_questions/20_open_questions.md`: should a single-DataKind Request's planner entry always receive `InterfaceView::Composed(_)` for uniform dispatch?)
+- Request-side field-first resolution (`16 §11`) may form an implicit `ComposedSemanticInterface` **at plan time** when a Request's Semantics span multiple top-level DataKinds connected by declared `Relationship`s. This is a **plan-time synthesis**, not a DataKind-level interface exposure — the individual DataKinds still expose their variant-determined interface at the Manifest layer. (Open question Q3 in `questions/open/20_questions.md`: should a single-DataKind Request's planner entry always receive `InterfaceView::Composed(_)` for uniform dispatch?)
 - `20 §5.3`'s dispatch logic reads the variant tag; it does NOT read the `InterfaceView` variant. Strategy selection is structural, not interface-shape-based.
 
 ### 4.5 Grain posture
@@ -745,9 +745,9 @@ The extension is a MINOR change per `30 §2` (new sub-range allocation). See `§
 
 ## 9. Round-1 Audit / Open Items
 
-### 9.1 Open items parked to `open_questions/20_open_questions.md`
+### 9.1 Open items parked to `questions/open/20_questions.md`
 
-Items surfaced during Round-1 drafting of `20` that cannot be closed from `10` / `11` / `12` / `15` / `16` / `17` alone. See `open_questions/20_open_questions.md` for full write-ups.
+Items surfaced during Round-1 drafting of `20` that cannot be closed from `10` / `11` / `12` / `15` / `16` / `17` alone. See `questions/open/20_questions.md` for full write-ups.
 
 | ID | Title | Section | Blocking? |
 |---|---|---|---|

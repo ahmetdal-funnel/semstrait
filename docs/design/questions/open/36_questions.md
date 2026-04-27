@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/36_open_questions
+doc: design/questions/open/36_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `apis/36_semstrait_adapter.md`
 depends-on:
@@ -177,7 +177,7 @@ depends-on:
 **Question.** `35 §6.6` exposes `Capability` as a `#[non_exhaustive]` enum re-exported from `36`. `36 §6.1` uses it as the type of `AdapterCapabilities.capabilities`. Should the roster-addition mechanism (which adapter ratifies which new variant) live in `35` (where the enum is defined) or in `36` (where it's consumed)?
 
 **Refs.**
-- `35 §6.6` / `35 open_questions Q-IR-010` — current split (enum in `35`, roster ownership in `36`).
+- `35 §6.6` / `35_questions Q-IR-010` — current split (enum in `35`, roster ownership in `36`).
 - `36 §6.1` — uses the enum as a struct field type.
 - `30 §4` — enum-variant addition is MINOR.
 

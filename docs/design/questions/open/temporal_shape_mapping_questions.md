@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/temporal_shape_mapping_open_questions
+doc: design/questions/open/temporal_shape_mapping_questions
 status: Living
 purpose: Parked unresolved questions discovered while drafting `registry/temporal_shape_mapping.md`
 depends-on:
@@ -16,7 +16,7 @@ depends-on:
 
 > Unresolved items surfaced during Round-1 drafting of the temporal-shape-mapping catalog. Each entry restates the question, lists its ratified references, enumerates options, records the Round-1 default, and marks blocking status. Questions migrate out of this file as adapter implementation lands or engine landscape shifts.
 
-> **Index pointer.** For a one-file view of every open question across all registry sidecars (functions / join-types / temporal-shape), see [`registry_open_questions.md`](registry_open_questions.md). That index is pure navigation — the full question bodies stay here.
+> **Index pointer.** For a one-file view of every open question across all registry sidecars (functions / join-types / temporal-shape), see [`registry_questions.md`](registry_questions.md). That index is pure navigation — the full question bodies stay here.
 
 ---
 

@@ -29,7 +29,7 @@ Then route by topic:
 | Per-crate public API contracts | `docs/design/apis/` (see `00_overview.md §6.4`) |
 | Refactor plan, deprecations, migration notes | `docs/design/implementation/` (see `00_overview.md §6.5`) |
 | Per-engine mapping catalogs (types, functions, temporal, joins) | `docs/design/registry/` (see `00_overview.md §6.6`) |
-| Open questions for any doc `N` | `docs/design/open_questions/N_open_questions.md` |
+| Open questions for any doc `N` | `docs/design/questions/open/N_questions.md` (active backlog); fully-resolved sidecars live in `docs/design/questions/closed/`. See `docs/design/INDEX.md §Open questions` for the full doc-map. |
 
 ## Documentation Routing — Code & Refactor Work (legacy / reference-only)
 

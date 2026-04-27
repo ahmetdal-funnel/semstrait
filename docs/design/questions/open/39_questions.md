@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/39_open_questions
+doc: design/questions/open/39_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `apis/39_semstrait_facade.md`
 depends-on:

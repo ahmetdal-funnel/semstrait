@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/42_open_questions
+doc: design/questions/open/42_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `implementation/42_migration_notes.md`
 depends-on:

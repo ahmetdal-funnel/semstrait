@@ -37,7 +37,7 @@ refined-by:
 > - **`grain:` rules** — required on leaf `Dataset`, forbidden on `ComplexDataKind` (SR-E-6 / SR-E-7 in `18 §11`); Grainset children each author their own (SR-E-8).
 > - **`JoinType::AsOf`** — descoped for v1; `18 §2.3` roster is `{Inner, Left, Right, Full}`. The `AsOf` design in §5 below remains the forward-reference spec.
 >
-> **Status:** partially ratified — §3 / §4 shape-propagation rules, §7 additivity interactions, §8 shape-gated composition, and §9 diagnostic catalog are authoritative. §2 SCD taxonomy (full Kimball treatment), §5 AsOf design, and §6 Request.temporal are forward-reference / post-v1. Round-1 drafting open items live in `open_questions/17_open_questions.md`.
+> **Status:** partially ratified — §3 / §4 shape-propagation rules, §7 additivity interactions, §8 shape-gated composition, and §9 diagnostic catalog are authoritative. §2 SCD taxonomy (full Kimball treatment), §5 AsOf design, and §6 Request.temporal are forward-reference / post-v1. Round-1 drafting open items live in `questions/open/17_questions.md`.
 
 ## [CONTRADICTION-FOUND] — code-range coordination with `30 §6.2`
 
@@ -48,7 +48,7 @@ This document assigns error codes in the doc-aligned range `*_E_1700`–`*_E_179
 1. **Extend `30 §6.2`'s subsystem ranges.** Add a doc-aligned sub-range convention (`NN00`–`NN99` reserved for the doc that ratifies the error, where `NN` is the doc number), and widen `VALID_E` / `COMP_E` / `PLAN_E` / `PLAN_W` overall ranges to `0001`–`9999` to accommodate. Bumps `30 §6.2`'s table.
 2. **Re-allocate within `30 §6.2`'s current ranges.** `16` used `0400`–`0499` / `0500`–`0599`; the next free 100-ranges in the ratified allocation are `VALID_E_0500`–`0999` (structurally claimed for keys + internal but most unused), `COMP_E` has no free 100-block left (0400-0499 taken), `PLAN_E_0600`–`0699`, `PLAN_W_0600`–`0699`. Under this reconciliation, `17` would claim `VALID_E_0500`–`0599` and `PLAN_E_0600`–`0699` and `PLAN_W_0600`–`0699`; `COMP_E` would need to either borrow from `VALID_E_0400`–`0499` unused slots or extend.
 
-This doc adopts **Option 1** (doc-aligned 17NN allocation) on the authoring-time brief, and records the coordination task as Q-TEMPORAL-001 in `open_questions/17_open_questions.md`. If `30 §6.2` is instead revised to adopt Option 2, every `*_E_17NN` reference in this doc is re-homed to its Option-2 code; error semantics are unchanged.
+This doc adopts **Option 1** (doc-aligned 17NN allocation) on the authoring-time brief, and records the coordination task as Q-TEMPORAL-001 in `questions/open/17_questions.md`. If `30 §6.2` is instead revised to adopt Option 2, every `*_E_17NN` reference in this doc is re-homed to its Option-2 code; error semantics are unchanged.
 
 `16 §14`'s `COMP_E_04xx` / `VALID_E_04xx` / `PLAN_E_05xx` / `PLAN_W_05xx` allocations are **not affected** — they remain authoritative for composition.
 
@@ -152,7 +152,7 @@ The variants are mutually exclusive per `SimpleDataKind`: a single `SimpleDataKi
 
 **Design rationale (still applicable to `18`'s shape).** These notes motivated the per-subtype struct-payload design and apply equally to the `18 §3` ratification:
 
-- **Per-subtype payload vs flat-fields.** The alternative — `Scd { subtype: ScdSubtype, valid_from_dim: SemanticsName, valid_to_dim: SemanticsName, current_flag_dim: Option<SemanticsName>, ... }` with the fields meaningless for `Type0` / `Type1` / `Type3` — was rejected. Per-subtype payload lets the type system refuse nonsense (you cannot accidentally author `valid_from_dim` on a `Type0` record) and makes future additions (post-v1 Type 7 dual-view fields) additive inside a single variant. Q-TEMPORAL-002 in `open_questions/17_open_questions.md` revisits the flat-struct alternative.
+- **Per-subtype payload vs flat-fields.** The alternative — `Scd { subtype: ScdSubtype, valid_from_dim: SemanticsName, valid_to_dim: SemanticsName, current_flag_dim: Option<SemanticsName>, ... }` with the fields meaningless for `Type0` / `Type1` / `Type3` — was rejected. Per-subtype payload lets the type system refuse nonsense (you cannot accidentally author `valid_from_dim` on a `Type0` record) and makes future additions (post-v1 Type 7 dual-view fields) additive inside a single variant. Q-TEMPORAL-002 in `questions/open/17_questions.md` revisits the flat-struct alternative.
 - **Payload references are `SemanticsName`s.** Per I1, every time-axis Dimension reference in `TemporalShape` is a canonical Semantics name, not a physical column. Resolution to physical columns happens in `15 §4` via `SemanticMapping`.
 - **Non-exhaustive at every level.** `TemporalShape`, `TemporalShapeKind`, and `ScdType` are each `#[non_exhaustive]` per I10. Adding `ScdType::Type3` (post-v1 promotion), extending `TemporalShapeKind` with bi-temporal variants, or growing `ScdBody` with a sentinel-aware `valid_to` marker is MINOR.
 
@@ -658,7 +658,7 @@ The closed list of behaviors whose **vocabulary and model surface** `17` ratifie
 
 ## 11. Round-1 audit / open items
 
-Detailed items in `open_questions/17_open_questions.md`. Summary of the questions this doc could not close from ratified foundations alone:
+Detailed items in `questions/open/17_questions.md`. Summary of the questions this doc could not close from ratified foundations alone:
 
 | Q | Title | Blocking? |
 |---|---|---|
@@ -726,4 +726,4 @@ Detailed items in `open_questions/17_open_questions.md`. Summary of the question
 - `35` — `PlanNode::Join` extension for `JoinType::AsOf(anchor)` payload.
 - `36` — per-adapter emission rules for `AsOf` joins / snapshot selection / SCD window predicates.
 - `registry/temporal_shape_mapping.md` — per-engine SCD / Events / Snapshot emission catalog.
-- `open_questions/17_open_questions.md` — Round-1 deferred items (Q-TEMPORAL-001 through Q-TEMPORAL-008).
+- `questions/open/17_questions.md` — Round-1 deferred items (Q-TEMPORAL-001 through Q-TEMPORAL-008).

@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/35_open_questions
+doc: design/questions/open/35_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `apis/35_semstrait_ir.md`
 depends-on:

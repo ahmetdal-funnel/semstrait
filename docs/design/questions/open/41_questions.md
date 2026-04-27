@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/41_open_questions
+doc: design/questions/open/41_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `implementation/41_deprecations.md`
 depends-on:

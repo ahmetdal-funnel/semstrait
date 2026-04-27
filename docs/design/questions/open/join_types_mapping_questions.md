@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/join_types_mapping
+doc: design/questions/open/join_types_mapping_questions
 status: Round-1 open items
 scope: Unresolved questions surfaced while drafting `registry/join_types_mapping.md` (Round 1)
 ---
@@ -8,7 +8,7 @@ scope: Unresolved questions surfaced while drafting `registry/join_types_mapping
 
 Each entry is self-contained and includes the context, options considered, and the Round-1 position adopted in `registry/join_types_mapping.md`. Entries resolve once empirical adapter-harness data or adapter-implementation review retires them. None of these questions blocks Round-1 ratification of the registry — all are coordination items with canonical deferrals (`16 §4.3` / `17 §10`) or adapter implementation (`35` / `36` / adapter crates).
 
-> **Index pointer.** For a one-file view of every open question across all registry sidecars (functions / join-types / temporal-shape), see [`registry_open_questions.md`](registry_open_questions.md). That index is pure navigation — the full question bodies stay here.
+> **Index pointer.** For a one-file view of every open question across all registry sidecars (functions / join-types / temporal-shape), see [`registry_questions.md`](registry_questions.md). That index is pure navigation — the full question bodies stay here.
 
 ---
 
@@ -208,11 +208,11 @@ Both change observable behavior (row count for `DISTINCT`; explain-plan / runtim
 
 ## Cross-references to other open-question files
 
-- [`temporal_shape_mapping_open_questions.md`](temporal_shape_mapping_open_questions.md) — `AsOf` rewrite-tier questions are authoritative there. In particular:
+- [`temporal_shape_mapping_questions.md`](temporal_shape_mapping_questions.md) — `AsOf` rewrite-tier questions are authoritative there. In particular:
     - `Q-TEMPORAL-MAP-004` (ScdWindow trailing-closure on native-`ASOF` engines) — resolved Option C in `temporal_shape_mapping.md`; this doc's `§3.5.1` inherits.
     - `Q-TEMPORAL-MAP-001` (DataFusion native `ASOF JOIN`) — shares `TD-TEMPORAL-ASOF-DATAFUSION-NATIVE`.
     - `Q-TEMPORAL-MAP-003` (Spark `QUALIFY` versioning) — shares `TD-TEMPORAL-ASOF-SPARK-NATIVE`.
-- [`functions_mapping_open_questions.md`](functions_mapping_open_questions.md) — `ROW_NUMBER` consumed by `AsOf` structural rewrites is ratified in `14a`; emission-level divergence (e.g. frame clauses) would surface there.
-- [`16_open_questions.md`](16_open_questions.md) — `16 §4.3` defers `Semi` / `Anti` / `AsOf` canonical promotion. `TD-COMPOSITION-SEMI-ANTI` / `TD-COMPOSITION-ASOF` are shared.
-- [`17_open_questions.md`](17_open_questions.md) — `17 §10` defers `JoinType::AsOf(AsOfAnchor)` planner implementation. `TD-COMPOSITION-ASOF` and the `AsOf` emission detail shared with `temporal_shape_mapping.md` are ratified there.
-- [`36_open_questions.md`](36_open_questions.md) — adapter-surface hint emission (Q-JOIN-MAP-006 Option D) becomes an adapter-API concern when pursued.
+- [`functions_mapping_questions.md`](functions_mapping_questions.md) — `ROW_NUMBER` consumed by `AsOf` structural rewrites is ratified in `14a`; emission-level divergence (e.g. frame clauses) would surface there.
+- [`16_questions.md`](16_questions.md) — `16 §4.3` defers `Semi` / `Anti` / `AsOf` canonical promotion. `TD-COMPOSITION-SEMI-ANTI` / `TD-COMPOSITION-ASOF` are shared.
+- [`17_questions.md`](17_questions.md) — `17 §10` defers `JoinType::AsOf(AsOfAnchor)` planner implementation. `TD-COMPOSITION-ASOF` and the `AsOf` emission detail shared with `temporal_shape_mapping.md` are ratified there.
+- [`36_questions.md`](36_questions.md) — adapter-surface hint emission (Q-JOIN-MAP-006 Option D) becomes an adapter-API concern when pursued.

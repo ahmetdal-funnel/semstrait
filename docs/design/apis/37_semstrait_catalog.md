@@ -287,7 +287,7 @@ All methods are `async`. `Send + Sync` is required so `Arc<dyn CatalogProvider>`
 
 ### 3.5 Non-goals
 
-- No `create_table`, `drop_table`, `write_snapshot`, or any mutation. The v1 surface is strictly read-oriented. Mutation lands in a future MINOR under a separate companion trait (see `open_questions/37 Q-CAT-006`).
+- No `create_table`, `drop_table`, `write_snapshot`, or any mutation. The v1 surface is strictly read-oriented. Mutation lands in a future MINOR under a separate companion trait (see `questions/open/37 Q-CAT-006`).
 - No transaction scoping. Each call is independent.
 - No caching inside the trait. Callers may wrap with a cache layer but the trait is not the cache surface.
 
@@ -336,7 +336,7 @@ Limitations: REST API only — no direct metadata-file reads. Table data files a
 | Supported formats       | Parquet, Delta (reported as format).                                   |
 | Use cases               | Databricks-hosted data; platform-agnostic Unity Catalog deployments.   |
 
-Limitations: no snapshot pinning (versioning on Delta tables lives in the Delta log, not the Unity API). `check_schema_drift` still functions — it compares current schema to expected — but without snapshot-ID correlation. See `open_questions/37 Q-CAT-003`.
+Limitations: no snapshot pinning (versioning on Delta tables lives in the Delta log, not the Unity API). `check_schema_drift` still functions — it compares current schema to expected — but without snapshot-ID correlation. See `questions/open/37 Q-CAT-003`.
 
 ### 4.4 `FilesystemCatalogProvider`
 
@@ -408,7 +408,7 @@ pub trait FileSystem: Send + Sync + std::fmt::Debug {
 ### 5.3 Method contracts
 
 - **`list`** — Returns every object whose key begins with `prefix`. Non-recursive semantics are NOT implied; implementations return all descendants. Results are NOT sorted — callers sort client-side when determinism is required.
-- **`read`** — Returns the full object body as `Bytes`. Streaming reads are not in v1; large-object streaming is a MINOR extension (see `open_questions/37 Q-CAT-005`).
+- **`read`** — Returns the full object body as `Bytes`. Streaming reads are not in v1; large-object streaming is a MINOR extension (see `questions/open/37 Q-CAT-005`).
 - **`write`** — Writes `data` as a single object at `path`. Overwrites by default. Atomicity is provider-defined — typically atomic on S3/Azure/GCS, non-atomic on local disk unless the implementation stages to a temp file.
 - **`exists`** — Returns `true` iff an object exists at exactly `path`. Does NOT test prefix existence.
 
@@ -466,7 +466,7 @@ pub trait FileSystem: Send + Sync + std::fmt::Debug {
 
 ### 6.5 Roster summary
 
-Implementation selection is caller-side: the caller constructs the concrete `FileSystem` (or a `Vec<Arc<dyn FileSystem>>` dispatched by scheme) and injects it into the `CatalogProvider` or into `expand_glob`. No scheme-dispatch facility is exposed by the crate root in v1; if scheme-based dispatch is needed across multiple filesystems, callers compose it themselves. See `open_questions/37 Q-CAT-004`.
+Implementation selection is caller-side: the caller constructs the concrete `FileSystem` (or a `Vec<Arc<dyn FileSystem>>` dispatched by scheme) and injects it into the `CatalogProvider` or into `expand_glob`. No scheme-dispatch facility is exposed by the crate root in v1; if scheme-based dispatch is needed across multiple filesystems, callers compose it themselves. See `questions/open/37 Q-CAT-004`.
 
 ---
 
@@ -485,7 +485,7 @@ pub async fn expand_glob(
 
 1. Parses `pattern` into a fixed prefix (everything up to the first glob metacharacter) and a suffix pattern.
 2. Wraps the prefix in a `Path` and calls `fs.list(&prefix)` to enumerate candidates.
-3. Filters candidate `FileEntry.path` values against the suffix using glob semantics defined in `31` (via `semstrait_core::glob_match` or equivalent — see `open_questions/37 Q-CAT-002`).
+3. Filters candidate `FileEntry.path` values against the suffix using glob semantics defined in `31` (via `semstrait_core::glob_match` or equivalent — see `questions/open/37 Q-CAT-002`).
 4. Returns the lexicographically-sorted list of matching `Path`s.
 
 Globbing supports `*`, `**`, `?`, and character classes `[abc]` as defined by `semstrait-core`'s glob module. `**` matches any number of path segments; `*` matches within a single segment.
@@ -599,7 +599,7 @@ pub enum FileSystemError {
 
 ### 8.3 Registration with `30 §6.2`
 
-`30 §6.2`'s reserved-ranges table currently lists `PARSE`, `VALID`, `COMP`, `EXPR`, `PLAN`, `OPT`, `ADAPT`, and `REG / IO / ENG` as reserved. `IR` has an open item against `30` (see `open_questions/35 Q-IR-001`). Neither `CAT` nor `FS` is present today.
+`30 §6.2`'s reserved-ranges table currently lists `PARSE`, `VALID`, `COMP`, `EXPR`, `PLAN`, `OPT`, `ADAPT`, and `REG / IO / ENG` as reserved. `IR` has an open item against `30` (see `questions/open/35 Q-IR-001`). Neither `CAT` nor `FS` is present today.
 
 This doc proposes adding two new rows under `30 §6.2`:
 
@@ -608,7 +608,7 @@ This doc proposes adding two new rows under `30 §6.2`:
 | Catalog   | `CAT`  | `0100`–`0399` | `37_semstrait_catalog` |
 | FileSystem| `FS`   | `0100`–`0199` | `37_semstrait_catalog` |
 
-Tracked as amendment item `[TD-CAT-CODE-TABLE-AMEND]` pending `30`'s next amendment pass. See `open_questions/37 Q-CAT-001`.
+Tracked as amendment item `[TD-CAT-CODE-TABLE-AMEND]` pending `30`'s next amendment pass. See `questions/open/37 Q-CAT-001`.
 
 ---
 
@@ -727,7 +727,7 @@ Callers propagate `CatalogError` and `FileSystemError` through `?` into their ow
 
 ### 10.5 Async runtime
 
-The trait is `async fn` via `async_trait::async_trait` in v1. Callers MUST drive futures on a `tokio`-compatible runtime (per `30 §9`). A move to native `async fn` in traits (stable as of Rust 1.75+) is a possible future simplification — see `open_questions/37 Q-CAT-007`.
+The trait is `async fn` via `async_trait::async_trait` in v1. Callers MUST drive futures on a `tokio`-compatible runtime (per `30 §9`). A move to native `async fn` in traits (stable as of Rust 1.75+) is a possible future simplification — see `questions/open/37 Q-CAT-007`.
 
 ---
 
@@ -752,7 +752,7 @@ To avoid the "default method lie" — where a default silently returns `None` or
 
 ### 11.3 Error-variant stability
 
-`CatalogError` and `FileSystemError` are `#[non_exhaustive]`. MINOR releases MAY add variants with new `CAT_E_*` / `FS_E_*` codes. Existing variants MUST NOT change shape, and existing codes MUST NOT be reused or retired within a MAJOR cycle (retirement policy follows `30 §6.7` once `open_questions/30 Q-API-006` resolves).
+`CatalogError` and `FileSystemError` are `#[non_exhaustive]`. MINOR releases MAY add variants with new `CAT_E_*` / `FS_E_*` codes. Existing variants MUST NOT change shape, and existing codes MUST NOT be reused or retired within a MAJOR cycle (retirement policy follows `30 §6.7` once `questions/open/30 Q-API-006` resolves).
 
 ### 11.4 Value-type stability
 
@@ -762,7 +762,7 @@ To avoid the "default method lie" — where a default silently returns `None` or
 
 Method-set growth on `CatalogProvider` or `FileSystem` follows this ordered procedure:
 
-1. Propose in an `open_questions/37_*.md` entry citing the need.
+1. Propose in an `questions/open/37_*.md` entry citing the need.
 2. Draft signature + default behavior.
 3. Ratify in a MINOR release with a default impl that errors on absence-of-support.
 4. Built-in impls override the default in the same MINOR; third-party impls migrate at their own pace.
@@ -793,7 +793,7 @@ This procedure is the MINOR-safe path; any growth that cannot be fit into it bec
 
 ## 13. Round-1 open items
 
-The following drafting decisions are **defaulted** in this document but MUST be confirmed before ratification. All are captured in `docs/design/open_questions/37_open_questions.md`:
+The following drafting decisions are **defaulted** in this document but MUST be confirmed before ratification. All are captured in `docs/design/questions/open/37_questions.md`:
 
 - **Q-CAT-001** — Register `CAT` and `FS` subsystem prefixes in `30 §6.2`, with ranges `CAT_E_0100`–`0399` and `FS_E_0100`–`0199`.
 - **Q-CAT-002** — Ownership of glob-matching semantics: `semstrait-core` vs `semstrait-catalog`. Current default: core owns the predicate; catalog owns the prefix-and-filter orchestration.
@@ -808,7 +808,7 @@ The following drafting decisions are **defaulted** in this document but MUST be 
 - **Q-CAT-011** — `FilesystemCatalogProvider` schema source: empty schema + manifest-declared (current default) vs user-supplied schema-callback plug-in.
 - **Q-CAT-012** — `CatalogRegistry` ownership: `semstrait-manifest` (current default) vs `semstrait-catalog` (legacy code location).
 
-Each item is parked with arguments-for, arguments-against, and a next-step in `open_questions/37`.
+Each item is parked with arguments-for, arguments-against, and a next-step in `questions/open/37`.
 
 ---
 

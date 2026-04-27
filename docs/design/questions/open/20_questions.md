@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/20_open_questions
+doc: design/questions/open/20_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `data-kinds/20_taxonomy.md`
 depends-on:
@@ -202,4 +202,4 @@ Items considered during drafting but not elevated to open-question status. Each 
 
 ---
 
-**End of `20_open_questions.md`.**
+**End of `20_questions.md`.**

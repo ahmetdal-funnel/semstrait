@@ -56,7 +56,7 @@ refined-by:
 > **Status (Round 1 ratified).** All 17 framework decisions settled per `§16`'s
 > Ratified Decisions Index. Open implementation choices (depth bound value,
 > tie-breaker heuristics, solver sophistication) parked in
-> `open_questions/16_open_questions.md`.
+> `questions/open/16_questions.md`.
 
 ## 1. Purpose and Scope
 
@@ -180,7 +180,7 @@ equivalent lift the nested kind to top-level first.
 **Permitted constituents.** Both `from` and `to` must resolve to a
 top-level `DataKind` — `Simple`, `Unionset`, `Grainset`, or `Joinset`.
 A `Relationship` between two composed kinds is permitted (see
-`open_questions/16_open_questions.md#Q-COMP-013`); its `KeyPair.left` or
+`questions/open/16_questions.md#Q-COMP-013`); its `KeyPair.left` or
 `.right` may reference a namespaced name within the composed surface (e.g.
 `"order_details.customer_id"`).
 
@@ -191,7 +191,7 @@ Fields:
 - `id: RelationshipId` — assigned at `compile` in declared-iteration order,
   `u32` shape, Manifest-wide unique (`14b §4.2` owns the assignment). The
   ID is internal to one Manifest; not stable across recompiles (see
-  `14b open_questions OQ-7`).
+  `14b_questions OQ-7`).
 - `from: DataKindRef`, `to: DataKindRef` — named references to top-level
   `DataKind`s. `DataKindRef` is defined in `11 §4` as a newtype over
   `DataKindName`.
@@ -642,7 +642,7 @@ horizontal, both `Relationship`-mediated) is **materialization and
 identity**: `Joinset` has a name, is author-declared, and is persisted;
 `Relationship`-composition is anonymous, planner-synthesized, and
 Request-scoped. See `§9` for the full boundary and
-`open_questions Q-COMP-004` for the "should they merge?" debate.
+`16_questions Q-COMP-004` for the "should they merge?" debate.
 
 ### 5.4 Distinct type vs bare `SemanticInterface` — resolves open item (i)
 
@@ -1067,7 +1067,7 @@ by the rules in §9.1.
    by declaring a `Joinset` pinning a specific path, or by removing
    one of the candidate `Relationship`s from the Model.
 3. **Depth-limited to `MAX_IMPLICIT_COMPOSITION_DEPTH` hops.** Round 1
-   ratifies `4` hops (see `open_questions Q-COMP-001`). Requests that
+   ratifies `4` hops (see `16_questions Q-COMP-001`). Requests that
    would require a longer path emit `PlannerError::CompositionDepthExceeded`
    (§14.3, `PLAN_E_0502`). The limit protects against anonymously
    assembled "universal joins" that would never produce sensible

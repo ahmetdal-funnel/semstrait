@@ -36,7 +36,7 @@ refined-by:
 > `ResolvedQueryRequest` value objects, the `Strategy` and
 > `OptimizerPass` trait shapes, and the `PLAN_E_*` / `OPT_E_*` error
 > enums that flow across the stage boundary. Round-1 open items parked
-> in `open_questions/34_open_questions.md`.
+> in `questions/open/34_questions.md`.
 
 ## 1. Purpose, scope, layering
 
@@ -981,7 +981,7 @@ impl std::error::Error for PlanError {}
 
 The ranges `0506`, `0508`, `0509`, `0514`–`0519`, `0522`–`0599`, `0602`–`0609`, `0611`–`0699` are reserved against future additions within step-level sub-bands.
 
-Collision note: `PLAN_E_0500` is currently referenced by both `ConstraintViolation` (per `11 §8.7`, step 0) and `AmbiguousImplicitComposition` (per `16 §14.3`). This is the sole code-allocation conflict across the spec; §17 and `open_questions/34_open_questions.md` Q-PLAN-003 track the reconciliation — either move `AmbiguousImplicitComposition` to `PLAN_E_0506` (the next free slot in the composition sub-band) or move `ConstraintViolation` to its own dedicated code. Pending resolution, `34` uses `PLAN_E_0500` for the step-0 constraint carrier and notes the aliasing inline.
+Collision note: `PLAN_E_0500` is currently referenced by both `ConstraintViolation` (per `11 §8.7`, step 0) and `AmbiguousImplicitComposition` (per `16 §14.3`). This is the sole code-allocation conflict across the spec; §17 and `questions/open/34_questions.md` Q-PLAN-003 track the reconciliation — either move `AmbiguousImplicitComposition` to `PLAN_E_0506` (the next free slot in the composition sub-band) or move `ConstraintViolation` to its own dedicated code. Pending resolution, `34` uses `PLAN_E_0500` for the step-0 constraint carrier and notes the aliasing inline.
 
 ### 13.2 `PlanErrors`
 
@@ -1160,7 +1160,7 @@ Per `31 §13`, concrete CI checks guard each boundary:
 
 ## 17. Round-1 open items
 
-Open items surfaced during the drafting of `34` that cannot be resolved from `10`–`17`, `20`–`25`, `30`–`33`, or `35` alone. Full write-ups and proposed next steps live in `open_questions/34_open_questions.md`.
+Open items surfaced during the drafting of `34` that cannot be resolved from `10`–`17`, `20`–`25`, `30`–`33`, or `35` alone. Full write-ups and proposed next steps live in `questions/open/34_questions.md`.
 
 | ID | Title | Section | Blocking? |
 |---|---|---|---|

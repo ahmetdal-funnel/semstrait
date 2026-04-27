@@ -26,7 +26,7 @@ depends-on:
 
 > **Scope.** Authoritative per-engine rendering of every canonical `TemporalShape` variant ratified in `foundations/17_temporal_shape.md §2` (`Timeseries`, `Events`, `Snapshot`, `Scd { subtype: Type0..Type6 }`) and every `JoinType::AsOf(AsOfAnchor)` variant ratified in `17 §5.1`. This document is a **Living catalog**: entries gain detail, annotations, or additional engine columns as adapters land. It does NOT define new canonical shapes, subtypes, or anchor families — those live in `17`. Per `00 §6.6`, canonical specs in `17` never depend on the specific contents of this catalog.
 
-> **Status (as of drafting, 2026-04-20):** Round-1 scaffold drafted against `17` Round-1 ratification. Planner-side `Request.temporal` consumption and `AsOf` emission are DEFERRED per `17 §10`; this registry captures the **emission target** each adapter will converge on once the planner lands. Rows marked 🟡 are plausible based on engine documentation (DuckDB 1.1.x, DataFusion 40.x+, Spark 3.5.x, Snowflake docs, BigQuery docs, Iceberg / Delta time-travel specs) but have not been empirically verified against a live adapter test harness. Unresolved items parked in [`open_questions/temporal_shape_mapping_open_questions.md`](../open_questions/temporal_shape_mapping_open_questions.md).
+> **Status (as of drafting, 2026-04-20):** Round-1 scaffold drafted against `17` Round-1 ratification. Planner-side `Request.temporal` consumption and `AsOf` emission are DEFERRED per `17 §10`; this registry captures the **emission target** each adapter will converge on once the planner lands. Rows marked 🟡 are plausible based on engine documentation (DuckDB 1.1.x, DataFusion 40.x+, Spark 3.5.x, Snowflake docs, BigQuery docs, Iceberg / Delta time-travel specs) but have not been empirically verified against a live adapter test harness. Unresolved items parked in [`questions/open/temporal_shape_mapping_questions.md`](../questions/open/temporal_shape_mapping_questions.md).
 
 ---
 
@@ -458,7 +458,7 @@ Rows citing features behind a specific engine version carry `(Engine X.Y+)` inli
 
 ## 9. Round-1 Open Items
 
-Unresolved questions parked in [`open_questions/temporal_shape_mapping_open_questions.md`](../open_questions/temporal_shape_mapping_open_questions.md). Summary:
+Unresolved questions parked in [`questions/open/temporal_shape_mapping_questions.md`](../questions/open/temporal_shape_mapping_questions.md). Summary:
 
 | Q | Title | Round-1 position | Blocking? |
 |---|---|---|---|
@@ -486,4 +486,4 @@ None blocks ratification of this registry; all are coordination items with adapt
 - **`apis/35_semstrait_ir.md`** — `PlanNode::Join` carriage of `JoinType::AsOf(anchor)`. DEFERRED per `17 §10 D1`.
 - **`apis/36_semstrait_adapter.md`** — the `EngineAdapter` trait + PlanBuilder / Dialect layering that consumes this registry. Per-adapter crates ratify their own `FunctionRewriter` and emission paths; §3 / §4 / §5 rows seed each adapter's implementation.
 - **Adapter crates** (future `semstrait-adapter-datafusion`, `-duckdb`, `-spark`, `-snowflake`, `-bigquery`, `-substrait`) — own authoritative per-engine emission tables, feature flags (`DuckDbAdapterConfig::iceberg_extension`, etc.), and adapter-extended temporal idioms (§3.2.1, §5.4, §5.5 rows).
-- **`open_questions/temporal_shape_mapping_open_questions.md`** — parked unresolved questions surfaced by Round-1 drafting.
+- **`questions/open/temporal_shape_mapping_questions.md`** — parked unresolved questions surfaced by Round-1 drafting.

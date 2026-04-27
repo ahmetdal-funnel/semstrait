@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/30_open_questions
+doc: design/questions/open/30_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `apis/30_api_contracts.md`
 depends-on:

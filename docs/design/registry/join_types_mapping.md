@@ -26,7 +26,7 @@ depends-on:
 
 > **Scope.** Authoritative per-engine rendering of every canonical `JoinType` variant ratified in `foundations/16_composition.md §4` — `Inner`, `Left`, `Right`, `Full` — plus the `JoinType::AsOf(AsOfAnchor)` extension ratified in `foundations/17_temporal_shape.md §5.1` (implementation-DEFERRED per `17 §10`). This document is a **Living catalog**: entries gain detail, annotations, or additional engine columns as adapters land. It does NOT define new canonical variants, reserved-variant semantics, or anchor families — those live in `16` and `17`. Per `00 §6.6`, canonical specs never depend on this catalog's contents.
 
-> **Status (drafted 2026-04-20):** Round-1 scaffold drafted against `16` Round-1 ratification and `17` Round-1 ratification. Non-temporal variants (`Inner` / `Left` / `Right` / `Full`) are straightforward and drafted complete; `AsOf` emission cross-links to `temporal_shape_mapping.md §3.5` / `§4` which owns the authoritative per-(anchor, engine) table. This catalog is its `JoinType`-indexed companion: a reader who starts with "how does each engine render each `JoinType` variant" lands here; a reader who starts with "how does each engine express each `TemporalShape` or `AsOfAnchor`" lands in `temporal_shape_mapping.md`. Rows marked 🟡 are plausible from engine documentation (DuckDB 1.1.x, DataFusion 40.x+, Spark 3.5.x, Snowflake docs, BigQuery docs, Substrait 0.48+, Apache Calcite reference) but have not been empirically verified against a live adapter test harness. Unresolved items parked in [`open_questions/join_types_mapping_open_questions.md`](../open_questions/join_types_mapping_open_questions.md).
+> **Status (drafted 2026-04-20):** Round-1 scaffold drafted against `16` Round-1 ratification and `17` Round-1 ratification. Non-temporal variants (`Inner` / `Left` / `Right` / `Full`) are straightforward and drafted complete; `AsOf` emission cross-links to `temporal_shape_mapping.md §3.5` / `§4` which owns the authoritative per-(anchor, engine) table. This catalog is its `JoinType`-indexed companion: a reader who starts with "how does each engine render each `JoinType` variant" lands here; a reader who starts with "how does each engine express each `TemporalShape` or `AsOfAnchor`" lands in `temporal_shape_mapping.md`. Rows marked 🟡 are plausible from engine documentation (DuckDB 1.1.x, DataFusion 40.x+, Spark 3.5.x, Snowflake docs, BigQuery docs, Substrait 0.48+, Apache Calcite reference) but have not been empirically verified against a live adapter test harness. Unresolved items parked in [`questions/open/join_types_mapping_questions.md`](../questions/open/join_types_mapping_questions.md).
 
 ---
 
@@ -489,7 +489,7 @@ Per-engine inventory of canonical `16` / `17` semantics the engine does NOT nati
 
 ## 8. Round-1 Open Items
 
-Unresolved questions parked in [`open_questions/join_types_mapping_open_questions.md`](../open_questions/join_types_mapping_open_questions.md). Summary:
+Unresolved questions parked in [`questions/open/join_types_mapping_questions.md`](../questions/open/join_types_mapping_questions.md). Summary:
 
 | Q | Title | Round-1 position | Blocking? |
 |---|---|---|---|
@@ -555,4 +555,4 @@ Consolidated list of all `TD-JOIN-*` entries surfaced in this catalog plus share
 - **`apis/35_semstrait_ir.md`** — `PlanNode::Join.join_type: JoinType` carriage per `16 §4.4`; `AsOf(AsOfAnchor)` payload round-tripping per `17 §5.4` (DEFERRED).
 - **`apis/36_semstrait_adapter.md`** — the `EngineAdapter` trait + PlanBuilder / Dialect layering that consumes this registry. Per-adapter crates ratify their own emission paths; `§3` / `§4` / `§7` rows seed each adapter's implementation.
 - **Adapter crates** (future `semstrait-adapter-datafusion`, `-duckdb`, `-spark`, `-snowflake`, `-bigquery`, `-substrait`) — own authoritative per-engine emission tables and adapter-extended joins (reserved-variant registrations, optimizer hints).
-- **`open_questions/join_types_mapping_open_questions.md`** — parked unresolved questions surfaced during Round-1 drafting.
+- **`questions/open/join_types_mapping_questions.md`** — parked unresolved questions surfaced during Round-1 drafting.

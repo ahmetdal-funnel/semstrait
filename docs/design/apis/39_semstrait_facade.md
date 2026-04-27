@@ -17,7 +17,7 @@ refined-by:
 
 # 39. semstrait (facade)
 
-> **Status:** Round-1 draft. `39` nails down the public surface of `semstrait` — the **facade crate**, same name as the workspace — as a re-export + `prelude::*` + one-shot-convenience veneer over `semstrait-api` (`38`). Every type exposed here is already ratified in `30`–`38`; `39` adds no new vocabulary, no new types, no new traits, and no new algorithms. It ratifies only **which** subset of the lower-layer surface is promoted to the top-level convenience namespace, **how** feature flags compose against the per-adapter and per-catalog crates, and **what** the `v1` stability promise on `prelude::*` means. Round-1 open items are parked in `open_questions/39_open_questions.md`.
+> **Status:** Round-1 draft. `39` nails down the public surface of `semstrait` — the **facade crate**, same name as the workspace — as a re-export + `prelude::*` + one-shot-convenience veneer over `semstrait-api` (`38`). Every type exposed here is already ratified in `30`–`38`; `39` adds no new vocabulary, no new types, no new traits, and no new algorithms. It ratifies only **which** subset of the lower-layer surface is promoted to the top-level convenience namespace, **how** feature flags compose against the per-adapter and per-catalog crates, and **what** the `v1` stability promise on `prelude::*` means. Round-1 open items are parked in `questions/open/39_questions.md`.
 
 ## Table of Contents
 
@@ -504,7 +504,7 @@ The entirety of `crates/semstrait/src/` in v1 is expected to be well under 200 s
 
 ## 9. Round-1 Open Items
 
-The following drafting decisions are **defaulted** in this document but MUST be confirmed before v1 ratification. All are captured in `docs/design/open_questions/39_open_questions.md`:
+The following drafting decisions are **defaulted** in this document but MUST be confirmed before v1 ratification. All are captured in `docs/design/questions/open/39_questions.md`:
 
 - **Q-FAC-001** — Default-feature composition: `default = ["ansi-sql"]` vs `default = []`. Current default: `ansi-sql` on, to give `cargo add semstrait` a working adapter out of the box.
 - **Q-FAC-002** — Prelude membership of `Name` (`semstrait-ir §5.4`): promoted to the prelude (current default) vs reachable only through `semstrait::ir::Name`. The IR `Name` newtype is not a common first-touch type; concern is resolved one way or the other at `38` ratification.
@@ -515,7 +515,7 @@ The following drafting decisions are **defaulted** in this document but MUST be 
 - **Q-FAC-007** — Prelude growth budget: should the prelude cap at ~25 names to remain scannable, or grow organically with sub-crate additions? Current default: no hard cap; membership principles in `§3.3` apply.
 - **Q-FAC-008** — `semstrait::VERSION` constant usefulness: ship it (current default) vs rely on `env!("CARGO_PKG_VERSION")` inline at consumer site.
 
-Each item is parked with arguments-for, arguments-against, and a next-step in `open_questions/39`.
+Each item is parked with arguments-for, arguments-against, and a next-step in `questions/open/39`.
 
 ---
 

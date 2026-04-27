@@ -1098,7 +1098,7 @@ pub mod io {
 
 ## 17. Round-1 Open Items
 
-Parked in `docs/design/open_questions/33_open_questions.md`. Titles:
+Parked in `docs/design/questions/open/33_questions.md`. Titles:
 
 - **Q1.** `compile` — `SemanticModel` by value vs `&SemanticModel`.
 - **Q2.** `CompileError` — unified enum vs split `CoreCompileError` + `ManifestCompileError`.

@@ -65,7 +65,7 @@ Items surfaced during Round-1 drafting of `25` where two authoritative docs appe
 | `CDF-21-01` | `21 §2.1`'s `DataKind` enum | `21 §2.1` shows a **flat** 4-arm `DataKind { Simple, Unionset, Grainset, Joinset }` enum. `20 §2.1` and `23 §2.1` ratify a **two-level** shape `DataKind { Simple(_), Complex(ComplexDataKind) }` with `ComplexDataKind { Unionset, Grainset, Joinset }`. The two cannot both be right. Per `00 §6.3`'s read-order / directionality rule, `20`'s two-level shape is the earlier ratification and therefore authoritative; `21 §2.1` needs a doc edit. | `21`. |
 | `CDF-21-02` | `21 §2.1` / `22 §2.1` / `23 §2.1` / `24 §2.2` | Inner variant struct names diverge: `21` uses `UnionsetDataKind` / `GrainsetDataKind` / `JoinsetDataKind`; `22` uses `GrainsetDataKind`; `23` uses `UnionsetDecl`; `24` uses `JoinsetDataKind`. `20 §2.1` uses `UnionsetSpec` / `GrainsetSpec` / `JoinsetSpec`. A single canonical name per variant must exist; `25 §2` and `§3` pick a non-normative default (`<Variant>DataKind`) consistent with `21` / `22` / `24`, but `23`'s `UnionsetDecl` and `20`'s `*Spec` both need reconciling. | `20` (authoritative for the two-level roster; each of `21`–`24` updates its own inner struct name). |
 | `CDF-23-01` | `23 §1.1` and `23 §4.4` | Both cite `13 §7`'s "cast matrix" / "widening rules". `13 §7` (per the current `13` outline) is "Interaction with Other Docs" — there is no cast-matrix content under that anchor. The widening rules `23` consumes are authored across `13 §2.4` (shape unification) and `14a` (promotion lattice / cast policy). Either `13 §7` needs to grow a "Cast Matrix" subsection, or `23`'s refs should be retargeted to `13 §2.4` + `14a`. | `13` or `23` (editorial). |
-| `CDF-17-01` | `17 §7.3` advisory roster × `22 §5` / `23 §6` | `22`'s `PLAN_W_2202 MixedShapeAdvisoryChildren` and `23`'s `COMP_W_2302`–`W_2306` shape-mismatch advisories overlap with `17 §7.3`'s advisory-warning roster without a single owning code. A cross-variant `TemporalShape` advisory shared across `Grainset` / `Unionset` (and, once `17 §5` lands, `Joinset`) is a natural `25 §2.9` cell — but the code-owning doc is unclear. | `17` owns the advisory taxonomy; the per-variant `PLAN_W_*` codes in `22` / `23` / `24` are the emission-site labels. `25` does not resolve; see Q1 in `open_questions/25_open_questions.md`. |
+| `CDF-17-01` | `17 §7.3` advisory roster × `22 §5` / `23 §6` | `22`'s `PLAN_W_2202 MixedShapeAdvisoryChildren` and `23`'s `COMP_W_2302`–`W_2306` shape-mismatch advisories overlap with `17 §7.3`'s advisory-warning roster without a single owning code. A cross-variant `TemporalShape` advisory shared across `Grainset` / `Unionset` (and, once `17 §5` lands, `Joinset`) is a natural `25 §2.9` cell — but the code-owning doc is unclear. | `17` owns the advisory taxonomy; the per-variant `PLAN_W_*` codes in `22` / `23` / `24` are the emission-site labels. `25` does not resolve; see Q1 in `questions/open/25_questions.md`. |
 
 None of these block `25`'s Round-1 ratification: every affected cell lists **both** citations and tags them, so a reader following either side sees the same rule.
 
@@ -459,7 +459,7 @@ NULL-fill appears in two distinct axes:
 | `Unionset` | **Per-child `CompositionCoverage`**, optionally overridden by an author-declared `ChildCoverageOverride.provides` set (`23 §3.2` / `§5`). | **Yes** — `FieldOwnership::NullFill(providers)` records which children DO cover each field; non-providers inferred by set-difference (`23 §5.5`, `16 §7.3.3`). | **Yes** — per-child `Project` emits `Cast(Null, unified_type)` at the seam for every `NullFill` field (`23 §4.3`). The only variant that materializes structural NULL-fill in `PlanNode`s. |
 | `Joinset` | **Per-member `CompositionCoverage`** — fold per `24 §8.4`; every member is either `Native` or `NullFill` on each composed-surface Semantics. Most Joinset coverage rows are `Native` on one side and `NullFill` on the other. | **No** — `16 §7.3.3` reserves `FieldOwnership::NullFill` for Unionset; Joinset-side outer-join NULL-fill is carried by `JoinType` semantics at plan time (`24 §8.3` / `§5.5` step 3). | NULL-fill is emitted by the `PlanNode::Join`'s outer-join semantics (`Left` / `Right` / `Full`), not by a typed `Cast(Null, _)` projection. |
 
-Q-24-08 in `open_questions/24_open_questions.md` revisits whether Joinset should gain structural `NullFill` records for outer joins; Round-1 position is no.
+Q-24-08 in `questions/open/24_questions.md` revisits whether Joinset should gain structural `NullFill` records for outer joins; Round-1 position is no.
 
 Cross-refs: `15 §6` (Binding-level Coverage), `16 §7.3.3` (per-variant `FieldOwnership::NullFill` policy), `16 §8.4` (`CompositionCoverage` fold), `21 §3.2` (Simple + multi-source), `22 §6` (Grainset), `23 §5` (Unionset — the canonical NULL-fill case), `24 §8.3` / `§8.4` (Joinset).
 
@@ -526,7 +526,7 @@ The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) continues to match 
 | `VALID_E_2500`–`2519` | Cross-variant authoring errors (e.g. a Relationship endpoint that is a valid DataKind on its own but illegal in combination with a declared Grainset / Unionset / Joinset under `12 §2`). | Reserved; no codes allocated in Round 1. `12 §2` itself handles same-variant self-nesting. |
 | `COMP_E_2500`–`2529` | Cross-variant compile-time errors (e.g. `AsOf` activation across an implicit Relationship composition where the two owning DataKinds are one Simple + one Grainset + one Unionset). | Reserved. |
 | `PLAN_E_2530`–`2559` | Cross-variant plan-time errors (e.g. ambiguous field-first resolution across a heterogeneous variant set — partially overlapping with `16 §14.3 PLAN_E_0507 AmbiguousFieldFirstResolution`). | Reserved; no new codes until cross-variant scenarios surface beyond `16 §14.3`'s coverage. |
-| `PLAN_W_2560`–`2589` | Cross-variant advisories (e.g. a `TemporalShape × Additivity` advisory that applies across all Measure-bearing variants; see `CDF-17-01` in `§1.3`). | Reserved; Round 1 emits per-variant advisories instead (`21 §9 PLAN_W_2102`, `22 §9.2 PLAN_W_2202`, `23 §10.2`, `24 §11.2 PLAN_W_2404`) — Q2 in `open_questions/25_open_questions.md` asks whether a unified code is preferable. |
+| `PLAN_W_2560`–`2589` | Cross-variant advisories (e.g. a `TemporalShape × Additivity` advisory that applies across all Measure-bearing variants; see `CDF-17-01` in `§1.3`). | Reserved; Round 1 emits per-variant advisories instead (`21 §9 PLAN_W_2102`, `22 §9.2 PLAN_W_2202`, `23 §10.2`, `24 §11.2 PLAN_W_2404`) — Q2 in `questions/open/25_questions.md` asks whether a unified code is preferable. |
 
 No `*_E_2500`–`*_E_2599` codes are **allocated** in Round 1. The range is reserved against cross-variant diagnostics that surface in `34` / `17` / `30` ratification.
 
@@ -545,7 +545,7 @@ A drafter adding a new diagnostic that could plausibly live in multiple ranges s
 1. **Single-variant scope?** The diagnostic fires only for one `DataKind` variant. → Use the variant's band (`*_E_21xx` for Simple, `*_E_22xx` for Grainset, `*_E_23xx` for Unionset, `*_E_24xx` for Joinset). Example: `24 §11.2 PLAN_W_2404 AsOfActivation`.
 2. **Shared across all four variants, owned by no single per-variant doc?** Use `*_E_2000–2099` (per `20 §8.2`). Example: `VALID_E_2002 InterfaceTypeMismatch`.
 3. **Cross-variant, fires for ≥ 2 but < 4 variants, no natural per-variant home?** Use `*_E_2500–2599` (this doc's band). Example: hypothetical `COMP_E_2510 CrossVariantAsOfAmbiguity` for an `AsOf` that crosses a Joinset and an implicit Relationship composition simultaneously.
-4. **Same advisory semantics emitted by multiple variants (e.g. shape × additivity)?** Round-1 default is per-variant emission per Q2 in `open_questions/25_open_questions.md`; retain the per-variant code unless Q2 resolves differently.
+4. **Same advisory semantics emitted by multiple variants (e.g. shape × additivity)?** Round-1 default is per-variant emission per Q2 in `questions/open/25_questions.md`; retain the per-variant code unless Q2 resolves differently.
 
 The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) follows the emission stage (`30 §6.1`); per-variant numbering within the band is the drafter's discretion.
 
@@ -563,9 +563,9 @@ The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) follows the emissio
 - **Ratify the `PlanNode` roster.** That is `35`'s.
 - **Specify `Manifest` persistence or the `ResolvedDataKind` struct roster.** Those are `33`'s.
 - **Specify the `Request` shape or the `SessionContext` payload.** Those are `34`'s (plus `00 §4.1`'s vocabulary entries).
-- **Resolve `[CROSS-DOC-FIX-NEEDED]` items.** Per the hard constraint, `25` flags contradictions but never resolves them. Each is parked in `§1.3` with the owning-doc pointer; resolution happens in the flagged doc's next revision, possibly with supporting items in `open_questions/25_open_questions.md`.
+- **Resolve `[CROSS-DOC-FIX-NEEDED]` items.** Per the hard constraint, `25` flags contradictions but never resolves them. Each is parked in `§1.3` with the owning-doc pointer; resolution happens in the flagged doc's next revision, possibly with supporting items in `questions/open/25_questions.md`.
 - **Define `#[non_exhaustive]` policy.** That is `30 §4`'s. `25` consumes I10 without amending it.
-- **Define an `Authoritative-for` schema.** That is `00 §6`'s governance section. `25`'s front-matter follows the conventions already in use; any schema formalization (see Q4 in `open_questions/25_open_questions.md`) is not `25`'s territory.
+- **Define an `Authoritative-for` schema.** That is `00 §6`'s governance section. `25`'s front-matter follows the conventions already in use; any schema formalization (see Q4 in `questions/open/25_questions.md`) is not `25`'s territory.
 
 ### 7.1 What belongs in per-variant docs (not `25`)
 
@@ -585,7 +585,7 @@ A contrasting "where does this belong?" table to help drafters identify when a c
 
 ## 8. Round-1 Open Items
 
-Round-1 drafting surfaced four questions where `25`'s scope boundary interacts with the owning docs in a way that cannot be closed from `10`–`17` or `20`–`24` alone. Each is parked in `open_questions/25_open_questions.md`:
+Round-1 drafting surfaced four questions where `25`'s scope boundary interacts with the owning docs in a way that cannot be closed from `10`–`17` or `20`–`24` alone. Each is parked in `questions/open/25_questions.md`:
 
 | ID | Title | Section | Blocking? |
 |---|---|---|---|
@@ -647,9 +647,9 @@ Round-1 deferrals recorded at specific cells of `§2` reuse the owning doc's `[T
 - `33` (pending) — `Manifest` layer: `ResolvedDataKind` / `ResolvedSimpleDataKind` / `ResolvedComplexDataKind` struct rosters; `§2.7`'s Manifest counterpart table will tighten when `33` lands.
 - `34` (pending) — planner surface: `Strategy` trait, `PlannerCtx`, `RequestSlice`, `StrategyRegistry`; `§3` bullets consume.
 - `35` (pending) — `PlanNode` IR: `PlanNode::Union` / `PlanNode::Join` variants referenced by `§3.3` and `§3.4`.
-- `open_questions/25_open_questions.md` — Round-1 deferred items Q1–Q4 (`§8`).
-- `open_questions/17_open_questions.md` — temporal-shape deferrals that ripple into `§2.9`'s qualifier cells.
-- `open_questions/23_open_questions.md` — Unionset shape-planning deferrals (`[TD-UNIONSET-SHAPE-PLANNING]`).
-- `open_questions/24_open_questions.md` — Joinset N-ary / `AsOf` / reuse items consumed by `§3.4`'s bullets and `§3.5`'s table.
+- `questions/open/25_questions.md` — Round-1 deferred items Q1–Q4 (`§8`).
+- `questions/open/17_questions.md` — temporal-shape deferrals that ripple into `§2.9`'s qualifier cells.
+- `questions/open/23_questions.md` — Unionset shape-planning deferrals (`[TD-UNIONSET-SHAPE-PLANNING]`).
+- `questions/open/24_questions.md` — Joinset N-ary / `AsOf` / reuse items consumed by `§3.4`'s bullets and `§3.5`'s table.
 
 No legacy-doc cross-refs: `25` is new in Round 1 and has no pre-ratification predecessor.

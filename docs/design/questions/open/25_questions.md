@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/25_open_questions
+doc: design/questions/open/25_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `data-kinds/25_applicability_matrix.md`
 depends-on:
@@ -211,4 +211,4 @@ But `authoritative-for:` entries are written in prose; converting them mechanica
 
 ---
 
-**End of `25_open_questions.md`.**
+**End of `25_questions.md`.**

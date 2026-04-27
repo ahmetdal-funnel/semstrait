@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/37_open_questions
+doc: design/questions/open/37_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `apis/37_semstrait_catalog.md`
 depends-on:
@@ -46,7 +46,7 @@ depends-on:
 
 **Current position in `37`.** Two separate subsystems, `CAT_E_0100`–`0399` and `FS_E_0100`–`0199`. Amendment item `[TD-CAT-CODE-TABLE-AMEND]` is recorded against `30 §6.2`.
 
-**Next step.** Decide during `30`'s next amendment pass alongside `Q-IR-001` (the analogous IR prefix question from `open_questions/35`). If `30` adopts a uniform "each subsystem gets a 1000-wide band" convention, `37`'s codes update mechanically. Until then, the digit literals in `§8.1`–`§8.2` are placeholders; variant names, severity, sub-range assignment, and diagnostic shape are all ratified.
+**Next step.** Decide during `30`'s next amendment pass alongside `Q-IR-001` (the analogous IR prefix question from `questions/open/35`). If `30` adopts a uniform "each subsystem gets a 1000-wide band" convention, `37`'s codes update mechanically. Until then, the digit literals in `§8.1`–`§8.2` are placeholders; variant names, severity, sub-range assignment, and diagnostic shape are all ratified.
 
 ---
 

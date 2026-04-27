@@ -938,7 +938,7 @@ Had `hourly_events` not existed, step 3 would leave Candidates empty → `PLAN_E
 
 ## 12. Round-1 open items
 
-Parked in `docs/design/open_questions/22_open_questions.md`. Each entry restates the question, lists its refs, and records `22`'s Round-1 default. Entries migrate out of the file as later docs (`17`, `20`, `25`, `33`, `34`) ratify decisions that confirm or amend `22`'s defaults.
+Parked in `docs/design/questions/open/22_questions.md`. Each entry restates the question, lists its refs, and records `22`'s Round-1 default. Entries migrate out of the file as later docs (`17`, `20`, `25`, `33`, `34`) ratify decisions that confirm or amend `22`'s defaults.
 
 Summary of titles:
 
@@ -974,4 +974,4 @@ Summary of titles:
 
 ---
 
-**End of document.** Open items in `docs/design/open_questions/22_open_questions.md`.
+**End of document.** Open items in `docs/design/questions/open/22_questions.md`.

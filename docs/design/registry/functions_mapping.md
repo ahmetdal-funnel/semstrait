@@ -22,7 +22,7 @@ depends-on:
 
 > **Scope.** Authoritative per-engine rendering of every canonical `FunctionSpec` ratified in `foundations/14a_function_catalog.md` §4, plus every dedicated-variant `Expr` node from `foundations/14_expressions.md` §3.2 that reaches the adapter. Per `14a §6.2`, `14a` owns canonical shape (engine-agnostic); this doc owns per-engine reality. It does NOT define new canonical entries — those live in `14a`. Adapter-extended entries (per `14a §7`) are catalogued here for cross-reference but registered in each adapter crate.
 
-> **Status (2026-04-20):** Round-2 scaffold drafted against `14a` Q10 intersection-only population policy. Every row tracks (canonical name, signature, per-engine native form, rewrite tier, verification marker). Entries marked 🟡 are plausible from legacy `docs/FUNCTION_CATALOG.md` + engine-docs but have not been empirically verified against a live adapter test harness. Unresolved questions parked in `open_questions/functions_mapping_open_questions.md`.
+> **Status (2026-04-20):** Round-2 scaffold drafted against `14a` Q10 intersection-only population policy. Every row tracks (canonical name, signature, per-engine native form, rewrite tier, verification marker). Entries marked 🟡 are plausible from legacy `docs/FUNCTION_CATALOG.md` + engine-docs but have not been empirically verified against a live adapter test harness. Unresolved questions parked in `questions/open/functions_mapping_questions.md`.
 
 ---
 
@@ -621,7 +621,7 @@ Convergent. Canonical `14 §5.4` specifies `Long`. No reconciliation needed.
 - **`registry/types_mapping.md`** — canonical type mappings consumed by §11 (`Cast` variant target rendering) and §16 (reconciliation Casts).
 - **`apis/36_semstrait_adapter.md`** — the `EngineAdapter` trait and its `Dialect` / `PlanBuilder` layering. This doc specifies WHAT each adapter rewrites; `36` specifies HOW the layering composes.
 - **Adapter crates** (future `semstrait-adapter-datafusion`, `semstrait-adapter-duckdb`, `semstrait-adapter-spark`) — own the authoritative `FunctionRewriter` table and `RegistryExtension` implementations. §12 mirrors each adapter's contribution; the adapter's own README is authoritative.
-- **`open_questions/functions_mapping_open_questions.md`** — parked unresolved questions surfaced by Round-2 drafting.
+- **`questions/open/functions_mapping_questions.md`** — parked unresolved questions surfaced by Round-2 drafting.
 
 ---
 

@@ -1184,7 +1184,7 @@ pub use semstrait_core::{Cardinality, JoinType};
 
 ## 16. Round-1 Open Items
 
-See `/docs/design/open_questions/35_open_questions.md` for the parked questions surfaced during Round-1 drafting. Round-1 defaults above ratify the plan-tree shape enough for `34` / `36` to draft against; the open-questions file records the items that will revisit once downstream drafts push back.
+See `/docs/design/questions/open/35_questions.md` for the parked questions surfaced during Round-1 drafting. Round-1 defaults above ratify the plan-tree shape enough for `34` / `36` to draft against; the open-questions file records the items that will revisit once downstream drafts push back.
 
 ---
 

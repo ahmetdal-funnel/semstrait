@@ -523,7 +523,7 @@ simplify                -> optimize
 
 `cargo-fix` support, a rustfmt-rules preset, or a `syn`-based codemod are all deferred; if a community-contributed codemod lands, it will be linked from this section in a future revision.
 
-YAML transformations are tracked in `open_questions/42_open_questions.md` as `Q-42-003` (whether a scripted YAML migrator is worth the maintenance cost).
+YAML transformations are tracked in `questions/open/42_questions.md` as `Q-42-003` (whether a scripted YAML migrator is worth the maintenance cost).
 
 ---
 
@@ -614,7 +614,7 @@ All v3.0 items are speculative at Round-1 freeze and depend on follow-up design 
 
 ## 6. Round-1 open items
 
-Parked in `docs/design/open_questions/42_open_questions.md`. Items in scope for this doc are **documentation-format / communication-format** questions only; any item that re-opens a ratified design decision belongs in the originating doc's open-questions file.
+Parked in `docs/design/questions/open/42_questions.md`. Items in scope for this doc are **documentation-format / communication-format** questions only; any item that re-opens a ratified design decision belongs in the originating doc's open-questions file.
 
 | # | Title |
 |---|---|

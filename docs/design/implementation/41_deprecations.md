@@ -218,7 +218,7 @@ Rows are grouped by owning crate to match `40 §2`'s organization.
 
 | Symbol | Kind | Replacement | Deprecation release | Retirement release | Tracking TD | Rationale |
 |---|---|---|---|---|---|---|
-| Public-entry-point signatures that do not carry the `Result<(Output, Vec<Diagnostic>), (Error, Vec<Diagnostic>)>` shape | Function / method signatures | Warning-propagation shape per `open_questions/30 §Q-API-002` | Phase 7 (MINOR, old shape accepted via wrapper) | End-of-Phase-7 MAJOR (if `38`/`39` stabilize) | `40 §2.8` + `open_questions/30 §Q-API-002` | Diagnostic propagation is I12; the `Vec<Diagnostic>` carry is non-optional per `30 §7`. |
+| Public-entry-point signatures that do not carry the `Result<(Output, Vec<Diagnostic>), (Error, Vec<Diagnostic>)>` shape | Function / method signatures | Warning-propagation shape per `questions/open/30 §Q-API-002` | Phase 7 (MINOR, old shape accepted via wrapper) | End-of-Phase-7 MAJOR (if `38`/`39` stabilize) | `40 §2.8` + `questions/open/30 §Q-API-002` | Diagnostic propagation is I12; the `Vec<Diagnostic>` carry is non-optional per `30 §7`. |
 
 ### 3.3 YAML surface keys
 
@@ -315,7 +315,7 @@ Symbols in this section carry a `#[deprecated]` attribute (or acquire the `Depre
 |---|---|---|---|
 | `MeasureConstraints` struct name | Active (renamed internally to generalize across Measure + Metric carriers, but public name kept for v1) | Rename deferred to the broader Manifest-schema revision pass (post-v1) to avoid a breaking rename before `33` stabilizes. | `[TD-CONSTRAINT-RENAME]` + `11 §8.4.3` / `31 §6.1` |
 | `SourceId::ModelInline { label: &'static str }` | Active | Test-harness / inline-string parse path; retained as `#[non_exhaustive]` member per `30 §5.3`. Not a rename target. | `30 §5.3` |
-| `kind: dataset` YAML value (synonym of `kind: simple`) | Active — permanent synonym | Author-ergonomic; `32 §5.1` ratifies both spellings as permanent in v1. Retirement would break authored Models without benefit. | `open_questions/32 §Q-MODEL-003` |
+| `kind: dataset` YAML value (synonym of `kind: simple`) | Active — permanent synonym | Author-ergonomic; `32 §5.1` ratifies both spellings as permanent in v1. Retirement would break authored Models without benefit. | `questions/open/32 §Q-MODEL-003` |
 | `pub use TemporalShape as TemporalHistorization;` alias in `semstrait-model` | Transitional (retired at end-of-Phase-1 MAJOR) | NOT grandfathered — listed here only to distinguish from the permanent aliases above. Row belongs to §3.2.2; included here to make the exception list unambiguous. | `[40 §9.1 row 10]` |
 | `pub type LogicalPlan = SemanticPlan;` alias in `semstrait-ir` | Transitional (retired next MAJOR after Phase 4) | NOT grandfathered — one-MINOR-cycle transition per `30 §12`. Row belongs to §3.2.5. | `[TD-IR-RENAME]` |
 | `TD-004` (expect-panic messages) | Active — not a rename | Programming-error panics; `40 §3.9` closes opportunistically when touched, not as a scheduled retirement. | `TD-004` (legacy) |
@@ -412,7 +412,7 @@ Every row in §3 anchors to a `[TD-*]` tag from `40 §3` (or to a banned-terms e
 
 ## 8. Round-1 Open Items
 
-See `docs/design/open_questions/41_open_questions.md`. Each item is a policy question about the register's discipline, not a design re-open.
+See `docs/design/questions/open/41_questions.md`. Each item is a policy question about the register's discipline, not a design re-open.
 
 | # | Title | Parked item |
 |---|---|---|

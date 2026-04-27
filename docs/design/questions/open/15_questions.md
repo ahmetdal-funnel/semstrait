@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/15_open_questions
+doc: design/questions/open/15_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `foundations/15_mapping_and_binding.md`
 depends-on:

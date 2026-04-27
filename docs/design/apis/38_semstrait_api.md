@@ -651,7 +651,7 @@ The rightmost "YES" row is narrow: orchestration, warning policy, builder, unifi
 
 ## 13. Round-1 open items
 
-The following drafting decisions are **defaulted** in this document but MUST be confirmed before ratification. All are captured in `docs/design/open_questions/38_open_questions.md`:
+The following drafting decisions are **defaulted** in this document but MUST be confirmed before ratification. All are captured in `docs/design/questions/open/38_questions.md`:
 
 - **Q-API-001** — Should `SemStraitError::{BuilderInvalid, NoRepositoryConfigured}` carry a stable `API_E_*` code (new subsystem prefix) or re-use `COMP_E_0101` as currently drafted?
 - **Q-API-002** — `PipelineOutcome`: should the fused helper return a dedicated `PipelineOutcome { artifact, diagnostics, per_stage_timings }` struct or stay on the current `(EngineArtifact, Vec<Diagnostic>)` tuple?
@@ -665,7 +665,7 @@ The following drafting decisions are **defaulted** in this document but MUST be 
 - **Q-API-010** — `validate_manifest` aggregation: max-severity (current) vs per-source `Vec<DriftReport>`. The per-source variant preserves more detail; the max-severity variant matches the caller policy in `37 §9.4`.
 - **Q-API-011** — Whether `SemStrait` should expose `emit` directly (SQL emission convenience) or require callers to go through `EngineAdapter::emit`. Current default: no direct emit; callers use the adapter.
 
-Each item is parked with arguments-for, arguments-against, and a next-step in `open_questions/38`.
+Each item is parked with arguments-for, arguments-against, and a next-step in `questions/open/38`.
 
 ---
 

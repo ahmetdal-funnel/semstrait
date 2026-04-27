@@ -129,7 +129,7 @@ pub struct BindingId(pub u32);
 - **Stability across `compile` invocations.** `BindingId` is **stable within a single `compile` run and NOT stable across runs.** Recompiling a Model (even a byte-identical Model) produces the same IDs if and only if the `compile` driver's iteration order over `ResolvedDataKind`s is deterministic (I4). Adding a `SimpleDataKind` anywhere earlier in the iteration order shifts every later Binding's ID — which is intended. Cross-Manifest Binding comparison by ID is not supported; the planner keys on `(DataKindId, BindingId)` and never on `BindingId` alone against another Manifest.
 - **Serialization.** The `u32` surfaces directly in the persisted Manifest form (`33`). Serialized `Manifest`s that round-trip through `Repository::store` and `Repository::load` preserve the IDs unchanged; round-tripping is NOT a re-`compile` and ID stability is preserved by structural equality, not by reconstruction.
 
-**Proposed (Round 1):** the counter resets to `0` per Manifest (per-compile scope). A cross-Manifest namespace (e.g. embedding the Manifest content hash into the ID) is not adopted; it would break the `u32` shape and have no concrete use case. See `open_questions/15_open_questions.md` Q-MAP-001.
+**Proposed (Round 1):** the counter resets to `0` per Manifest (per-compile scope). A cross-Manifest namespace (e.g. embedding the Manifest content hash into the ID) is not adopted; it would break the `u32` shape and have no concrete use case. See `questions/open/15_questions.md` Q-MAP-001.
 
 ### 2.3 Cross-reference: `14b`'s `ResolvedExprKey`
 
@@ -347,7 +347,7 @@ The compile-time strategy per format:
 
 Inferred schemas (CSV without declared schema; JSON without declared schema) DEGRADE the I4 determinism guarantee because the "inferred" result depends on the actual bytes of the first N records. The design admission is explicit: **Binding output is deterministic w.r.t. a given catalog snapshot + filesystem snapshot**; if the bytes at the source change between runs, the schema can change. This is captured as `COMP_W_0301 SchemaInferenceUsed` and advised against for production Models.
 
-**Proposed (Round 1):** JSON inference does not recurse into nested objects — only top-level scalar fields are typed; nested-object fields fall through as `String`. Array typing is not supported (arrays become `String`). Complex types (arrays, structs) are out of scope per `00 §10`. Authors needing nested JSON model the unnest explicitly in upstream jobs. See `open_questions/15_open_questions.md` Q-MAP-004.
+**Proposed (Round 1):** JSON inference does not recurse into nested objects — only top-level scalar fields are typed; nested-object fields fall through as `String`. Array typing is not supported (arrays become `String`). Complex types (arrays, structs) are out of scope per `00 §10`. Authors needing nested JSON model the unnest explicitly in upstream jobs. See `questions/open/15_questions.md` Q-MAP-004.
 
 ### 4.5 Format inference from path
 
@@ -437,7 +437,7 @@ Per `11 §6`, a `SimpleDataKind`'s `SemanticInterface` is the complete named sur
 - A name in `entries` but not in the interface → `CompileError::SpuriousBindingEntry { name, binding_id }` (COMP_E_0309). Fail-fast.
 - A name duplicated in `entries` — the YAML parser rejects duplicate keys at a lower layer (`32`) via standard YAML duplicate-key handling; at the `15` level, `BTreeMap` is an unambiguous map and duplication is structurally impossible.
 
-**Edge case: Semantics with a `Constraint` that derives its value (e.g. `Measure(Count, Key)` per `11 §8.4`).** Per `11 §8.4`, a count-like Measure declared with `Constraint::DerivesFrom(Key)` does not require a physical column; it counts the Key's rows. `SemanticMapping` still includes an entry for that Semantics — proposal: `SemanticMappingValue::Expr { expr: PhysicalExpr(Count(Column(<key_column>))) }` where the key column is the `SemanticMapping`'s entry for the referenced Key. The `compile` stage synthesizes the `Computed` entry from the `Constraint::DerivesFrom` spec — authors do not need to re-declare it. **Proposed (Round 1):** this is a compile-stage synthesis, not a YAML-surface convenience; the Model's authored `SemanticMapping` can omit the key-derived Measure entry, and the compile stage fills it in before the completeness check runs. See `open_questions/15_open_questions.md` Q-MAP-003.
+**Edge case: Semantics with a `Constraint` that derives its value (e.g. `Measure(Count, Key)` per `11 §8.4`).** Per `11 §8.4`, a count-like Measure declared with `Constraint::DerivesFrom(Key)` does not require a physical column; it counts the Key's rows. `SemanticMapping` still includes an entry for that Semantics — proposal: `SemanticMappingValue::Expr { expr: PhysicalExpr(Count(Column(<key_column>))) }` where the key column is the `SemanticMapping`'s entry for the referenced Key. The `compile` stage synthesizes the `Computed` entry from the `Constraint::DerivesFrom` spec — authors do not need to re-declare it. **Proposed (Round 1):** this is a compile-stage synthesis, not a YAML-surface convenience; the Model's authored `SemanticMapping` can omit the key-derived Measure entry, and the compile stage fills it in before the completeness check runs. See `questions/open/15_questions.md` Q-MAP-003.
 
 **Edge case: `ComputedDimension` (per `14 §1.2`).** These ALWAYS map to `SemanticMappingValue::Expr`; they never have a `Column`-valued entry. The YAML parse enforces this at `32`.
 
@@ -504,7 +504,7 @@ Variants:
 
 When a Semantics maps to `Computed`, its `Coverage` on a specific source depends on whether the expression's column references are present on that source. The `Derived` variant encodes: "the upstream columns are here, the planner computes the Semantics on this source branch." The `NullFill` variant encodes: "the upstream columns are not here, the planner emits a NULL-filled constant of the declared Semantics type on this source branch."
 
-**Proposed (Round 1):** `Derived` is a distinct variant from `Native` (rather than collapsing into `Native`) because consumers that care about provenance — notably the `16` composition layer building a `ComposedSemanticInterface` coverage map — need to distinguish "this is physically present as a column" (`Native` on a `Column`-valued Semantics) from "this is computed from upstream columns that happen to be present" (`Derived`). The distinction matters for pushdown reasoning in `34 §5`: Native reads are always pushdownable, Derived reads require pushing the computation. See `open_questions/15_open_questions.md` Q-MAP-005.
+**Proposed (Round 1):** `Derived` is a distinct variant from `Native` (rather than collapsing into `Native`) because consumers that care about provenance — notably the `16` composition layer building a `ComposedSemanticInterface` coverage map — need to distinguish "this is physically present as a column" (`Native` on a `Column`-valued Semantics) from "this is computed from upstream columns that happen to be present" (`Derived`). The distinction matters for pushdown reasoning in `34 §5`: Native reads are always pushdownable, Derived reads require pushing the computation. See `questions/open/15_questions.md` Q-MAP-005.
 
 ### 6.4 Scope boundary with `16`
 
@@ -617,7 +617,7 @@ Each branch is an O(1) HashMap probe. The sum-type match on the Model-layer enum
 - The global table supports cross-Binding planner work (e.g. `14b §6.2` Relationship-path composition, where an expression is shared across a Joinset's members).
 - The per-Binding HashMap supports single-Binding planner work (per-`Scan` expression lookup) without the extra `BindingId` in the key.
 
-Whether the two share storage (the `ResolvedColumnMapping.computed` values are pointers into the global table) or are duplicated is a `33`-owned implementation choice. From `15`'s contract surface, both are populated and both are plan-readable; `33` will ratify the storage strategy. **Proposed (Round 1):** duplicate storage by default; the memory overhead is a small constant per binding-semantics pair, and the planner is free of aliasing concerns. See `open_questions/15_open_questions.md` Q-MAP-006.
+Whether the two share storage (the `ResolvedColumnMapping.computed` values are pointers into the global table) or are duplicated is a `33`-owned implementation choice. From `15`'s contract surface, both are populated and both are plan-readable; `33` will ratify the storage strategy. **Proposed (Round 1):** duplicate storage by default; the memory overhead is a small constant per binding-semantics pair, and the planner is free of aliasing concerns. See `questions/open/15_questions.md` Q-MAP-006.
 
 ### 7.6 `ResolvedBinding` envelope
 
@@ -672,7 +672,7 @@ Applicable to `PhysicalSource::File` variants only. The path tokenization rule:
 4: "data.parquet"
 ```
 
-So `path: { token: 1 }` → `"year=2024"` (the full token, not the value — see §8.1.1 below). See `open_questions/15_open_questions.md` Q-MAP-007.
+So `path: { token: 1 }` → `"year=2024"` (the full token, not the value — see §8.1.1 below). See `questions/open/15_questions.md` Q-MAP-007.
 
 **Local-path case.** `"/mnt/data/year=2024/month=01/file.parquet"`: `0: "mnt"`, `1: "data"`, `2: "year=2024"`, etc. Leading `/` produces no empty-string token; the first non-empty segment is `0`. Windows-style paths are NOT supported in v1 (explicit non-goal; the Model surface is lake-native).
 
@@ -682,7 +682,7 @@ The extracted token is a raw `String` — the whole segment, NOT the `=`-suffix 
 
 **Rationale.** Splitting on `=` to yield `"2024"` would be a second, implicit parse step that can fail silently (what about paths like `"year-2024"` or `"year"`?). Returning the whole segment keeps `15`'s contract narrow; authors needing the value-only form can wrap the Metadata extraction in a `Computed` expression that calls `substring_after(metadata_segment, '=')`. The function catalog (`14a`) provides `substring_after` for this pattern.
 
-**Proposed (Round 1):** raw segment as the default. A sibling `path.value_of_kv_token: N` extraction (that extracts the value after `=`) is **not** ratified in v1; authors compose it explicitly. See `open_questions/15_open_questions.md` Q-MAP-008.
+**Proposed (Round 1):** raw segment as the default. A sibling `path.value_of_kv_token: N` extraction (that extracts the value after `=`) is **not** ratified in v1; authors compose it explicitly. See `questions/open/15_questions.md` Q-MAP-008.
 
 #### 8.1.2 Error conditions
 
@@ -708,7 +708,7 @@ The extracted value is the partition column's value for a given row, typed as th
 - Hive-style path: always `String` unless the author declares a `data_type` override in the Model (future extension; not in v1).
 - Iceberg / Unity table: the declared partition-column `DataType` (which may be `Integer`, `String`, `Date`, etc.).
 
-**Proposed (Round 1):** for Hive-style path partitioning, the v1 extraction is raw-value `String` (the part after the `=`, not the whole segment — note the asymmetry with §8.1.1, rationalized because path-style partitioning is a value-carrying convention, whereas free-form path tokens are not). See `open_questions/15_open_questions.md` Q-MAP-009.
+**Proposed (Round 1):** for Hive-style path partitioning, the v1 extraction is raw-value `String` (the part after the `=`, not the whole segment — note the asymmetry with §8.1.1, rationalized because path-style partitioning is a value-carrying convention, whereas free-form path tokens are not). See `questions/open/15_questions.md` Q-MAP-009.
 
 #### 8.2.2 Error conditions
 
@@ -784,7 +784,7 @@ The Semantics-level nullability (from `11 §6` / `14 §5.2`) is compared against
 - Declared Non-nullable + any source reporting nullable → `COMP_W_0306 NullableSourceForNonNullableSemantics` (warning, not error — the source may still contain no nulls in practice; the runtime engine will enforce). Advises the author to either relax the declared type or add a `filter: NOT NULL` in a wrapping Measure/Dimension.
 - Declared Nullable + physical non-nullable → silent; this is always safe.
 
-**Proposed (Round 1):** the nullability mismatch is a warning, not an error. Upgrading to an error is a v2 conversation; some authors have legitimate workflows where the source-reported nullability is conservative (Parquet marking `optional` for a column that is in practice always populated). See `open_questions/15_open_questions.md` Q-MAP-010.
+**Proposed (Round 1):** the nullability mismatch is a warning, not an error. Upgrading to an error is a v2 conversation; some authors have legitimate workflows where the source-reported nullability is conservative (Parquet marking `optional` for a column that is in practice always populated). See `questions/open/15_questions.md` Q-MAP-010.
 
 ### 9.5 Reconciliation site in `compile`
 
@@ -976,7 +976,7 @@ The v1 design pencils in `serde` derivations on all `15`-ratified types (with th
 
 ## 13. Ratified Decisions Index
 
-A Q-numbered roll-up of every choice `15` ratifies in Round 1. Each entry cross-references the owning section; the `status` column marks whether the decision is fully ratified (`✓`) or has a parked companion question (`?` → see `open_questions/15_open_questions.md`).
+A Q-numbered roll-up of every choice `15` ratifies in Round 1. Each entry cross-references the owning section; the `status` column marks whether the decision is fully ratified (`✓`) or has a parked companion question (`?` → see `questions/open/15_questions.md`).
 
 | # | Decision | Ratified in | Status |
 |---|---|---|---|
@@ -1065,4 +1065,4 @@ Everything in this table is `pub`-visible in `semstrait-manifest` (post-resolve)
 
 ---
 
-**End of document.** Open reconciliation items and decisions parked for round-2 review are in `docs/design/open_questions/15_open_questions.md`.
+**End of document.** Open reconciliation items and decisions parked for round-2 review are in `docs/design/questions/open/15_questions.md`.

@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/24_open_questions
+doc: design/questions/open/24_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `data-kinds/24_joinset.md`
 depends-on:
@@ -236,7 +236,7 @@ depends-on:
 
 ## Post-v1 shape-hint clusters (folded in 2026-04-17)
 
-> The following two clusters were previously parked in a standalone sidecar `joinset_shape_semantics.md`. That file was folded into this one on 2026-04-17 as part of the documentation-consolidation pass (H6). Neither cluster is blocking for v1; both describe *authoring-shape hints* the v1 Joinset body deliberately omits. Historical references to `open_questions/joinset_shape_semantics.md` resolve into this section.
+> The following two clusters were previously parked in a standalone sidecar `joinset_shape_semantics.md`. That file was folded into this one on 2026-04-17 as part of the documentation-consolidation pass (H6). Neither cluster is blocking for v1; both describe *authoring-shape hints* the v1 Joinset body deliberately omits. Historical references to `questions/open/24_questions.md` resolve into this section.
 
 ### Q-24-09 — `JoinAssociativity` hint (deferred) — `TD-JOINSET-ASSOCIATIVITY-PARK`
 

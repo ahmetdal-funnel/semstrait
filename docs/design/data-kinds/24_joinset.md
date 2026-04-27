@@ -36,7 +36,7 @@ refined-by:
 >   - `cardinality:` is required at every Relationship authoring site (SR-E-4).
 >   - `directionality:` is part of the struct (`forward` | `bidirectional`, default `bidirectional`).
 > - [`26_nesting_matrix.md`](./26_nesting_matrix.md) — nesting rules. Notably **R3** (every `ComplexDataKind` requires ≥ 2 children).
-> - [`../open_questions/24_open_questions.md#post-v1-shape-hint-clusters-folded-in-2026-04-17`](../open_questions/24_open_questions.md#post-v1-shape-hint-clusters-folded-in-2026-04-17) — Q-24-09 (`JoinAssociativity`) + Q-24-10 (star / snowflake / 3NF shape-tag vocabulary), folded from the former `joinset_shape_semantics.md` sidecar on 2026-04-17.
+> - [`../questions/open/24_questions.md#post-v1-shape-hint-clusters-folded-in-2026-04-17`](../questions/open/24_questions.md#post-v1-shape-hint-clusters-folded-in-2026-04-17) — Q-24-09 (`JoinAssociativity`) + Q-24-10 (star / snowflake / 3NF shape-tag vocabulary), folded from the former `joinset_shape_semantics.md` sidecar on 2026-04-17.
 >
 > This document retains authority for:
 >
@@ -413,7 +413,7 @@ With an explicit path, `overrides.per_hop[HopPosition(i)]` unambiguously targets
 | `Some(ExplicitPath { hops: vec![] })` | Rejected at validate (`VALID_E_2403`). Empty explicit paths are never an implicit-fallback. |
 | `Some(ExplicitPath { hops: [_, ..] })` | Explicit (§4.2). |
 
-Round 1 forbids hybrid modes ("use these specific hops plus let the planner fill in the rest"). Hybrid modes are tracked as `[TD-JOINSET-HYBRID-PATH]` in `open_questions/24_open_questions.md`.
+Round 1 forbids hybrid modes ("use these specific hops plus let the planner fill in the rest"). Hybrid modes are tracked as `[TD-JOINSET-HYBRID-PATH]` in `questions/open/24_questions.md`.
 
 ## 5. `JoinsetStrategy`
 
@@ -605,7 +605,7 @@ Per `16 §4.4.2` and `00 §4.1`'s `TemporalShape` row:
 - **Permitted `AsOf` but not mandated**: both the declared `JoinType` and an `AsOf` override are legal. The author's declaration wins.
 - **Forbidden `AsOf`**: temporal shapes do not support as-of joining; an override to `AsOf` is `COMP_E_2413`.
 
-When `17` ratifies, this section is updated to cite `17 §5.X` tables directly. Until then, the error codes `COMP_E_2412`–`COMP_E_2414` are reserved under §10.1; see `open_questions/24_open_questions.md` Q-24-04.
+When `17` ratifies, this section is updated to cite `17 §5.X` tables directly. Until then, the error codes `COMP_E_2412`–`COMP_E_2414` are reserved under §10.1; see `questions/open/24_questions.md` Q-24-04.
 
 ## 8. Interaction with `ComposedSemanticInterface`
 
@@ -775,7 +775,7 @@ All `PLAN_E_24xx` are `Severity::Error`; they fail plan. All `PLAN_W_24xx` are `
 
 ### 12.1 Star schema — fact anchor, implicit paths
 
-Consider a Model with four top-level Simple DataKinds and three Relationships. (For v1 binary Joinsets, the example is narrated as three independent binary Joinsets `orders_x_customers`, `orders_x_products`, `orders_x_dates`, each a two-member pairing; the canonical N-ary star-schema Joinset unifying all four members is tracked under `TD-NESTING-NARY-JOIN` — see `open_questions/24_open_questions.md` Q-24-01. Each binary Joinset below exercises the full §§3–5 contract.)
+Consider a Model with four top-level Simple DataKinds and three Relationships. (For v1 binary Joinsets, the example is narrated as three independent binary Joinsets `orders_x_customers`, `orders_x_products`, `orders_x_dates`, each a two-member pairing; the canonical N-ary star-schema Joinset unifying all four members is tracked under `TD-NESTING-NARY-JOIN` — see `questions/open/24_questions.md` Q-24-01. Each binary Joinset below exercises the full §§3–5 contract.)
 
 ```mermaid
 erDiagram
@@ -1026,7 +1026,7 @@ Per §5.3.3, `Left → Full` is forbidden (widening row-preservation beyond the 
 
 ## 13. Round-1 Open Items
 
-Tracked in `open_questions/24_open_questions.md`:
+Tracked in `questions/open/24_questions.md`:
 
 - **Q-24-01** — N-ary Joinset lift (`TD-NESTING-NARY-JOIN` / `[TD-JOINSET-NARY]`): when does it graduate from tech-debt to MINOR, what is the spanning-tree authoring surface, how do multi-hop Cardinality compositions accumulate?
 - **Q-24-02** — Hybrid path mode: should a Joinset be permitted to declare some hops explicitly and let the planner implicit-fill the rest? Round-1 position: prohibited.
@@ -1058,6 +1058,6 @@ Tracked in `open_questions/24_open_questions.md`:
 - `33` (pending) — Manifest surface: `ResolvedJoinset`, `ResolvedJoinHop`.
 - `34` (pending) — planner surface: `JoinsetStrategy` impl, dispatch rules between `16` generic codes and `24` specialized codes.
 - `35` (pending) — `PlanNode::Join` with `from_relationship` and `from_joinset` tagging fields.
-- `open_questions/24_open_questions.md` — Round-1 deferred items Q-24-01..Q-24-08.
-- `open_questions/16_open_questions.md` — composition-level deferrals that touch Joinset (`[TD-COMPOSITION-JOINSET-REUSE]`, `[TD-COMPOSITION-SELFJOIN]`, `[TD-COMPOSITION-ASOF]`).
+- `questions/open/24_questions.md` — Round-1 deferred items Q-24-01..Q-24-08.
+- `questions/open/16_questions.md` — composition-level deferrals that touch Joinset (`[TD-COMPOSITION-JOINSET-REUSE]`, `[TD-COMPOSITION-SELFJOIN]`, `[TD-COMPOSITION-ASOF]`).
 - Legacy: `docs/JOINSET.md` — early reference; superseded by this document and `16 §13`.

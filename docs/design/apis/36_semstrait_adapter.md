@@ -1203,7 +1203,7 @@ pub use semstrait_ir::{
 
 ## 17. Round-1 Open Items
 
-See `/docs/design/open_questions/36_open_questions.md` for the 10 parked questions surfaced during Round-1 drafting:
+See `/docs/design/questions/open/36_questions.md` for the 10 parked questions surfaced during Round-1 drafting:
 
 - `Q-ADAPT-001` — `adapt` return-shape (bare `Result` vs `Result<(Artifact, Vec<Diagnostic>), _>`).
 - `Q-ADAPT-002` — `AdapterCapabilities` consultation site (planner + API vs adapter-internal).

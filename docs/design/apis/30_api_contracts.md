@@ -28,7 +28,7 @@ refined-by:
 
 # 30. API Contracts
 
-> **Status:** ratified. The cross-cutting policies in §§2–12 bind every `3x` per-crate doc; the stability table (§13) fixes v1 maturity markers; the non-exhaustive type roster (§4.2), the `Diagnostic` shape (§5), and the error-code number ranges (§6.6) are authoritative. Open reconciliation items are parked in `open_questions/30_open_questions.md`.
+> **Status:** ratified. The cross-cutting policies in §§2–12 bind every `3x` per-crate doc; the stability table (§13) fixes v1 maturity markers; the non-exhaustive type roster (§4.2), the `Diagnostic` shape (§5), and the error-code number ranges (§6.6) are authoritative. Open reconciliation items are parked in `questions/open/30_questions.md`.
 
 ## 1. Purpose and Scope
 
@@ -465,7 +465,7 @@ An **open** public trait is implementable by any crate. Used where semstrait ben
 | `FileSystem` | `semstrait-manifest` (compile, glob expansion), `semstrait-catalog-*` (source reads) | local-fs impl in `semstrait-catalog`; object-store impls in per-provider crates | open | `37` |
 | `Repository` | callers at the `semstrait-api` / `semstrait-facade` layer | in-memory, filesystem-backed (bundled); third-party may add | open | `33` |
 | `EngineAdapter` | `semstrait-planner` (injection hooks), `semstrait-api` (terminal `adapt`) | `semstrait-adapter-*` crates | open — new engine support is a primary extension axis | `36` |
-| `RegistryExtension` | `function_registry()` initializer in `semstrait-core` | `semstrait-adapter-*` crates | open (see `open_questions/30_open_questions.md` Q-API-009) | `36` (via `14a §7`) |
+| `RegistryExtension` | `function_registry()` initializer in `semstrait-core` | `semstrait-adapter-*` crates | open (see `questions/open/30_questions.md` Q-API-009) | `36` (via `14a §7`) |
 | `IntoDiagnostic` | every public entry point | each stage's typed error enum | open — enables third-party error kinds to enter the Diagnostic pipeline | `31` |
 
 ### 8.3 Trait-method return shape
@@ -672,4 +672,4 @@ The following decisions are ratified in this document. Each bullet links to the 
 - `31`–`39` — per-crate refinements of every policy in this doc.
 - `implementation/41_deprecations.md` — deprecation lifecycle tracking.
 - `implementation/42_migration_notes.md` — MAJOR migration entries.
-- `open_questions/30_open_questions.md` — parked reconciliation items (notably Q-API-001 on `10 §5.1` alignment).
+- `questions/open/30_questions.md` — parked reconciliation items (notably Q-API-001 on `10 §5.1` alignment).

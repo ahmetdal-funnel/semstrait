@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/16_open_questions
+doc: design/questions/open/16_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `foundations/16_composition.md`
 depends-on:

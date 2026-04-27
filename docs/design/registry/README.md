@@ -46,4 +46,4 @@ Canonical specs under `foundations/` may reference the registry but never depend
 
 ## Open questions
 
-Open items surfaced against any registry catalog live in the corresponding `open_questions/<catalog>_open_questions.md` sidecar. For a one-file view of every registry open question across all catalogs, see [`../open_questions/registry_open_questions.md`](../open_questions/registry_open_questions.md) — a navigation-only aggregate index. The per-sidecar files remain authoritative for the detailed bodies.
+Open items surfaced against any registry catalog live in the corresponding `questions/open/<catalog>_questions.md` sidecar. For a one-file view of every registry open question across all catalogs, see [`../questions/open/registry_questions.md`](../questions/open/registry_questions.md) — a navigation-only aggregate index. The per-sidecar files remain authoritative for the detailed bodies.

@@ -281,7 +281,7 @@ pub struct WhenClause {
 }
 ```
 
-`BinaryOpKind` lists 14 variants per `14 §3.2`. `Aggregation` lists 5 canonical variants (**not 6** — `CountDistinct` is encoded via the `distinct: bool` flag on `Expr::Aggregate`, per `14 §3.2` catalog row and `14 §3.3` design notes). See §15 and `/docs/design/open_questions/31_open_questions.md#q1-canonical-aggregation-variant-count` for the naming-discrepancy rationale.
+`BinaryOpKind` lists 14 variants per `14 §3.2`. `Aggregation` lists 5 canonical variants (**not 6** — `CountDistinct` is encoded via the `distinct: bool` flag on `Expr::Aggregate`, per `14 §3.2` catalog row and `14 §3.3` design notes). See §15 and `/docs/design/questions/open/31_questions.md#q1-canonical-aggregation-variant-count` for the naming-discrepancy rationale.
 
 ### 3.6 Visitor trait — `expr::visit`
 
@@ -669,7 +669,7 @@ pub trait IntoDiagnostic {
 
 Blanket impl for `Vec<T: IntoDiagnostic>` returning `Vec<Diagnostic>` lives on this trait (it is sealed-by-coherence against the orphan rule across non-core crates; `semstrait-core` is the only place that impl can live).
 
-**Note on `ContextLine`.** The prompt mentioned a `ContextLine` type; `10 §5.1` does not ratify one. Rich context rendering (source lines with caret markers) is a presentation concern that belongs above `Diagnostic`, not inside it. `31` does NOT expose `ContextLine`; the question is parked in `/docs/design/open_questions/31_open_questions.md#q2-contextline-placement`.
+**Note on `ContextLine`.** The prompt mentioned a `ContextLine` type; `10 §5.1` does not ratify one. Rich context rendering (source lines with caret markers) is a presentation concern that belongs above `Diagnostic`, not inside it. `31` does NOT expose `ContextLine`; the question is parked in `/docs/design/questions/open/31_questions.md#q2-contextline-placement`.
 
 ## 8. Public Types — Error Enums
 
@@ -763,7 +763,7 @@ impl std::fmt::Display for CompileError { /* per-variant messages per `14 §7.3`
 impl std::error::Error for CompileError {}
 ```
 
-**Code stability.** `code()` returns the kebab-case derivation ratified in `10 §5.1` — e.g. `"compile.unresolved-entity-ref"`, `"validate.column-in-semantic-expr"`. The legacy `EXPR_E_####` code mapping from `14 §7` is preserved as a `const LEGACY_CODE: &str` associated value per variant for tooling that grew against the numeric codes; migration policy is in `/docs/design/open_questions/31_open_questions.md#q3-legacy-numeric-codes`.
+**Code stability.** `code()` returns the kebab-case derivation ratified in `10 §5.1` — e.g. `"compile.unresolved-entity-ref"`, `"validate.column-in-semantic-expr"`. The legacy `EXPR_E_####` code mapping from `14 §7` is preserved as a `const LEGACY_CODE: &str` associated value per variant for tooling that grew against the numeric codes; migration policy is in `/docs/design/questions/open/31_questions.md#q3-legacy-numeric-codes`.
 
 ### 8.4 Shared helper methods
 

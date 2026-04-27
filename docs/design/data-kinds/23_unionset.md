@@ -940,7 +940,7 @@ For this Model + Request, compile emits no errors. At plan time, no errors fire.
 
 ## 12. Round-1 open items
 
-Round-1 open questions surfaced while drafting `23` are parked in `docs/design/open_questions/23_open_questions.md`. Questions span:
+Round-1 open questions surfaced while drafting `23` are parked in `docs/design/questions/open/23_questions.md`. Questions span:
 
 - The error-code allocation scheme (`*_E_23NN` per doc vs. `30 §6.2`'s cross-subsystem reservation).
 - ~~Whether `UnionMode::Distinct` should remain v1 or be deferred.~~ **CLOSED by `18 §2`** — v1 roster is `{All, Unique}`; the variant formerly named `Distinct` was renamed to `Unique` and kept in v1.
@@ -979,8 +979,8 @@ Each entry there records the Round-1 default `23` currently uses.
 - `33` (future) — `ResolvedUnionset` persistence; `Manifest` index placement for composed interfaces.
 - `34` (future) — `UnionsetStrategy` trait surface; re-aggregation helper.
 - `35` (future) — `PlanNode::Union` field roster.
-- `open_questions/23_open_questions.md` — Round-1 deferred items.
+- `questions/open/23_questions.md` — Round-1 deferred items.
 
 ---
 
-**End of document.** Round-1 open reconciliation items are in `docs/design/open_questions/23_open_questions.md`.
+**End of document.** Round-1 open reconciliation items are in `docs/design/questions/open/23_questions.md`.

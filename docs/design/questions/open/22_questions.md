@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/22_open_questions
+doc: design/questions/open/22_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `data-kinds/22_grainset.md`
 depends-on:

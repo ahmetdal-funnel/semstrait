@@ -26,7 +26,9 @@ docs/design/
 ├── apis/                    ← 30 … 39 : per-crate API contracts
 ├── implementation/          ← 40 … 42 : refactor plan, deprecations, migration notes
 ├── registry/                ← living catalogs: per-engine mappings
-└── open_questions/          ← parked / deferred items (one sidecar per parent doc + aggregates)
+└── questions/               ← parked / deferred items (one sidecar per parent doc + aggregates)
+    ├── open/                ←   files with at least one unresolved Q-ID
+    └── closed/              ←   files whose Q-IDs are all resolved (historical record)
 ```
 
 See `00_overview.md §6` for the full numbering convention, sibling-suffix rule (`14a`, `14b`), and the per-folder responsibility tables.
@@ -48,7 +50,7 @@ Every row points to **one** canonical doc. Cross-references in the right column 
 | `CatalogProvider` | `apis/37_semstrait_catalog.md` | — |
 | `CanonicalFn` + `FunctionRegistry` | `foundations/14a_function_catalog.md` | `registry/functions_mapping.md` (per-engine rewrite) |
 | `ComposedSemanticInterface` | `foundations/16_composition.md` | `data-kinds/2x` (per-variant specialization) |
-| `Constraint` (planner-time) | `foundations/11_names_and_scopes.md §8` | `open_questions/11_constraints_deferred.md` (deferred items) |
+| `Constraint` (planner-time) | `foundations/11_names_and_scopes.md §8` | `questions/open/11_constraints_deferred.md` (deferred items) |
 | `DataKind` taxonomy + sealed trait hierarchy | `data-kinds/20_taxonomy.md` + `apis/32_semstrait_model.md §3` | `data-kinds/21`–`24` (per-variant) |
 | `DataKindBase` + variant `*Body` structs | `apis/32_semstrait_model.md §3` | — |
 | `DataKindFilter` / `AggregationFilter` | `foundations/18_entities.md §7` | — |
@@ -147,43 +149,55 @@ Concepts the 2026-04-17 consolidation pass ratified as owned by **exactly one** 
 
 ## Open questions
 
-Unresolved / parked items live in `docs/design/open_questions/`. Each numbered doc has one sidecar (`<n>_open_questions.md`); registry catalogs have per-catalog sidecars plus one aggregate index.
+Unresolved / parked items live in `docs/design/questions/`. Status is encoded in the parent directory:
+
+- **`questions/open/`** — files with at least one unresolved Q-ID. The active backlog.
+- **`questions/closed/`** — files whose Q-IDs are all resolved (historical record). When every Q-ID in an `open/` file closes, the whole file moves to `closed/` in the next consolidation pass.
+
+Each numbered doc has one sidecar (`<n>_questions.md`); registry catalogs have per-catalog sidecars plus one aggregate index.
+
+### `questions/open/` — active backlog
 
 | Sidecar | Parent doc | Scope |
 |---|---|---|
-| `open_questions/11_constraints_deferred.md` | `foundations/11` | Constraints DSL (post-v1) |
-| `open_questions/14b_open_questions.md` | `foundations/14b` | Round-1 deferrals for expression resolution |
-| `open_questions/15_open_questions.md` | `foundations/15` | Mapping / binding deferrals |
-| `open_questions/16_open_questions.md` | `foundations/16` | Composition / `Relationship` deferrals |
-| `open_questions/17_open_questions.md` | `foundations/17` | Temporal-shape open items (partial closure after 18 consolidation — see top-of-file status summary) |
-| `open_questions/20_open_questions.md` | `data-kinds/20` | Taxonomy deferrals |
-| `open_questions/21_open_questions.md` | `data-kinds/21` | Dataset deferrals |
-| `open_questions/22_open_questions.md` | `data-kinds/22` | Grainset deferrals (Q-GRN-004 / -006 CLOSED by `26` — see top-of-file status summary) |
-| `open_questions/23_open_questions.md` | `data-kinds/23` | Unionset deferrals (Q-UNI-002 / -009 CLOSED — see top-of-file status summary) |
-| `open_questions/24_open_questions.md` | `data-kinds/24` | Joinset deferrals + (new post-v1 clusters Q-24-09 / Q-24-10 folded from the retired `joinset_shape_semantics.md` sidecar) |
-| `open_questions/25_open_questions.md` | `data-kinds/25` | Applicability-matrix deferrals |
-| `open_questions/30_open_questions.md` | `apis/30` | API-contract / error-code deferrals |
-| `open_questions/31_open_questions.md` | `apis/31` | Core public-surface deferrals |
-| `open_questions/31b_io_open_questions.md` | `apis/31b` | I/O layer (all items CLOSED; historical record) |
-| `open_questions/32_open_questions.md` | `apis/32` | `SemanticModel` deferrals |
-| `open_questions/33_open_questions.md` | `apis/33` | Manifest deferrals |
-| `open_questions/34_open_questions.md` | `apis/34` | Planner deferrals |
-| `open_questions/35_open_questions.md` | `apis/35` | IR deferrals |
-| `open_questions/36_open_questions.md` | `apis/36` | Adapter deferrals |
-| `open_questions/37_open_questions.md` | `apis/37` | Catalog deferrals |
-| `open_questions/38_open_questions.md` | `apis/38` | API deferrals |
-| `open_questions/39_open_questions.md` | `apis/39` | Facade deferrals |
-| `open_questions/40_open_questions.md` | `implementation/40` | Refactor-plan deferrals |
-| `open_questions/41_open_questions.md` | `implementation/41` | Deprecations deferrals |
-| `open_questions/42_open_questions.md` | `implementation/42` | Migration deferrals |
-| `open_questions/registry_open_questions.md` | **aggregate index** over the three registry sidecars (pure navigation) | — |
-| `open_questions/functions_mapping_open_questions.md` | `registry/functions_mapping` | Per-engine function-mapping deferrals |
-| `open_questions/join_types_mapping_open_questions.md` | `registry/join_types_mapping` | Per-engine join-type-mapping deferrals |
-| `open_questions/temporal_shape_mapping_open_questions.md` | `registry/temporal_shape_mapping` | Per-engine temporal-shape-mapping deferrals |
+| `questions/open/11_constraints_deferred.md` | `foundations/11` | Constraints DSL (post-v1) |
+| `questions/open/14b_questions.md` | `foundations/14b` | Round-1 deferrals for expression resolution |
+| `questions/open/15_questions.md` | `foundations/15` | Mapping / binding deferrals |
+| `questions/open/16_questions.md` | `foundations/16` | Composition / `Relationship` deferrals |
+| `questions/open/17_questions.md` | `foundations/17` | Temporal-shape open items (partial closure after 18 consolidation — see top-of-file status summary) |
+| `questions/open/20_questions.md` | `data-kinds/20` | Taxonomy deferrals |
+| `questions/open/21_questions.md` | `data-kinds/21` | Dataset deferrals |
+| `questions/open/22_questions.md` | `data-kinds/22` | Grainset deferrals (Q-GRN-004 / -006 CLOSED by `26` — see top-of-file status summary) |
+| `questions/open/23_questions.md` | `data-kinds/23` | Unionset deferrals (Q-UNI-002 / -009 CLOSED — see top-of-file status summary) |
+| `questions/open/24_questions.md` | `data-kinds/24` | Joinset deferrals + (new post-v1 clusters Q-24-09 / Q-24-10 folded from the retired `joinset_shape_semantics.md` sidecar) |
+| `questions/open/25_questions.md` | `data-kinds/25` | Applicability-matrix deferrals |
+| `questions/open/30_questions.md` | `apis/30` | API-contract / error-code deferrals |
+| `questions/open/31_questions.md` | `apis/31` | Core public-surface deferrals |
+| `questions/open/32_questions.md` | `apis/32` | `SemanticModel` deferrals |
+| `questions/open/33_questions.md` | `apis/33` | Manifest deferrals |
+| `questions/open/34_questions.md` | `apis/34` | Planner deferrals |
+| `questions/open/35_questions.md` | `apis/35` | IR deferrals |
+| `questions/open/36_questions.md` | `apis/36` | Adapter deferrals |
+| `questions/open/37_questions.md` | `apis/37` | Catalog deferrals |
+| `questions/open/38_questions.md` | `apis/38` | API deferrals |
+| `questions/open/39_questions.md` | `apis/39` | Facade deferrals |
+| `questions/open/40_questions.md` | `implementation/40` | Refactor-plan deferrals |
+| `questions/open/41_questions.md` | `implementation/41` | Deprecations deferrals |
+| `questions/open/42_questions.md` | `implementation/42` | Migration deferrals |
+| `questions/open/registry_questions.md` | **aggregate index** over the three registry sidecars (pure navigation) | — |
+| `questions/open/functions_mapping_questions.md` | `registry/functions_mapping` | Per-engine function-mapping deferrals |
+| `questions/open/join_types_mapping_questions.md` | `registry/join_types_mapping` | Per-engine join-type-mapping deferrals |
+| `questions/open/temporal_shape_mapping_questions.md` | `registry/temporal_shape_mapping` | Per-engine temporal-shape-mapping deferrals |
+
+### `questions/closed/` — historical record
+
+| Sidecar | Parent doc | Scope |
+|---|---|---|
+| `questions/closed/31b_io_questions.md` | `apis/31b` | I/O layer — all items CLOSED; retained as a historical record. |
 
 **Retired standalone sidecars (folded in 2026-04-17):**
 
-- `open_questions/joinset_shape_semantics.md` → folded into `open_questions/24_open_questions.md §Post-v1 shape-hint clusters` as Q-24-09 + Q-24-10.
+- `open_questions/joinset_shape_semantics.md` → folded into `questions/open/24_questions.md §Post-v1 shape-hint clusters` as Q-24-09 + Q-24-10.
 
 ---
 
@@ -212,6 +226,11 @@ See `registry/README.md` for the engine-coverage policy and versioning rules.
   - `ColumnMappingValue` (model-layer) → `SemanticMappingValue` (model-layer).
   - `ResolvedColumnMapping` (Manifest-layer) **unchanged** per `33 §5.3`.
   - `KeyPair` → `JoinKeyExprPair` (per `18 §2.6`).
+- **Renames landed in 2026-04-27 questions restructure (ninth pass).**
+  - Directory `open_questions/` → `questions/` with two subfolders: `questions/open/` (28 active backlog files) and `questions/closed/` (1 archived file: `31b_io_questions.md`).
+  - Filename suffix `<doc>_open_questions.md` → `<doc>_questions.md` across all 29 sidecars (status now comes from the parent directory). Files without that suffix (`11_constraints_deferred.md`) keep their names.
+  - Mechanical reference sweep updated every `open_questions/...` path-prefixed link, every bare `<doc>_open_questions.md` reference, and every `doc:` front-matter field across `docs/design/` + `CLAUDE.md`.
+  - No content change inside any sidecar; the rename is structural only. Q-IDs, bodies, and per-file CLOSED status summaries are unchanged.
 - **"I know what `*Body` I need."** See the body-struct inventory in `apis/32 §3.1` (top-level wrappers) and the per-variant struct layouts in `data-kinds/21`–`24`. The common fields are on `DataKindBase` (`32 §3.1`); ratified entity-struct shapes live in `18 §§4–10`.
 
 ---

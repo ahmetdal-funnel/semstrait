@@ -35,7 +35,7 @@ refined-by:
 > Ratified Decisions Index. Four narrower questions on serialization, on
 > multi-`EntityRef` path composition, on SCC-vs-linear ordering, and on
 > provenance granularity are parked in
-> `docs/design/open_questions/14b_open_questions.md` for later review; each has
+> `docs/design/questions/open/14b_questions.md` for later review; each has
 > a working default annotated `**Proposed (Round 1):** ...` in the body so
 > downstream docs (15, 16, 20–25, 33) have concrete contracts to reference.
 
@@ -178,7 +178,7 @@ The Manifest (`33`) binds the byte-level encoding. `14b` ratifies only the shape
 - `entries` is encoded in the `BTreeMap`'s natural iteration order — no per-serializer re-sort needed.
 - Each `ResolvedExprEntry` is encoded inline — `physical_expr` is not interned into a separate expression pool in v1.
   - **Proposed (Round 1):** no interning. An entry's `physical_expr` is a standalone `PhysicalExpr` tree. Rationale: (a) ~all resolved expressions are small (1–20 nodes) and duplication across entries is moderate; (b) interning introduces a second layer of ID-based indirection that every planner pass must chase; (c) Manifests are produced once and consumed many times, so decode-time simplicity beats encode-time size reduction.
-  - Future extension `[TD-14B-EXPR-INTERN]` (tracked in `14b_open_questions.md`) covers opt-in interning if Manifest sizes grow past comfortable budgets.
+  - Future extension `[TD-14B-EXPR-INTERN]` (tracked in `14b_questions.md`) covers opt-in interning if Manifest sizes grow past comfortable budgets.
 - `PhysicalExpr` serialization itself is `14` / `33`'s concern; `14b` only requires that whatever `14` and `33` choose is byte-stable.
 
 ### 2.5 Why `(SemanticsName, BindingId)` (not `SemanticsName` alone)
@@ -238,7 +238,7 @@ pub enum OccurrenceRole {
 
 **Purpose.** `Provenance` never leaves the Manifest — no plan-time or adapt-time consumer reads it. It exists purely for diagnostics: when an error fires against an entry, the reporter can quote every Location that contributed, giving authors precise finger-pointing without re-walking the parse tree. It is also used by the `--explain` tooling `[TD-EXPLAIN-COMPILED]`.
 
-**Proposed (Round 1):** granularity per above. The open question asks whether we also record per-`EntityRef`-site location trails (useful for diagnosing cross-kind path errors inside a deep expression). Default for Round 1: no — we rely on the expression tree's own `Location` nodes (from `14`) for that. Tracked in `14b_open_questions.md`.
+**Proposed (Round 1):** granularity per above. The open question asks whether we also record per-`EntityRef`-site location trails (useful for diagnosing cross-kind path errors inside a deep expression). Default for Round 1: no — we rely on the expression tree's own `Location` nodes (from `14`) for that. Tracked in `14b_questions.md`.
 
 ## 3. The Substitution Algorithm
 
@@ -388,7 +388,7 @@ Contract:
   - For comparison operators (`=`, `!=`, `<`, `<=`, `>`, `>=`), the resulting type is `Boolean` regardless of operand types; operand-type compatibility is the adapter's concern (per `14 §5.6` — no compile-time coercion validation).
   - For logical operators (`AND`, `OR`, `NOT`), operand types must be `Boolean`; result is `Boolean`. If an operand is not `Boolean` at the compile boundary, 14b raises `CompileError::TypeInferenceFailure { node, reason }` with the concrete message "operand of `AND` / `OR` / `NOT` is not `Boolean`".
 
-**Proposed (Round 1) detail.** The arithmetic `SameAs(0)` convention is the minimal, compile-boundary-stable choice. An author who wants explicit widening writes `{cast: {expr: lhs, as: Double}} + rhs`. The alternative — a canonical promotion lattice at the 14b boundary — conflicts with `14 §5.6` and `14a §5.2`'s non-coercion decisions. Tracked in `14b_open_questions.md` if we revisit.
+**Proposed (Round 1) detail.** The arithmetic `SameAs(0)` convention is the minimal, compile-boundary-stable choice. An author who wants explicit widening writes `{cast: {expr: lhs, as: Double}} + rhs`. The alternative — a canonical promotion lattice at the 14b boundary — conflicts with `14 §5.6` and `14a §5.2`'s non-coercion decisions. Tracked in `14b_questions.md` if we revisit.
 
 ### 3.10 `Aggregate { fn, arg }`
 
@@ -581,7 +581,7 @@ pub struct RelationshipPath(pub Vec<RelationshipId>);
 
 **Proposed (Round 1) — multi-EntityRef composition.** If a single expression contains two `EntityRef`s each requiring a different path (e.g. `{sum: [{order.amount}, {customer.credit_limit}]}` where the expression belongs to `returns`, `order` is one hop away, and `customer` is two hops away via `order`), `path_signature.paths` will contain both paths; the planner materializes both joins (possibly with shared intermediate nodes).
 
-The open question covers whether to **intersect** paths that share intermediate relationships or to keep them distinct as-is. Default for Round 1: keep them distinct; the planner de-dupes join-node materialization internally (`16 §4.2`). Tracked in `14b_open_questions.md` — the decision depends on how `16` models join subgraph canonicalization.
+The open question covers whether to **intersect** paths that share intermediate relationships or to keep them distinct as-is. Default for Round 1: keep them distinct; the planner de-dupes join-node materialization internally (`16 §4.2`). Tracked in `14b_questions.md` — the decision depends on how `16` models join subgraph canonicalization.
 
 ### 4.6 Worked example
 
@@ -721,7 +721,7 @@ Outputs:
 
 **Q8 decision.** Tarjan SCC + topological sort is the Round-1 approach. Rationale: (a) detects every cycle in a single pass, (b) the topological order is a free side-product reused for resolution ordering, (c) stable order is easy to pin down, (d) well-understood algorithm.
 
-**Proposed (Round 1) — single-cycle reporting.** 14b reports the **first** cycle encountered (lexicographically smallest SCC name). Authors fix one cycle at a time and re-run. Alternative: aggregate all cycles in one pass. Round-1 default is single-cycle per I12 (fail-fast); tracked in `14b_open_questions.md` for a future batch-diagnostic mode `[TD-14B-BATCH-DIAGS]`.
+**Proposed (Round 1) — single-cycle reporting.** 14b reports the **first** cycle encountered (lexicographically smallest SCC name). Authors fix one cycle at a time and re-run. Alternative: aggregate all cycles in one pass. Round-1 default is single-cycle per I12 (fail-fast); tracked in `14b_questions.md` for a future batch-diagnostic mode `[TD-14B-BATCH-DIAGS]`.
 
 ### 5.4 Worked example
 
@@ -1045,7 +1045,7 @@ When cross-kind resolution traverses a Relationship, the join-key columns on **b
 
 14b records both, so the planner never has to re-derive join-key requirements.
 
-**Proposed (Round 1).** Join-key columns are recorded inline in `referenced_columns`. Alternative: keep them separate in a `required_join_keys` field. Default for Round 1 is inline; if plan-time column pruning needs the split (e.g. the planner wants to know which columns are "payload" vs. "join-keying"), the `Relationship` metadata is the source of truth. Tracked in `14b_open_questions.md`.
+**Proposed (Round 1).** Join-key columns are recorded inline in `referenced_columns`. Alternative: keep them separate in a `required_join_keys` field. Default for Round 1 is inline; if plan-time column pruning needs the split (e.g. the planner wants to know which columns are "payload" vs. "join-keying"), the `Relationship` metadata is the source of truth. Tracked in `14b_questions.md`.
 
 ## 11. Error Model
 

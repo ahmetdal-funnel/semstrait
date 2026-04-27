@@ -712,7 +712,7 @@ L3 / L4 / L5 elided per skip rules. This is `SimpleStrategy`'s irreducible minim
 
 ## 11. Round-1 Open Items
 
-Round-1 drafting surfaced five open questions. Each is parked in `docs/design/open_questions/21_open_questions.md` with context, options, and a Round-1 working default. Summary:
+Round-1 drafting surfaced five open questions. Each is parked in `docs/design/questions/open/21_questions.md` with context, options, and a Round-1 working default. Summary:
 
 - **Q-DS-001 — `SimpleDataKind` nested-kind structural label under a Complex.** When a Simple is nested inside a Complex (per `12`), it may carry a structural label separate from its `name:` (per `11 §10`). Does `SimpleDataKind`'s struct need a separate `label: Option<StructuralLabel>` field, or does `name:` double as the label at nested scope? Round-1 default: `name:` doubles.
 - **Q-DS-002 — Wrapper code discipline for re-surfaced errors.** Should every compile-time error raised inside a Simple's compile flow be wrapped under a `21`-level `COMP_E_21xx` code (for diagnostic context), or should pass-through to the owning-doc code (`COMP_E_03xx`, `EXPR_E_02xx`) be the norm? Round-1 default: wrap only when context materially aids debugging.
@@ -722,4 +722,4 @@ Round-1 drafting surfaced five open questions. Each is parked in `docs/design/op
 
 ---
 
-**End of document.** Round-1 ratified decisions are inline throughout §§2–9; open items parked in `docs/design/open_questions/21_open_questions.md`.
+**End of document.** Round-1 ratified decisions are inline throughout §§2–9; open items parked in `docs/design/questions/open/21_questions.md`.

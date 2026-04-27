@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/38_open_questions
+doc: design/questions/open/38_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `apis/38_semstrait_api.md`
 depends-on:
@@ -146,7 +146,7 @@ depends-on:
 
 **Refs.**
 - `31 §5.2` — canonical registry is process-global and sealed.
-- `31 §5.5` (via `open_questions/31 Q-CORE-005`) — whether a per-process isolated registry is feasible.
+- `31 §5.5` (via `questions/open/31 Q-CORE-005`) — whether a per-process isolated registry is feasible.
 - `38 §4.5` — current position.
 
 **Arguments for per-handle registries (future option).**

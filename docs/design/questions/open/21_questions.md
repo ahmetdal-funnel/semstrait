@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/21_open_questions
+doc: design/questions/open/21_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `data-kinds/21_dataset.md`
 depends-on:

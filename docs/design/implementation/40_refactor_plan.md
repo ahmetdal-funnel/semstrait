@@ -149,7 +149,7 @@ Each subsection fixes, for one crate: (a) what the current code substantially ma
 - No step-0 **Constraint validator** as a first-class plan step (`11 §8.4` / `34 §*`). Constraint checks are currently scattered; the ratified plan-time step-0 discipline mandates a single validator pass per-`Request` against all realized Constraint carriers with structured `Diagnostic` output.
 - Constraint-error fan-out is a single-variant message today (per `10 §5`'s `ConstraintViolation`). Typed per-rule enum fan-out deferred as `[TD-CONSTRAINT-ERROR-FANOUT]`.
 - No **field-first resolution** — current code requires a `Request.from` target (or a heuristic replacement). `34` / `16` ratify field-first: when `Request.from = None`, the planner maps requested Semantics to their owning DataKinds via Manifest indices and — if Semantics span multiple DataKinds — traverses the top-level Relationship graph to form a `ComposedSemanticInterface`.
-- Implicit composition depth limit not enforced. `16 §9.1` ratifies `MAX_IMPLICIT_COMPOSITION_DEPTH = 4`; planner has no constant (see `open_questions/16` `Q-COMP-001`).
+- Implicit composition depth limit not enforced. `16 §9.1` ratifies `MAX_IMPLICIT_COMPOSITION_DEPTH = 4`; planner has no constant (see `questions/open/16` `Q-COMP-001`).
 - Ambiguous-path tie → error discipline (`16 §11.4`) not materialized; current code is non-deterministic in edge cases.
 - `AdditivityResolver` is a v1 stub (`DL-058`) — semi/non-additive Measures do not restructure plans; `34`-era planner work must reconcile with `11 §7`'s Additivity classification.
 - `SCDRollupWithoutAsOf` and Unionset cross-shape error surface (`22 §5`, `23 §6.3`) not yet emitted.
@@ -217,7 +217,7 @@ Each subsection fixes, for one crate: (a) what the current code substantially ma
 - Schema drift today covers `manifest.datasets` only; kind-bound datasets have no `compiled_schema` (`DL-037`). Extending to cover every resolved source per `37 §4` is future work.
 - `FileSystem` and `CatalogProvider` are not fully independent axes in the code; `37 §1.1`'s orthogonality contract is the target.
 - `CAT_E_*` / `FS_E_*` error-code tables are proposed against `30 §6.2` but not yet registered (`[TD-CAT-CODE-TABLE-AMEND]`).
-- Glob-matching home (semstrait-core vs semstrait-catalog) is `open_questions/37` `Q-CAT-002`.
+- Glob-matching home (semstrait-core vs semstrait-catalog) is `questions/open/37` `Q-CAT-002`.
 - Per-provider error-variant fan-out does not yet match `37 §8`'s proposed `CAT_E_*` / `FS_E_*` ranges.
 
 ### 2.8 `semstrait-api` / `semstrait` (facade)
@@ -231,7 +231,7 @@ Each subsection fixes, for one crate: (a) what the current code substantially ma
 **Diverges from the design.**
 
 - Public surfaces not yet aligned with `38` (API entry point) and `39` (facade) rosters — diff is structural (signatures, re-export set, error surface).
-- Warning propagation (`Result<(Output, Vec<Diagnostic>), (Error, Vec<Diagnostic>)>` per `open_questions/30` `Q-API-002`) not materialized.
+- Warning propagation (`Result<(Output, Vec<Diagnostic>), (Error, Vec<Diagnostic>)>` per `questions/open/30` `Q-API-002`) not materialized.
 - Diagnostic-shaped error surface absent on public entry points (`30 §5` / `I12`).
 - CLI entry-point crate split (`semstrait-cli`) if ever extracted sits under `38 §10`; today is flat under `semstrait-api`.
 
@@ -260,13 +260,13 @@ Legacy `docs/TECH_DEBT.md` entries (`TD-001`…`TD-009`) are retained at the bot
 
 | Tag | Source | One-liner |
 |---|---|---|
-| `[TD-14B-EXPR-INTERN]` | `14b §2`, `14b_open_questions §Q-14B-01` | Opt-in `PhysicalExpr` interning for large Manifests. |
+| `[TD-14B-EXPR-INTERN]` | `14b §2`, `14b_questions §Q-14B-01` | Opt-in `PhysicalExpr` interning for large Manifests. |
 | `[TD-14B-PATH-UNIFICATION]` | `14b §5` | Canonicalization of multi-path resolution. |
 | `[TD-14B-EXPR-PROVENANCE-SITES]` | `14b §2.6` | Per-`EntityRef`-site provenance trails. |
 | `[TD-14B-BATCH-DIAGS]` | `14b §7` | Multi-error aggregation mode for resolution cycles. |
 | `[TD-14B-RELATIONSHIP-ROLE-HINTS]` | `14b §6` | Role-hints at `EntityRef` when multiple Relationships coexist. |
 | `[TD-14B-TYPECLASS-UNIFY]` | `14b §10` | Richer unification gated on `[TD-REGISTRY-TYPECLASS]`. |
-| `[TD-EXPLAIN-COMPILED]` | `14b §2.6` (several), `open_questions/14b` | `--explain`-style tooling over compiled artifacts. |
+| `[TD-EXPLAIN-COMPILED]` | `14b §2.6` (several), `questions/open/14b` | `--explain`-style tooling over compiled artifacts. |
 
 ### 3.3 Names and scopes / constraints
 
@@ -289,7 +289,7 @@ Legacy `docs/TECH_DEBT.md` entries (`TD-001`…`TD-009`) are retained at the bot
 | `[TD-COMPOSITION-ASOF]` | `16 §4.4.2`, `17 §5` | Planner emission of `JoinType::AsOf` (vocabulary-only in v1). |
 | `[TD-JOINSET-NARY]` | `16 §13.2`, `24 §13` | N-ary Joinsets. |
 | `[TD-NESTING-NARY-JOIN]` | `12 §5.2` | Nesting-policy-level n-ary-join gate. |
-| `[TD-JOINSET-HYBRID-PATH]` | `24 §7.2`, `open_questions/24` | Partial explicit + implicit join-path hybrid. |
+| `[TD-JOINSET-HYBRID-PATH]` | `24 §7.2`, `questions/open/24` | Partial explicit + implicit join-path hybrid. |
 
 ### 3.5 Temporal shape
 
@@ -310,40 +310,40 @@ Legacy `docs/TECH_DEBT.md` entries (`TD-001`…`TD-009`) are retained at the bot
 | `[TD-UNIONSET-SHAPE-PLANNING]` | `23 §6.4`, `25 §2.9` | Planner-side shape rewrite for Unionset branches. |
 | `[TD-UNIONSET-CODERANGE]` | `23 §8` | `2300`–`2399` per-DataKind code allocation reconciliation with `30 §6.2`. |
 | `[TD-UNIONSET-DISTINCT-SEMANTICS]` | `23 §4.3` | `Distinct` subsection. |
-| `[TD-UNIONSET-AVG-WEIGHTED]` | `23 §5`, `open_questions/23` | Weighted-average promotion. |
+| `[TD-UNIONSET-AVG-WEIGHTED]` | `23 §5`, `questions/open/23` | Weighted-average promotion. |
 | `[TD-UNIONSET-STRICT-SHAPES]` | `23 §6.1` | Strict shape reconciliation for union branches. |
 | `[TD-UNIONSET-FUTURE-MODES]` | `23 §4.1` | Additional `UnionMode` variants beyond `All` / `Distinct`. |
-| `[TD-UNIONSET-SINGLE-CHILD]` | `23`, `open_questions/23` | Single-child Unionset accept vs reject (asymmetry with Grainset). |
-| `[TD-UNIONSET-DERIVED]` | `23` / `open_questions/23` | Unionset-level derived-Semantics declarations. |
+| `[TD-UNIONSET-SINGLE-CHILD]` | `23`, `questions/open/23` | Single-child Unionset accept vs reject (asymmetry with Grainset). |
+| `[TD-UNIONSET-DERIVED]` | `23` / `questions/open/23` | Unionset-level derived-Semantics declarations. |
 | `[TD-UNIONSET-AGG-COLLAPSE]` | `23`, `34` | Optimizer pass for aggregate collapsing across Unionset branches. |
 
 ### 3.7 API contracts / cross-cutting
 
 | Tag | Source | One-liner |
 |---|---|---|
-| `[TD-DIAG-ALIGN-10]` | `open_questions/30 §Q-API-001` | Amend `10 §5.1`'s Diagnostic sketch to import `30 §5`'s ratified shape. |
-| `[TD-CAT-CODE-TABLE-AMEND]` | `37 §8.3`, `open_questions/37 §Q-CAT-001` | Register `CAT_E_*` / `FS_E_*` in `30 §6.2`. |
-| `[TD-IR-CODE-TABLE-AMEND]` | `35 §10.2`, `open_questions/35` | Register `IR_E_3500`–`3599` in `30 §6.2`. |
+| `[TD-DIAG-ALIGN-10]` | `questions/open/30 §Q-API-001` | Amend `10 §5.1`'s Diagnostic sketch to import `30 §5`'s ratified shape. |
+| `[TD-CAT-CODE-TABLE-AMEND]` | `37 §8.3`, `questions/open/37 §Q-CAT-001` | Register `CAT_E_*` / `FS_E_*` in `30 §6.2`. |
+| `[TD-IR-CODE-TABLE-AMEND]` | `35 §10.2`, `questions/open/35` | Register `IR_E_3500`–`3599` in `30 §6.2`. |
 
 ### 3.8 Per-crate API
 
 | Tag | Source | One-liner |
 |---|---|---|
-| `[TD-MODEL-DIR-LOADER]` | `32 §10.3`, `open_questions/32 §Q-MODEL-001` | `parse_dir` / `parse_files` multi-file loader. |
-| `[TD-INLINE-HOIST-LAZY]` | `32 §3.3`, `open_questions/32 §Q-MODEL-004` | Deferred hoisting for incremental re-parse. |
-| `[TD-MODEL-YAML-CRATE]` | `32 §15`, `open_questions/32 §Q-MODEL-007` | Migration from `serde_yaml` to `yaml-rust2` / `saphyr`. |
-| `[TD-MODEL-FUNCTIONS-BLOCK]` | `open_questions/32 §Q-MODEL-008` | Per-Model `functions:` YAML block fate. |
-| `[TD-EXPR-PARSE-SITE-AUDIT]` | `open_questions/32 §Q-MODEL-005` | Exhaustive parse-site audit appendix. |
-| `[TD-33-ERROR-UNIFY]` | `33 §10.1`, `open_questions/33` | `CompileError` re-export contract (shared variants from core). |
-| `[TD-33-CANONICAL-JSON]` | `33 §14.3`, `open_questions/33` | Canonical JSON as secondary encoding. |
-| `[TD-33-BINCODE]` | `33 §14.2`, `open_questions/33` | Bincode encoder behind a feature flag. |
+| `[TD-MODEL-DIR-LOADER]` | `32 §10.3`, `questions/open/32 §Q-MODEL-001` | `parse_dir` / `parse_files` multi-file loader. |
+| `[TD-INLINE-HOIST-LAZY]` | `32 §3.3`, `questions/open/32 §Q-MODEL-004` | Deferred hoisting for incremental re-parse. |
+| `[TD-MODEL-YAML-CRATE]` | `32 §15`, `questions/open/32 §Q-MODEL-007` | Migration from `serde_yaml` to `yaml-rust2` / `saphyr`. |
+| `[TD-MODEL-FUNCTIONS-BLOCK]` | `questions/open/32 §Q-MODEL-008` | Per-Model `functions:` YAML block fate. |
+| `[TD-EXPR-PARSE-SITE-AUDIT]` | `questions/open/32 §Q-MODEL-005` | Exhaustive parse-site audit appendix. |
+| `[TD-33-ERROR-UNIFY]` | `33 §10.1`, `questions/open/33` | `CompileError` re-export contract (shared variants from core). |
+| `[TD-33-CANONICAL-JSON]` | `33 §14.3`, `questions/open/33` | Canonical JSON as secondary encoding. |
+| `[TD-33-BINCODE]` | `33 §14.2`, `questions/open/33` | Bincode encoder behind a feature flag. |
 | `[TD-33-INCREMENTAL-COMPILE]` | `33 §17` | Streaming / incremental compile API. |
 | `[TD-33-CLIPPY-ASYNC-GUARD]` | `33 §11` | CI lint forbidding new `async fn` outside the two ratified entry points. |
 | `[TD-IR-RENAME]` | `35 §3.1`, `35 §13` | `LogicalPlan` → `SemanticPlan` rename. |
 | `[TD-IR-NONEXHAUSTIVE]` | `35 §13` | Non-exhaustive discipline across `PlanNode` variants. |
-| `[TD-IR-NON-EQUI-JOIN]` | `35 §4.6`, `open_questions/35` | Non-equi-join `residual` field. |
-| `[TD-IR-AGG-FILTER]` | `35 §4.5`, `open_questions/35` | Uniform `filter: Option<PhysicalExpr>` carriage. |
-| `[TD-IR-SCHEMA-SHARING]` | `open_questions/35` | Schema-type unification with Manifest-layer Schema. |
+| `[TD-IR-NON-EQUI-JOIN]` | `35 §4.6`, `questions/open/35` | Non-equi-join `residual` field. |
+| `[TD-IR-AGG-FILTER]` | `35 §4.5`, `questions/open/35` | Uniform `filter: Option<PhysicalExpr>` carriage. |
+| `[TD-IR-SCHEMA-SHARING]` | `questions/open/35` | Schema-type unification with Manifest-layer Schema. |
 | `[TD-ADAPTER-DEBUG-SQL-FREE-FN]` | `36 §3.5` | `debug_sql` as free function (not trait method). |
 | `[TD-ADAPTER-SUBSTRAIT-ANCHOR]` | `36 §5` | Per-function Substrait URN override. |
 | `[TD-ADAPTER-SUBSTRAIT-ASOF]` | `36 §5` | AsOf join extension path for Substrait. |
@@ -603,7 +603,7 @@ Eight phases. Each phase has exit criteria, owning crates, high-level migration 
 - Per-provider impls (`semstrait-catalog-iceberg`, `semstrait-catalog-unity`, local FS, S3) sit behind the ratified traits cleanly.
 - Schema drift covers every resolved source, not just `manifest.datasets` (`DL-037` deprecated and removed).
 - `CAT_E_*` / `FS_E_*` codes registered in `30 §6.2` (`[TD-CAT-CODE-TABLE-AMEND]`).
-- Glob-matching home resolved (`open_questions/37 §Q-CAT-002`) — either stays in `semstrait-core::GlobPattern` or moves to catalog.
+- Glob-matching home resolved (`questions/open/37 §Q-CAT-002`) — either stays in `semstrait-core::GlobPattern` or moves to catalog.
 
 **Owning crates.** `semstrait-catalog`, `semstrait-manifest` (drift-check call sites), `semstrait-core` (optional glob migration).
 
@@ -625,7 +625,7 @@ Eight phases. Each phase has exit criteria, owning crates, high-level migration 
 
 **Exit criteria.**
 
-- `semstrait-api` exposes the unified pipeline entry with warning propagation per `open_questions/30 §Q-API-002`: every pipeline verb returns `Result<(Output, Vec<Diagnostic>), (Error, Vec<Diagnostic>)>`.
+- `semstrait-api` exposes the unified pipeline entry with warning propagation per `questions/open/30 §Q-API-002`: every pipeline verb returns `Result<(Output, Vec<Diagnostic>), (Error, Vec<Diagnostic>)>`.
 - `semstrait` facade re-exports the minimum useful `semstrait-*` surface per `39 §2` / `39 §4`.
 - Feature flags align with `30 §10` — per-adapter / per-provider feature flags on both `semstrait-api` and `semstrait`.
 - gRPC / REST / CLI transports each consume the unified pipeline (no private copies of pipeline plumbing).
@@ -838,7 +838,7 @@ Per `30 §6.7` / `30 §12.3`, retired error-code literals are MAJOR. v1 introduc
 
 ## 10. Round-1 open items
 
-See `docs/design/open_questions/40_open_questions.md`. Each item is a policy / process question for this plan, not a design re-open.
+See `docs/design/questions/open/40_questions.md`. Each item is a policy / process question for this plan, not a design re-open.
 
 | # | Title | Parked item |
 |---|---|---|

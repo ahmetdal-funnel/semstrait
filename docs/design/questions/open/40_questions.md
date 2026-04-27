@@ -1,5 +1,5 @@
 ---
-doc: design/open_questions/40_open_questions
+doc: design/questions/open/40_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `implementation/40_refactor_plan.md`
 depends-on:
