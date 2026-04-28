@@ -32,6 +32,7 @@ status: open
 | Q-CAT-005 | Lenient unknown-category downgrade (`[TD-CAT-LENIENT]`) | **Open — deferred to a future major version** — v1 enforces strict reject (Layer 2). Lenient mode requires a `plan.unknown-category-degraded` warning channel and `Custom` fallback semantics that drop unknown body fields. | `19 §1` (Layer 2); `[TD-CAT-LENIENT]` tech-debt entry. |
 | Q-CAT-006 | Per-category planner routing — when does category change SQL emission? | **Open — pending adapter-cascade pass** | `19 §3.3` / §4.2 implicit-constraint tables surface the contracts; concrete per-engine SQL templates land in `registry/functions_mapping.md` once adapter framing closes. |
 | Q-CAT-007 | Downstream-aggregation policy edge cases (SR-E-16 perimeter) | **Open** | `19 §3.3` / §4.2 + `11 §8.4` cover the v1 envelope; corner cases (e.g. wrapping a `Ratio` metric in `Avg` for cohort dashboards; double-count guards across nested `Joinset` children) need a worked-example pass. |
+| Q-CAT-008 | `Balance` as naming alias for `Snapshot` | **Open — deferred indefinitely** — composition (`category: snapshot` + `constraints.aggregation:`) already covers the use case (worked example in `11 §8.4.1`); promotion to a first-class variant would be sugar-only, deferred until concrete naming-clarity demand surfaces. | `11 §8.4.1` (worked example); `19 §3.3` (Snapshot row). |
 
 ---
 
@@ -187,7 +188,31 @@ status: open
 
 ---
 
-## 9. Cross-references
+## 9. Q-CAT-008 — `Balance` as a naming alias for `Snapshot`
+
+**State**: **Open — deferred indefinitely.**
+
+**Context**: The balance use case (banking-balance, inventory-level, debt-position) is fully covered by the existing composition `category: snapshot` + `constraints.aggregation:` — worked example in [`../foundations/11_names_and_scopes.md §8.4.1`](../foundations/11_names_and_scopes.md). A `MeasureCategory::Balance` variant would offer **no new mechanism**: same body shape (`non_additive_axes`, `strategy`), same implicit-constraint contract, identical planner / adapter routing. The only differentiator is the *spelling* (`category: balance` vs `category: { snapshot: { ... } }`).
+
+**Why deferred**:
+
+1. **No mechanism gap.** The composition expresses everything balance needs; a `Balance` variant would be sugar over `Snapshot + constraints.aggregation:`. Per [`../STATUS.md §7 L13`](../STATUS.md), labeled invariants earn their place when they carry a distinct contract — aliases without contract divergence are second-naming for the same invariant.
+2. **Doc-cascade overhead.** Per `19 §8`, every new `MeasureCategory` variant runs the full 8-section growth recipe (variant + body shape, implicit-constraint table row, planner routing, adapter emission, SR-E-* additions, manifest YAML examples, peer-system lineage, TD entries). For a sugar-only variant the cost / benefit is heavily negative.
+3. **Strict-then-loosen.** Adding `Balance` later is a MINOR (per `SR-CAT-FWD` Layer 1 — `#[non_exhaustive]` on `MeasureCategory`); retracting it would break authoring contracts. The safe direction is to keep the closed roster minimal until concrete demand surfaces.
+
+**Trigger to revisit**: banking / inventory / position-tracking authors report that `category: snapshot` reads as semantically misleading for stock-balance measures and would prefer a domain-flavored spelling. A concrete request showing the spelling causes real authoring confusion would justify the recipe pass.
+
+**Tech-debt tag**: `[TD-CAT-BALANCE-ALIAS]`.
+
+**Cross-references**:
+
+- [`../foundations/11_names_and_scopes.md §8.4.1`](../foundations/11_names_and_scopes.md) — worked example demonstrating the composition; section "The 'Balance' idiom — composition, not a separate category".
+- [`../foundations/19_categories.md §3.3`](../foundations/19_categories.md#33-implicit-constraint-contract-per-measure-category) — Snapshot row in the implicit-constraint contract table.
+- [`../STATUS.md §7 L13`](../STATUS.md) — labeled-invariant lesson; aliases without contract divergence are second-naming.
+
+---
+
+## 10. Cross-references
 
 - [`../foundations/19_categories.md`](../foundations/19_categories.md) — parent doc.
 - [`../foundations/18_entities.md §4.1`](../foundations/18_entities.md) / [§5](../foundations/18_entities.md) / [§6](../foundations/18_entities.md) — `DimensionType` / `Measure.category` / `Metric.category` field carriers.

@@ -699,6 +699,34 @@ measures:
         prohibited: [COUNT_DISTINCT]    # also disallowed (already outside category default)
 ```
 
+**The "Balance" idiom — composition, not a separate category.** A second worked example illustrates how the same framework expresses a *stock-balance* measure (banking balance, inventory level, debt position). The shape combines a body-bearing `Snapshot` category (semi-additive over a temporal axis) with an `aggregation:`-only refinement (no `dimensions:` block needed):
+
+```yaml
+# Example: balance-style measure (banking, inventory, debt position).
+# Demonstrates that the existing constraints + categories framework
+# already covers what a hypothetical `category: balance` variant
+# would express — no new mechanism needed.
+measures:
+  - name: account_balance
+    category:
+      snapshot:
+        non_additive_axes: [snapshot_date]   # semi-additive over the date axis
+        strategy: latest                     # rollup picks the most recent snapshot
+    data_type: decimal(18, 2)
+    constraints:
+      aggregation:                           # narrow Snapshot's category-implied default
+        allowed:    [SUM, MIN, MAX]          # additive across customers / accounts
+                                             # on a single date
+        prohibited: [AVG, COUNT_DISTINCT]    # AVG of balances across dates is meaningless
+```
+
+Banking-balance, inventory-level, and debt-position measures share a recurring shape: semi-additive over a temporal axis, additive across non-temporal axes (customers, accounts, products), and intolerant of certain downstream re-aggregations (`AVG` of dollars across multiple snapshot dates produces a meaningless number). The composition above expresses all three concerns:
+
+- `category: snapshot` carries the **mathematical property** (semi-additive math; `strategy: latest` for forced rollups when a Request omits the non-additive axis from scope). See [`19 §3.3`](./19_categories.md#33-implicit-constraint-contract-per-measure-category).
+- `constraints.aggregation:` carries the **defensive narrowing** of the category-implied downstream-aggregation default. Same pattern as the `order_amount` example above — applied here to a `Snapshot` category instead of `Additive`.
+
+A hypothetical `MeasureCategory::Balance` variant would be a *naming alias* over this exact composition — same body shape (`non_additive_axes`, `strategy`), same constraints, no new mechanism. The v1 spec deliberately does not add the alias because the composition is short, the primitives are clear, and a sugar-only variant adds doc-cascade overhead with no expressive gain. Tracked under [`Q-CAT-008`](../questions/open/19_questions.md) for future ratification if banking-domain authors find the `Snapshot` spelling semantically misleading.
+
 Unknown keys inside any Measure-`constraints:` sub-block are `ValidateError::ShapeMalformed` via serde's default unknown-field rejection. Both sub-blocks are independently optional; a `constraints:` block carrying only `dimensions:` (or only `aggregation:`) is legal.
 
 **No `filter:` sub-block.** Per Q-R4.3c → c1, `Measure.constraints` does not carry a `filter:` sub-block. Filter intent already lives in the carrier's `filters: Vec<AggregationFilter>` whitelist (`18 §5`).
