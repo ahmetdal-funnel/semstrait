@@ -2,11 +2,11 @@
 prereqs: [10, 11, 13, 14, 14b, 15, 16, 17, 20, 21, 22, 23, 24, 25, 30, 31, 33, 35]
 authoritative-for:
   - the `semstrait-planner` public-API surface (types, traits, free functions)
-  - the `plan` free-function signature (`plan(&Manifest, Request) -> Result<SemanticPlan, PlanErrors>`) and its seven pipeline sub-steps
+  - the `plan` free-function signature (`plan(&SemanticManifest, Request) -> Result<SemanticPlan, PlanErrors>`) and its seven pipeline sub-steps
   - the `optimize` free-function signature (`optimize(SemanticPlan) -> Result<SemanticPlan, OptimizeErrors>`) and the canonical-pass roster
   - the `Request` type and its fields (dimensions, measures, metrics, filters, order, limit, offset, from, temporal, session)
   - the `SessionContext` type and its fields (now, timezone, feature_toggles, correlation_id)
-  - the `ResolvedQueryRequest` type — Manifest-contextualized Request with looked-up Semantics and resolved target DataKind
+  - the `ResolvedQueryRequest` type — SemanticManifest-contextualized Request with looked-up Semantics and resolved target DataKind
   - the `Strategy` trait surface (`id`, `supports`, `plan`) and its companion types (`StrategyId`, `StrategyContext`)
   - the `OptimizerPass` trait surface and its canonical v1 passes (constant folding, metadata-Dimension substitution, predicate simplification, identity-Project elimination)
   - the `PlanError` / `PlanErrors` / `OptimizeError` / `OptimizeErrors` typed carriers and their `PLAN_E_*` / `OPT_E_*` code ranges
@@ -29,7 +29,7 @@ refined-by:
 > `semstrait-planner` — the crate that owns the `plan` stage (`10 §3.4`)
 > and the `optimize` stage (`10 §3.5`) — against `20`'s Strategy-per-
 > variant taxonomy, `21`–`24`'s per-variant strategy bodies, `33`'s
-> Manifest consumer contract, `35`'s `SemanticPlan` shape, and `30`'s
+> SemanticManifest consumer contract, `35`'s `SemanticPlan` shape, and `30`'s
 > stability / diagnostics policy. All types the surface touches are
 > ratified upstream; `34` adds the crate-level wiring — the `plan` /
 > `optimize` entry points, the `Request` / `SessionContext` /
@@ -42,7 +42,7 @@ refined-by:
 
 ### 1.1 What `semstrait-planner` OWNS
 
-- The `plan` free function (§6) that turns a `&Manifest` + a `Request` into a `SemanticPlan`.
+- The `plan` free function (§6) that turns a `&SemanticManifest` + a `Request` into a `SemanticPlan`.
 - The `optimize` free function (§11) that takes a `SemanticPlan` and returns an equivalent, canonicalized `SemanticPlan`.
 - The `Request` (§3), `SessionContext` (§4), and `ResolvedQueryRequest` (§5) value types.
 - The `Strategy` trait (§8) — the dispatch surface ratified structurally in `20 §5.2` and concretized here.
@@ -56,17 +56,17 @@ refined-by:
 
 - **Expression / type vocabulary.** `Expr`, `PhysicalExpr`, `Aggregation`, `DataType`, `Grain`, `Diagnostic`, `Severity` all live in `semstrait-core` (`31`). `34` consumes them.
 - **Plan-tree shape.** `SemanticPlan`, `PlanNode`, `NodeMeta`, `SourceRef`, `Name` all live in `semstrait-ir` (`35`). `34` emits and consumes them.
-- **Manifest shape.** `Manifest`, `ResolvedDataKind`, `ResolvedBinding`, `ResolvedExprTable`, `CoverageIndex`, `CompositionIndex` all live in `semstrait-manifest` (`33`). `34` reads them — never mutates, never re-resolves (I5 / I8).
+- **SemanticManifest shape.** `SemanticManifest`, `ResolvedDataKind`, `ResolvedBinding`, `ResolvedExprTable`, `CoverageIndex`, `CompositionIndex` all live in `semstrait-manifest` (`33`). `34` reads them — never mutates, never re-resolves (I5 / I8).
 - **YAML parsing / structural validation.** Lives in `semstrait-model` (`32`). The `Request` the planner accepts is already a Rust value — the API layer (`semstrait-api`) is responsible for converting user-facing JSON / gRPC / protobuf into `Request`.
 - **Catalog / filesystem access.** `CatalogProvider` / `FileSystem` (`37`) are consumed at `compile` time only; no planner surface accepts them (I11).
 - **SQL / engine emission.** `semstrait-adapter` (`36`) consumes the `SemanticPlan` and produces engine-specific artifacts; no planner API touches a dialect.
 
 ### 1.3 Design posture — sync-only dispatch crate
 
-The planner is the workspace's widest dispatch site — the `plan` entry point fans out across every `ResolvedDataKind` variant — but it is **not** the crate with the most runtime weight. The hot path is a single tree walk over pre-resolved Manifest indices (§7). Three properties shape the design:
+The planner is the workspace's widest dispatch site — the `plan` entry point fans out across every `ResolvedDataKind` variant — but it is **not** the crate with the most runtime weight. The hot path is a single tree walk over pre-resolved SemanticManifest indices (§7). Three properties shape the design:
 
 - **Synchronous end-to-end.** Per I6, there is no `async fn` anywhere on the public surface. `plan` and `optimize` are ordinary fallible functions; every strategy method is sync. The `async` wrapper on `compile` (`10 §3.3`) is the last async boundary in the pipeline; everything the planner reads has already been resolved.
-- **Pure transformations over pre-built indices.** Per I5 / I8, the planner does no name resolution, no catalog fetch, no expression recompilation. It performs O(1) / O(log n) index lookups on the `Manifest` (`14b §2.3`, `33 §3.4`) and emits `PlanNode`s carrying pre-resolved `PhysicalExpr`s.
+- **Pure transformations over pre-built indices.** Per I5 / I8, the planner does no name resolution, no catalog fetch, no expression recompilation. It performs O(1) / O(log n) index lookups on the `SemanticManifest` (`14b §2.3`, `33 §3.4`) and emits `PlanNode`s carrying pre-resolved `PhysicalExpr`s.
 - **Strategy dispatch is the one variant-match site.** Per `20 §5.3`, the only place the planner branches on a `ResolvedDataKind` variant tag is the dispatch function (§8.5). Every other planner site consumes `&dyn Strategy`. Adding a new `Complex` variant per I10 is a MINOR change that forces a new match arm in one place, not a scatter of edits.
 
 ### 1.4 Invariants upheld by the crate
@@ -75,7 +75,7 @@ The planner is the workspace's widest dispatch site — the `plan` entry point f
 |---|---|
 | **I5** — name resolution is compile-time | The planner performs **lookup only** (`14b §2.3`, `33 §3.4`). No `resolve_*` method walks names to Semantics or columns; every such walk was performed at `compile`. A CI lint forbids `EntityRef` leaves in any `PhysicalExpr` a plan node carries. |
 | **I6** — plan hot path is synchronous | **No `pub async fn` exists on `semstrait-planner`.** The `Strategy` trait's `plan` method is sync; so is every `OptimizerPass::apply`. A CI audit (`cargo clippy -- -D clippy::async_fn_in_trait`) enforces. |
-| **I8** — planner-complete Manifest | Every `(SemanticsName, BindingId)` the planner might ask for is already in `manifest.expr_table` (`14b §2.3`). Every `Relationship` the planner walks is in `manifest.resolved_relationships`. A Manifest whose indices fail this completeness guarantee triggers `PLAN_E_2052 ManifestIndexInconsistent` at dispatch (`20 §8.2`). |
+| **I8** — planner-complete SemanticManifest | Every `(SemanticsName, BindingId)` the planner might ask for is already in `manifest.expr_table` (`14b §2.3`). Every `Relationship` the planner walks is in `manifest.resolved_relationships`. A SemanticManifest whose indices fail this completeness guarantee triggers `PLAN_E_2052 SemanticManifestIndexInconsistent` at dispatch (`20 §8.2`). |
 | **I10** — non-exhaustive public sum types | `Request`, `SessionContext`, `ResolvedQueryRequest`, `PlanError`, `PlanErrors`, `OptimizeError`, `OptimizeErrors`, `StrategyId` are all `#[non_exhaustive]`. An integration test over `cargo public-api` enforces. |
 | **I11** — no I/O in hot path | No `std::fs`, no `std::net`, no `tokio`, no `reqwest` in the crate's dependency graph. The `Cargo.toml` audit (§16.2) is CI-enforced. |
 | **I12** — first-class diagnostics | Every `PlanError` / `OptimizeError` variant has a stable `PLAN_E_*` / `OPT_E_*` code (§13); each converts to `Diagnostic` via `IntoDiagnostic` (`31 §7.4`). Non-error diagnostics accumulate through both success and failure arms per `30 §7`. |
@@ -84,8 +84,8 @@ The planner is the workspace's widest dispatch site — the `plan` entry point f
 
 Per `11 §8.6`, realized-carrier Constraint validation runs as the **planner's first action — step 0, pre-resolution — before any other sub-step of the `plan` pipeline**. The rationale is twofold:
 
-1. Constraints express author-declared admissibility rules on Request shape (`11 §8.4`). A Request that violates a Measure's `dimensions: { one_of: [...] }` rule cannot be planned without lying about author intent; it is cheaper and clearer to reject before any Manifest index work begins.
-2. The v1 `ConstraintValidator::check()` (`11 §8.6`) reads only the Request and the Manifest's name indices — work the planner must do anyway in step 1. Reordering would duplicate lookups.
+1. Constraints express author-declared admissibility rules on Request shape (`11 §8.4`). A Request that violates a Measure's `dimensions: { one_of: [...] }` rule cannot be planned without lying about author intent; it is cheaper and clearer to reject before any SemanticManifest index work begins.
+2. The v1 `ConstraintValidator::check()` (`11 §8.6`) reads only the Request and the SemanticManifest's name indices — work the planner must do anyway in step 1. Reordering would duplicate lookups.
 
 §7.1 ratifies step 0 as the planner's entry action. The seven-step pipeline is fixed: violating the order is a crate-internal bug, not a surface the caller can influence.
 
@@ -120,7 +120,7 @@ Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root r
 
 | Module | Item | Kind | Section |
 |---|---|---|---|
-| (crate root) | `pub fn plan(&Manifest, Request) -> Result<SemanticPlan, PlanErrors>` | free fn | §6 |
+| (crate root) | `pub fn plan(&SemanticManifest, Request) -> Result<SemanticPlan, PlanErrors>` | free fn | §6 |
 | (crate root) | `pub fn optimize(SemanticPlan) -> Result<SemanticPlan, OptimizeErrors>` | free fn | §11 |
 | `request` | `pub struct Request` | value type | §3 |
 | `request` | `pub struct SessionContext` | value type | §4 |
@@ -155,7 +155,7 @@ Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root r
 ```rust
 /// A caller-authored query intent — the planner's input at the
 /// stage-4 boundary (`10 §3.4`). Per `00 §4.1`'s Request row. Carries
-/// no references to the Manifest; the API layer constructs it from
+/// no references to the SemanticManifest; the API layer constructs it from
 /// the user-facing query form.
 #[non_exhaustive]
 pub struct Request {
@@ -178,7 +178,7 @@ Each field is detailed in §3.2–§3.7. `#[non_exhaustive]` per I10: additions 
 
 Each field is a `Vec<SemanticsName>`. Order is user-visible: it pins the left-to-right column order in `SemanticPlan.output_names` (`35 §3.2`). Duplicates within any single list are rejected at step 1 with `PLAN_E_0510 DuplicateRequestedName`; empty lists on all three simultaneously are rejected with `PLAN_E_0511 EmptyRequest`.
 
-The split into three vectors mirrors `00 §4.1`'s terminology. At the planner layer the distinction is structural, not semantic: every entry becomes a leaf lookup against the Manifest's name index. The split matters downstream — a Measure wraps inside a `PlanNode::Agg`; a Dimension lands in `group_by`; a Metric routes through its `CompiledMetric` entry per `14b §2.4`.
+The split into three vectors mirrors `00 §4.1`'s terminology. At the planner layer the distinction is structural, not semantic: every entry becomes a leaf lookup against the SemanticManifest's name index. The split matters downstream — a Measure wraps inside a `PlanNode::Agg`; a Dimension lands in `group_by`; a Metric routes through its `CompiledMetric` entry per `14b §2.4`.
 
 **Type admissibility.** If a name's resolved Semantics type contradicts the field it was placed in (e.g. a Dimension name in `measures`), the planner raises `PLAN_E_0512 RequestFieldTypeMismatch` at step 1.
 
@@ -371,7 +371,7 @@ Legacy `crates/semstrait-planner/src/request.rs::SessionVariables` is a `HashMap
 
 ### 5.1 Shape
 
-The Manifest-contextualized Request: every `SemanticsName` looked up, every target DataKind resolved (either via explicit `from` or via field-first resolution per §10), every `Filter.field` bound to its `ResolvedSemanticRef`. Produced by step 1 (§7.2) and consumed by step 4 (§7.5). NEVER exposed on the `plan` entry signature — a caller who needs the resolved form destructures the returned `SemanticPlan` instead. The type is `pub` so `Strategy` impls can consume it directly; construction is `pub(crate)` (only the step-1 builder produces well-formed instances).
+The SemanticManifest-contextualized Request: every `SemanticsName` looked up, every target DataKind resolved (either via explicit `from` or via field-first resolution per §10), every `Filter.field` bound to its `ResolvedSemanticRef`. Produced by step 1 (§7.2) and consumed by step 4 (§7.5). NEVER exposed on the `plan` entry signature — a caller who needs the resolved form destructures the returned `SemanticPlan` instead. The type is `pub` so `Strategy` impls can consume it directly; construction is `pub(crate)` (only the step-1 builder produces well-formed instances).
 
 ```rust
 #[non_exhaustive]
@@ -426,28 +426,28 @@ Exposing the resolved form lets strategies consume a single pre-resolved value: 
 ```rust
 /// Planner entry point. Per `10 §3.4`.
 ///
-/// Consumes a read-only `Manifest` reference and an owned `Request`;
+/// Consumes a read-only `SemanticManifest` reference and an owned `Request`;
 /// returns a well-formed `SemanticPlan` on success or a fail-fast
 /// `PlanErrors` carrier on failure.
 ///
-/// Sync (I6). Never mutates the Manifest (I8 / I5). Performs no I/O
+/// Sync (I6). Never mutates the SemanticManifest (I8 / I5). Performs no I/O
 /// (I11). Accumulates non-error diagnostics across both arms per
 /// `30 §7` — warnings surfaced during planning flow out through
 /// `PlanErrors.warnings` (error arm) or `SemanticPlan.diagnostics`
 /// (success arm).
 pub fn plan(
-    manifest: &Manifest,
+    manifest: &SemanticManifest,
     request: Request,
 ) -> Result<SemanticPlan, PlanErrors>;
 ```
 
-**Input ownership.** `Manifest` is borrowed (never consumed) — a Manifest is typically cached across many `plan` calls; the planner takes a read-only view. `Request` is owned (consumed) — its fields are destructured into the internal `ResolvedQueryRequest` representation, and retaining the caller's copy has no utility.
+**Input ownership.** `SemanticManifest` is borrowed (never consumed) — a SemanticManifest is typically cached across many `plan` calls; the planner takes a read-only view. `Request` is owned (consumed) — its fields are destructured into the internal `ResolvedQueryRequest` representation, and retaining the caller's copy has no utility.
 
 **Return shape.** `Result<SemanticPlan, PlanErrors>` rather than `Result<(SemanticPlan, Vec<Diagnostic>), (Diagnostic, Vec<Diagnostic>)>` (the `30 §7` primitive form). The `PlanErrors` carrier (§13.2) wraps the error + warnings pair; the success-arm `SemanticPlan.diagnostics` (`35 §3.1`) carries the warnings. The binary difference from `30 §7`'s shape is presentation only: a caller can trivially destructure either form.
 
 ### 6.2 Preconditions on `manifest`
 
-The Manifest must satisfy every invariant in `33 §3.1` — in particular, `expr_table` must be populated for every exposed `(name, binding_id)` pair, and every referenced `RelationshipId` must be present in `resolved_relationships`. Feeding a partially-built Manifest is a caller error; the planner's index-inconsistency checks raise `PLAN_E_2052` where possible but are not exhaustive. Multi-thread access is safe per `33 §12` — a single `Manifest` may back concurrent `plan` calls.
+The SemanticManifest must satisfy every invariant in `33 §3.1` — in particular, `expr_table` must be populated for every exposed `(name, binding_id)` pair, and every referenced `RelationshipId` must be present in `resolved_relationships`. Feeding a partially-built SemanticManifest is a caller error; the planner's index-inconsistency checks raise `PLAN_E_2052` where possible but are not exhaustive. Multi-thread access is safe per `33 §12` — a single `SemanticManifest` may back concurrent `plan` calls.
 
 ### 6.3 Postconditions
 
@@ -457,7 +457,7 @@ The Manifest must satisfy every invariant in `33 §3.1` — in particular, `expr
 
 ### 6.4 Thread-safety
 
-`plan` is `Send` on the invoking thread and reentrant under concurrent invocations against the same Manifest (reads only; no interior mutability across calls).
+`plan` is `Send` on the invoking thread and reentrant under concurrent invocations against the same SemanticManifest (reads only; no interior mutability across calls).
 
 ## 7. Plan pipeline sub-steps
 
@@ -465,17 +465,17 @@ Per `10 §3.4`, `plan` executes seven sub-steps in fixed order. The ordering is 
 
 ### 7.1 Step 0 — Constraint validation (`11 §8.6`)
 
-**Work.** Invoke `ConstraintValidator::check(request, manifest)` per `11 §8.6`. The v1 checker iterates every Measure and Metric named in `request.measures` / `request.metrics`, resolves each via the Manifest's name index, and evaluates every `MeasureConstraints` entry against the Request's query scope (`dimensions` ∪ filter-field Dimensions) and against the Measure's effective aggregation.
+**Work.** Invoke `ConstraintValidator::check(request, manifest)` per `11 §8.6`. The v1 checker iterates every Measure and Metric named in `request.measures` / `request.metrics`, resolves each via the SemanticManifest's name index, and evaluates every `MeasureConstraints` entry against the Request's query scope (`dimensions` ∪ filter-field Dimensions) and against the Measure's effective aggregation.
 
 **Output.** Either a successful advance to step 1, or a fail-fast abort with `PLAN_E_0500 ConstraintViolation { entity, message }` per `11 §8.7`. The v1 checker short-circuits on first violation; future fan-out (`[TD-CONSTRAINT-ERROR-FANOUT]`) refines the carrier without changing step-0 placement.
 
-**Why step 0.** Constraint violations express author-declared admissibility rules. Running them before any Manifest-index work avoids redundant field-first resolution / relationship / dispatch work on Requests that cannot be planned by author intent.
+**Why step 0.** Constraint violations express author-declared admissibility rules. Running them before any SemanticManifest-index work avoids redundant field-first resolution / relationship / dispatch work on Requests that cannot be planned by author intent.
 
 ### 7.2 Step 1 — Request lookup (`11 §5`)
 
 **Work.** Per `11 §5`'s lookup algorithm and `14b §2.3`'s O(1) guarantee:
 
-1. For each name in `request.dimensions` ∪ `request.measures` ∪ `request.metrics`, look up the `SemanticsName` in the Manifest's name index. Unknown names raise `PLAN_E_0504 UnknownSemantics { name }`.
+1. For each name in `request.dimensions` ∪ `request.measures` ∪ `request.metrics`, look up the `SemanticsName` in the SemanticManifest's name index. Unknown names raise `PLAN_E_0504 UnknownSemantics { name }`.
 2. Record each name's `SemanticElement` and owning `DataKindRef`. Mismatch with the field the name was placed in raises `PLAN_E_0512 RequestFieldTypeMismatch`.
 3. For each `Filter.field`, look up similarly; arity mismatch raises `PLAN_E_0520`; value-type mismatch raises `PLAN_E_0521`.
 4. Duplicate names within any field list raise `PLAN_E_0510`.
@@ -496,10 +496,10 @@ Two-branch decision:
 For composition targets (explicit Complex or `SynthesizedComposition`), the planner materializes the `ComposedSemanticInterface` the strategy will plan against:
 
 - **Synthesized (implicit):** `traversed_paths` from step 2 are pre-walked; no extra work beyond packaging edges for strategy consumption (the synthesized interface is built on demand per `16 §10`).
-- **Explicit Complex:** the target's `composed_interface` is already in the Manifest; step 3 is a consistency check.
+- **Explicit Complex:** the target's `composed_interface` is already in the SemanticManifest; step 3 is a consistency check.
 - **Simple target:** step 3 is a no-op.
 
-`PLAN_E_2052 ManifestIndexInconsistent` surfaces here when a recorded `RelationshipId` is missing from `manifest.resolved_relationships` — a Manifest-integrity bug.
+`PLAN_E_2052 SemanticManifestIndexInconsistent` surfaces here when a recorded `RelationshipId` is missing from `manifest.resolved_relationships` — a SemanticManifest-integrity bug.
 
 ### 7.5 Step 4 — Strategy dispatch (`20 §5.3`)
 
@@ -612,7 +612,7 @@ Holds exactly one strategy per variant; replacement is allowed at construction t
 
 ```rust
 pub struct StrategyContext<'a> {
-    pub manifest: &'a Manifest,
+    pub manifest: &'a SemanticManifest,
     pub session:  &'a SessionContext,
     pub registry: &'a StrategyRegistry,
     pub diagnostics: &'a DiagnosticSink,
@@ -723,7 +723,7 @@ Step 2 of the pipeline (§7.3) invokes field-first resolution when `request.from
 
 ### 10.2 Algorithm sketch (from `16 §11`)
 
-The algorithm's canonical ratification is `16 §11`; §10 here records the planner-side realization and its integration with the Manifest indices.
+The algorithm's canonical ratification is `16 §11`; §10 here records the planner-side realization and its integration with the SemanticManifest indices.
 
 1. **Name-to-kind map (`16 §11.2`).** For each `SemanticsName` in `request.dimensions ∪ request.measures ∪ request.metrics ∪ request.filters.field`, consult `manifest.name_index(name)`:
    - `None` → `PLAN_E_0504 UnknownSemantics { name }` (re-raised from step 1 if the lookup missed there).
@@ -746,9 +746,9 @@ The algorithm's canonical ratification is `16 §11`; §10 here records the plann
 
 6. **Return.** `ResolvedTarget::{Implicit | SynthesizedComposition}`.
 
-### 10.3 Integration with Manifest indices
+### 10.3 Integration with SemanticManifest indices
 
-The algorithm is a thin reader of the Manifest's pre-built indices: `manifest.name_index: BTreeMap<SemanticsName, Vec<DataKindRef>>` (`33 §5`), `manifest.relationship_graph: RelationshipGraph` (`14b §4.2`, adjacency-list with deterministic neighbor order), `manifest.resolved_relationships: BTreeMap<RelationshipId, ResolvedRelationship>` (`33 §3.1`), and the crate constant `MAX_IMPLICIT_COMPOSITION_DEPTH` (§10.4). Every lookup is O(log n); BFS / Steiner walk is O(E × depth-bound). No name resolution occurs (I5).
+The algorithm is a thin reader of the SemanticManifest's pre-built indices: `manifest.name_index: BTreeMap<SemanticsName, Vec<DataKindRef>>` (`33 §5`), `manifest.relationship_graph: RelationshipGraph` (`14b §4.2`, adjacency-list with deterministic neighbor order), `manifest.resolved_relationships: BTreeMap<RelationshipId, ResolvedRelationship>` (`33 §3.1`), and the crate constant `MAX_IMPLICIT_COMPOSITION_DEPTH` (§10.4). Every lookup is O(log n); BFS / Steiner walk is O(E × depth-bound). No name resolution occurs (I5).
 
 ### 10.4 Depth bound
 
@@ -756,7 +756,7 @@ The algorithm is a thin reader of the Manifest's pre-built indices: `manifest.na
 pub const MAX_IMPLICIT_COMPOSITION_DEPTH: usize = 3;
 ```
 
-Per `16 §9.1`'s "implicit composition is bounded to unambiguous shortest-path chains, depth-limited". Attempts beyond the bound abort with `PLAN_E_0502`. Configurable only via an off-by-default feature toggle (`semstrait.plan.implicit_depth_max`); the limit is not a tunable on `SessionContext` because Manifest structure dominates what is ergonomic. A Model needing deep traversal should declare an explicit `Joinset` (`24`), making intent authored and planner work a direct lookup.
+Per `16 §9.1`'s "implicit composition is bounded to unambiguous shortest-path chains, depth-limited". Attempts beyond the bound abort with `PLAN_E_0502`. Configurable only via an off-by-default feature toggle (`semstrait.plan.implicit_depth_max`); the limit is not a tunable on `SessionContext` because SemanticManifest structure dominates what is ergonomic. A Model needing deep traversal should declare an explicit `Joinset` (`24`), making intent authored and planner work a direct lookup.
 
 ### 10.5 Interaction with Joinsets and `14b` path resolution
 
@@ -835,13 +835,13 @@ Passes are pure, sync, deterministic (`10 §3.5`). `name` is stable per pass for
 
 ```rust
 pub struct OptimizePassContext<'a> {
-    pub manifest:    Option<&'a Manifest>,
+    pub manifest:    Option<&'a SemanticManifest>,
     pub session:     Option<&'a SessionContext>,
     pub diagnostics: &'a DiagnosticSink,
 }
 ```
 
-`manifest` and `session` are `Option` because a `SemanticPlan` passed through `optimize` does not necessarily carry its producing Manifest / SessionContext — a plan deserialized from a wire form (`35 §3.3`) may arrive without either. Passes that require them MUST emit `OPT_E_0110 PassRequiresContext { pass, required }` when invoked without the needed reference.
+`manifest` and `session` are `Option` because a `SemanticPlan` passed through `optimize` does not necessarily carry its producing SemanticManifest / SessionContext — a plan deserialized from a wire form (`35 §3.3`) may arrive without either. Passes that require them MUST emit `OPT_E_0110 PassRequiresContext { pass, required }` when invoked without the needed reference.
 
 ### 12.3 Externally-implementable
 
@@ -918,10 +918,10 @@ pub enum PlanError {
     PostConstructionInvariantViolated { underlying: String, location: Option<Location> },
 
     // -- DataKind-specific (§7.5 delegate) --
-    DataKindNotInManifest          { name: DataKindRef, location: Option<Location> },
+    DataKindNotInSemanticManifest          { name: DataKindRef, location: Option<Location> },
     StrategyDispatchFailed         { kind_variant: String, location: Option<Location> },
     StrategyMissingForVariant      { kind_variant: String, location: Option<Location> },
-    ManifestIndexInconsistent      { detail: String, location: Option<Location> },
+    SemanticManifestIndexInconsistent      { detail: String, location: Option<Location> },
 
     // -- per-variant error passthrough (21–24) --
     Simple   (SimpleError),
@@ -970,10 +970,10 @@ impl std::error::Error for PlanError {}
 | `PLAN_E_0601` | `UnsupportedRequestShape` | §7.6 |
 | `PLAN_E_0610` | `PostConstructionInvariantViolated` | §7.7 |
 | `PLAN_E_1700`+ | `TemporalDeferred` variants | `17 §9` (DEFERRED) |
-| `PLAN_E_2040` | `DataKindNotInManifest` | `20 §8.2` |
+| `PLAN_E_2040` | `DataKindNotInSemanticManifest` | `20 §8.2` |
 | `PLAN_E_2050` | `StrategyDispatchFailed` | `20 §8.2` |
 | `PLAN_E_2051` | `StrategyMissingForVariant` | `20 §8.2` |
-| `PLAN_E_2052` | `ManifestIndexInconsistent` | `20 §8.2` |
+| `PLAN_E_2052` | `SemanticManifestIndexInconsistent` | `20 §8.2` |
 | `PLAN_E_21xx` | `Simple(SimpleError)` | `21 §7` |
 | `PLAN_E_22xx` | `Grainset(GrainsetError)` | `22 §8` |
 | `PLAN_E_23xx` | `Unionset(UnionsetError)` | `23 §10` |
@@ -1105,7 +1105,7 @@ The `PLAN_E_0500` aliasing (§13.1) between `ConstraintViolation` and `Ambiguous
 
 ### 16.1 NO I/O
 
-No `std::fs`, no `std::net`, no `tokio`, no `reqwest`, no `aws-sdk-*`, no `object_store` in the crate's dependency graph. A `plan` or `optimize` invocation performs zero syscalls on the hot path; every datum consulted is already in the `Manifest` (I8 / I11). `tracing::debug!` is permissible as instrumentation — `tracing` is a no-op when no subscriber is installed.
+No `std::fs`, no `std::net`, no `tokio`, no `reqwest`, no `aws-sdk-*`, no `object_store` in the crate's dependency graph. A `plan` or `optimize` invocation performs zero syscalls on the hot path; every datum consulted is already in the `SemanticManifest` (I8 / I11). `tracing::debug!` is permissible as instrumentation — `tracing` is a no-op when no subscriber is installed.
 
 ### 16.2 NO SQL emission
 
@@ -1117,7 +1117,7 @@ YAML parsing lives in `semstrait-model` (`32`). The `Request` the planner accept
 
 ### 16.4 NO catalog access
 
-`CatalogProvider` / `FileSystem` (`37`) are strictly a `compile`-stage concern. The planner takes a `&Manifest` that already encodes every piece of catalog data it needs; no `&dyn CatalogProvider` appears on any planner surface. The legacy `SemanticPlanner.catalog: Option<Arc<dyn CatalogProvider>>` field is a migration item (`[TD-PLANNER-NO-CATALOG]`) retained only for the handful of ad-hoc-join paths pending the field-first-resolution refactor (§9.5); the ratified surface drops it entirely.
+`CatalogProvider` / `FileSystem` (`37`) are strictly a `compile`-stage concern. The planner takes a `&SemanticManifest` that already encodes every piece of catalog data it needs; no `&dyn CatalogProvider` appears on any planner surface. The legacy `SemanticPlanner.catalog: Option<Arc<dyn CatalogProvider>>` field is a migration item (`[TD-PLANNER-NO-CATALOG]`) retained only for the handful of ad-hoc-join paths pending the field-first-resolution refactor (§9.5); the ratified surface drops it entirely.
 
 ### 16.5 Dependency posture
 

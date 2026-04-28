@@ -12,7 +12,7 @@ authoritative-for:
   - crate boundaries for `semstrait-model`
 refined-by:
   - 32b (`apis/32b_catalogs_yaml.md` — catalog YAML grammar and reference syntax)
-  - 33 (`apis/33_semstrait_manifest.md` — how the `SemanticModel` tree lowers to a `Manifest`)
+  - 33 (`apis/33_semstrait_manifest.md` — how the `SemanticModel` tree lowers to a `SemanticManifest`)
 # Upstream cross-references (see `prereqs:` above and §11 "Pointers to Child Docs"
 # for full context): 18 (entity struct shapes), 15 (SemanticMapping compile
 # semantics), 16 (composition), 17 (temporal-shape planner semantics), 21-24
@@ -26,22 +26,6 @@ refined-by:
 # 32. `semstrait-model` — Root YAML Contract
 
 `32` fixes the root-shape YAML surface of a `semstrait` model and the in-memory `SemanticModel` type. Per-variant grammar lives in `21`–`24`. Catalog authoring lives in `32b`. Nesting lives in `26`.
-
-## Table of Contents
-
-1. [Root YAML Shape](#1-root-yaml-shape)
-2. [`SemanticModel` Root Type](#2-semanticmodel-root-type)
-3. [DataKind Type Hierarchy](#3-datakind-type-hierarchy)
-4. [The `Extras` Block](#4-the-extras-block)
-5. [Semantic Mapping and Binding](#5-semantic-mapping-and-binding)
-6. [Structural Rules (SR-*)](#6-structural-rules-sr)
-7. [Deterministic Ordering (I4)](#7-deterministic-ordering-i4)
-8. [`${VAR}` Substitution](#8-var-substitution)
-9. [`parse` API and `ParseError`](#9-parse-api-and-parseerror)
-10. [Crate Boundaries](#10-crate-boundaries)
-11. [Pointers to Child Docs](#11-pointers-to-child-docs)
-
----
 
 ## 1. Root YAML Shape
 
@@ -442,7 +426,7 @@ extras:
   semantic_mapping: auto
 ```
 
-**Explicit map.** The author provides a `{ semantic_name: <SemanticMappingValue> }` mapping. Each entry's value is one of **three variants** — the full `SemanticMappingValue` enum (shape + roster + `LiteralValue` grammar) is ratified in [`18 §10`](../foundations/18_entities.md#10-semanticmapping-value-shape) and consumed by the `Binding` process in [`15 §5`](../foundations/15_mapping_and_binding.md#5-semanticmapping-value-compile-semantics):
+**Explicit map.** The author provides a `{ semantic_name: <SemanticMappingValue> }` mapping. Each entry's value is one of **three author-facing variants** (`Column` / `Literal` / `Expr`) — the full `SemanticMappingValue` enum is **4-variant** at the type level (`Column` / `Literal` / `Expr` / `Metadata`), with the 4th `Metadata(MetadataDimensionRecipe)` variant **compile-synthesized only** from the Dimension's own `type: { metadata: ... }` block (per `13 §4.7` / `18 §10.4` / `15 §5.5`). The 4th variant has no `semantic_mapping:` YAML form and is therefore not authored here. The full enum (shape + roster + `LiteralValue` grammar + `MetadataDimensionRecipe`) is ratified in [`18 §10`](../foundations/18_entities.md#10-semanticmapping-value-shape) and consumed by the `Binding` process in [`15 §5`](../foundations/15_mapping_and_binding.md#5-semanticmapping-value-compile-semantics):
 
 ```yaml
 extras:
@@ -607,6 +591,102 @@ Accumulation: `ParseErrors { errors: Vec<ParseError> }`. Recoverable errors (per
 - **No catalog I/O.** Catalog references are parsed as `CatalogRef` values and left unresolved; `catalogs.yaml` is a separate file loaded by the caller.
 - **No multi-file loading.** `parse` takes one `&str`.
 
+### 9.4 Fluent loader: `SemanticModel::loader()`
+
+`parse` is the primitive — one input, one output, no config. Most callers want **parse + validate** together, returning a `SemanticModel` ready for `compile` consumption. The fluent loader is the ergonomic entry that fuses the two:
+
+```rust
+impl SemanticModel {
+    /// Entry point for the fluent loader. Returns a typestate builder
+    /// awaiting a source.
+    pub fn loader() -> SemanticModelLoader<NoSource>;
+}
+
+/// Typestate marker — `NoSource` (no input attached yet) vs `HasSource`
+/// (input attached, ready to load). Sealed at the `state` module.
+pub struct NoSource(());
+pub struct HasSource(()); // payload field is `pub(crate)`; not user-constructible
+
+pub struct SemanticModelLoader<State> { /* state field is pub(crate) */ }
+
+impl SemanticModelLoader<NoSource> {
+    /// In-memory YAML payload. Synchronous path — no `io` feature needed.
+    pub fn with_yaml_str(self, yaml: impl Into<String>) -> SemanticModelLoader<HasSource>;
+
+    /// Filesystem / object-store payload via `semstrait-core::io::Source`.
+    /// `io` feature required.
+    #[cfg(feature = "io")]
+    pub fn with_yaml_source<S: Source + ?Sized>(self, src: &S) -> SemanticModelLoader<HasSource>;
+}
+
+impl SemanticModelLoader<HasSource> {
+    /// Async load: read (if a `Source`) → `parse` → `validate`. Async only when the
+    /// loader was configured with `with_yaml_source`; otherwise synchronous path
+    /// is selected via `load_blocking`.
+    #[cfg(feature = "io")]
+    pub async fn load(self) -> Result<SemanticModel, SemanticModelBuildError>;
+
+    /// Synchronous load. Available for `with_yaml_str`-configured loaders only;
+    /// `with_yaml_source` requires `load` (async). Compile error if called on the
+    /// async-path loader.
+    pub fn load_blocking(self) -> Result<SemanticModel, SemanticModelBuildError>;
+}
+
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum SemanticModelBuildError {
+    #[error("parse stage failed")]    Parse(ParseErrors),
+    #[error("validate stage failed")] Validate(ValidateErrors),
+    #[cfg(feature = "io")]
+    #[error("io stage failed")]       Io(IoError),
+}
+```
+
+**Stages composed by `load` / `load_blocking`** (in order, fail-fast at any stage):
+
+1. **Read** — only when the source is a `Source`-trait input; reads the payload as `String` via `src.read::<String>().await` (`31b §5`). Errors surface as `SemanticModelBuildError::Io`.
+2. **Parse** — `parse(&yaml)` (§9.1). Errors surface as `SemanticModelBuildError::Parse`.
+3. **Validate** — runs the structural-precondition pass (SR-* rules per §6). Errors surface as `SemanticModelBuildError::Validate`.
+
+Stage outputs accumulate within a stage per `30 §7`'s accumulating-stage rule (every `parse` / `validate` error in the input is collected into `ParseErrors` / `ValidateErrors`); cross-stage progression is fail-fast (a non-empty `ParseErrors` short-circuits before validate runs).
+
+**Why typestate?** A loader without a source attached is a programming error — the typestate machinery makes "call `load()` before attaching a source" a compile-time failure rather than a runtime panic / `Result`. The two states (`NoSource`, `HasSource`) are sealed: only this crate constructs the second-state values.
+
+**Why retain `parse` as primary?** The fluent loader is ergonomic sugar. Callers needing per-stage control (custom error routing per stage, cached parse tree reuse, programmatic post-parse mutations before validate) continue to call `parse(&str)` and the still-accessible `validate` entry directly. The two surfaces coexist as primitive (`parse`) + ergonomic-fused (`loader().with_yaml_*().load[_blocking]()`).
+
+**Composition with `semstrait-api`.** `SemStrait::compile_from_yaml` (`38 §3.3`) is the parallel API at the orchestration layer (it adds compile on top). The two lanes don't compete: in-process callers reach for `SemanticModel::loader()` to obtain a `SemanticModel` they can pass to a separate compile call (e.g. for caching mid-pipeline); end-to-end callers reach for `SemStrait::compile_from_yaml` to skip the intermediate handle.
+
+#### 9.4.1 Examples
+
+```rust
+// Sync path — caller has the YAML in memory.
+let model: SemanticModel = SemanticModel::loader()
+    .with_yaml_str(yaml_text)
+    .load_blocking()?;
+
+// Async path — caller has a `Location` (`31b`).
+let loc: Location = "s3://bucket/model.yaml".parse()?;
+let model: SemanticModel = SemanticModel::loader()
+    .with_yaml_source(&loc)
+    .load()
+    .await?;
+
+// Per-stage error routing — caller wants different handling per stage.
+match SemanticModel::loader().with_yaml_str(text).load_blocking() {
+    Ok(model)                                    => use_model(model),
+    Err(SemanticModelBuildError::Parse(errs))    => report_parse_errors(errs),
+    Err(SemanticModelBuildError::Validate(errs)) => report_validate_errors(errs),
+    Err(other)                                   => report_other(other),
+}
+```
+
+#### 9.4.2 Stability
+
+- `SemanticModelLoader<State>`, the typestate marker types `NoSource` / `HasSource`, the `SemanticModel::loader()` entry, the `with_yaml_*` setters, and `load` / `load_blocking` are **Stable in v1**.
+- `SemanticModelBuildError` is `#[non_exhaustive]`; new stage variants land as MINOR per `30 §4`.
+- The relationship "loader is sugar over `parse + validate`" is a public contract — `load` MUST NOT alter parse / validate semantics; any divergence is a v1 bug.
+- The async-only / sync-only split between `load` and `load_blocking` is intentional and stable. A future `with_yaml_source` consumer that wants a sync wrapper bridges via the caller's executor; `semstrait-model::io` does not provide `block_on`.
+
 ---
 
 ## 10. Crate Boundaries
@@ -635,7 +715,7 @@ Name resolution, reference expansion, and cross-kind path resolution are `compil
 
 ### 10.3 No planning
 
-`Request`, `PlanNode`, `SemanticPlan`, and `Manifest` types never appear in `semstrait-model`.
+`Request`, `PlanNode`, `SemanticPlan`, and `SemanticManifest` types never appear in `semstrait-model`.
 
 ### 10.4 Model-Level I/O Surface (`semstrait-model::io`)
 
@@ -788,7 +868,7 @@ Per I11. `io` is default-off so the historical pure-type consumer of `semstrait-
 | Relationships (planner) | [`../foundations/16_composition.md`](../foundations/16_composition.md) | Composition graph, implicit Joinset synthesis |
 | Temporal shape (planner) | [`../foundations/17_temporal_shape.md`](../foundations/17_temporal_shape.md) | Planner-level variant semantics, rollup matrix |
 | Catalogs file | [`./32b_catalogs_yaml.md`](./32b_catalogs_yaml.md) | `catalogs.yaml` grammar; `CatalogRef` reference syntax |
-| Manifest | [`./33_semstrait_manifest.md`](./33_semstrait_manifest.md) | How the `SemanticModel` tree lowers to a `Manifest` |
+| SemanticManifest | [`./33_semstrait_manifest.md`](./33_semstrait_manifest.md) | How the `SemanticModel` tree lowers to a `SemanticManifest` |
 | Core I/O transport | [`./31b_semstrait_core_io.md`](./31b_semstrait_core_io.md) | `Source` / `Sink` / `Location` / `IoError` that §10.4 composes |
 
 ---

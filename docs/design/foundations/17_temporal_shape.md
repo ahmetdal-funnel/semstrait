@@ -100,8 +100,8 @@ DEFERRED status does **not** mean "ignore the vocabulary until the planner catch
 
 - **I1 — canonical layer.** `TemporalShape`'s identifying Dimension references are `SemanticsName`s, never physical column names. The `SemanticsName → physical-column` resolution happens in `15 §4` via `ColumnMapping`; `17`'s rules operate on the canonical-layer names.
 - **I4 — determinism.** Shape-gated planner decisions are fully determined by `(Model, Request)`; no non-deterministic tie-breaking. When shape-propagation through composition is ambiguous (e.g. a `Unionset` of constituents with divergent shapes), the rule is "emit `COMP_E_17NN`, do not pick a shape."
-- **I5 — resolution at compile time.** `temporal_shape:` references to Dimensions are resolved during `compile`; the Manifest carries a `ResolvedTemporalShape` with `SemanticsName` pointers replaced by `(SemanticsName, BindingId)` pairs that index into the `ResolvedExprTable` per `14b §2`.
-- **I8 — Manifest planner-complete.** Every shape-aware planner decision is table-driven from Manifest state; no YAML-time logic survives into `plan`.
+- **I5 — resolution at compile time.** `temporal_shape:` references to Dimensions are resolved during `compile`; the SemanticManifest carries a `ResolvedTemporalShape` with `SemanticsName` pointers replaced by `(SemanticsName, BindingId)` pairs that index into the `ResolvedExprTable` per `14b §2`.
+- **I8 — SemanticManifest planner-complete.** Every shape-aware planner decision is table-driven from SemanticManifest state; no YAML-time logic survives into `plan`.
 - **I10 — non-exhaustive extensibility.** `TemporalShape`, `ScdSubtype`, and `JoinType::AsOf`-extended `JoinType` are all `#[non_exhaustive]`. Variants may grow (SCD Type 7, non-temporal shapes, bi-temporal shapes) without MAJOR bumps.
 - **I12 — first-class diagnostics.** Every Precondition and advisory in §9 carries a stable `*_E_17NN` / `*_W_17NN` code.
 
@@ -705,7 +705,7 @@ Detailed items in `questions/open/17_questions.md`. Summary of the questions thi
 ## 13. Cross-References
 
 - `00 §4.1` — `TemporalShape` row (ratified vocabulary referenced here); `AsOf` `JoinType` row (deferred variant ratified here); `Additivity` row (independent-axes interaction per §7).
-- `00 §9` — I1 (canonical layer), I4 (determinism), I5 (compile-time resolution), I8 (Manifest planner-complete), I10 (non-exhaustive), I12 (diagnostics).
+- `00 §9` — I1 (canonical layer), I4 (determinism), I5 (compile-time resolution), I8 (SemanticManifest planner-complete), I10 (non-exhaustive), I12 (diagnostics).
 - `11 §5` — shape-vs-resolution-variant boundary; `temporal_shape:` is not a Semantics shape field but a DataKind-level property.
 - `11 §6.1` — Dimension authoring; temporal Dimensions' `grains:` list per `13 §4.2` is what this doc's identifying-Dimension Precondition TS-C4 checks against.
 - `11 §7.2, §7.3` — `Additivity`'s default-`Additive` rule and the rationale for keeping it independent of `TemporalShape`.
@@ -721,7 +721,7 @@ Detailed items in `questions/open/17_questions.md`. Summary of the questions thi
 - `20`–`25` — per-DataKind strategy catalog; consumes `TemporalShape` for rollup, anchoring, and snapshot selection.
 - `30 §6.2` — subsystem code-range allocation; `[CONTRADICTION-FOUND]` at head of doc records the 17NN coordination.
 - `32` — YAML surface for `temporal_shape:` block and subtype discriminators.
-- `33` — `ResolvedTemporalShape` on `ResolvedDataKind`; Manifest-layer materialization of this doc's model-layer types.
+- `33` — `ResolvedTemporalShape` on `ResolvedDataKind`; SemanticManifest-layer materialization of this doc's model-layer types.
 - `34` — planner's shape-aware strategy dispatch; `Request.temporal` consumption; `AsOf` emission.
 - `35` — `PlanNode::Join` extension for `JoinType::AsOf(anchor)` payload.
 - `36` — per-adapter emission rules for `AsOf` joins / snapshot selection / SCD window predicates.

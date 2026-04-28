@@ -25,34 +25,18 @@ refined-by:
   - 30 (`apis/30_api_contracts.md` — error-code allocation for `SR-E-*`)
   - 32 (`apis/32_semstrait_model.md` — root YAML shape; hosts `relationships:` and the shared pools this doc ratifies; SR-* enforcement)
   - 32b (`apis/32b_catalogs_yaml.md` — catalog grammar)
-  - 33 (`apis/33_semstrait_manifest.md` — Manifest-layer `Resolved*` counterparts of the types ratified here)
+  - 33 (`apis/33_semstrait_manifest.md` — SemanticManifest-layer `Resolved*` counterparts of the types ratified here)
   - 34 (`apis/34_semstrait_planner.md` — planner consumption of resolved entity types)
   - 35 (`apis/35_semstrait_ir.md` — `PlanNode::Join` carriage of `JoinType`)
 ---
 
 # 18. Canonical Entity Types
 
-`18` is the consolidated specification for the ratified entity types that populate a `SemanticModel`: shared Semantics pools, relationships, temporal shapes, dimensions / measures / metrics, filters, AI context, keys, and the model-authoring `SemanticMapping` value shape. `32` fixes the root YAML shape and the `DataKind` hierarchy (an apis-layer concern); `18` fixes the entity shapes nested inside (a foundations-layer concern — these types cross-cut every DataKind variant, Manifest, Planner, and IR surface).
+`18` is the consolidated specification for the ratified entity types that populate a `SemanticModel`: shared Semantics pools, relationships, temporal shapes, dimensions / measures / metrics, filters, AI context, keys, and the model-authoring `SemanticMapping` value shape. `32` fixes the root YAML shape and the `DataKind` hierarchy (an apis-layer concern); `18` fixes the entity shapes nested inside (a foundations-layer concern — these types cross-cut every DataKind variant, SemanticManifest, Planner, and IR surface).
 
 > **Reader's note (structural placement).** This doc originally landed as `apis/32c_entities.md` in the late-April 2026 entity-ratification pass. It was promoted to the foundations layer (`foundations/18_entities.md`) in the 2026-04-17 consolidation pass because the types it defines are structurally foundational — they cross-cut every `2x` data-kind variant, every `3x` api surface, and every planner/adapter consumer. Per the directionality rule in `00 §8`, canonical definitions belong in the lowest-numbered doc that owns them; the promotion places entity types in their correct layer. Section numbering is unchanged from `32c` — every `18 §N` was `32c §N` in the prior revision.
 
 Every struct in this document is `#[non_exhaustive]` and every enum is `#[non_exhaustive]` per I10, unless a specific note overrides.
-
-## Table of Contents
-
-1. [Shared Semantics Pools & Reference Grammar](#1-shared-semantics-pools--reference-grammar)
-2. [`Relationship`](#2-relationship)
-3. [`TemporalShape`](#3-temporalshape)
-4. [`Dimension`](#4-dimension)
-5. [`Measure`](#5-measure)
-6. [`Metric`](#6-metric)
-7. [Filter Taxonomy](#7-filter-taxonomy)
-8. [`AiContext`](#8-aicontext)
-9. [`Keys`](#9-keys)
-10. [`SemanticMapping` Value Shape](#10-semanticmapping-value-shape)
-11. [Structural Rules (SR-E-*)](#11-structural-rules-sr-e-)
-
----
 
 ## 1. Shared Semantics Pools & Reference Grammar
 
@@ -183,7 +167,7 @@ pub struct Relationship {
 }
 ```
 
-Companion identity newtype — stable `u32` handle used by Manifest indices and compile-time graph walks:
+Companion identity newtype — stable `u32` handle used by SemanticManifest indices and compile-time graph walks:
 
 ```rust
 #[non_exhaustive]
@@ -191,7 +175,7 @@ Companion identity newtype — stable `u32` handle used by Manifest indices and 
 pub struct RelationshipId(pub u32);
 ```
 
-`RelationshipId` is allocated at `compile` in declaration order over the root-level `relationships:` list. It is the key type for the `Manifest.relationship_index`, for `RelationshipGraph` traversal in `14b`, and for `RelationshipPath` in `16 §6`. `PartialOrd` / `Ord` are derived so downstream code (`14b`'s BFS neighbor iteration, `Manifest` indices keyed by `(DataKindId, RelationshipId)`) can rely on natural `u32` ordering without unwrapping the newtype. Its one-copy-only home is this doc; `14b`, `16`, and `33` all reference it from here.
+`RelationshipId` is allocated at `compile` in declaration order over the root-level `relationships:` list. It is the key type for the `SemanticManifest.relationship_index`, for `RelationshipGraph` traversal in `14b`, and for `RelationshipPath` in `16 §6`. `PartialOrd` / `Ord` are derived so downstream code (`14b`'s BFS neighbor iteration, `SemanticManifest` indices keyed by `(DataKindId, RelationshipId)`) can rely on natural `u32` ordering without unwrapping the newtype. Its one-copy-only home is this doc; `14b`, `16`, and `33` all reference it from here.
 
 ### 2.2 YAML shape
 
@@ -952,7 +936,7 @@ Keys refer to Semantics, not physical columns. Binding through `semantic_mapping
 Keys are consumed for:
 
 - **Relationship graph** — `16 §11`'s implicit composition consults foreign keys when author-declared `relationships:` are absent.
-- **Manifest statistics** — `compile` emits pre-computed statistics for the planner.
+- **SemanticManifest statistics** — `compile` emits pre-computed statistics for the planner.
 - **Future SemanticInterface exposure** — external consumers (LSP, API) may surface keys as part of the entity description.
 
 Keys are NOT enforced at query time (no duplicate checking, no referential-integrity validation). That's database territory, not a semantic-model concern.
@@ -961,7 +945,7 @@ Keys are NOT enforced at query time (no duplicate checking, no referential-integ
 
 ## 10. `SemanticMapping` Value Shape
 
-A `semantic_mapping:` entry carries one of three variants, resolved at `compile` during the Binding process (`15`):
+A `semantic_mapping:` entry carries one of four variants, resolved at `compile` during the Binding process (`15`):
 
 ```rust
 #[non_exhaustive]
@@ -976,6 +960,14 @@ pub enum SemanticMappingValue {
     /// compute. Lives at binding time because the expression references
     /// physical column names, not Semantic names.
     Expr(crate::expr_block::PhysicalExpr),
+
+    /// A metadata-extraction recipe (§10.4). Compile-synthesized from the
+    /// Dimension's `type: metadata` block (per `13 §4.7` / `15 §5.5`); never
+    /// authored under `semantic_mapping:`. Distinct from `Expr` because the
+    /// extraction is not a `PhysicalExpr` but a compile-time mechanic that
+    /// resolves to a per-source `LiteralValue` stored on
+    /// `ResolvedPhysicalSource.metadata_values` (`15 §7.6`).
+    Metadata(MetadataDimensionRecipe),
 }
 ```
 
@@ -998,7 +990,7 @@ extras:
           unit: hour
 ```
 
-Single-string values dispatch to `Column`; mapping values with `literal:` / `expr:` keys dispatch to `Literal` / `Expr`.
+Single-string values dispatch to `Column`; mapping values with `literal:` / `expr:` keys dispatch to `Literal` / `Expr`. The `Metadata` variant has **no author-facing YAML under `semantic_mapping:`** — it is exclusively compile-synthesized from the Dimension's `type: { metadata: { path: { token: N } } }` block authored on the Dimension itself (per `13 §4.7` and the YAML in §4.2 above). The compile stage's binding-resolution pass (`15 §5.5` / `15 §10.4`) produces the `SemanticMappingValue::Metadata(...)` entry before the completeness check runs.
 
 ### 10.2 `LiteralValue`
 
@@ -1021,6 +1013,35 @@ Each literal carries its `DataType`-equivalent kind tag; the compile-time bindin
 ### 10.3 `auto` vs explicit
 
 An absent `semantic_mapping:` block on a `Dataset`'s `extras` is equivalent to `semantic_mapping: auto`. Explicit entries narrow that default: every Semantic named in the explicit map receives the declared value; every other Semantic on the `Dataset`'s interface is resolved per `auto` (name-identical physical column).
+
+### 10.4 `MetadataDimensionRecipe`
+
+Compile-synthesized payload of `SemanticMappingValue::Metadata`. The recipe pairs the extraction kind with the Dimension's declared `data_type:`; per-source resolved `LiteralValue`s live on each `ResolvedPhysicalSource.metadata_values` (`15 §7.6`), not on the recipe.
+
+```rust
+#[non_exhaustive]
+pub struct MetadataDimensionRecipe {
+    /// The extraction kind. v1: path-token only.
+    pub extraction: MetadataExtraction,
+
+    /// The declared Dimension `data_type:`. Extraction always returns
+    /// `String` at the layer-3 mechanic (`15 §8`); this field is the
+    /// target of the post-extraction `Cast` invoked during compile.
+    pub data_type: DataType,
+}
+
+#[non_exhaustive]
+pub enum MetadataExtraction {
+    /// Extract token at 0-indexed (scheme-stripped) segment position.
+    /// Runtime mechanic in `15 §8.1`.
+    Path { token: u32 },
+    // Future: Partition { level: u32 } — deferred to v2 per `15 §8.0`.
+}
+```
+
+`MetadataExtraction` is `#[non_exhaustive]` so v2 partition-level extraction (or other compile-time-resolvable metadata kinds) can grow as MINOR per `30 §2`. The v1 roster is **path-only**; partition extraction described in `13 §4.7` is non-goal in v1 and explicitly deferred (no `Partition` variant in v1's `MetadataExtraction`).
+
+The recipe is **never serialized at the author surface** — it is a compile-output struct that lives on the SemanticManifest. The `13 §4.7` `MetadataDimensionBody.source: MetadataSource` shape (the Dimension-type author surface) is what the author writes; the binding-resolution pass converts the author-side body into a recipe for `15`'s consumption.
 
 ---
 

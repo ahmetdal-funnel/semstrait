@@ -19,21 +19,6 @@ refined-by:
 
 > **Status:** Round-1 draft. `39` nails down the public surface of `semstrait` — the **facade crate**, same name as the workspace — as a re-export + `prelude::*` + one-shot-convenience veneer over `semstrait-api` (`38`). Every type exposed here is already ratified in `30`–`38`; `39` adds no new vocabulary, no new types, no new traits, and no new algorithms. It ratifies only **which** subset of the lower-layer surface is promoted to the top-level convenience namespace, **how** feature flags compose against the per-adapter and per-catalog crates, and **what** the `v1` stability promise on `prelude::*` means. Round-1 open items are parked in `questions/open/39_questions.md`.
 
-## Table of Contents
-
-1. [Purpose, Scope, Layering](#1-purpose-scope-layering)
-2. [Public Crate Surface](#2-public-crate-surface)
-3. [The `prelude::*` Module](#3-the-prelude-module)
-4. [One-Shot Convenience Functions](#4-one-shot-convenience-functions)
-5. [Feature Flags](#5-feature-flags)
-6. [Version Alignment](#6-version-alignment)
-7. [Stability](#7-stability)
-8. [Crate Boundaries](#8-crate-boundaries)
-9. [Round-1 Open Items](#9-round-1-open-items)
-10. [Cross-References](#10-cross-references)
-
----
-
 ## 1. Purpose, Scope, Layering
 
 ### 1.1 Purpose
@@ -104,7 +89,7 @@ Consumers who DO need sub-crate-level control (pick a different adapter registry
 |---|---|---|---|
 | `core`        | module (re-export) | `semstrait-core` (`31`)         | Shared primitives: `Expr` family, `DataType`, `Diagnostic`, `FunctionRegistry`, `CanonicalFn`. |
 | `model`       | module (re-export) | `semstrait-model` (`32`)        | `SemanticModel`, `parse`, `ParseError`. |
-| `manifest`    | module (re-export) | `semstrait-manifest` (`33`)     | `Manifest`, `compile`, `CompileError`, `Repository` + bundled impls. |
+| `manifest`    | module (re-export) | `semstrait-manifest` (`33`)     | `SemanticManifest`, `compile`, `CompileError`, `Repository` + bundled impls. |
 | `planner`     | module (re-export) | `semstrait-planner` (`34`)      | `Request`, `SessionContext`, `plan`, `optimize`, `PlanError`, `OptimizeError`. |
 | `ir`          | module (re-export) | `semstrait-ir` (`35`)           | `SemanticPlan`, `PlanNode`, `EngineArtifact`, `DialectId`. |
 | `adapter`     | module (re-export) | `semstrait-adapter` (`36`)      | `EngineAdapter`, `AdaptError`, `AdapterCapabilities`, `AnsiSqlAdapter`, `SubstraitAdapter`. |
@@ -196,7 +181,7 @@ pub use crate::model::{
 
 // -- manifest (33) --
 pub use crate::manifest::{
-    Manifest,
+    SemanticManifest,
     compile,
     Repository,
     InMemoryRepository,
@@ -264,7 +249,7 @@ The following are reachable through `semstrait::<module>::*` but deliberately ex
 - `PhysicalExpr` / `SemanticExpr` / `Expr` (consumers rarely construct AST nodes directly; authors consume them through `ExprSource` parse boundaries).
 - `FunctionRegistry`, `FunctionSpec`, `FnSignature` (registry is process-global via `core::function_registry()`; rarely referenced by name).
 - Every per-engine adapter type beyond `AnsiSqlAdapter` / the feature-gated `DataFusionSqlAdapter` (the default bundle — see `§5`).
-- Every `*Id` newtype (`CatalogId`, `SourceId`, `ManifestId`) — consumers reference them by value, not by type path.
+- Every `*Id` newtype (`CatalogId`, `SourceId`, `SemanticManifestId`) — consumers reference them by value, not by type path.
 
 ### 3.5 Glob discipline
 
@@ -314,7 +299,7 @@ pub async fn run(
 
 - **Not a router.** `run` takes exactly one adapter; dispatching across engines is a `SemStrait` / `AdapterRegistry` concern (`36 §11`, `38`).
 - **Not a loader.** `run` takes a `&str`; reading YAML from disk, merging multi-file models, or resolving `$include` directives is a caller responsibility (`32 §10.3`).
-- **Not a cache.** `run` compiles every invocation. Persistent `Manifest` caching goes through `Repository::save` / `Repository::load` (`33 §11`).
+- **Not a cache.** `run` compiles every invocation. Persistent `SemanticManifest` caching goes through `Repository::save` / `Repository::load` (`33 §11`).
 - **Not a harness for streaming or incremental planning.** One input, one output, one await.
 
 ### 4.4 No other free functions
@@ -387,7 +372,7 @@ serde = [
 ]
 ```
 
-Default-OFF, per `30 §10.4`. Consumers who serialize `Manifest` / `SemanticPlan` / `Diagnostic` opt in.
+Default-OFF, per `30 §10.4`. Consumers who serialize `SemanticManifest` / `SemanticPlan` / `Diagnostic` opt in.
 
 ### 5.6 Reserved feature names
 
@@ -427,7 +412,7 @@ optional = true
 # ... one entry per optional per-adapter / per-catalog crate
 ```
 
-`=1.0.0` (exact-version pin) — not `^1.0.0` or `1.0` — because the facade re-exports types by identity (`30 §11.3`). A caller who consumes `semstrait::manifest::Manifest` and `semstrait-manifest::Manifest` directly MUST see the same type; cargo's MINOR-compatibility semantics would silently allow a newer patched `semstrait-manifest` to slide in and break type-identity across the boundary.
+`=1.0.0` (exact-version pin) — not `^1.0.0` or `1.0` — because the facade re-exports types by identity (`30 §11.3`). A caller who consumes `semstrait::manifest::SemanticManifest` and `semstrait-manifest::SemanticManifest` directly MUST see the same type; cargo's MINOR-compatibility semantics would silently allow a newer patched `semstrait-manifest` to slide in and break type-identity across the boundary.
 
 ### 6.2 Release rhythm
 

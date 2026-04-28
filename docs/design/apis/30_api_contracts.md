@@ -15,7 +15,7 @@ authoritative-for:
 refined-by:
   - 31 (`semstrait-core` — `Diagnostic`/`Span`/`Severity` placement, shared primitives)
   - 32 (`semstrait-model` — `ParseError`, `ValidateError`, `SourceId` variant shape)
-  - 33 (`semstrait-manifest` — `CompileError`, `Manifest` struct `#[non_exhaustive]` roster, `Repository` trait)
+  - 33 (`semstrait-manifest` — `CompileError`, `SemanticManifest` struct `#[non_exhaustive]` roster, `Repository` trait)
   - 34 (`semstrait-planner` — `PlanError`, `OptimizeError`, Constraint / adapter-injection hook surface)
   - 35 (`semstrait-ir` — `SemanticPlan`, `PlanNode`, `EngineArtifact` non-exhaustive roster)
   - 36 (`semstrait-adapter` — `AdaptError`, `EngineAdapter` sealed-vs-open, `DialectId`)
@@ -76,7 +76,7 @@ This matters because I7's strict DAG means inter-crate API changes can only flow
 |---|---|
 | **MAJOR** | Any non-additive change to a `pub` type, function, trait, or trait method. Removing a variant, adding a required field to a non-`#[non_exhaustive]` struct, changing a function signature (other than relaxing bounds), retiring a stable error code, changing `Diagnostic` shape, changing pipeline-stage error policy. Every MAJOR requires a corresponding entry in `implementation/42_migration_notes.md`. |
 | **MINOR** | Additive-only changes. Adding a variant to a `#[non_exhaustive]` sum type, adding a field to a `#[non_exhaustive]` struct, adding a new `FunctionSpec` to the registry, adding a new `pub fn` or `pub struct`, adding a default-impl method to a public trait (with a default), widening a method's accepted input type (e.g. `&str` → `impl AsRef<str>`), introducing a new `#[deprecated]` symbol. Warnings are additive. |
-| **PATCH** | Bug fixes that preserve observable behavior. Doc-comment corrections, internal algorithm improvements that produce identical `Manifest`s / `SemanticPlan`s / `EngineArtifact`s, dependency bumps that do not change public types. |
+| **PATCH** | Bug fixes that preserve observable behavior. Doc-comment corrections, internal algorithm improvements that produce identical `SemanticManifest`s / `SemanticPlan`s / `EngineArtifact`s, dependency bumps that do not change public types. |
 
 ### 2.2 What additivity means for specific changes
 
@@ -152,7 +152,7 @@ Public structs whose field set may grow in MINOR are annotated `#[non_exhaustive
 
 - `Diagnostic` (§5.1) — `context` and source-chain details may gain fields.
 - `FunctionSpec` (ratified in `14a §3.1` — already `#[non_exhaustive]`).
-- `Manifest` and its `Resolved*` family (`ResolvedDataKind`, `ResolvedSource`, `ResolvedColumnMapping`, `ResolvedExprTable`). The `33` doc fixes the exact roster; every public leaf is `#[non_exhaustive]`.
+- `SemanticManifest` and its `Resolved*` family (`ResolvedDataKind`, `ResolvedSource`, `ResolvedColumnMapping`, `ResolvedExprTable`). The `33` doc fixes the exact roster; every public leaf is `#[non_exhaustive]`.
 - `SemanticPlan` and `PlanNode` sub-structs — indices and metadata may grow (`35`).
 - `SemanticInterface`, `ComposedSemanticInterface` — fields grow as composition semantics sharpen (`16`).
 - `Request`, `SessionContext` — session state evolves (`34`).
@@ -324,7 +324,7 @@ Subsystems are pipeline-stage-aligned with one exception (`EXPR`, which spans pa
 | `IR` | IR / `SemanticPlan` tree-shape errors (construction-time well-formedness) | owned by `semstrait-ir` (`35`); produced at `plan` boundary and `transform` hooks |
 | `CAT` | Catalog-provider errors (structured metadata integration) | `semstrait-catalog` `CatalogProvider` (`37`) — `compile` stage + gated drift check |
 | `FS` | Filesystem-provider errors (generic I/O) | `semstrait-catalog` `FileSystem` (`37`) — `compile` stage (glob, list, read) |
-| `IO` | Manifest-persistence I/O errors (`Repository` layer) | `semstrait-manifest` (`33`) — load / save / list / delete |
+| `IO` | SemanticManifest-persistence I/O errors (`Repository` layer) | `semstrait-manifest` (`33`) — load / save / list / delete |
 
 **Why `EXPR` is cross-stage.** Expression-related errors have a single author-facing mental model — "something is wrong with this `expr:` block" — regardless of whether the parser rejected the DSL syntax, the wrapper invariants caught a misplaced `EntityRef`, or the type inference produced a conflict. Keeping them under one `EXPR` subsystem prefix (with sub-ranges per category) matches that mental model and matches the catalog already ratified in `14 §7`. Non-expression errors at the same stage use the stage prefix (`PARSE_E_0001` for a YAML top-level-key error, `EXPR_E_0001` for an Inline-DSL-syntax error).
 
@@ -409,7 +409,7 @@ The per-stage policy is ratified in `10 §5`; `30` carries it forward to the cra
 |---|---|---|
 | `parse` | `Result<SemanticModel, Vec<Diagnostic>>` with warnings interleaved | accumulate |
 | `validate` | `Result<(), Vec<Diagnostic>>` with warnings interleaved | accumulate |
-| `compile` | `Result<(Manifest, Vec<Diagnostic>), (Diagnostic, Vec<Diagnostic>)>` — error arm carries the fatal `Diagnostic` plus any warnings up to failure | fail-fast |
+| `compile` | `Result<(SemanticManifest, Vec<Diagnostic>), (Diagnostic, Vec<Diagnostic>)>` — error arm carries the fatal `Diagnostic` plus any warnings up to failure | fail-fast |
 | `plan` | `Result<(SemanticPlan, Vec<Diagnostic>), (Diagnostic, Vec<Diagnostic>)>` | fail-fast |
 | `optimize` | `Result<(SemanticPlan, Vec<Diagnostic>), (Diagnostic, Vec<Diagnostic>)>` | fail-fast |
 | `adapt` | `Result<(EngineArtifact, Vec<Diagnostic>), (Diagnostic, Vec<Diagnostic>)>` | fail-fast |
@@ -424,7 +424,7 @@ The per-stage policy is ratified in `10 §5`; `30` carries it forward to the cra
 
 ### 7.2 Panic-freedom
 
-Public entry points never panic on caller-reachable input. Internal `unreachable!()` / `panic!("invariant ...")` calls are permitted only where the invariant is genuinely impossible to violate without a semstrait bug (e.g. a `Manifest` field the compile pass is sworn to populate). A caller-reachable panic is a semstrait bug and is fixed as such.
+Public entry points never panic on caller-reachable input. Internal `unreachable!()` / `panic!("invariant ...")` calls are permitted only where the invariant is genuinely impossible to violate without a semstrait bug (e.g. a `SemanticManifest` field the compile pass is sworn to populate). A caller-reachable panic is a semstrait bug and is fixed as such.
 
 ## 8. Public Trait Surface Rules
 
@@ -484,7 +484,7 @@ Per I6 (sync hot path) and I11 (gated I/O), most crates are sync-only. The excep
 |---|---|---|---|
 | `semstrait-core` | Sync only | No | Pure primitives (`DataType`, `Diagnostic`, `Span`, `CanonicalFn`); no I/O surface. |
 | `semstrait-model` | Sync only | No | `parse` and `validate` are pure transformations over in-memory YAML. |
-| `semstrait-manifest` | Compile-time async; plan-time sync | Compile-time via providers | The `compile` entry point is `async fn` (awaits `CatalogProvider` / `FileSystem`). The `Manifest` is then consumed synchronously; no `async fn` at plan time. |
+| `semstrait-manifest` | Compile-time async; plan-time sync | Compile-time via providers | The `compile` entry point is `async fn` (awaits `CatalogProvider` / `FileSystem`). The `SemanticManifest` is then consumed synchronously; no `async fn` at plan time. |
 | `semstrait-planner` | Sync only | No | `plan` and `optimize` are the I6 hot path. |
 | `semstrait-ir` | Sync only | No | Canonical IR types; no I/O. |
 | `semstrait-adapter` | Sync only | No | `adapt` is the I6 hot path. Per-engine adapter crates inherit the posture. |
@@ -560,7 +560,7 @@ When a break propagates across crates (e.g. a `semstrait-ir` variant removal for
 
 ### 11.4 Behavior-preserving refactors
 
-Internal refactors that preserve every observable output (same `Manifest` bytes, same `SemanticPlan` tree, same `EngineArtifact` text) are PATCH. Determinism (I4) makes this bit-comparable for `Manifest` and `SemanticPlan`; adapter output is compared at the `SqlArtifact::text` / `EnginePlan` serialization level. A refactor that produces equivalent but not byte-identical output is MINOR (callers comparing artifacts byte-for-byte, e.g. for content-addressable caching, see the change).
+Internal refactors that preserve every observable output (same `SemanticManifest` bytes, same `SemanticPlan` tree, same `EngineArtifact` text) are PATCH. Determinism (I4) makes this bit-comparable for `SemanticManifest` and `SemanticPlan`; adapter output is compared at the `SqlArtifact::text` / `EnginePlan` serialization level. A refactor that produces equivalent but not byte-identical output is MINOR (callers comparing artifacts byte-for-byte, e.g. for content-addressable caching, see the change).
 
 ## 12. Deprecation Policy
 
@@ -599,7 +599,7 @@ v1 per-crate maturity markers. These lock at the v1.0 cut and evolve per the sem
 |---|---|---|
 | `semstrait-core` | Stable in v1 | Canonical shared primitives: `DataType`, `Diagnostic`, `Severity`, `Span`, `CanonicalFn` newtype, `FunctionRegistry` public surface. Breaking changes require a workspace-wide MAJOR. |
 | `semstrait-model` | Stable in v1 | `SemanticModel`, `ParseError`, `ValidateError`, YAML grammar. The author-facing YAML shape extends non-exhaustively (new keys, new variants) in MINOR. |
-| `semstrait-manifest` | Stable in v1 | `Manifest`, `Resolved*` family, `CompileError`, `Repository` trait. **Internal serialization format (Manifest on-disk bytes) is NOT a public API** — callers round-trip through `Repository::save` / `Repository::load`, not through direct byte access. |
+| `semstrait-manifest` | Stable in v1 | `SemanticManifest`, `Resolved*` family, `CompileError`, `Repository` trait. **Internal serialization format (SemanticManifest on-disk bytes) is NOT a public API** — callers round-trip through `Repository::save` / `Repository::load`, not through direct byte access. |
 | `semstrait-planner` | Stable in v1 | `plan`, `optimize`, `PlanError`, `OptimizeError`. Per-DataKind strategy dispatch is internal. `PlanNode` variants are I10 `#[non_exhaustive]`. |
 | `semstrait-ir` | Stable in v1 | `SemanticPlan`, `PlanNode`, `EngineArtifact`, `SqlArtifact`, `EnginePlan`. Variant and field additions are MINOR via `#[non_exhaustive]`. |
 | `semstrait-adapter` | Provisional | `EngineAdapter` trait stable; `AdaptError` stable; `DialectId` extends in MINOR. Per-engine adapter crates (`semstrait-adapter-datafusion`, `semstrait-adapter-duckdb`, `semstrait-adapter-spark`, `semstrait-adapter-substrait`) are **versioned independently** and may carry their own stability tier in their own `3x` appendix. |
@@ -621,7 +621,7 @@ The following decisions are ratified in this document. Each bullet links to the 
 - **§3.2** — `missing_docs` is a CI failure for every `semstrait-*` crate.
 - **§4.1** — The public sum-type roster is `#[non_exhaustive]`: canonical domain enums (`DataType`, `DataKind`, `Additivity`, `Cardinality`, `JoinType`, `DialectId`, `EngineArtifact`, `EnginePlan`, `ExprSource` variants, `TemporalShape` + SCD subtype, composition-kind tag, `DimensionType`, `Grain`, `LiteralValue`, `BinaryOpKind`, `Aggregation`, `FunctionCategory`, `ParamType`, `ReturnTypeRule`, `Portability`), `Severity`, `SourceId` variants, every `StageError` enum.
 - **§4.1** — `CanonicalFn` is a newtype; inherently extensible; no `#[non_exhaustive]` annotation needed.
-- **§4.2** — `Diagnostic`, `FunctionSpec`, `Manifest` + `Resolved*` family, `SemanticPlan`, `PlanNode` sub-structs, `SemanticInterface`, `ComposedSemanticInterface`, `Request`, `SessionContext`, `SqlArtifact`, `Span`, `ContextLine` are `#[non_exhaustive]` public structs.
+- **§4.2** — `Diagnostic`, `FunctionSpec`, `SemanticManifest` + `Resolved*` family, `SemanticPlan`, `PlanNode` sub-structs, `SemanticInterface`, `ComposedSemanticInterface`, `Request`, `SessionContext`, `SqlArtifact`, `Span`, `ContextLine` are `#[non_exhaustive]` public structs.
 - **§4.3** — Internal-only (`pub(crate)` or narrower) enums MAY be exhaustive.
 - **§4.4** — Library code never panics on an unknown non-exhaustive variant; wildcard arms return `Diagnostic`s.
 - **§5.1** — `Diagnostic { code, severity, message, location, context }` is the canonical shape; `#[non_exhaustive]`.

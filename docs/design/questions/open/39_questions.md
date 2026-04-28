@@ -1,5 +1,6 @@
 ---
-doc: design/questions/open/39_questions
+
+## doc: design/questions/open/39_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `apis/39_semstrait_facade.md`
 depends-on:
@@ -11,7 +12,6 @@ depends-on:
   - apis/36_semstrait_adapter.md
   - apis/37_semstrait_catalog.md
   - apis/38_semstrait_api.md
----
 
 # Open Questions — `apis/39_semstrait_facade.md`
 
@@ -21,7 +21,7 @@ depends-on:
 
 ## Q-FAC-001 — Default-feature composition: `["ansi-sql"]` vs `[]`
 
-**Question.** `39 §5.1` sets `default = ["ansi-sql"]`, which keeps `AnsiSqlAdapter` reachable from `semstrait::prelude::*` in a fresh `cargo add semstrait` build. Should the facade ship with a default-adapter bundle at all, or should `default = []` force consumers to opt into at least one adapter explicitly?
+**Question.** `39 §5.1` sets `default = ["ansi-sql"]`, which keeps `AnsiSqlAdapter` reachable from `semstrait::prelude::`* in a fresh `cargo add semstrait` build. Should the facade ship with a default-adapter bundle at all, or should `default = []` force consumers to opt into at least one adapter explicitly?
 
 **Refs.**
 
@@ -50,7 +50,7 @@ depends-on:
 
 ## Q-FAC-002 — Prelude membership of `ir::Name`
 
-**Question.** `39 §3.2` promotes `Name` (from `semstrait-ir §5.4`) into `prelude::*`. `Name` is a plan-level identifier newtype that most first-pass callers never construct by hand — they receive it embedded in `PlanNode` variants. Should it remain in the prelude for symmetry with other re-exports, or drop to `semstrait::ir::Name`-only?
+**Question.** `39 §3.2` promotes `Name` (from `semstrait-ir §5.4`) into `prelude::`*. `Name` is a plan-level identifier newtype that most first-pass callers never construct by hand — they receive it embedded in `PlanNode` variants. Should it remain in the prelude for symmetry with other re-exports, or drop to `semstrait::ir::Name`-only?
 
 **Refs.**
 
@@ -70,7 +70,7 @@ depends-on:
 - The prelude is better at being "the 20 names you actually use" than "every carrier type from every sub-crate."
 - Reduces prelude-namespace pressure as the workspace grows.
 
-**Current position in `39`.** Included in `prelude::*` per `§3.2`.
+**Current position in `39`.** Included in `prelude::`* per `§3.2`.
 
 **Next step.** Revisit when `38` fleshes out `SemStrait`'s output-rendering surface. If `Name` is materialized only through `SemanticPlan` / `PlanNode` in common usage, drop to `semstrait::ir::Name`-only.
 
@@ -141,13 +141,13 @@ depends-on:
 
 **Current position in `39`.** Hard-coded `NoopCatalogProvider`. Catalog-bound flows use `SemStraitBuilder` from `38`.
 
-**Next step.** Resolve alongside `38`'s `SemStraitBuilder` ratification. If the builder turns out to be a one-liner (`SemStrait::builder().catalog(c).build()`), keeping `run` catalog-less is defensible; if the builder is verbose, lift the restriction.
+**Next step.** Resolve alongside `38`'s `SemStraitBuilder` ratification. If the builder turns out to be a one-liner (`SemStrait::builder().with_catalog_provider(c).with_file_system(fs).build()`), keeping `run` catalog-less is defensible; if the builder is verbose, lift the restriction.
 
 ---
 
 ## Q-FAC-005 — Exact-version pinning of sub-crates: `=1.0.0` vs `~1.0` vs `^1.0`
 
-**Question.** `39 §6.1` pins every `semstrait-*` sub-crate at `=1.0.0` (exact version). This upholds `30 §2.1`'s coordinated-release posture and preserves type-identity across the facade boundary. Is exact-pinning the right policy, or is `~1.0` (patch-compatible) / `^1.0` (minor-compatible) better?
+**Question.** `39 §6.1` pins every `semstrait-`* sub-crate at `=1.0.0` (exact version). This upholds `30 §2.1`'s coordinated-release posture and preserves type-identity across the facade boundary. Is exact-pinning the right policy, or is `~1.0` (patch-compatible) / `^1.0` (minor-compatible) better?
 
 **Refs.**
 
@@ -158,7 +158,7 @@ depends-on:
 
 **Arguments for `=1.0.0` exact pin (current Round-1 default).**
 
-- Type-identity: if the facade re-exports `semstrait-manifest::Manifest` at `semstrait::manifest::Manifest` and a caller also depends on `semstrait-manifest` directly at `1.0.1`, cargo's MINOR-compatibility semantics silently allow two different type instances to coexist — the facade's re-export becomes non-identical to the direct import. Exact-pin forbids this.
+- Type-identity: if the facade re-exports `semstrait-manifest::SemanticManifest` at `semstrait::manifest::SemanticManifest` and a caller also depends on `semstrait-manifest` directly at `1.0.1`, cargo's MINOR-compatibility semantics silently allow two different type instances to coexist — the facade's re-export becomes non-identical to the direct import. Exact-pin forbids this.
 - Coordinated release (`30 §2.1`): the facade has no lifecycle independent of the sub-crates; pinning exactly matches.
 - Makes `cargo update` on `semstrait` a single coordinated bump; no hidden drift across the workspace.
 
@@ -210,7 +210,7 @@ depends-on:
 
 ## Q-FAC-007 — Prelude growth budget: scannable cap vs organic growth
 
-**Question.** `39 §3.2`'s prelude is currently ~25 names. As sub-crates grow new first-touch types, prelude membership may balloon — at some point it stops being "the 20 names you actually use" and starts being "half the workspace surface." Should `prelude::*` cap its size, or grow organically?
+**Question.** `39 §3.2`'s prelude is currently ~25 names. As sub-crates grow new first-touch types, prelude membership may balloon — at some point it stops being "the 20 names you actually use" and starts being "half the workspace surface." Should `prelude::`* cap its size, or grow organically?
 
 **Refs.**
 
@@ -247,7 +247,7 @@ depends-on:
 
 **Refs.**
 
-- `33 §3.2` — `ManifestMetadata.semstrait_version` records the compile-time workspace version.
+- `33 §3.2` — `SemanticManifestMetadata.semstrait_version` records the compile-time workspace version.
 - `39 §6` — version alignment posture (coordinated release).
 - `39 §2.1` — `VERSION` constant row.
 

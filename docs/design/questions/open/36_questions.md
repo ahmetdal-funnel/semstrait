@@ -24,7 +24,7 @@ depends-on:
 
 ## Q-ADAPT-001 — `EngineAdapter::adapt` return shape: `Result<EngineArtifact, AdaptError>` vs `Result<(EngineArtifact, Vec<Diagnostic>), AdaptError>`
 
-**Question.** `36 §3.1` ratifies `adapt(&SemanticPlan, &Manifest) -> Result<EngineArtifact, AdaptError>`. `30 §7`'s stage-result pattern recommends `Result<(Output, Vec<Diagnostic>), ...>` so warnings propagate alongside successful output. Should `adapt` also carry `Vec<Diagnostic>` on success (e.g. "structural rewrite for `string_agg` applied on Spark")?
+**Question.** `36 §3.1` ratifies `adapt(&SemanticPlan, &SemanticManifest) -> Result<EngineArtifact, AdaptError>`. `30 §7`'s stage-result pattern recommends `Result<(Output, Vec<Diagnostic>), ...>` so warnings propagate alongside successful output. Should `adapt` also carry `Vec<Diagnostic>` on success (e.g. "structural rewrite for `string_agg` applied on Spark")?
 
 **Refs.**
 - `30 §7` — fail-fast stage-result pattern.

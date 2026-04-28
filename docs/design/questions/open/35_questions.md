@@ -51,12 +51,12 @@ depends-on:
 
 ## Q-IR-002 — `NodeId` stability across planner invocations
 
-**Question.** `35 §5.1` / `§11.2` states `NodeId` is NOT stable across planner invocations — two runs of the planner over the same Manifest + Request MAY produce different UUIDs. Is this the right design, or should `NodeId` be derived deterministically (e.g. from a tree-shape hash of the subtree rooted at the node)?
+**Question.** `35 §5.1` / `§11.2` states `NodeId` is NOT stable across planner invocations — two runs of the planner over the same SemanticManifest + Request MAY produce different UUIDs. Is this the right design, or should `NodeId` be derived deterministically (e.g. from a tree-shape hash of the subtree rooted at the node)?
 
 **Refs.**
 - `35 §5.1` — `NodeId` is a newtype over `Uuid::new_v4()`; opaque to external consumers.
 - `35 §11.2` — declared internal / not stable.
-- `00 §9` I4 — Manifest determinism; does not directly require plan-tree determinism but supports it as a design goal.
+- `00 §9` I4 — SemanticManifest determinism; does not directly require plan-tree determinism but supports it as a design goal.
 
 **Arguments for random `NodeId` (current Round-1 default).**
 - Simple, fast, never collides within a run.
@@ -148,11 +148,11 @@ depends-on:
 
 ## Q-IR-006 — `Schema` placement: `semstrait-ir` vs. `semstrait-core`
 
-**Question.** `35 §5.1` exposes `Schema { fields: Vec<Field> }` at the plan layer. A plan-level `Schema` is structurally identical to (a subset of) the Manifest-level `ResolvedBinding.sources[*].columns` shape in `15 §4.2`. Should `Schema` live in `semstrait-core` (shared between Manifest, IR, and whoever needs it) or in `semstrait-ir` (plan-layer-specific)?
+**Question.** `35 §5.1` exposes `Schema { fields: Vec<Field> }` at the plan layer. A plan-level `Schema` is structurally identical to (a subset of) the SemanticManifest-level `ResolvedBinding.sources[*].columns` shape in `15 §4.2`. Should `Schema` live in `semstrait-core` (shared between SemanticManifest, IR, and whoever needs it) or in `semstrait-ir` (plan-layer-specific)?
 
 **Refs.**
 - `35 §5.1` — current placement inside `semstrait-ir::plan::NodeMeta`.
-- `15 §4.2` — Manifest-layer column shape on `ResolvedPhysicalSource`.
+- `15 §4.2` — SemanticManifest-layer column shape on `ResolvedPhysicalSource`.
 - `31 §2` — `semstrait-core` module roster does NOT list a `schema` module today.
 
 **Arguments for placing in `semstrait-core` (shared).**
@@ -160,13 +160,13 @@ depends-on:
 - Downstream tools (catalog inspectors, drift detectors, schema diff tools) can import just `semstrait-core` without linking `semstrait-ir`.
 
 **Arguments for keeping in `semstrait-ir` (current Round-1 default).**
-- The plan-level `Schema` is a *derived* artifact of the plan tree — every plan node's `output_schema` is a re-computable function of the node and its children. The Manifest-level schema is the *authored* artifact.
-- Keeping them separate respects the layering: Manifest is input to `plan`, `Schema` is output of each plan node.
+- The plan-level `Schema` is a *derived* artifact of the plan tree — every plan node's `output_schema` is a re-computable function of the node and its children. The SemanticManifest-level schema is the *authored* artifact.
+- Keeping them separate respects the layering: SemanticManifest is input to `plan`, `Schema` is output of each plan node.
 - Future `[TD-IR-SCHEMA-SHARING]` — if `semstrait-planner` starts sharing schema machinery with `semstrait-manifest`, consolidation can happen then.
 
-**Current position in `35`.** Plan-layer `Schema` lives in `semstrait-ir`. A convergence with the Manifest-layer `Schema` is a `[TD-IR-SCHEMA-SHARING]` item.
+**Current position in `35`.** Plan-layer `Schema` lives in `semstrait-ir`. A convergence with the SemanticManifest-layer `Schema` is a `[TD-IR-SCHEMA-SHARING]` item.
 
-**Next step.** Decide at `33` (Manifest) drafting time. If `33` ratifies `Schema` at `semstrait-core` as a shared type, `35` re-exports it and drops the local definition.
+**Next step.** Decide at `33` (SemanticManifest) drafting time. If `33` ratifies `Schema` at `semstrait-core` as a shared type, `35` re-exports it and drops the local definition.
 
 ---
 
@@ -264,7 +264,7 @@ depends-on:
 
 ## Q-IR-011 — `SourceRef` opacity vs. `Display` / structured decomposition
 
-**Question.** `35 §5.2` defines `SourceRef` as a newtype over `(BindingId, u32)` with crate-private construction and accessor methods (`binding_id()`, `source_index()`). Should it be fully opaque (no accessors), or should it expose `Display` so diagnostic messages can render it without an extra Manifest-lookup round-trip?
+**Question.** `35 §5.2` defines `SourceRef` as a newtype over `(BindingId, u32)` with crate-private construction and accessor methods (`binding_id()`, `source_index()`). Should it be fully opaque (no accessors), or should it expose `Display` so diagnostic messages can render it without an extra SemanticManifest-lookup round-trip?
 
 **Refs.**
 - `35 §5.2` — current accessor methods.
@@ -272,7 +272,7 @@ depends-on:
 - `10 §5.1` — `Location` / `SourceId` handling model.
 
 **Arguments for current accessors.**
-- `binding_id()` / `source_index()` let the adapter resolve against the Manifest without exposing internal memory layout.
+- `binding_id()` / `source_index()` let the adapter resolve against the SemanticManifest without exposing internal memory layout.
 - Diagnostic rendering can look up the source via the accessors.
 
 **Arguments for fully opaque.**
@@ -283,9 +283,9 @@ depends-on:
 - Reduces the lookup round-trip for diagnostics.
 - Matches a common Rust convention ("values you'd want to print should `Display`").
 
-**Current position in `35`.** Accessors present, no `Display`. Consumers needing a renderable form pass the `SourceRef` + `Manifest` into a rendering helper.
+**Current position in `35`.** Accessors present, no `Display`. Consumers needing a renderable form pass the `SourceRef` + `SemanticManifest` into a rendering helper.
 
-**Next step.** Decide at `33` (Manifest) ratification. If the Manifest ratifies a `source_ref_to_display(manifest, source_ref) -> String` helper, `SourceRef::Display` is redundant; otherwise consider adding.
+**Next step.** Decide at `33` (SemanticManifest) ratification. If the SemanticManifest ratifies a `source_ref_to_display(manifest, source_ref) -> String` helper, `SourceRef::Display` is redundant; otherwise consider adding.
 
 ---
 

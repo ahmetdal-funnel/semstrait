@@ -87,7 +87,7 @@ Policy note: every item below is a **process or scheduling** question. None of t
 - `40 §5.3` Phase 2 — mentions trigger-based extraction.
 - `40 §2.3` — notes `io.rs` placement.
 
-**Proposed (Round 1):** Keep the three-utilities trigger. Extraction lands ahead of Phase 3 if the trigger fires during Phase 2 (the likely moment, as Manifest rewrites touch I/O paths). If the trigger does not fire, carry `io.rs` into Phase 7 and re-evaluate against `38` / `39`.
+**Proposed (Round 1):** Keep the three-utilities trigger. Extraction lands ahead of Phase 3 if the trigger fires during Phase 2 (the likely moment, as SemanticManifest rewrites touch I/O paths). If the trigger does not fire, carry `io.rs` into Phase 7 and re-evaluate against `38` / `39`.
 
 **Current position in `40`.** Trigger-based. Not a phase-exit criterion.
 

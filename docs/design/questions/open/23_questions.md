@@ -90,8 +90,8 @@ depends-on:
 **Refs.**
 - `23 §3.2` — Round-1: whitelist-only.
 - `23 §5.4` — override-compose-with-fold rule.
-- `15 §6.1` — `CoverageVariant { Native, NullFill, Derived }`; the richer three-way distinction at Binding level.
-- `16 §8` — `CompositionCoverage`; the same three variants at composition level.
+- `15 §6.1` — `CoverageVariant { Native, NullFill, Derived, Metadata }`; the richer four-way distinction at Binding level (`Metadata` ratified 2026-04-27 per `15 §13 R22 / R44–R47`).
+- `16 §8` — `CompositionCoverage`; the same four variants at composition level (per `16 §8.2 / §8.3`).
 
 **Arguments for whitelist-only (Round-1 default).**
 - Simplest mental model: "these fields, the child provides; everything else is NULL-filled."

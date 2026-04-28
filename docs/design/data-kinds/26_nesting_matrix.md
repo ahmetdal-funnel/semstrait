@@ -17,17 +17,6 @@ refined-by:
 
 `26` is the single source of truth for which data-kind variant may contain which variant as a nested child. Per-variant structural details beyond the matrix live in `22` (Grainset), `23` (Unionset), `24` (Joinset).
 
-## Table of Contents
-
-1. [The Matrix](#1-the-matrix)
-2. [Rules (R1, R2, R3)](#2-rules-r1-r2-r3)
-3. [Nested-Form Structural-Only Rule](#3-nested-form-structural-only-rule)
-4. [Addressing Scheme for Diagnostics](#4-addressing-scheme-for-diagnostics)
-5. [Enforcement](#5-enforcement)
-6. [Related Entity-Level Rules (pointer)](#6-related-entity-level-rules-pointer)
-
----
-
 ## 1. The Matrix
 
 Each cell answers: can an instance of the Child variant appear inside a Parent variant's child arrays?

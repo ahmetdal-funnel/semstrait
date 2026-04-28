@@ -67,11 +67,11 @@ depends-on:
 
 ## Q-API-006 — `#[non_exhaustive]` struct matrix for `Resolved*` types
 
-**Context.** `30 §4` lists the public sum types that MUST be non-exhaustive and acknowledges MAY-grow public structs should be `#[non_exhaustive]`. The `Manifest`-layer `Resolved*` family (`ResolvedDataKind`, `ResolvedSource`, `ResolvedColumnMapping`, `ResolvedExprTable`, …) are MAY-grow by construction (planner indices evolve).
+**Context.** `30 §4` lists the public sum types that MUST be non-exhaustive and acknowledges MAY-grow public structs should be `#[non_exhaustive]`. The `SemanticManifest`-layer `Resolved*` family (`ResolvedDataKind`, `ResolvedSource`, `ResolvedColumnMapping`, `ResolvedExprTable`, …) are MAY-grow by construction (planner indices evolve).
 
-**Question.** Is the blanket rule "every `Manifest`-layer public struct is `#[non_exhaustive]`" correct, or should internal-only indices (e.g. `ResolvedExprTable`) remain `pub(crate)` and therefore exhaustive? The `33` doc will settle placement; `30` states the policy and defers.
+**Question.** Is the blanket rule "every `SemanticManifest`-layer public struct is `#[non_exhaustive]`" correct, or should internal-only indices (e.g. `ResolvedExprTable`) remain `pub(crate)` and therefore exhaustive? The `33` doc will settle placement; `30` states the policy and defers.
 
-**Status.** Policy: the `Manifest` root struct, `ResolvedDataKind`, `ResolvedSource`, `ResolvedColumnMapping`, and any other MAY-grow public leaf are `#[non_exhaustive]`. Planner-internal indices (the lookup tables, the `Relationship` adjacency) live behind `pub(crate)` accessors and are therefore free to be exhaustive. Confirm per-type in `33`.
+**Status.** Policy: the `SemanticManifest` root struct, `ResolvedDataKind`, `ResolvedSource`, `ResolvedColumnMapping`, and any other MAY-grow public leaf are `#[non_exhaustive]`. Planner-internal indices (the lookup tables, the `Relationship` adjacency) live behind `pub(crate)` accessors and are therefore free to be exhaustive. Confirm per-type in `33`.
 
 ---
 
@@ -87,7 +87,7 @@ depends-on:
 
 ## Q-API-008 — Async posture of `semstrait-manifest`: compile-time only, or sealed-then-sync?
 
-**Context.** `30 §9`'s per-crate async table lists `semstrait-manifest` as "compile-time async; plan-time sync". The compile-time async surface is the orchestration entry point (`compile(model, catalog, fs) -> Manifest`). At plan time, the `Manifest` is consumed by reference and all access is sync.
+**Context.** `30 §9`'s per-crate async table lists `semstrait-manifest` as "compile-time async; plan-time sync". The compile-time async surface is the orchestration entry point (`compile(model, catalog, fs) -> SemanticManifest`). At plan time, the `SemanticManifest` is consumed by reference and all access is sync.
 
 **Question.** Does `semstrait-manifest` expose any `async fn` at plan time, e.g. for on-demand re-resolution of a specific `PhysicalSource` that the planner discovered needs freshening? Per I11 this is forbidden — only the two out-of-band I/O entry points (`Repository::load`, `CatalogProvider::check_schema_drift`) are permitted around plan time, and both are invoked **before** `plan` begins.
 

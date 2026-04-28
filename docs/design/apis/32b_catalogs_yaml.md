@@ -18,18 +18,6 @@ refined-by:
 
 `32b` fixes the grammar of the sibling `catalogs.yaml` file. A model references a catalog by alias via `extras.catalog:` (authored per `32 §1.3`); the catalog entry itself lives here.
 
-## Table of Contents
-
-1. [Root YAML Shape](#1-root-yaml-shape)
-2. [`CatalogEntry` Fields](#2-catalogentry-fields)
-3. [Authentication Methods](#3-authentication-methods)
-4. [`CatalogRef` — Reference Site Inside a Model](#4-catalogref--reference-site-inside-a-model)
-5. [Loader Contract](#5-loader-contract) — signature, error enum, composition with `parse`, async load / dump wrappers
-6. [Environment-Variable Substitution](#6-environment-variable-substitution)
-7. [Structural Rules](#7-structural-rules)
-
----
-
 ## 1. Root YAML Shape
 
 ```yaml

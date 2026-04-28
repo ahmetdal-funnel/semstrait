@@ -42,7 +42,7 @@ refined-by:
 ### 1.2 What `semstrait-core` does NOT own
 
 - **Model parse + YAML grammar.** The `ExprSource` → `SemanticExpr` / `PhysicalExpr` **dispatch** (per `14 §4.2`), the reserved-tag parser, the `ExprBlock` rule tables, all live in `semstrait-model`. `semstrait-core` exposes only the structural types those parsers produce.
-- **Manifest structure.** The `Manifest`, `ResolvedDataKind`, `ResolvedExprTable`, `ResolvedSource`, `ResolvedColumnMapping` all live in `semstrait-manifest` (per `33`). `semstrait-core` exposes only the `PhysicalExpr` type that `ResolvedExprTable` stores.
+- **SemanticManifest structure.** The `SemanticManifest`, `ResolvedDataKind`, `ResolvedExprTable`, `ResolvedSource`, `ResolvedColumnMapping` all live in `semstrait-manifest` (per `33`). `semstrait-core` exposes only the `PhysicalExpr` type that `ResolvedExprTable` stores.
 - **Planner + optimizer.** `SemanticPlan`, `PlanNode`, `PlannerError`, plan-time `Request` / `SessionContext` all live in `semstrait-ir` (plan types) and `semstrait-planner` (stages) per `34` / `35`.
 - **Engine identity and dialect.** `EngineArtifact`, `EngineAdapter`, `Dialect`, `DialectId`, `EnginePlan`, `SqlArtifact`, `AdaptError` all live in `semstrait-adapter` (per `36`).
 - **Catalog and filesystem.** `CatalogProvider`, `FileSystem`, `Repository`, `CatalogSnapshot` all live in `semstrait-catalog` (per `37`).
@@ -527,7 +527,7 @@ Sealed-trait pattern deliberately NOT applied — adapter crates outside the wor
 
 ## 6. Public Types — Constraint Family
 
-Per `11 §8.3`–`§8.4`. Current type name `MeasureConstraints` is a legacy artifact for the Measure + Metric carriers (`11 §8.4.3`, `[TD-CONSTRAINT-RENAME]`); the three sub-blocks below retain their current names to avoid a breaking rename before the Manifest-schema revision pass.
+Per `11 §8.3`–`§8.4`. Current type name `MeasureConstraints` is a legacy artifact for the Measure + Metric carriers (`11 §8.4.3`, `[TD-CONSTRAINT-RENAME]`); the three sub-blocks below retain their current names to avoid a breaking rename before the SemanticManifest-schema revision pass.
 
 ### 6.1 `MeasureConstraints`
 
@@ -914,9 +914,9 @@ Concrete crate-level guarantees mapping to `00 §9` invariants:
 
 | Invariant | `semstrait-core` guarantee |
 |---|---|
-| **I1** — no raw SQL in canonical layer | `Expr` is a typed AST; no `String`-as-SQL fields. Every `Column.name`, `EntityRef.name`, `FunctionCall.name` is an identifier, not SQL text. `ExprSource::Inline(String)` is the sole string-form input and it is deliberately a YAML-surface type, not a Manifest-layer type — consumers convert it into `Expr` before it crosses any stage boundary. |
+| **I1** — no raw SQL in canonical layer | `Expr` is a typed AST; no `String`-as-SQL fields. Every `Column.name`, `EntityRef.name`, `FunctionCall.name` is an identifier, not SQL text. `ExprSource::Inline(String)` is the sole string-form input and it is deliberately a YAML-surface type, not a SemanticManifest-layer type — consumers convert it into `Expr` before it crosses any stage boundary. |
 | **I2** — physical types belong to adapters | `DataType` variants are engine-neutral per `13 §2`. No `arrow::*` / `spark::*` / `datafusion::*` types are visible on any public surface. |
-| **I5** — name resolution is compile-time | `SemanticExpr` and `PhysicalExpr` are wrapper-only; they expose no `resolve` method. `EntityRef.name` remains a `String` at the `semstrait-core` layer — resolution is performed by `semstrait-manifest::compile` and stored in the Manifest's `ResolvedExprTable`. No runtime resolver trait is exported here. |
+| **I5** — name resolution is compile-time | `SemanticExpr` and `PhysicalExpr` are wrapper-only; they expose no `resolve` method. `EntityRef.name` remains a `String` at the `semstrait-core` layer — resolution is performed by `semstrait-manifest::compile` and stored in the SemanticManifest's `ResolvedExprTable`. No runtime resolver trait is exported here. |
 | **I6** — plan hot path is synchronous | No `pub async fn` exists on the plan hot path: `SemanticExpr`, `PhysicalExpr`, `FunctionRegistry`, `IntoDiagnostic`, validate / resolve / plan surfaces. The only `async fn`s at `semstrait-core` live in `io` (`Source::read`, `Sink::write`, `Location`'s impls) — I/O is explicitly outside the plan hot path. A CI lint enforces: no `async fn` outside `semstrait_core::io::*`. |
 | **I7** — strict DAG | `Cargo.toml` contains zero `semstrait-*` entries in `[dependencies]`. A CI check greps the manifest and fails on any workspace-internal entry. |
 | **I10** — extensibility | Every `pub enum` and `pub struct` (with the `30`-documented newtype-over-stable exception) carries `#[non_exhaustive]`. The exception set: `CanonicalFn`, `SemanticExpr`, `PhysicalExpr`, `ByteSpan`, `WhenClause`. An `integration-test` over `cargo public-api` enforces the `#[non_exhaustive]` rule. |
@@ -1076,7 +1076,7 @@ Internally every back-end thin-wraps `object_store` (Apache Arrow project); `obj
 | R8 | Feature flags `serde` and `schemars` are OFF by default | Minimizes transitive compile cost for consumers that only need the types. Existing always-on derives in `semstrait-core` code are a migration item (`[TD-CORE-SERDE-GATING]`). | §11 |
 | R9 | No `pub async fn` anywhere in `semstrait-core`; CI-enforced | Concrete I6 / I11 guarantee. Lint + dependency audit. | §13 |
 | R10 | Zero internal workspace dependencies; CI-enforced manifest audit | Concrete I7 guarantee. `semstrait-core` is the root of the workspace DAG. | §12.2 |
-| R11 | `MeasureConstraints` retains its legacy name for v1 | Renames are scheduled with the broader Manifest-schema revision pass per `11 §8.4.3` / `[TD-CONSTRAINT-RENAME]`. `31` ratifies keeping the current name stable; rename is a v2 concern. | §6.1 |
+| R11 | `MeasureConstraints` retains its legacy name for v1 | Renames are scheduled with the broader SemanticManifest-schema revision pass per `11 §8.4.3` / `[TD-CONSTRAINT-RENAME]`. `31` ratifies keeping the current name stable; rename is a v2 concern. | §6.1 |
 | R12 | `Aggregation` enum has **5 variants** (`Sum`, `Avg`, `Count`, `Min`, `Max`); `CountDistinct` is encoded via `Expr::Aggregate.distinct: bool` | Ratifies `14 §3.2` over the prompt's "6 canonical aggregates" framing. Adding a `CountDistinct` variant would duplicate the `distinct: bool` field already on `Expr::Aggregate`. Parked as Q1 in open questions for any second look. | §3.5 |
 | R13 | `io` module added to `semstrait-core` — byte-blob transport via `Source` / `Sink` + `FromIoBytes` / `IntoIoBytes` conversion traits + `Location` + `IoError` + `backends::{memory, local, s3}` | Ratified in `31b`. Domain-specific load / dump wrappers live in the owning crate (`32 §10.4`, `33 §16.5`). Back-ends thin-wrap `object_store` (Apache Arrow) — not re-exported publicly except the one documented `S3SourceBuilder::with_object_store_builder` escape hatch. Under default features, core pulls `tokio`, `bytes`, `dashmap`, and `object_store` (Local + InMemory features); under `--no-default-features`, the crate retains its zero-runtime-dep posture. Supersedes R9's "no `pub async fn` anywhere" — async is permitted inside `io`. | §11 / §12 / `31b` |
 

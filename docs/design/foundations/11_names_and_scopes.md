@@ -31,7 +31,7 @@ refined-by:
 
 ## 1. Purpose and Scope
 
-`11` ratifies the naming and scoping rules a `SemanticModel` must satisfy, and the lookup mechanics `compile` applies when producing a `Manifest`. It is the first foundations doc after `10` because every subsequent doc refers to Semantics by name; nothing downstream (`12`–`17`, `20`–`25`, `31`–`37`) is well-defined without a pinned scope model.
+`11` ratifies the naming and scoping rules a `SemanticModel` must satisfy, and the lookup mechanics `compile` applies when producing a `SemanticManifest`. It is the first foundations doc after `10` because every subsequent doc refers to Semantics by name; nothing downstream (`12`–`17`, `20`–`25`, `31`–`37`) is well-defined without a pinned scope model.
 
 **What `11` ratifies:**
 
@@ -59,8 +59,8 @@ refined-by:
 
 **Key invariants from `00` that `11` directly upholds:**
 
-- **I5** — all name resolution is compile-time work, captured in the `Manifest`; nothing resolvable remains for `plan`.
-- **I8** — the `Manifest` carries every index `plan` needs; `11`'s lookup algorithm feeds those indices.
+- **I5** — all name resolution is compile-time work, captured in the `SemanticManifest`; nothing resolvable remains for `plan`.
+- **I8** — the `SemanticManifest` carries every index `plan` needs; `11`'s lookup algorithm feeds those indices.
 - Global identity and unified-namespace rules (§3) refine `00 §4.1` for Semantics.
 
 ## 2. The Scope Chain
@@ -159,7 +159,7 @@ Authoring consequence: modelers write Semantics declarations wherever it reads b
 
 ### 3.4.1 Worked example — order-independent introduction
 
-Two Models that compile to the **same** `Manifest`. The first has no Tier-1 declarations; the second pulls shared shape up to Tier-1 for readability. Neither is canonical — `compile` does not distinguish them at the registry level.
+Two Models that compile to the **same** `SemanticManifest`. The first has no Tier-1 declarations; the second pulls shared shape up to Tier-1 for readability. Neither is canonical — `compile` does not distinguish them at the registry level.
 
 **Model A — all shape inline at DataKind level:**
 
@@ -213,7 +213,7 @@ semantic_model:
       # binding omitted
 ```
 
-Both Models produce the same `Manifest` registry entry for `revenue`:
+Both Models produce the same `SemanticManifest` registry entry for `revenue`:
 
 ```
 Semantics registry: revenue
@@ -275,7 +275,7 @@ YAML anchors (`&foo`) and aliases (`*foo`) operate at the YAML parse layer. The 
 
 - `- *some_measure_anchor` expands to an inline copy of whatever the anchor referenced. That expanded content is then interpreted per §4's field-driven rules — no special treatment.
 - Anchors/aliases are a YAML-layer DRY mechanism for authors, not a Semantics-level reference mechanism. They do NOT create resolution variants, participate in identity, or affect the Semantics registry. Two occurrences produced from the same anchor are two equivalent occurrences, unified by `compile` the same way any other two occurrences are.
-- Tools that serialize or pretty-print a `Manifest` MUST NOT assume that anchors/aliases from the original YAML survive the round trip. The `Manifest` is normalized; the original YAML shape is not reconstructible from it (this matches `00 §4.1` `SemanticModel` as post-parse representation — anchors are resolved during YAML parse, before `parse` returns).
+- Tools that serialize or pretty-print a `SemanticManifest` MUST NOT assume that anchors/aliases from the original YAML survive the round trip. The `SemanticManifest` is normalized; the original YAML shape is not reconstructible from it (this matches `00 §4.1` `SemanticModel` as post-parse representation — anchors are resolved during YAML parse, before `parse` returns).
 
 ## 5. Shape vs. Resolution Variant
 
@@ -350,7 +350,7 @@ semantic_model:
       # binding omitted
 ```
 
-Resulting `Manifest` Semantics registry entry:
+Resulting `SemanticManifest` Semantics registry entry:
 
 ```
 Semantics registry: cost
@@ -695,7 +695,7 @@ The same two kind sub-blocks as §8.4.1 are admissible. Authoring matches §8.4.
 
 The v1 implementation's struct is named `MeasureConstraints` in `semstrait-model::types::measure` and is attached to both Measure and Metric carriers. The name is a **legacy artifact** — the spec treats Constraints as per-carrier, so the conceptual naming is `{Measure,Metric}Constraints` (distinct types per carrier) even though the code currently reuses one struct.
 
-> **[TD-CONSTRAINT-RENAME]** — rename `MeasureConstraints` in the model crate to a name that reflects its cross-carrier reuse (e.g. `ElementConstraints`, or per-carrier `MeasureConstraints` + `MetricConstraints`). Schedule with the broader Manifest-schema revision pass; not a v1 blocker.
+> **[TD-CONSTRAINT-RENAME]** — rename `MeasureConstraints` in the model crate to a name that reflects its cross-carrier reuse (e.g. `ElementConstraints`, or per-carrier `MeasureConstraints` + `MetricConstraints`). Schedule with the broader SemanticManifest-schema revision pass; not a v1 blocker.
 
 ### 8.5 Reserved carriers (future design)
 
@@ -747,13 +747,13 @@ The framework retains Cardinality constraints as DataKind-level kinds, deferred 
 | Metric | `dimensions` | step 0 | Same |
 | Metric | `aggregations` (two-stage) | step 0 | Fires only when Metric has `agg:`; otherwise silent-skip per `[TD-AGG-ON-METRIC]` |
 | *(Reserved)* Dimension `rollup:` | — | future `plan` sub-step | Needs resolved Request scope |
-| *(Reserved)* Filter `reachability:` | — | future `compile` | Can be resolved statically against the Manifest |
+| *(Reserved)* Filter `reachability:` | — | future `compile` | Can be resolved statically against the SemanticManifest |
 | *(Reserved)* Filter `requires:` | — | future `plan` sub-step (injection) | Needs Request context to know which Filters are already named |
 | *(Reserved)* DataKind `row_count:` / `null_fraction:` | — | future `plan` sub-step (post-catalog) | Needs `CatalogProvider` stats |
 
 **v1 evaluation entry point.** For realized carriers (Measure, Metric), `ConstraintValidator::check()` runs as the planner's first action — **step 0, pre-resolution** — BEFORE dataset routing, `from:`-resolution, Relationship traversal, or PlanNode construction. Per-Measure / per-Metric algorithm:
 
-1. Resolve `request.entity_name` to a `CompiledDataKind` via the `Manifest`. (If `entity_name` is empty — ad-hoc query — constraint validation is skipped entirely.)
+1. Resolve `request.entity_name` to a `CompiledDataKind` via the `SemanticManifest`. (If `entity_name` is empty — ad-hoc query — constraint validation is skipped entirely.)
 2. Build the *query scope* set: `request.dimensions` ∪ filter-field Dimensions (§8.4.1).
 3. For each name in `request.measures`:
    - If the name resolves to a Measure: run dimensions-check AND aggregations-check (passing the Measure's effective `agg` name).
@@ -806,7 +806,7 @@ Round-1 ratified 13 decisions against a flat-taxonomy framing. In the two-layer 
 | Q10 | Stage placement: validate / compile / plan per-kind | Re-framed as **per-carrier + per-kind matrix** (§8.6 table); v1's realized kinds are all step 0 pre-resolution, not distributed across stages. |
 | Q11 | Accumulation inherits host stage | Re-framed: v1 is fail-fast per carrier (§8.7). Host-stage inheritance becomes relevant when reserved carriers activate at validate/compile stages. |
 | Q12 | Hard error only; no severity | Survives — framework-level (§8.7). |
-| Q13 | Caching deferred to generic Manifest machinery | Survives — `[TD-MANIFEST-INCR-CACHE]`. |
+| Q13 | Caching deferred to generic SemanticManifest machinery | Survives — `[TD-MANIFEST-INCR-CACHE]`. |
 
 ### 8.10 Code-vs-spec delta (audit)
 
@@ -948,7 +948,7 @@ The full nesting matrix (which Complex may contain which nested-block form) is r
 
 ## 11. Lookup Algorithm
 
-`compile`'s name-resolution pass produces the following indices in the `Manifest`:
+`compile`'s name-resolution pass produces the following indices in the `SemanticManifest`:
 
 - A **global Semantics registry** keyed by name, carrying the unified shape plus the per-DataKind resolution-variant map.
 - A **per-DataKind Semantics table** listing which Semantics are exposed by each top-level DataKind's interface.
@@ -974,7 +974,7 @@ Within an `expr` (from any Semantics in K's Kind scope), referenced names are Se
 
 ### 11.3 Deterministic ordering
 
-All Manifest indices and all Diagnostic streams emitted by `11`'s lookup algorithm MUST be deterministic across runs of the same input. The ratified order:
+All SemanticManifest indices and all Diagnostic streams emitted by `11`'s lookup algorithm MUST be deterministic across runs of the same input. The ratified order:
 
 | Index | Ordering rule |
 |---|---|
@@ -984,7 +984,7 @@ All Manifest indices and all Diagnostic streams emitted by `11`'s lookup algorit
 | Relationship graph | lexicographic by `(from_dataset, to_dataset)` pair |
 | Diagnostic stream | primary: source-document location when present (by `(file, line, col)`); secondary: structural walk order of the Model root's declarations (Model-root Tier-1 blocks first, then top-level DataKinds in declaration order, then Relationships); tertiary: within-list index |
 
-Rationale: deterministic output is required for stable test fixtures, stable Manifest artifacts under snapshot-style CI, and I5-compatible caching. `BTreeMap`-backed indices inside the Manifest make the Semantics / DataKind / path orderings structural rather than policy. Diagnostic ordering is policy because locations may be absent (context-free errors, per `10 §5.1`).
+Rationale: deterministic output is required for stable test fixtures, stable SemanticManifest artifacts under snapshot-style CI, and I5-compatible caching. `BTreeMap`-backed indices inside the SemanticManifest make the Semantics / DataKind / path orderings structural rather than policy. Diagnostic ordering is policy because locations may be absent (context-free errors, per `10 §5.1`).
 
 Structural walk order for Diagnostic streams is the tie-breaker when two Diagnostics share a `None` location — they sort by the lexical position of the declaration they arose from. Within-run determinism is guaranteed; cross-run stability across non-trivial Model edits is not (adding a Tier-1 declaration shifts structural positions).
 

@@ -10,6 +10,7 @@ Never bypass the workstyle:
 1. **Root cause analysis** -- identify and explain the root cause before proposing any fix
 2. **Present results** -- show findings and proposed solution to the human
 3. **Wait for confirmation** -- do NOT apply code changes until the human approves the fix
+4. **Design / spec edits** -- in spec-driven-dev mode the design docs under `docs/design/` are the artifact, so the rule-3 discipline applies equally to design or spec edits there. Approval is clause-level: a directional pick (option letter, "yes" to a shape, "go") does NOT authorize derived implementation clauses (validation rules, error codes, edge cases). Each derived clause is its own decision.
 
 For spec / design work specifically: describe, clean, and name what the code actually implements. Do not fabricate parallel abstractions. Any new concept in the spec tree must ground in current code or be explicitly flagged as a proposed extension. See [`docs/design/STATUS.md`](docs/design/STATUS.md) §7 for recurring failure modes.
 

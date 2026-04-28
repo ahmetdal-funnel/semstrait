@@ -121,7 +121,7 @@ depends-on:
 **Question.** `38 §8.4` states model mutation forces a full re-compile. Should a Round-2 MINOR add a `SemStrait::recompile_with_changes(&manifest, ModelDiff)` surface that re-compiles only affected bindings?
 
 **Refs.**
-- `33 §7.4` — Manifest is sealed; no in-place mutation.
+- `33 §7.4` — SemanticManifest is sealed; no in-place mutation.
 - `33 §13` — determinism discipline (identical inputs → identical manifest bytes).
 - `38 §8.4` — current no-incremental-compile stance.
 
@@ -130,7 +130,7 @@ depends-on:
 - Services that dynamically mutate models (multi-tenant SaaS adjusting Semantics per tenant) would benefit.
 
 **Arguments against (current Round-1 default).**
-- Determinism story becomes harder: an incrementally-compiled Manifest may not be byte-identical to a from-scratch compile for the same (model, catalog snapshot) pair (`33 §13.2`'s guarantee would need qualification).
+- Determinism story becomes harder: an incrementally-compiled SemanticManifest may not be byte-identical to a from-scratch compile for the same (model, catalog snapshot) pair (`33 §13.2`'s guarantee would need qualification).
 - Implementation complexity: the dependency graph across bindings, data-kinds, relationships, and composition is dense; invalidation analysis is its own research project.
 - Users who need fast incremental loops use the `FunctionRegistry`'s process-global handle + manifest caching — the compile itself becomes a cold-path operation amortized across many plans.
 
@@ -142,7 +142,7 @@ depends-on:
 
 ## Q-API-006 — Per-`SemStrait`-handle `FunctionRegistry`
 
-**Question.** `38 §4.5` and `§1.3` state the `FunctionRegistry` is process-global per `31 §5.2`. Should `SemStraitBuilder::function_registry` accept a caller-built `&'static FunctionRegistry` constructed from a test-local `RegistryBuilder`, or remain pinned to `semstrait_core::function_registry()`?
+**Question.** `38 §4.5` and `§1.3` state the `FunctionRegistry` is process-global per `31 §5.2`. Should `SemStraitBuilder::with_function_registry` accept a caller-built `&'static FunctionRegistry` constructed from a test-local `RegistryBuilder`, or remain pinned to `semstrait_core::function_registry()`?
 
 **Refs.**
 - `31 §5.2` — canonical registry is process-global and sealed.
@@ -157,7 +157,7 @@ depends-on:
 - `CanonicalFn` identity is process-global per `31 §5.2` — two registries with different function rosters would create IDs that don't compose across them, violating I3 (stability of canonical IDs).
 - Current `RegistryExtension` / `RegistryBuilder` surfaces don't support isolated instances cleanly; work in `31` is prerequisite.
 
-**Current position in `38`.** `function_registry` field accepts any `&'static FunctionRegistry`, but v1 ships only `semstrait_core::function_registry()`. The builder field shape accommodates future isolation without API change.
+**Current position in `38`.** The `function_registry` field on `SemStraitBuilder` (set via `with_function_registry`) accepts any `&'static FunctionRegistry`, but v1 ships only `semstrait_core::function_registry()`. The builder field shape accommodates future isolation without API change.
 
 **Next step.** Depends on `Q-CORE-005` resolution. If `31` adopts per-process isolation, `38` picks it up with no signature change.
 

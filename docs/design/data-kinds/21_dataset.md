@@ -41,9 +41,9 @@ refined-by:
 
 ### 1.1 What `21` ratifies
 
-`21` is the per-variant specification for the `DataKind::Simple` arm. Where `20` ratifies the shared `DataKind` taxonomy, nesting invariants, and the Manifest-layer `ResolvedDataKind` lifecycle (per `20 §*` — see shared invariants referenced below), `21` fills in the Simple-specific shape and plan-emission contract:
+`21` is the per-variant specification for the `DataKind::Simple` arm. Where `20` ratifies the shared `DataKind` taxonomy, nesting invariants, and the SemanticManifest-layer `ResolvedDataKind` lifecycle (per `20 §*` — see shared invariants referenced below), `21` fills in the Simple-specific shape and plan-emission contract:
 
-- **§2** — the Rust struct `SimpleDataKind`: its field roster, its `DataKind::Simple` discriminant, and its Manifest-layer counterpart `ResolvedSimpleDataKind`.
+- **§2** — the Rust struct `SimpleDataKind`: its field roster, its `DataKind::Simple` discriminant, and its SemanticManifest-layer counterpart `ResolvedSimpleDataKind`.
 - **§3** — the single-`Binding` rule as a `SimpleDataKind`-level consumer contract layered on top of `15 §2.1`'s mechanics. `21` does not re-specify Binding shape; it pins down the consumer rule "exactly one Binding per `SimpleDataKind`" and how glob-expanded multi-source Bindings are presented to the plan.
 - **§4** — the 5-layer `SimpleStrategy` plan shape: L1 Scan, L2 Rename, L3 Expression, L4 Aggregate, L5 Project. This is the canonical Simple-plan form. Every layer's role is ratified here; per-layer skip rules are in §4.7.
 - **§5** / **§6** — cross-reference-only interactions with `TemporalShape` (forward to `17`) and `Grain` (forward to `13 §5`). These sections pin the YAML surface carriage on the `SimpleDataKind` struct and enumerate which shape / grain fields affect the `SimpleStrategy` layers; the actual shape semantics live in `17`.
@@ -70,7 +70,7 @@ refined-by:
 
 `SimpleStrategy` also owes its shape to two invariants:
 
-- **I5 / I8** — Everything Simple needs is in the Manifest (`ResolvedSimpleDataKind` + its `ResolvedBinding`). No catalog call, no schema fetch, no expression compilation at plan time.
+- **I5 / I8** — Everything Simple needs is in the SemanticManifest (`ResolvedSimpleDataKind` + its `ResolvedBinding`). No catalog call, no schema fetch, no expression compilation at plan time.
 - **I6** — Synchronous hot path. No `.await` in any layer's emission code.
 
 ### 1.4 Reference implementations
@@ -79,7 +79,7 @@ refined-by:
 - **Cube.js.** `cube { sql / sql_table }` + `dimensions` + `measures` is the peer shape. Cube's pre-aggregations are a Grainset concern (`22`); the bare `cube`-with-no-preAgg mode is `21`.
 - **LookML.** `view.sql_table_name` + per-field `sql:` is a peer; LookML's PDTs (persistent derived tables) do not map cleanly here and are intentionally out of scope.
 
-None of these override `00 §4` vocabulary: `Binding`, `ColumnMapping`, `PhysicalExpr`, `SemanticInterface`, `ResolvedDataKind`, `PlanNode` are authoritative. Peer vocabulary (`semantic_model`, `cube`, `view`) is cited only as structural precedent.
+None of these override `00 §4` vocabulary: `Binding`, `SemanticMapping`, `PhysicalExpr`, `SemanticInterface`, `ResolvedDataKind`, `PlanNode` are authoritative. Peer vocabulary (`semantic_model`, `cube`, `view`) is cited only as structural precedent.
 
 ### 1.5 Guardrails — how `21` upholds `00 §9` invariants
 
@@ -88,10 +88,10 @@ None of these override `00 §4` vocabulary: `Binding`, `ColumnMapping`, `Physica
 | **I1** — no raw SQL in canonical layer | `SimpleStrategy` emits `PlanNode`s carrying `PhysicalExpr` trees; no SQL-shaped strings leave the planner. Adapter rendering (`36`) is the only site where SQL is produced. |
 | **I2** — physical types via adapters only | Every `PlanNode::Scan` projects columns typed by the resolved physical `Schema` (logical `DataType` per `15 §3.2` / `13 §2`). L2 CAST emission reconciles declared-vs-physical at the semantic boundary; the rendering of `CAST(... AS ...)` is still `36`'s job. |
 | **I3** — no engine branching | Nothing in `SimpleStrategy` names an engine, a dialect, or an engine-specific operator. `PlanNode::Agg` carries canonical `Aggregation` variants; adapters decide emission. |
-| **I4** — Manifest determinism | `SimpleStrategy` is a pure function of `(ResolvedSimpleDataKind, Request)`. Multi-source fan-out order follows `15 §3.6`'s lexical `Binding.sources` index order. |
+| **I4** — SemanticManifest determinism | `SimpleStrategy` is a pure function of `(ResolvedSimpleDataKind, Request)`. Multi-source fan-out order follows `15 §3.6`'s lexical `Binding.sources` index order. |
 | **I5** — compile-time resolution | Every layer's input (`ResolvedColumnMapping`, `ResolvedExprTable`, per-source `Coverage`) is compile-built. Plan-time is O(1) lookups per Semantics. |
 | **I6** — synchronous hot path | No I/O at any layer. |
-| **I8** — planner-complete Manifest | `SimpleStrategy` touches only `ResolvedSimpleDataKind` and its `ResolvedBinding`; no YAML, no catalog. |
+| **I8** — planner-complete SemanticManifest | `SimpleStrategy` touches only `ResolvedSimpleDataKind` and its `ResolvedBinding`; no YAML, no catalog. |
 | **I10** — non-exhaustive public sum types | `SimpleStrategy`'s strategy enum (`SimpleStrategyVariant`, if the planner ever exposes strategy selection) is `#[non_exhaustive]`. The `SimpleDataKind` struct itself is `#[non_exhaustive]` per `20 §*`. |
 | **I12** — first-class Diagnostics | Every error code allocated in §§7–9 is stable and carries a `Diagnostic.location`. |
 
@@ -137,7 +137,7 @@ Per-field semantics:
 
 **Field ordering is stable.** `21` pins the roster above; adding a field is MINOR per `30 §4` and follows `20`'s shared extension discipline for `DataKind` variants.
 
-### 2.3 Manifest-layer shape
+### 2.3 SemanticManifest-layer shape
 
 ```rust
 #[non_exhaustive]
@@ -151,14 +151,14 @@ pub struct ResolvedSimpleDataKind {
 }
 ```
 
-The Manifest counterpart differs from the Model form in two ways:
+The SemanticManifest counterpart differs from the Model form in two ways:
 
 - `binding: ResolvedBinding` — the compile-resolved form (`15 §7.6`), carrying `ResolvedColumnMapping` + `Vec<ResolvedPhysicalSource>` + per-source `Coverage`.
-- `data_kind_id: DataKindId` — the compile-assigned identifier (per `20 §*`'s DataKind identity rules). Manifest indices key on it.
+- `data_kind_id: DataKindId` — the compile-assigned identifier (per `20 §*`'s DataKind identity rules). SemanticManifest indices key on it.
 
-`ResolvedSimpleDataKind` is structurally close to `SimpleDataKind`; the `Resolved*` prefix is retained (per `00 §4.1`'s naming convention) because the `binding` field diverges — the Model-layer form carries a `Binding`, the Manifest-layer form carries a `ResolvedBinding`. Structural fidelity is not a goal (I8); the shape is planner-oriented.
+`ResolvedSimpleDataKind` is structurally close to `SimpleDataKind`; the `Resolved*` prefix is retained (per `00 §4.1`'s naming convention) because the `binding` field diverges — the Model-layer form carries a `Binding`, the SemanticManifest-layer form carries a `ResolvedBinding`. Structural fidelity is not a goal (I8); the shape is planner-oriented.
 
-Per `20 §*`'s ratified flow, the `ResolvedSimpleDataKind` is produced by the `compile` driver and spliced into the `Manifest`'s `data_kinds: Vec<ResolvedDataKind>` with `ResolvedDataKind::Simple(ResolvedSimpleDataKind)` as the discriminant.
+Per `20 §*`'s ratified flow, the `ResolvedSimpleDataKind` is produced by the `compile` driver and spliced into the `SemanticManifest`'s `data_kinds: Vec<ResolvedDataKind>` with `ResolvedDataKind::Simple(ResolvedSimpleDataKind)` as the discriminant.
 
 ### 2.4 YAML surface sketch
 
@@ -215,7 +215,7 @@ A nested `SimpleDataKind`'s `name` is scoped to its parent Complex's nested-kind
 
 - **Structurally** — `SimpleDataKind.binding: Binding` is a single value, not a `Vec` (§2.2).
 - **At the parse layer** — `11 §5.3` and `15 §2.1` forbid multiple binding blocks on a single kind.
-- **At the Manifest layer** — `ResolvedSimpleDataKind.binding: ResolvedBinding` is a single value (§2.3).
+- **At the SemanticManifest layer** — `ResolvedSimpleDataKind.binding: ResolvedBinding` is a single value (§2.3).
 
 The structural rule is `15 §2.1`'s; `21`'s job here is to pin the **consumer contract**: every `SimpleStrategy` invocation operates over exactly one `ResolvedBinding`. Plan composition above a Simple (Unionset branching, Grainset routing, Joinset joining) multiplies the number of Simple plans, not the number of Bindings per Simple.
 
@@ -308,7 +308,7 @@ Filter placement is **in between** layers, not a numbered layer itself. A Reques
 | `Column { name }` | `(name_semantic, PhysicalExpr::Column(name_physical))` — a rename. |
 | `Column { name }` with boundary cast (`15 §9.1`) | `(name_semantic, PhysicalExpr::Cast(Column(name_physical), declared_type))` — the `Cast` was wrapped at compile and lives in `ResolvedColumnMapping.computed` per `15 §7.2`; L2 reads from `computed` for this Semantics. |
 | `Literal { value, data_type }` | `(name_semantic, PhysicalExpr::Literal(value))` — materialized as a scalar broadcast. |
-| `Metadata(MetadataDimension)` | `(name_semantic, PhysicalExpr::Literal(extracted_value))` — the extraction is performed per-source at plan time, consulting `ResolvedPhysicalSource`'s path / partition fields per `15 §8`. The value is a compile-time constant per-source; in a multi-source scan (§4.2 step 3), each source's Rename project emits its own per-source literal. |
+| `Metadata(MetadataDimensionRecipe)` | `(name_semantic, PhysicalExpr::Literal(per_source_value))` — the **extraction is performed at compile time**, not at plan time (per `15 §5.5` / §10.5). The planner reads each source's pre-resolved `LiteralValue` from `ResolvedPhysicalSource.metadata_values[name_semantic]` (`15 §7.6`) and emits it as a scalar broadcast. In a multi-source scan (§4.2 step 3), each source's Rename project emits its own per-source literal because the `metadata_values` map's value can differ across sources (the recipe is global to the Binding; the resolved `LiteralValue` is per-source). v1 scope is path-token only (`15 §8.0`). |
 | `Computed { expr }` | Deferred to L3. L2 passes through the columns `expr.referenced_columns` needs unchanged. |
 
 **Output shape.** Every non-Computed Semantics is named and typed per the `SemanticInterface`. Computed Semantics are not yet materialized — their `referenced_columns` are carried through as physical columns.
@@ -370,7 +370,7 @@ The resulting `Project` has the shape `(all_pass_through_columns ++ computed_col
 
 #### 4.5.1 Re-aggregation skip when metadata is source-distinguishing
 
-When a multi-source `Binding` is consumed at L4 and the `GROUP BY` includes a metadata Dimension whose values are **distinct per source** (e.g. `partition.level: 1` extracting `year`, and each source corresponds to a different year), the per-source partial aggregation is already "complete" — no two sources contribute rows that share a `GROUP BY` key. In that case, the re-aggregation above the Union can be skipped, and the plan shape simplifies to:
+When a multi-source `Binding` is consumed at L4 and the `GROUP BY` includes a metadata Dimension whose values are **distinct per source** (e.g. `path.token: 0` extracting `year_dir = "year=2024"` on source 0 vs `"year=2025"` on source 1, per `15 §8.1`; v1 path-only scope per `15 §8.0`), the per-source partial aggregation is already "complete" — no two sources contribute rows that share a `GROUP BY` key. In that case, the re-aggregation above the Union can be skipped, and the plan shape simplifies to:
 
 ```
 Union(
@@ -444,7 +444,7 @@ Example:
 
 - **L4 (§4.5) — rollup legality.** When the Request rolls up a temporal Dimension, the rollup target is compared against the shape's rollup matrix (`17 §*`). `Snapshot` has a fixed source grain; rolling up `snapshotted_at` from its native grain requires explicit additivity information. `SCD` has no intrinsic grain; rolling up `valid_from` is shape-gated. The exact matrix lives in `17`; `21` only identifies the hook.
 - **L4 (§4.5) — advisory warnings when `TemporalShape` and `Additivity` are inconsistent.** Per `00 §4.1`'s `TemporalShape` row and `11 §7`'s `Additivity` row, the two axes are independent but related. The planner MAY emit advisory warnings (shape ratified in `17`). `SimpleStrategy` surfaces the warning at L4 emission; the predicate lives in `17`.
-- **Per-Request `temporal:` block (DEFERRED).** A Request with an `as_of:` timestamp or a temporal range must be shape-compatible: `SCD` types answer as-of queries; `Snapshot` answers point-in-time; `Timeseries`/`Events` reject `as_of` in favor of bucket-scoped queries. Planner support for these is DEFERRED per `00 §4.1` and `17`; `21` does not emit shape-aware plans yet in v1. `temporal_shape:` declarations are stored on the Manifest and become consequential when `17`'s planner support lands.
+- **Per-Request `temporal:` block (DEFERRED).** A Request with an `as_of:` timestamp or a temporal range must be shape-compatible: `SCD` types answer as-of queries; `Snapshot` answers point-in-time; `Timeseries`/`Events` reject `as_of` in favor of bucket-scoped queries. Planner support for these is DEFERRED per `00 §4.1` and `17`; `21` does not emit shape-aware plans yet in v1. `temporal_shape:` declarations are stored on the SemanticManifest and become consequential when `17`'s planner support lands.
 
 ### 5.3 Shape-less Simples
 
@@ -548,7 +548,7 @@ A `SimpleDataKind` with `grain: None` has no author-declared rollup level. `Simp
 | `PLAN_E_2102` | Error | `RequestGrainFinerThanSource { data_kind, requested, declared }` | A Request rolls a temporal Dimension finer than the Simple's declared `grain:`. See §6.2. |
 | `PLAN_W_2101` | Warning | `LossyMultiSourceReaggregation { data_kind, measure }` | Multi-source Binding + re-aggregation-cannot-be-skipped (§4.5.1) + Measure uses `COUNT_DISTINCT` or `AVG`. Advisory; the plan still executes but is lossy. |
 | `PLAN_W_2102` | Warning | `ShapeAdditivityMismatch { data_kind, measure, shape, additivity }` | A Measure's `Additivity` and the Simple's `TemporalShape` appear inconsistent per the advisory matrix (ratified in `17`). Advisory; plan proceeds. |
-| `PLAN_E_2103` | Error | `SimpleNullFillAtPlan { data_kind, source_index, semantics }` | A multi-source Binding whose Coverage includes `NullFill` reached plan-time under a bare Simple consumer. This should have been caught at compile (`COMP_E_0310` / `COMP_E_2106`); if the Manifest was hand-constructed or loaded from a stale artifact, the planner's defensive check fires this error. |
+| `PLAN_E_2103` | Error | `SimpleNullFillAtPlan { data_kind, source_index, semantics }` | A multi-source Binding whose Coverage includes `NullFill` reached plan-time under a bare Simple consumer. This should have been caught at compile (`COMP_E_0310` / `COMP_E_2106`); if the SemanticManifest was hand-constructed or loaded from a stale artifact, the planner's defensive check fires this error. |
 | `PLAN_E_2104` | Error | `SimpleEmptyPlanRequested { data_kind }` | A Request asks for zero fields (empty projection list). A Simple plan with zero output columns is ill-formed; rejected. Reserved for the structural check. |
 | `PLAN_E_2105` | Error | `SimpleAggregationWithoutMeasure { data_kind, grouping }` | A Request includes `GROUP BY`-level Dimensions but no Measure / Metric. This is structurally a Dimensions-DISTINCT query; `SimpleStrategy` elides L4 per §4.7. If the Request carries aggregation explicitly (via a future API), the absence of Measures fires this error. Reserved. |
 
@@ -572,8 +572,17 @@ data_kinds:
           data_type: Timestamp
         - name: region
           data_type: String
-        - name: year
+        # Metadata Dimension — author the recipe on the Dimension type
+        # (per `13 §4.7` / `18 §4`); compile synthesizes the corresponding
+        # `SemanticMappingValue::Metadata(...)` entry — no `semantic_mapping:`
+        # entry for this Dimension. v1 path-only per `15 §8.0`.
+        - name: year_dir
           data_type: String
+          type:
+            metadata:
+              source:
+                path:
+                  token: 0       # 0-indexed, scheme-stripped — `15 §8.1`
       measures:
         - name: gross_revenue
           agg: sum
@@ -582,11 +591,13 @@ data_kinds:
     binding:
       sources:
         - path: "s3://b/orders/year=*/*.parquet"
-      column_mapping:
-        ordered_at: { column: ordered_at }
-        region:     { column: region }
-        year:       { metadata: { partition: { level: 1 } } }
-        amount_cents: { column: amount_cents }
+      semantic_mapping:
+        ordered_at:   ordered_at        # Variant 1 — bare column
+        region:       region
+        amount_cents: amount_cents
+        # `year_dir` has NO entry here — its recipe lives on the Dimension
+        # type above and is compile-synthesized into the SemanticMapping
+        # before the §5.6 completeness check (`15 §10.4` step 4.0).
     grain: Day
     temporal_shape:
       kind: Events
@@ -613,18 +624,18 @@ Request {
   - `columns: { ordered_at -> ordered_at, region -> region, amount_cents -> amount_cents }`
   - `literals: {}`
   - `computed: {}`
-  - `metadata: { year -> MetadataDimension { partition: Some(PartitionExtraction{level:1}) } }`
-- `year`'s per-source metadata literal: `"2024"` on source 0, `"2025"` on source 1 (§8.2 `15`).
+  - `metadata: { year_dir -> MetadataDimensionRecipe { extraction: Path { token: 0 }, data_type: String } }` — v1 path-only scope per `15 §8.0`; partition extraction deferred to v2.
+- `year_dir`'s per-source resolved metadata literal (eagerly evaluated at compile per `15 §10.5`, stored on `ResolvedPhysicalSource.metadata_values` per `15 §7.6`): `"year=2024"` on source 0, `"year=2025"` on source 1. The raw segment is what `path_token` returns (`15 §8.1.1`); a downstream `Computed` Dimension can `substring_after(@year_dir, '=')` if a `"2024"`-style value is needed.
 
 ### 10.4 `SimpleStrategy` plan emission
 
 Layer-by-layer derivation:
 
 - **L1 Scan.** `needed_columns = {ordered_at, region, amount_cents}`. Two sources → Union of two `Scan`s.
-- **L2 Rename.** Per-source Project injecting the metadata literal for `year` and renaming physical to semantic (identity-mapped here).
+- **L2 Rename.** Per-source Project injecting the metadata literal for `year_dir` (read from `ResolvedPhysicalSource.metadata_values` per `15 §7.6`) and renaming physical to semantic (identity-mapped here).
 - **L3 Expression.** Zero `Computed` entries on the referenced Semantics. **Skipped.**
 - **Filter injection.** The `region = 'EU'` filter references a semantic name; placed above L2.
-- **L4 Agg.** `GROUP BY = {DateTrunc(ordered_at, Month), region}`; `Aggregate(Sum, amount_cents)` as `gross_revenue`. `year` is NOT in the Request's fields list, so it is not a `GROUP BY` key. The source-distinguishing-metadata skip predicate (§4.5.1) examines `GROUP BY` only; `DateTrunc(ordered_at, Month)` and `region` carry values that can repeat across sources → re-aggregation is **not** skipped → per-source partial `Agg` inside each Union branch + merge `Agg` above.
+- **L4 Agg.** `GROUP BY = {DateTrunc(ordered_at, Month), region}`; `Aggregate(Sum, amount_cents)` as `gross_revenue`. `year_dir` is NOT in the Request's fields list, so it is not a `GROUP BY` key. The source-distinguishing-metadata skip predicate (§4.5.1) examines `GROUP BY` only; `DateTrunc(ordered_at, Month)` and `region` carry values that can repeat across sources → re-aggregation is **not** skipped → per-source partial `Agg` inside each Union branch + merge `Agg` above.
 - **L5 Project.** Requested output shape: `(ordered_at, region, gross_revenue)`. L4 output schema: `(ordered_at_month, region, gross_revenue)` — the `GROUP BY` key `DateTrunc(ordered_at, Month)` is materialized under the name `ordered_at_month`, not `ordered_at`. Output requires renaming to `ordered_at`. **Not skipped.**
 
 ### 10.5 Final ASCII plan
@@ -659,7 +670,7 @@ PlanNode::Project                              (L5 — rename ordered_at_month -
               |                 expressions:
               |                   ordered_at:    Column(ordered_at)
               |                   region:        Column(region)
-              |                   year:          Literal("2024")     # source 0
+              |                   year_dir:      Literal("year=2024") # source 0 — raw path token per `15 §8.1.1`
               |                   amount_cents:  Column(amount_cents)
               |                 |
               |                 +-- PlanNode::Scan    (L1 — source 0)
@@ -676,7 +687,7 @@ PlanNode::Project                              (L5 — rename ordered_at_month -
                                 expressions:
                                   ordered_at:    Column(ordered_at)
                                   region:        Column(region)
-                                  year:          Literal("2025")     # source 1
+                                  year_dir:      Literal("year=2025") # source 1 — raw path token per `15 §8.1.1`
                                   amount_cents:  Column(amount_cents)
                                 |
                                 +-- PlanNode::Scan    (L1 — source 1)
@@ -687,7 +698,7 @@ PlanNode::Project                              (L5 — rename ordered_at_month -
 ### 10.6 Reading key
 
 - **L1** materializes one `Scan` per resolved `PhysicalSource`. Every source projects the same physical column set (`ordered_at, region, amount_cents`) because `needed_columns` is Request-derived and uniform across sources.
-- **L2** renames (identity here) and injects the per-source `year` metadata literal. `year` is NOT referenced by the Request (neither in fields nor filters); `SimpleStrategy` still emits it because the metadata-column emission is unconditional at the layer (per Q-DS-003). A future optimizer pass (`34 §5`) elides `year` from L2 when no downstream layer reads it; `21` ratifies the layer structure, not the elision.
+- **L2** renames (identity here) and injects the per-source `year_dir` metadata literal (read from `ResolvedPhysicalSource.metadata_values` per `15 §7.6`; pre-resolved at compile per `15 §10.5`). `year_dir` is NOT referenced by the Request (neither in fields nor filters); `SimpleStrategy` still emits it because the metadata-column emission is unconditional at the layer (per Q-DS-003). A future optimizer pass (`34 §5`) elides `year_dir` from L2 when no downstream layer reads it; `21` ratifies the layer structure, not the elision.
 - **Filter** sits between L2 and L4, targeting the semantic-named `region`.
 - **L4** runs as a per-source partial inside each branch of the Union, and as a merge aggregate above. The per-source partial is an optimizer-driven form (pushed-down from `34 §5`); the merge is the Request's actual aggregate.
 - **L5** projects the three requested fields, dropping the internal `partial_revenue` staging name and selecting the output order.

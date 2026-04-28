@@ -85,7 +85,7 @@ depends-on:
 
 **Refs.**
 - `22 §4.4` — Round-1: source-count proxy.
-- `34` (pending) — planner entry-point; owns the Manifest-to-Plan strategy dispatch.
+- `34` (pending) — planner entry-point; owns the SemanticManifest-to-Plan strategy dispatch.
 - `37` — catalog adapter; owns source metadata (file sizes, partition counts, row-count estimates).
 - `30 §6.2` — the `22xx` code range is fixed regardless of cost-function placement.
 
@@ -180,8 +180,8 @@ depends-on:
 **Arguments for reject (`VALID_E_22xx`).**
 - Keeps the Model sharp; single-child Grainsets have no planner-visible effect.
 
-**Current position in `22`.** Silent accept in v1 (matches `VALID_E_2201`'s "empty only" check).
+**Current position in `22`.** **CLOSED — single-child Grainset is rejected structurally** via `26 §R3` (every `ComplexDataKind` requires ≥ 2 children). `VALID_E_2201`'s "empty only" check is superseded by the unified-arity rejection. Body retained as historical resolution context.
 
-**Next step.** Gather feedback; if authoring-facing feedback suggests confusion, promote to a lint. Advisory-only; do not elevate to error without a stronger signal.
+**Next step.** None. Reactivates only on a future relaxation of `26 §R3`.
 
 ---

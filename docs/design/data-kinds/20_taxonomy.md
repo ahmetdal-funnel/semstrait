@@ -18,7 +18,7 @@ refined-by:
   - 24 (`data-kinds/24_joinset.md` — `Joinset` specifics: anchor, declared-Relationship path, materialized composed surface)
   - 25 (`data-kinds/25_applicability_matrix.md` — per-variant × foundation-rule cross-cuts; planner strategy matrix)
   - 17 (`foundations/17_temporal_shape.md` — per-variant `TemporalShape` interactions; grain-rollup legality on `Grainset`; `AsOf` gating on `Joinset`)
-  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedDataKind` / `ResolvedSimpleDataKind` / `ResolvedComplexDataKind` struct rosters; Manifest index layout)
+  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedDataKind` / `ResolvedSimpleDataKind` / `ResolvedComplexDataKind` struct rosters; SemanticManifest index layout)
   - 34 (`apis/34_semstrait_planner.md` — planner entry point; `Strategy` trait public surface and dispatch wiring)
 ---
 
@@ -42,20 +42,6 @@ refined-by:
 > - Shared error-code roster `*_E_20NN`; reservation of `21NN`–`25NN` sub-ranges.
 >
 > Body sections below that describe pre-`18` YAML shape (formerly `32c` before the 2026-04-17 promotion — e.g., `data_kinds:` singular tag, non-flattened body structs, `ColumnMapping`) are historical. `ColumnMapping` → `SemanticMapping` rename per `18 §10`.
-
-## Table of Contents
-
-1. [Purpose and Scope](#1-purpose-and-scope)
-2. [The `DataKind` Abstraction](#2-the-datakind-abstraction)
-3. [The Four Variants at a Glance](#3-the-four-variants-at-a-glance)
-4. [Shared Invariants](#4-shared-invariants)
-5. [Construction / Resolution Strategy — the Strategy Taxonomy](#5-construction--resolution-strategy--the-strategy-taxonomy)
-6. [Lifecycle — Per-Stage Responsibilities (Shared Skeleton)](#6-lifecycle--per-stage-responsibilities-shared-skeleton)
-7. [Applicability Cross-Cuts](#7-applicability-cross-cuts)
-8. [Error-Code Roster](#8-error-code-roster)
-9. [Round-1 Audit / Open Items](#9-round-1-audit--open-items)
-
----
 
 ## 1. Purpose and Scope
 
@@ -83,7 +69,7 @@ Concretely, `20` ratifies:
 - **The `ComposedSemanticInterface` internals.** `20` treats `ComposedSemanticInterface` as a ratified `16 §5` type. Its `UnifiedSemantics` merge (`16 §6`), `FieldProvenance` axis (`16 §7`), and `CompositionCoverage` keying (`16 §8`) are `16`'s concerns.
 - **The `Relationship` block shape, Cardinality, JoinType carriage, and implicit-vs-explicit composition boundary.** All `16`'s. `20` cites `16` whenever a `Complex` variant depends on composition machinery.
 - **`TemporalShape` × `Additivity` interactions.** Forward-referenced per `17`'s ratification: `17 §*` is still landing in parallel. Where `20` mentions `TemporalShape` it names only section numbers already in `00 §4.1`'s row and `11 §7` / `17` general scope.
-- **Manifest-layer struct rosters** (`ResolvedDataKind`, `ResolvedSimpleDataKind`, `ResolvedComplexDataKind`) — ratified in `33`. `20` describes the abstract trait contract; the concrete `Resolved*` field lists are `33`'s.
+- **SemanticManifest-layer struct rosters** (`ResolvedDataKind`, `ResolvedSimpleDataKind`, `ResolvedComplexDataKind`) — ratified in `33`. `20` describes the abstract trait contract; the concrete `Resolved*` field lists are `33`'s.
 
 ### 1.3 Design posture
 
@@ -105,7 +91,7 @@ After `20`, read `21`–`24` in any order (they are sibling documents); `25`'s a
 |---|---|
 | **I5** — resolution is compile-time | Every DataKind variant's structural / reference / binding / composition work happens in `parse` / `validate` / `compile` per `§6`. Plan time sees only a ratified trait surface. |
 | **I6** — `plan` is synchronous | The `Strategy` trait (`§5.2`) returns a `Result<PlanNode, PlanError>` with no `async`. Strategy dispatch (`§5.3`) is a single `match` on the ratified `DataKind::Complex` variant tag. |
-| **I8** — Manifest is planner-complete | Every per-variant field the planner needs is materialized by `compile` (`§6.3`). Simple's resolved `Binding`, Complex's constituent refs, composed interfaces — all Manifest-present before `plan` is invoked. |
+| **I8** — SemanticManifest is planner-complete | Every per-variant field the planner needs is materialized by `compile` (`§6.3`). Simple's resolved `Binding`, Complex's constituent refs, composed interfaces — all SemanticManifest-present before `plan` is invoked. |
 | **I10** — public sum types are `#[non_exhaustive]` | `DataKind`, `ComplexDataKind`, every variant-owned enum (e.g. `NestingCapability` in `§2.2`), and every `*_E_2xxx` error variant carry `#[non_exhaustive]`. |
 | **I12** — diagnostics carry stable codes | Every `§8` entry has a `{SUBSYSTEM}_{SEVERITY}_{NUMBER}` code matching `30 §6.1`'s format. Ranges are reserved per `30 §6.2`'s structural-not-sequential discipline, with a cross-doc-fix note in `§8.5` on extending `30 §6.2`'s subsystem caps to accept `2xxx`. |
 
@@ -150,7 +136,7 @@ The two-level structure (as opposed to a flat `DataKind { Simple, Unionset, Grai
 - It mirrors `16 §5`'s `ComposedSemanticInterface::kind: CompositionKind` discriminator. Every `Complex(ComplexDataKind)` pairs 1:1 with a `CompositionKind` tag on its composed interface; there is no composed interface for `Simple`.
 - It isolates the `SimpleDataKind` surface — which is stable — from the `ComplexDataKind` surface, which is expected to grow per I10.
 
-At the Manifest layer (`33`), the same two-level shape appears as `ResolvedDataKind::Simple(ResolvedSimpleDataKind)` / `ResolvedDataKind::Complex(ResolvedComplexDataKind)`, with the inner variant discriminator preserved. No `CompiledDataKind`-prefixed type exists in the design vocabulary (`00 §4.3` bans the `Compiled*` prefix). Any code symbol still named `CompiledDataKind` is an implementation-side rename deferred to `implementation/40_refactor_plan.md` per I9.
+At the SemanticManifest layer (`33`), the same two-level shape appears as `ResolvedDataKind::Simple(ResolvedSimpleDataKind)` / `ResolvedDataKind::Complex(ResolvedComplexDataKind)`, with the inner variant discriminator preserved. No `CompiledDataKind`-prefixed type exists in the design vocabulary (`00 §4.3` bans the `Compiled*` prefix). Any code symbol still named `CompiledDataKind` is an implementation-side rename deferred to `implementation/40_refactor_plan.md` per I9.
 
 #### 2.1.1 Diagram — the `DataKind` taxonomy tree
 
@@ -177,13 +163,13 @@ Shape legend per `00 §7.2`: rectangles are data/types. No arrows diverge — th
 
 ### 2.2 Mandatory trait surface — what every DataKind variant exposes
 
-Every concrete DataKind variant (`SimpleDataKind`, `Unionset`, `Grainset`, `Joinset`) implements the same minimal trait. The trait is the **contract surface** that the planner, the Manifest indices, and the validator read; pattern-matching on the variant tag is restricted to the dispatch site in `§5.3` and to a small number of clearly-marked match arms in `22`–`24`.
+Every concrete DataKind variant (`SimpleDataKind`, `Unionset`, `Grainset`, `Joinset`) implements the same minimal trait. The trait is the **contract surface** that the planner, the SemanticManifest indices, and the validator read; pattern-matching on the variant tag is restricted to the dispatch site in `§5.3` and to a small number of clearly-marked match arms in `22`–`24`.
 
 ```rust
 /// The minimal trait every concrete DataKind variant implements.
 ///
 /// Lives in `semstrait-model` (at the Model-layer) with a parallel `ResolvedDataKindOps`
-/// trait in `semstrait-manifest` (at the Manifest layer, per `33`). `20` ratifies the
+/// trait in `semstrait-manifest` (at the SemanticManifest layer, per `33`). `20` ratifies the
 /// Model-layer surface; the `ResolvedDataKindOps` roster is `33`'s to pin down.
 pub trait DataKindOps {
     /// The Semantics-facing interface this DataKind exposes.
@@ -223,7 +209,7 @@ pub trait DataKindOps {
     /// Lifecycle hook — called by the planner's strategy-dispatch site (`§5.3`).
     ///
     /// Returns the variant's `Strategy` by reference; the planner invokes it on a
-    /// `(Manifest, Request slice)` to produce a `PlanNode` subtree (`§5.2`).
+    /// `(SemanticManifest, Request slice)` to produce a `PlanNode` subtree (`§5.2`).
     fn strategy(&self) -> &dyn Strategy;
 }
 
@@ -312,10 +298,10 @@ The matrix below is the **single at-a-glance reference** for how the four concre
 | **Grain-aware at resolution?** | No — fixed grain per source (`15 §6`). | No — union over branches at the branch's own grain; no cross-branch rollup. | **Yes** — level selection is grain-driven per `22 §*` / `13 §*`. | No — join semantics are grain-agnostic at the Joinset level; per-member grain is its own concern. |
 | **Uses declared `Relationship`s?** | No — Simple is unrelated to `16 §2`'s `Relationship` block. | No — branches are unioned, not joined. | No — levels are grain-stacked, not joined. | **Yes** — `path:` optionally names a declared `Relationship` per `12 §5.1`; mandatory from `16 §9` if the path spans two constituents connected only by declared Relationships. |
 | **Request fan-out rule** | 1:1 — one Request resolves to one `Scan` over the Simple's `ResolvedBinding` (or one `Scan` per PhysicalSource — see `15 §3`). | 1:N union branches — one Request fans out to N `Scan`/filter legs `UNION ALL`-ed per `23 §*`. | 1:1 level selection — one Request resolves to one level's child subtree. | 1:1 join — one Request resolves to one join tree over exactly the members on the `path:`. |
-| **Coverage model** | Binding-level `Coverage` per `15 §6` (`Native` / `NullFill` / `Derived`). | Composition-level `CompositionCoverage` per `16 §8`, with NULL-fill for gaps per `23 §*`. | Composition-level `CompositionCoverage` per `16 §8`, with per-level coverage folding per `22 §*`. | Composition-level `CompositionCoverage` per `16 §8`, with join-path provenance per `24 §*`. |
+| **Coverage model** | Binding-level `Coverage` per `15 §6` (`Native` / `NullFill` / `Derived` / `Metadata`). | Composition-level `CompositionCoverage` per `16 §8`, with NULL-fill for gaps per `23 §*`. | Composition-level `CompositionCoverage` per `16 §8`, with per-level coverage folding per `22 §*`. | Composition-level `CompositionCoverage` per `16 §8`, with join-path provenance per `24 §*`. |
 | **TemporalShape interaction** | Shape declared inline per `00 §4.1` row / `17`; constrains `Grain` rollup legality on its own axis. | Branches may have heterogeneous shapes; planner advisories per `17 §*`. | Shape-gated level eligibility per `17 §*` (e.g. `Snapshot` has a fixed source grain). | `AsOf` join variant is gated on `TemporalShape` support per `17 §*` (currently DEFERRED). |
 | **Same-variant self-nesting** | N/A — Simple is a leaf. | Banned by `12 §2.1` (`ParseError::IllegalNesting`). | Banned by `12 §2.1`. | Banned by `12 §2.1`. |
-| **Materialization in Manifest** | `ResolvedSimpleDataKind` with `ResolvedBinding` — always materialized by `compile` per `15 §10`. | `ResolvedComplexDataKind` with composed interface — always materialized by `compile` per `16 §10.1`. | Same as Unionset — always materialized. | Same — Joinset is an **explicit** composition per `16 §9`, so the Manifest carries its composed interface and path materially. |
+| **Materialization in SemanticManifest** | `ResolvedSimpleDataKind` with `ResolvedBinding` — always materialized by `compile` per `15 §10`. | `ResolvedComplexDataKind` with composed interface — always materialized by `compile` per `16 §10.1`. | Same as Unionset — always materialized. | Same — Joinset is an **explicit** composition per `16 §9`, so the SemanticManifest carries its composed interface and path materially. |
 | **Strategy (§5)** | `SimpleStrategy` (`21`). | `UnionsetStrategy` (`23`). | `GrainsetStrategy` (`22`). | `JoinsetStrategy` (`24`). |
 
 **Reading the matrix.** Each row is a semantic dimension of the variant axis; each column is a variant. A blank cell is forbidden — every variant has a defined answer for every row. When a cell cites a forward-ref (`§*` within `21`–`24`), the ref marks a per-variant specialization that the matrix summarizes in one line.
@@ -350,12 +336,12 @@ Every DataKind variant participates in the six-stage pipeline ratified in `10 §
 |---|---|---|
 | `parse` | Parser recognizes the variant's YAML discriminator (`datasets:` / `unionsets:` / `grainsets:` / `joinsets:`), emits a `SemanticModel` node tagged with the variant. No references are resolved. | Per-variant YAML shape (`12 §3`–`§5`); per-variant ParseErrors in `PARSE_E_02xx` range (structural) per `30 §6.2`. |
 | `validate` | Validator runs every variant's `validate_structure` hook (`§2.2`). Variant-independent structural Preconditions (valid references, legal nesting per `12 §2`) run in parallel with variant-specific ones; all diagnostics accumulate per `10 §5`. | Per-variant structural rules: `12 §3.2`, `§4.2`, `§4.3`, `§5.3`, and every variant-specific rule in `21`–`24`. |
-| `compile` | Compiler runs every variant's `compile_into` hook (`§2.2`). Per `15 §10` for `Simple`; per `16 §5` / `§6` / `§10.1` for `Complex`. Produces `ResolvedDataKind` nodes placed in the Manifest tree. Fails fast per `10 §4.4`. | Per-variant compile work: Simple resolves a single Binding; Unionset constructs branch coverage; Grainset folds per-level coverage; Joinset walks its declared path and synthesizes a materialized composed surface. |
+| `compile` | Compiler runs every variant's `compile_into` hook (`§2.2`). Per `15 §10` for `Simple`; per `16 §5` / `§6` / `§10.1` for `Complex`. Produces `ResolvedDataKind` nodes placed in the SemanticManifest tree. Fails fast per `10 §4.4`. | Per-variant compile work: Simple resolves a single Binding; Unionset constructs branch coverage; Grainset folds per-level coverage; Joinset walks its declared path and synthesizes a materialized composed surface. |
 | `plan` | Planner's strategy-dispatch site (§5.3) matches on the DataKind variant, retrieves its `Strategy`, and invokes `Strategy::resolve`. Request-side field-first resolution (`16 §11`) locates the variant owning each requested field before dispatch. | Per-variant strategy: §5.1 names them; `21`–`24` ratify each algorithm. |
 | `optimize` | Rule-based rewrites over the `PlanNode` tree (`10 §5.4`). Variant-agnostic — every `PlanNode` is already engine-agnostic by the time optimize sees it (I3). | None — optimizer rules are declared at the `PlanNode` level, not the DataKind level. |
 | `adapt` | Adapter lowers the `PlanNode` tree to an `EngineArtifact` (`10 §5.5`). Variant-agnostic. | None. |
 
-> **Invariant D3 — every DataKind variant owns a compile-time materialization.** By the end of `compile`, every top-level DataKind in the input `SemanticModel` has produced a corresponding `ResolvedDataKind` in the Manifest. No DataKind crosses into `plan` without being fully resolved.
+> **Invariant D3 — every DataKind variant owns a compile-time materialization.** By the end of `compile`, every top-level DataKind in the input `SemanticModel` has produced a corresponding `ResolvedDataKind` in the SemanticManifest. No DataKind crosses into `plan` without being fully resolved.
 
 The shared skeleton above is `20`'s scope. Per-variant specifics (how a `Joinset` anchor is picked, how a `Grainset` level is selected, etc.) are `21`–`24`'s scope. `§6` expands on the per-stage skeleton with per-stage error-emission rules and the responsibility split between `20` and `21`–`24`.
 
@@ -365,10 +351,10 @@ Every DataKind exposes a **coverage surface**: a mapping from the DataKind's Sem
 
 | Variant | Coverage layer | Source |
 |---|---|---|
-| `Simple` | **Binding-level** `Coverage` (`Native` / `NullFill` / `Derived`). | `15 §6` — one entry per Semantics, one entry per `PhysicalSource`. |
+| `Simple` | **Binding-level** `Coverage` (`Native` / `NullFill` / `Derived` / `Metadata`). | `15 §6` — one entry per Semantics, one entry per `PhysicalSource`. |
 | `Unionset` / `Grainset` / `Joinset` | **Composition-level** `CompositionCoverage` keyed by `(ConstituentRef, SemanticsName)`. | `16 §8` — extends `15 §6` to the composed surface. |
 
-> **Invariant D4 — coverage is always present.** Every `ResolvedDataKind` in the Manifest carries a coverage surface (either `ResolvedBinding.coverage` for `Simple` or `ComposedSemanticInterface.composition_coverage` for Complex). A Manifest that carries a `ResolvedDataKind` with no coverage surface is malformed — `CompileError::MissingCoverage` (`COMP_E_2005`).
+> **Invariant D4 — coverage is always present.** Every `ResolvedDataKind` in the SemanticManifest carries a coverage surface (either `ResolvedBinding.coverage` for `Simple` or `ComposedSemanticInterface.composition_coverage` for Complex). A SemanticManifest that carries a `ResolvedDataKind` with no coverage surface is malformed — `CompileError::MissingCoverage` (`COMP_E_2005`).
 
 Per-variant behavior:
 
@@ -386,7 +372,7 @@ The planner does NOT walk `Coverage` at plan time beyond a pre-indexed lookup �
 Rationale:
 
 - `ComposedSemanticInterface` carries per-field `FieldProvenance` and per-`(ConstituentRef, SemanticsName)` `CompositionCoverage` (`16 §7` / `§8`). A Simple has no constituents, so these fields would be trivially empty — the type-level distinction keeps the API honest.
-- Request-side field-first resolution (`16 §11`) may form an implicit `ComposedSemanticInterface` **at plan time** when a Request's Semantics span multiple top-level DataKinds connected by declared `Relationship`s. This is a **plan-time synthesis**, not a DataKind-level interface exposure — the individual DataKinds still expose their variant-determined interface at the Manifest layer. (Open question Q3 in `questions/open/20_questions.md`: should a single-DataKind Request's planner entry always receive `InterfaceView::Composed(_)` for uniform dispatch?)
+- Request-side field-first resolution (`16 §11`) may form an implicit `ComposedSemanticInterface` **at plan time** when a Request's Semantics span multiple top-level DataKinds connected by declared `Relationship`s. This is a **plan-time synthesis**, not a DataKind-level interface exposure — the individual DataKinds still expose their variant-determined interface at the SemanticManifest layer. (Open question Q3 in `questions/open/20_questions.md`: should a single-DataKind Request's planner entry always receive `InterfaceView::Composed(_)` for uniform dispatch?)
 - `20 §5.3`'s dispatch logic reads the variant tag; it does NOT read the `InterfaceView` variant. Strategy selection is structural, not interface-shape-based.
 
 ### 4.5 Grain posture
@@ -437,7 +423,7 @@ Per-variant consequences:
 
 ### 5.1 Strategy-per-variant principle
 
-Each concrete DataKind variant owns a single **strategy** — the algorithm that maps a `(Manifest, Request-slice)` to a `PlanNode` subtree at plan time. The strategies are:
+Each concrete DataKind variant owns a single **strategy** — the algorithm that maps a `(SemanticManifest, Request-slice)` to a `PlanNode` subtree at plan time. The strategies are:
 
 | Variant | Strategy | Authoritative doc |
 |---|---|---|
@@ -471,9 +457,9 @@ The `Strategy` trait is the planner-side contract every strategy implements. It 
 /// typed `PlanError` with a stable `PLAN_E_*` code.
 pub trait Strategy: Send + Sync {
     /// Resolve the given Request slice against this DataKind using the
-    /// Manifest. Returns the `PlanNode` subtree rooted at this DataKind.
+    /// SemanticManifest. Returns the `PlanNode` subtree rooted at this DataKind.
     ///
-    /// - `manifest` — the full Manifest. Reads from index-keyed lookups
+    /// - `manifest` — the full SemanticManifest. Reads from index-keyed lookups
     ///   (I8); no catalog calls, no filesystem calls, no expression
     ///   re-compilation (I5, I11).
     /// - `request` — the slice of the incoming Request that this DataKind
@@ -485,7 +471,7 @@ pub trait Strategy: Send + Sync {
     ///   diagnostic accumulator).
     fn resolve(
         &self,
-        manifest: &Manifest,
+        manifest: &SemanticManifest,
         request: &RequestSlice,
         ctx: &mut PlannerCtx,
     ) -> Result<PlanNode, PlanError>;
@@ -503,7 +489,7 @@ pub trait Strategy: Send + Sync {
 
 - **No `&self: &mut`.** Strategies are stateless once constructed; per-invocation state lives in `PlannerCtx`. This keeps the strategy registry shareable (`&dyn Strategy` is `Sync`).
 - **No `SessionContext` as a direct param.** It's carried inside `PlannerCtx` per `34`'s contract.
-- **No asynchronous resolution.** I6 forbids it; if a strategy needs a value that is not in the Manifest, that is a `CompileError` bug (I8 violation), not a plan-time situation.
+- **No asynchronous resolution.** I6 forbids it; if a strategy needs a value that is not in the SemanticManifest, that is a `CompileError` bug (I8 violation), not a plan-time situation.
 - **No adapter-specific branching.** I3 — the strategy emits `PlanNode`s; adapter-specific lowering happens in `adapt`.
 
 **Variant-to-strategy delegation for Complex variants.** A `UnionsetStrategy` (and analogously `GrainsetStrategy`, `JoinsetStrategy`) resolves its own DataKind's composed surface, then **recursively dispatches** into its constituents via `ctx.strategy_registry.dispatch(child)`. This is how `Unionset ⊃ Grainset ⊃ Simple` (the deepest legal chain per `12 §2.3`) walks bottom-up: the outer strategy composes `PlanNode::Union` / `PlanNode::Grain` / `PlanNode::Join` nodes over the inner strategies' outputs.
@@ -587,7 +573,7 @@ These checks accumulate per `10 §5`'s fail-accumulate policy. Every variant's `
 - For `Simple`: delegate to `15 §10`'s Binding resolution flow.
 - For `Complex`: produce a `ResolvedComplexDataKind` carrying (a) the resolved constituent references, (b) the synthesized `ComposedSemanticInterface` per `16 §5` / `§6` / `§7` / `§8`, (c) the composition-level `FieldProvenance` / `CompositionCoverage` records.
 - Fail fast on first error per `10 §4.4`.
-- Register the resolved DataKind in the Manifest's `DataKindIndex` (`33 §*`).
+- Register the resolved DataKind in the SemanticManifest's `DataKindIndex` (`33 §*`).
 
 **Per-variant responsibility (`21`–`24`):**
 
@@ -598,7 +584,7 @@ These checks accumulate per `10 §5`'s fail-accumulate policy. Every variant's `
 
 **`20`-scope error codes:** `COMP_E_2000`–`COMP_E_2029` — see `§8.2`. Notably `COMP_E_2005 MissingCoverage` (Invariant D4), `COMP_E_2010 StrategyBindingUnresolved` (contract failure between `compile_into` and `strategy`).
 
-**Ordering note.** `compile`'s depth-first traversal is deterministic per I4 — siblings are processed in YAML-declaration order. The Manifest's `DataKindIndex` is populated in the same order, preserving reproducibility.
+**Ordering note.** `compile`'s depth-first traversal is deterministic per I4 — siblings are processed in YAML-declaration order. The SemanticManifest's `DataKindIndex` is populated in the same order, preserving reproducibility.
 
 ### 6.4 `plan` (stage 4)
 
@@ -611,9 +597,9 @@ These checks accumulate per `10 §5`'s fail-accumulate policy. Every variant's `
 
 All four steps are synchronous (I6). No I/O (I11).
 
-**Per-variant responsibility (`21`–`24`):** The per-variant algorithm inside `Strategy::resolve`. Everything a strategy does — what `PlanNode` shapes it emits, how it consumes the Manifest indices, how it recursively dispatches — lives in the variant's strategy doc.
+**Per-variant responsibility (`21`–`24`):** The per-variant algorithm inside `Strategy::resolve`. Everything a strategy does — what `PlanNode` shapes it emits, how it consumes the SemanticManifest indices, how it recursively dispatches — lives in the variant's strategy doc.
 
-**`20`-scope error codes:** `PLAN_E_2040`–`PLAN_E_2069` — see `§8.2`. These cover cross-variant planner failures: strategy-dispatch failure (`PLAN_E_2050`), missing strategy for a variant (`PLAN_E_2051`), Manifest-index-inconsistency during dispatch (`PLAN_E_2052`).
+**`20`-scope error codes:** `PLAN_E_2040`–`PLAN_E_2069` — see `§8.2`. These cover cross-variant planner failures: strategy-dispatch failure (`PLAN_E_2050`), missing strategy for a variant (`PLAN_E_2051`), SemanticManifest-index-inconsistency during dispatch (`PLAN_E_2052`).
 
 ### 6.5 `optimize` / `adapt` (stages 5–6)
 
@@ -689,19 +675,19 @@ Every code below follows the `{SUBSYSTEM}_{SEVERITY}_{NUMBER}` format ratified i
 |---|---|---|
 | `COMP_E_2000` | `DataKindCompileFailed` | Generic wrapper fired when a variant's `compile_into` hook returns an error without a more-specific subsystem code. Carries the underlying `Diagnostic` as a `ContextLine`. Reserved against `§6.3`'s "fail fast on first error" policy. |
 | `COMP_E_2001` | `DataKindTraversalOrderInvalid` | Compile's depth-first traversal hit a DataKind whose children were not yet resolved — ordering bug. Should never fire for ratified content. |
-| `COMP_E_2005` | `MissingCoverage` | A `ResolvedDataKind` attempted to enter the Manifest without a coverage surface (either `ResolvedBinding.coverage` for Simple or `ComposedSemanticInterface.composition_coverage` for Complex). Violates Invariant D4 (`§4.3`). |
+| `COMP_E_2005` | `MissingCoverage` | A `ResolvedDataKind` attempted to enter the SemanticManifest without a coverage surface (either `ResolvedBinding.coverage` for Simple or `ComposedSemanticInterface.composition_coverage` for Complex). Violates Invariant D4 (`§4.3`). |
 | `COMP_E_2010` | `StrategyBindingUnresolved` | A variant's `DataKindOps::strategy()` was invoked against a `ResolvedDataKind` whose required resolution data is missing (e.g. a Simple with `ResolvedBinding::None` or a Complex with empty constituent list). Contract failure between `compile_into` and `strategy`. |
 | `COMP_E_2015` | `InterfaceSynthesisFailed` | For a `ComplexDataKind`, the synthesized `ComposedSemanticInterface` could not be produced — usually because a constituent's own compile failed, or `UnifiedSemantics` merge (`16 §6`) failed. `16 §14` owns the specific COMP_E_04xx codes for Relationship / composition; `2015` is the `20`-layer wrapper that labels the failure at the variant boundary. |
-| `COMP_E_2020` | `DataKindIndexConflict` | Populating the Manifest's `DataKindIndex` found a conflict — two `ResolvedDataKind`s resolved to the same index key. Violates Invariant D2 (`§4.1`) in Manifest form; should be caught earlier by `VALID_E_2000`. |
+| `COMP_E_2020` | `DataKindIndexConflict` | Populating the SemanticManifest's `DataKindIndex` found a conflict — two `ResolvedDataKind`s resolved to the same index key. Violates Invariant D2 (`§4.1`) in SemanticManifest form; should be caught earlier by `VALID_E_2000`. |
 
 #### `PLAN_E_20xx` — shared plan-time errors
 
 | Code | Variant | Meaning |
 |---|---|---|
-| `PLAN_E_2040` | `DataKindNotInManifest` | Field-first resolution or explicit `Request.from` named a DataKind that is not in the Manifest's `DataKindIndex`. Likely an invalid Request against a stale Manifest. |
+| `PLAN_E_2040` | `DataKindNotInSemanticManifest` | Field-first resolution or explicit `Request.from` named a DataKind that is not in the SemanticManifest's `DataKindIndex`. Likely an invalid Request against a stale SemanticManifest. |
 | `PLAN_E_2050` | `StrategyDispatchFailed` | The strategy registry produced no `Strategy` for a variant. Reserved defensively — the `#[non_exhaustive]` match in `§5.3` makes this fire only when a third-party crate extends `DataKind::Complex` without registering a strategy. |
 | `PLAN_E_2051` | `StrategyMissingForVariant` | A ratified variant has no registered `Strategy`. Indicates a planner init bug, not an authoring bug. |
-| `PLAN_E_2052` | `ManifestIndexInconsistent` | During dispatch, the Manifest's `DataKindIndex` returned a `ResolvedDataKind` whose variant tag disagrees with its inner content (e.g. `Simple` with `ResolvedComplexDataKind` inside). Should not fire for ratified content. |
+| `PLAN_E_2052` | `SemanticManifestIndexInconsistent` | During dispatch, the SemanticManifest's `DataKindIndex` returned a `ResolvedDataKind` whose variant tag disagrees with its inner content (e.g. `Simple` with `ResolvedComplexDataKind` inside). Should not fire for ratified content. |
 
 #### Reserved `20`-scope codes
 
@@ -767,7 +753,7 @@ Items surfaced during Round-1 drafting of `20` that cannot be closed from `10` /
 
 - **Code-vocabulary rename — `DataKindPlanner` → `Strategy`.** The current codebase (see `crates/semstrait-planner/src/data_kind/mod.rs`) names the trait `DataKindPlanner` and the registry `DataKindPlannerRegistry`. `20 §5.2` ratifies `Strategy` / `StrategyRegistry` per the design vocabulary; the rename is tracked as a task in `implementation/40_refactor_plan.md` per I9.
 - **`17` section numbering.** `17 (foundations/17_temporal_shape.md)` is being drafted in parallel; `20` cites `17 §*` as a forward-ref where needed. Once `17`'s section numbers land, `§3`, `§4.5`, `§4.7`, and `§7` should be re-targeted to specific `17` sections instead of the wildcard `§*`.
-- **`33` struct rosters for `ResolvedDataKind` / `ResolvedSimpleDataKind` / `ResolvedComplexDataKind`.** `20 §2.1` hints at the Manifest-layer shape but leaves field lists to `33`. Once `33` lands, `20 §2.1` may gain a one-line pointer (no structural changes).
+- **`33` struct rosters for `ResolvedDataKind` / `ResolvedSimpleDataKind` / `ResolvedComplexDataKind`.** `20 §2.1` hints at the SemanticManifest-layer shape but leaves field lists to `33`. Once `33` lands, `20 §2.1` may gain a one-line pointer (no structural changes).
 - **`34`'s public `Strategy` trait.** `20 §5.2` sketches the trait; the concrete signatures — including `PlannerCtx` field rosters, `RequestSlice` shape, and `StrategyRegistry` API — are `34`'s to ratify.
 - **`21`–`25` full rosters.** `20 §8.3` reserves sub-ranges; each variant doc will populate its own error-variant tables.
 

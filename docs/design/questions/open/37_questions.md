@@ -106,7 +106,7 @@ depends-on:
 
 **Current position in `37`.** Option (a) — `SnapshotVersion::Current`, no pin ID, drift gate still operational. Documented as a limitation in `§4.3` and `§4.5`.
 
-**Next step.** Revisit when `33` ratifies `Manifest::verify_against_catalog` — if that method wants to promise reproducibility, the Unity path needs clearer downgrade signaling (e.g. a mandatory diagnostic when `SnapshotVersion::Current` is the best the provider can offer).
+**Next step.** Revisit when `33` ratifies `SemanticManifest::verify_against_catalog` — if that method wants to promise reproducibility, the Unity path needs clearer downgrade signaling (e.g. a mandatory diagnostic when `SnapshotVersion::Current` is the best the provider can offer).
 
 ---
 
@@ -307,7 +307,7 @@ depends-on:
 
 ## Q-CAT-011 — `FilesystemCatalogProvider` schema source
 
-**Question.** `37 §4.4` specifies `FilesystemCatalogProvider::get_schema` returns `Ok(Schema::empty())` because this provider does NOT parse format headers (that would violate `§12`). Manifest authors must supply schemas explicitly. Is this the right posture, or should `FilesystemCatalogProvider` accept a schema-provider callback at construction time (e.g. "when asked for schema of `s3://bucket/path`, call *this* function") so the user can plug in whatever header-parser they like?
+**Question.** `37 §4.4` specifies `FilesystemCatalogProvider::get_schema` returns `Ok(Schema::empty())` because this provider does NOT parse format headers (that would violate `§12`). SemanticManifest authors must supply schemas explicitly. Is this the right posture, or should `FilesystemCatalogProvider` accept a schema-provider callback at construction time (e.g. "when asked for schema of `s3://bucket/path`, call *this* function") so the user can plug in whatever header-parser they like?
 
 **Refs.**
 
@@ -322,7 +322,7 @@ depends-on:
 
 **Arguments for pluggable schema callback.**
 
-- Manifest authors routinely want "just point me at a directory and figure out the schema" — removing that capability entirely is a regression from `StorageProvider::read_schema`.
+- SemanticManifest authors routinely want "just point me at a directory and figure out the schema" — removing that capability entirely is a regression from `StorageProvider::read_schema`.
 - The callback is caller-supplied, so it doesn't violate the boundary — `semstrait-catalog` never imports a format-parser.
 
 **Current position in `37`.** Empty schema. The legacy `StorageProvider::read_schema` path is deliberately removed.

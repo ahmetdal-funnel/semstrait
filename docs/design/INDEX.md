@@ -44,7 +44,7 @@ Every row points to **one** canonical doc. Cross-references in the right column 
 | `AdditivityType` (`Additivity`) | `foundations/18_entities.md §5.2` (enum roster) + `foundations/11_names_and_scopes.md §8` (planner contract) | `17 §7` (advisory warnings when inconsistent with `TemporalShape`) |
 | `AiContext` | `foundations/18_entities.md §8` | — |
 | `AsOf` joins (post-v1) | `foundations/17_temporal_shape.md §5` (design forward-reference) | `registry/join_types_mapping.md §4.2`, `registry/temporal_shape_mapping.md §4.2` (engine mapping) |
-| `Binding` (compile-time process) | `foundations/15_mapping_and_binding.md` | `apis/33_semstrait_manifest.md §5.3` (Manifest-layer `ResolvedColumnMapping` surface) |
+| `Binding` (compile-time process) | `foundations/15_mapping_and_binding.md` | `apis/33_semstrait_manifest.md §5.3` (SemanticManifest-layer `ResolvedColumnMapping` surface) |
 | `Cardinality` | `foundations/18_entities.md §2.4` (struct) + `foundations/16_composition.md` (planner semantics) | — |
 | `CatalogEntry` / `CatalogAuthMethod` / `CatalogRef` | `apis/32b_catalogs_yaml.md` | — |
 | `CatalogProvider` | `apis/37_semstrait_catalog.md` | — |
@@ -69,8 +69,8 @@ Every row points to **one** canonical doc. Cross-references in the right column 
 | `JoinKeyExprPair` | `foundations/18_entities.md §2.6` | — |
 | `JoinType` | `foundations/18_entities.md §2` | `registry/join_types_mapping.md` (per-engine syntax) |
 | `Keys` (`{primary, unique, foreign}`) | `foundations/18_entities.md §9` | — |
-| Manifest layer types (`Resolved*` prefix) | `apis/33_semstrait_manifest.md` | — |
-| `Manifest` + `Repository` | `apis/33_semstrait_manifest.md` | — |
+| SemanticManifest layer types (`Resolved*` prefix) | `apis/33_semstrait_manifest.md` | — |
+| `SemanticManifest` + `Repository` | `apis/33_semstrait_manifest.md` | — |
 | `Measure` (struct shape) | `foundations/18_entities.md §5` | `foundations/11_names_and_scopes.md §5` (planner role) |
 | `Metric` (struct shape) | `foundations/18_entities.md §6` | `foundations/11_names_and_scopes.md §6` (planner role) |
 | Names / namespaces / scopes | `foundations/11_names_and_scopes.md` | `foundations/12_nesting_policy.md` (scope-chain-through-nesting rules) |
@@ -80,14 +80,14 @@ Every row points to **one** canonical doc. Cross-references in the right column 
 | `RelationshipPath` (newtype over `Vec<RelationshipId>`) | `foundations/14b_expression_resolution.md §4.5` | `foundations/16_composition.md §5.2` (consumer, pointer-only) |
 | `Request` / `SessionContext` | `apis/34_semstrait_planner.md` | — |
 | Resolution pipeline (end-to-end stages) | `foundations/10_resolution_pipeline.md` | — |
-| `ResolvedColumnMapping` (Manifest-layer) | `apis/33_semstrait_manifest.md §5.3` | — |
+| `ResolvedColumnMapping` (SemanticManifest-layer) | `apis/33_semstrait_manifest.md §5.3` | — |
 | `ResolvedExprTable` | `foundations/14b_expression_resolution.md` | — |
 | SR-E-* entity-level invariants | `foundations/18_entities.md §11` | `apis/30_api_contracts.md §6.2` (error-code allocation) |
 | SR-* (YAML-structural rules) | `apis/32_semstrait_model.md §3.2–§3.5` | — |
 | `ScdType` (v1 roster `{Type1, Type2}`) | `foundations/18_entities.md §3.1` | `foundations/17_temporal_shape.md §6` (full Kimball `Type0`–`Type6` as forward-reference) |
 | `SemanticInterface` | `foundations/11_names_and_scopes.md` | `foundations/16_composition.md` (composed form) |
 | `SemanticMapping` (container struct, compile semantics) | `foundations/15_mapping_and_binding.md` | — |
-| `SemanticMappingValue` (enum: `Column`/`Literal`/`Expr`) | `foundations/18_entities.md §10` | `foundations/15_mapping_and_binding.md §5` (compile semantics) |
+| `SemanticMappingValue` (enum: `Column`/`Literal`/`Expr`/`Metadata`) | `foundations/18_entities.md §10` | `foundations/15_mapping_and_binding.md §5` (compile semantics; `Metadata` is compile-synthesized — not authored under `semantic_mapping:`) |
 | `SemanticModel` root type + YAML grammar | `apis/32_semstrait_model.md` | — |
 | `SemanticPlan` + `PlanNode` | `apis/35_semstrait_ir.md` | — |
 | `semstrait-api` public surface | `apis/38_semstrait_api.md` | — |
@@ -125,7 +125,7 @@ Concepts the 2026-04-17 consolidation pass ratified as owned by **exactly one** 
 
 | Concept | Owner | Notes on where consumers may restate *parts* of this concept |
 |---|---|---|
-| `Relationship` struct | `foundations/18_entities.md §2` | Consumers (`14b`, `16`, `24`, `26`, `33`) reference-only. Manifest layer's `ResolvedRelationship` is a DIFFERENT type, named and defined in `33 §5.2`. |
+| `Relationship` struct | `foundations/18_entities.md §2` | Consumers (`14b`, `16`, `24`, `26`, `33`) reference-only. SemanticManifest layer's `ResolvedRelationship` is a DIFFERENT type, named and defined in `33 §5.2`. |
 | `RelationshipId` newtype | `foundations/18_entities.md §2.1` | Uses only. Never redefine. |
 | `JoinType` enum | `foundations/18_entities.md §2` | `registry/join_types_mapping.md` MAY list engine-mapped equivalents in table rows but never restates the Rust enum definition. |
 | `Cardinality` / `Directionality` | `foundations/18_entities.md §2.4` / `§2.5` | — |
@@ -139,7 +139,7 @@ Concepts the 2026-04-17 consolidation pass ratified as owned by **exactly one** 
 | `AiContext` | `foundations/18_entities.md §8` | — |
 | `Keys` | `foundations/18_entities.md §9` | — |
 | `DataKindFilter` / `AggregationFilter` | `foundations/18_entities.md §7` | `21` / `22` / `23` / `24` per-variant filter authoring rules. |
-| `SemanticMappingValue` | `foundations/18_entities.md §10` | `15 §5` owns compile-time semantics; `33 §5.3` owns the Manifest-layer `ResolvedColumnMapping` (flattened form). |
+| `SemanticMappingValue` | `foundations/18_entities.md §10` | `15 §5` owns compile-time semantics; `33 §5.3` owns the SemanticManifest-layer `ResolvedColumnMapping` (flattened form). |
 | `SR-E-*` codes | `foundations/18_entities.md §11` | `30 §6.2` integrates into the cross-subsystem allocation. |
 | `Grain` enum | `foundations/13_types_and_grain.md §3.1` | `18 §3` consumes via `TemporalShape.grain`; never redefined. |
 | `RelationshipPath` | `foundations/14b_expression_resolution.md §4.5` | `16 §5.2` consumes via `ComposedSemanticInterface.traversed_paths`; pointer-only. |
@@ -174,7 +174,7 @@ Each numbered doc has one sidecar (`<n>_questions.md`); registry catalogs have p
 | `questions/open/30_questions.md` | `apis/30` | API-contract / error-code deferrals |
 | `questions/open/31_questions.md` | `apis/31` | Core public-surface deferrals |
 | `questions/open/32_questions.md` | `apis/32` | `SemanticModel` deferrals |
-| `questions/open/33_questions.md` | `apis/33` | Manifest deferrals |
+| `questions/open/33_questions.md` | `apis/33` | SemanticManifest deferrals |
 | `questions/open/34_questions.md` | `apis/34` | Planner deferrals |
 | `questions/open/35_questions.md` | `apis/35` | IR deferrals |
 | `questions/open/36_questions.md` | `apis/36` | Adapter deferrals |
@@ -224,7 +224,7 @@ See `registry/README.md` for the engine-coverage policy and versioning rules.
   - `apis/32c_entities.md` → `foundations/18_entities.md` (promoted to foundations; same content).
   - `ColumnMapping` (model-layer) → `SemanticMapping` (model-layer).
   - `ColumnMappingValue` (model-layer) → `SemanticMappingValue` (model-layer).
-  - `ResolvedColumnMapping` (Manifest-layer) **unchanged** per `33 §5.3`.
+  - `ResolvedColumnMapping` (SemanticManifest-layer) **unchanged** per `33 §5.3`.
   - `KeyPair` → `JoinKeyExprPair` (per `18 §2.6`).
 - **Renames landed in 2026-04-27 questions restructure (ninth pass).**
   - Directory `open_questions/` → `questions/` with two subfolders: `questions/open/` (28 active backlog files) and `questions/closed/` (1 archived file: `31b_io_questions.md`).

@@ -494,7 +494,7 @@ Globbing supports `*`, `**`, `?`, and character classes `[abc]` as defined by `s
 
 `FilesystemCatalogProvider` internally uses `expand_glob` when resolving a table reference of the form `root/namespace/table_glob`. Other `CatalogProvider`s do NOT use `expand_glob` — they expand glob patterns through their native catalog APIs (e.g. `GET /v1/namespaces/{ns}/tables` followed by client-side filtering).
 
-Manifest compilation also calls `expand_glob` directly for glob-bound `Source::Path { glob: ... }` bindings (`15 §6.3`), bypassing the catalog.
+SemanticManifest compilation also calls `expand_glob` directly for glob-bound `Source::Path { glob: ... }` bindings (`15 §6.3`), bypassing the catalog.
 
 ### 7.3 Determinism
 
@@ -671,7 +671,7 @@ pub enum DriftKind {
 
 ### 9.4 Caller policy
 
-The caller (`semstrait-manifest`'s `Manifest::verify_against_catalog` or equivalent) maps `DriftReport` to one of:
+The caller (`semstrait-manifest`'s `SemanticManifest::verify_against_catalog` or equivalent) maps `DriftReport` to one of:
 
 | `DriftStatus` | Caller response                                                                 |
 |---------------|---------------------------------------------------------------------------------|
@@ -723,7 +723,7 @@ Every consumer takes `&dyn CatalogProvider` / `&dyn FileSystem` (or `Arc<dyn …
 
 ### 10.4 Error propagation
 
-Callers propagate `CatalogError` and `FileSystemError` through `?` into their own error types (typically `ManifestCompileError` at compile time, `ExecutionError` at I11b). Stable codes (`CAT_E_*`, `FS_E_*`) flow through the outer `Diagnostic` stream (`30 §5`).
+Callers propagate `CatalogError` and `FileSystemError` through `?` into their own error types (typically `SemanticManifestCompileError` at compile time, `ExecutionError` at I11b). Stable codes (`CAT_E_*`, `FS_E_*`) flow through the outer `Diagnostic` stream (`30 §5`).
 
 ### 10.5 Async runtime
 

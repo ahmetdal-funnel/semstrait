@@ -52,7 +52,9 @@ depends-on:
 
 ---
 
-## Q-24-02 — Hybrid path mode
+## Q-24-02 — Hybrid path mode — CLOSED (2026-04-28)
+
+**Status: CLOSED.** v1 ratifies "no hybrid path" — `24 §4.3` makes `path` strictly `None` (implicit) or fully declared (explicit). `TD-JOINSET-HYBRID-PATH` carries the post-v1 reactivation. Round-1 framing retained for historical reference.
 
 **Question.** `24 §4.3` ratifies that `path` is either fully implicit (`None`) or fully explicit (`Some(ExplicitPath)`). Could there be a hybrid mode where the author declares some hops and lets the planner fill the remainder via BFS?
 
@@ -78,7 +80,9 @@ depends-on:
 
 ---
 
-## Q-24-03 — Override reach: `Cardinality` overrides?
+## Q-24-03 — Override reach: `Cardinality` overrides? — CLOSED (2026-04-28)
+
+**Status: CLOSED.** v1 ratifies "no `Cardinality` override". The declared `Relationship.cardinality` is authoritative for all consumers; sophisticated authors restructure the Model (junction-table DataKind per `16 §3.3.4`) rather than override. Round-1 framing retained for historical reference.
 
 **Question.** `24 §5.3`'s `JoinsetStrategy` override mechanism currently covers `JoinType` only. Should `overrides` also permit pinning a hop's effective `Cardinality` — e.g. declaring "treat this `ManyToMany` hop as `OneToMany` for this Joinset because the author knows the Joinset's slice satisfies the tighter constraint"?
 
@@ -103,7 +107,9 @@ depends-on:
 
 ---
 
-## Q-24-04 — `AsOf` activation matrix
+## Q-24-04 — `AsOf` activation matrix — CLOSED (2026-04-28)
+
+**Status: CLOSED.** `17 §5.2` ratifies the per-shape-pair legality matrix; `24 §7.3` cross-references it. `TD-COMPOSITION-ASOF` continues to track the planner-side `AsOf` implementation deferral, but the activation-matrix question itself is settled. Round-1 framing retained for historical reference.
 
 **Question.** `24 §7` fixes the integration points for `TemporalShape × JoinType::AsOf` but defers the exact activation matrix to `17 §5`. What are the precise `TemporalShape` pairs that mandate / permit / forbid `AsOf`?
 
@@ -132,7 +138,9 @@ depends-on:
 
 ---
 
-## Q-24-05 — Joinset reuse by implicit composition
+## Q-24-05 — Joinset reuse by implicit composition — CLOSED (2026-04-28)
+
+**Status: CLOSED.** v1 ratifies "no reuse" per `16 §13.5`. Authors must use `from: Some("joinset_name")` to target a pre-built Joinset surface; otherwise an implicit composition synthesizes a distinct `ComposedSemanticInterface` with `CompositionKind::Relationship`. `TD-COMPOSITION-JOINSET-REUSE` continues to track the post-v1 reactivation. Round-1 framing retained for historical reference.
 
 **Question.** `16 §13.5` records that an explicit `Joinset` does NOT shadow implicit composition: a `Request` with `from: None` over the same constituents produces a **distinct** `ComposedSemanticInterface` with `CompositionKind::Relationship`, not the Joinset's `CompositionKind::Joinset`. Should the planner learn to recognize the coincidence and substitute the pre-built Joinset surface?
 
@@ -158,7 +166,9 @@ depends-on:
 
 ---
 
-## Q-24-06 — Self-referential Joinsets
+## Q-24-06 — Self-referential Joinsets — CLOSED (2026-04-28)
+
+**Status: CLOSED.** Forbidden in v1, transitively from `16 §12.4` (Relationship self-references forbidden) and the validate-layer rejection `VALID_E_2406 JoinsetDuplicateMember` (`24 §9.1`). `TD-COMPOSITION-SELFJOIN` continues to track the post-v1 lift. Round-1 framing retained for historical reference.
 
 **Question.** Can a Joinset's anchor and target be the same DataKind (e.g. `employees` joined to itself along a `manager_id → id` relationship)?
 
@@ -183,7 +193,9 @@ depends-on:
 
 ---
 
-## Q-24-07 — Per-hop filter pushdown annotations
+## Q-24-07 — Per-hop filter pushdown annotations — CLOSED (2026-04-28)
+
+**Status: CLOSED.** v1 ratifies "no per-hop filters". `JoinHop` carries only `relationship`, `direction`, `to` (`24 §4.2`). Filters are declared at the Joinset level (`§2.6`) and the planner pushes them where safe. Authors needing per-hop scoping push the filter into the member's own interface or declare a narrower member DataKind. Round-1 framing retained for historical reference.
 
 **Question.** Should `ExplicitPath.hops[i]` permit a per-hop filter expression — e.g. "only join with `addresses` where `country = 'US'`" — declared at the Joinset level?
 
@@ -196,7 +208,7 @@ depends-on:
 **Proposed (Round 1):** No per-hop filters. Filters are declared at the Joinset level (`2.6`) and the planner pushes them where safe.
 
 **Arguments against per-hop filters.**
-- Filter-pushdown is a classic planner optimization; encoding it in the Manifest risks double-application (Joinset-level filter + planner pushdown of the Joinset-level filter).
+- Filter-pushdown is a classic planner optimization; encoding it in the SemanticManifest risks double-application (Joinset-level filter + planner pushdown of the Joinset-level filter).
 - Per-hop filters blur the line between "declarative Joinset" and "imperative query plan" — Joinset is meant to be the former.
 
 **Arguments for per-hop filters.**
@@ -209,7 +221,9 @@ depends-on:
 
 ---
 
-## Q-24-08 — Structural `NullFill` for outer-join Joinsets
+## Q-24-08 — Structural `NullFill` for outer-join Joinsets — CLOSED (2026-04-28)
+
+**Status: CLOSED.** v1 ratifies "no structural NullFill for Joinset". `FieldOwnership::NullFill` is Unionset-only per `16 §7.3.3`; outer-join NULL-fill is the `JoinType` at the plan tree's responsibility (`24 §5.5` step 3). Round-1 framing retained for historical reference.
 
 **Question.** `16 §7.3.3` ratifies that `FieldOwnership::NullFill` is produced ONLY for `CompositionKind::Unionset`. For a `Joinset` with a `Left` / `Right` / `Full` outer join, missing-side columns are NULL-filled by the JoinType's semantics rather than recorded structurally on `FieldProvenance`. Should Joinset-side outer-join NULL-fill be recorded structurally?
 
@@ -318,12 +332,12 @@ For v1, the Joinset represents explicit joins over ≥ 2 members with a declared
 | ID | Title | Round-1 default | Tracking marker |
 |---|---|---|---|
 | Q-24-01 | N-ary Joinset lift | Binary-only (per `12 §5.2`) | `TD-NESTING-NARY-JOIN` / `TD-JOINSET-NARY` |
-| Q-24-02 | Hybrid path mode | Prohibited | `TD-JOINSET-HYBRID-PATH` |
-| Q-24-03 | Cardinality override | No | — |
-| Q-24-04 | `AsOf` activation matrix | Deferred to `17 §5` | `TD-COMPOSITION-ASOF` |
-| Q-24-05 | Joinset reuse by implicit composition | No reuse | `TD-COMPOSITION-JOINSET-REUSE` |
-| Q-24-06 | Self-referential Joinsets | Forbidden | `TD-COMPOSITION-SELFJOIN` |
-| Q-24-07 | Per-hop filter annotations | No | — |
-| Q-24-08 | Structural `NullFill` for outer joins | No (JoinType-only) | — |
+| Q-24-02 | Hybrid path mode | **CLOSED (2026-04-28)** — Prohibited | `TD-JOINSET-HYBRID-PATH` |
+| Q-24-03 | Cardinality override | **CLOSED (2026-04-28)** — No | — |
+| Q-24-04 | `AsOf` activation matrix | **CLOSED (2026-04-28)** — `17 §5.2` matrix | `TD-COMPOSITION-ASOF` |
+| Q-24-05 | Joinset reuse by implicit composition | **CLOSED (2026-04-28)** — No reuse | `TD-COMPOSITION-JOINSET-REUSE` |
+| Q-24-06 | Self-referential Joinsets | **CLOSED (2026-04-28)** — Forbidden | `TD-COMPOSITION-SELFJOIN` |
+| Q-24-07 | Per-hop filter annotations | **CLOSED (2026-04-28)** — No | — |
+| Q-24-08 | Structural `NullFill` for outer joins | **CLOSED (2026-04-28)** — JoinType-only | — |
 | Q-24-09 | `JoinAssociativity` hint | Dropped (no field in v1 body) | `TD-JOINSET-ASSOCIATIVITY-PARK` |
 | Q-24-10 | Star / snowflake / 3NF shape-tag vocabulary | Deferred (no field in v1 body) | `TD-JOINSET-SHAPE-VOCAB` |

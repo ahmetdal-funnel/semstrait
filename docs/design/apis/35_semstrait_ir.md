@@ -37,10 +37,10 @@ refined-by:
 
 ### 1.2 What `semstrait-ir` does NOT own
 
-- **Planning strategy and per-DataKind plan assembly.** Every decision that "this `Request` against this `Manifest` expands into a tree of `PlanNode`s in this order" lives in `semstrait-planner` per `34`. `35` ratifies only the **output shape** that planning must produce.
+- **Planning strategy and per-DataKind plan assembly.** Every decision that "this `Request` against this `SemanticManifest` expands into a tree of `PlanNode`s in this order" lives in `semstrait-planner` per `34`. `35` ratifies only the **output shape** that planning must produce.
 - **Optimization passes.** Rule-based rewrites over `SemanticPlan` live in `semstrait-planner` (`34`, stage 5 per `10 §3.5`). `35`'s `walk` / `transform` helpers (§8) are the substrate those rewrites run on, not the rewrites themselves.
 - **Adapter emission.** Translating a `SemanticPlan` into an `EngineArtifact` (SQL text or Substrait proto) is `36`'s contract. `35` ratifies the artifact's structural shape and the Substrait mapping table; the rendering code, dialect-specific SQL, and capability checks all live above.
-- **Manifest shape.** `SemanticPlan` references the Manifest for bindings and resolved expressions (§5.2) via opaque identifiers (`SourceRef`, `BindingId`); the Manifest types themselves live in `semstrait-manifest` per `33`. `35` never embeds `ResolvedDataKind` / `ResolvedBinding` values inline.
+- **SemanticManifest shape.** `SemanticPlan` references the SemanticManifest for bindings and resolved expressions (§5.2) via opaque identifiers (`SourceRef`, `BindingId`); the SemanticManifest types themselves live in `semstrait-manifest` per `33`. `35` never embeds `ResolvedDataKind` / `ResolvedBinding` values inline.
 - **Expression AST.** Every expression on every `PlanNode` is a `semstrait_core::PhysicalExpr` (or its aggregate analogue — see §5.7). The AST definition, wrapper invariants, and `Expr` variant roster all live in `semstrait-core` per `31 §3`.
 
 ### 1.3 Design posture — pure, sync, canonical
@@ -134,7 +134,7 @@ Construction does **not** re-check invariants 1–3 at runtime (planning establi
 
 `SemanticPlan` derives `Serialize` / `Deserialize` under the crate-level `serde` feature. The wire form is the direct struct shape; no intermediate envelope. `PhysicalExpr` inside child nodes serializes through `semstrait-core`'s expression serde (`31 §4.5`). `PlanNode` (`#[non_exhaustive]`) uses serde's `untagged` policy with a discriminator field (`kind: "scan" | "filter" | ...`) so the wire form survives the addition of new variants per I10.
 
-A serialized `SemanticPlan` is a format-stable portable plan artifact: two processes with the same compiled Manifest can exchange a `SemanticPlan` and get identical adapter output. This is what makes the crate a faithful IR.
+A serialized `SemanticPlan` is a format-stable portable plan artifact: two processes with the same compiled SemanticManifest can exchange a `SemanticPlan` and get identical adapter output. This is what makes the crate a faithful IR.
 
 ### 3.4 Construction patterns
 
@@ -215,9 +215,9 @@ Eight variants in v1. Every variant wraps a struct (not tuple / record form) so 
 pub struct ScanNode {
     pub meta: NodeMeta,
 
-    /// Opaque handle into the Manifest. Resolves to a
+    /// Opaque handle into the SemanticManifest. Resolves to a
     /// `ResolvedPhysicalSource` per `15 §7.1`. Adapters consume the
-    /// Manifest + this handle to learn the on-engine table / path /
+    /// SemanticManifest + this handle to learn the on-engine table / path /
     /// format. `35` never stores the expanded path.
     pub source: SourceRef,
 
@@ -236,7 +236,7 @@ pub struct ScanNode {
 }
 ```
 
-`ScanNode` carries **no raw path, no URL, no dialect**. Resolution from `SourceRef` to on-engine identity happens in the adapter via the Manifest (I1).
+`ScanNode` carries **no raw path, no URL, no dialect**. Resolution from `SourceRef` to on-engine identity happens in the adapter via the SemanticManifest (I1).
 
 ### 4.3 `Filter` — predicate
 
@@ -394,7 +394,7 @@ pub struct NodeMeta {
     /// Unique identifier for this node in the plan tree. Used by the
     /// optimizer (rule-engine source tracking) and the adapter
     /// (diagnostic correlation). Not stable across planner
-    /// invocations — two runs against the same Manifest + Request
+    /// invocations — two runs against the same SemanticManifest + Request
     /// MAY produce different `NodeId`s.
     pub node_id: NodeId,
 
@@ -411,18 +411,18 @@ pub struct NodeMeta {
 }
 ```
 
-`NodeId` is a newtype over `Uuid::new_v4()` in v1; external consumers should treat it as opaque. `Schema` is a plan-level structural schema (not a Manifest-level `ResolvedDataKind` schema) — `{ fields: Vec<Field> }` where `Field { name: Name, data_type: DataType, nullable: bool }` per `15 §4.2`.
+`NodeId` is a newtype over `Uuid::new_v4()` in v1; external consumers should treat it as opaque. `Schema` is a plan-level structural schema (not a SemanticManifest-level `ResolvedDataKind` schema) — `{ fields: Vec<Field> }` where `Field { name: Name, data_type: DataType, nullable: bool }` per `15 §4.2`.
 
 `SemAnnotation` is an additive `#[non_exhaustive]` sum (AggregateRole, FilterSource, Additivity, KindRef, …) ratified in `34`'s planner notes; `35` re-exports the enum for the purpose of serde-roundtrip fidelity and adapter consumption.
 
 ### 5.2 `SourceRef`
 
 ```rust
-/// Opaque reference to a `ResolvedPhysicalSource` in the Manifest.
+/// Opaque reference to a `ResolvedPhysicalSource` in the SemanticManifest.
 /// Per `15 §7.1` / `00 §4.1`.
 ///
 /// `SourceRef` is a deliberately opaque handle — adapters resolve it
-/// against the Manifest they were handed alongside the `SemanticPlan`.
+/// against the SemanticManifest they were handed alongside the `SemanticPlan`.
 /// No path, URL, catalog name, or file format leaks into the plan
 /// tree. I1 guarantee.
 ///
@@ -719,7 +719,7 @@ A **well-formed** `SemanticPlan` satisfies every invariant below. The planner (`
 
 ### 7.3 Scan-schema invariants
 
-- `ScanNode.columns[*]` references actual columns of the resolved source. The planner populates `columns` from the Manifest's `ResolvedBinding.sources[source_index].columns` — if the Manifest is consistent with the plan, this invariant holds.
+- `ScanNode.columns[*]` references actual columns of the resolved source. The planner populates `columns` from the SemanticManifest's `ResolvedBinding.sources[source_index].columns` — if the SemanticManifest is consistent with the plan, this invariant holds.
 - `ScanNode.meta.output_schema.len() == ScanNode.columns.len()`.
 - `ScanNode.meta.output_schema.fields[i].name == ScanNode.columns[i].name` for all `i`.
 
@@ -732,7 +732,7 @@ A **well-formed** `SemanticPlan` satisfies every invariant below. The planner (`
 
 - `JoinNode.on` is non-empty. (Cross-joins deferred per §11.1.)
 - For each `KeyPair`, `left` resolves to a column in `left.meta().output_schema` and `right` resolves to a column in `right.meta().output_schema`.
-- For each `KeyPair`, `left`'s column `data_type` matches `right`'s (modulo nullability). Type reconciliation is a planner responsibility (`15 §10.5` Cast-wrapping at Manifest compile time); a mismatch reaching `35` is `IR_E_3503 JoinKeyTypeMismatch`.
+- For each `KeyPair`, `left`'s column `data_type` matches `right`'s (modulo nullability). Type reconciliation is a planner responsibility (`15 §10.5` Cast-wrapping at SemanticManifest compile time); a mismatch reaching `35` is `IR_E_3503 JoinKeyTypeMismatch`.
 - `JoinNode.meta.output_schema` = structural concatenation of `left.meta().output_schema` and `right.meta().output_schema`, with nullability widened on the outer side per `join_type` (per SQL semantics).
 
 ### 7.6 Union invariants
@@ -837,7 +837,7 @@ impl SemanticPlan {
 
 ### 9.1 Serde
 
-Every public IR type derives `Serialize` / `Deserialize` under the crate-level `serde` feature flag (§11). `SemanticPlan` is the intended portable form: a serialized plan can be round-tripped across processes sharing the same Manifest. Wire-form stability rules:
+Every public IR type derives `Serialize` / `Deserialize` under the crate-level `serde` feature flag (§11). `SemanticPlan` is the intended portable form: a serialized plan can be round-tripped across processes sharing the same SemanticManifest. Wire-form stability rules:
 
 - Every `#[non_exhaustive]` enum serializes with a `kind` discriminator field (serde-tagged). Adding a variant preserves round-trip of existing variants.
 - Every `#[non_exhaustive]` struct serializes with absent-field-tolerant deserialization. Adding a field preserves round-trip of existing values (new field defaults to its `Default::default` or `None`).
@@ -849,7 +849,7 @@ The adapter crate (`36`) owns the bidirectional conversion between `SemanticPlan
 
 | `PlanNode` variant | Substrait `Rel` kind           | Notes                                                                                                                                            |
 |--------------------|--------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
-| `Scan`             | `ReadRel`                      | `source` resolves to `ReadRel.read_type` via the adapter's Manifest lookup. `filters_pushdown` → `ReadRel.filter` (one conjunction).             |
+| `Scan`             | `ReadRel`                      | `source` resolves to `ReadRel.read_type` via the adapter's SemanticManifest lookup. `filters_pushdown` → `ReadRel.filter` (one conjunction).             |
 | `Filter`           | `FilterRel`                    | `predicate` → `FilterRel.condition`.                                                                                                             |
 | `Project`          | `ProjectRel`                   | `projections` → `ProjectRel.expressions` (order-preserving). Output names carried in `RelRoot.names` at the plan root.                           |
 | `Agg`              | `AggregateRel`                 | `group_by` → one `Grouping` with the referenced columns as `grouping_expressions`. `aggregates` → `AggregateRel.measures`.                       |
@@ -1004,7 +1004,7 @@ Migration items are tracked in `implementation/40_refactor_plan.md` under `[TD-I
 - **No emission.** `semstrait-ir` contains no `fn adapt(plan) -> EngineArtifact`. Adapter emission (SQL rendering, Substrait proto building, capability checking) lives in `semstrait-adapter` per `36`.
 - **No I/O.** No `std::fs`, no `reqwest`, no `tokio`. Every method on every public type is synchronous and pure. I11 guarantee.
 - **No engine identity.** No adapter-specific logic inside `PlanNode` variants. `Scan` carries `SourceRef` (opaque); `Join` carries `JoinType` (canonical, not engine-specific); `Filter.predicate` is `PhysicalExpr` (canonical, not SQL text). I1 / I3 guarantees.
-- **No Manifest construction.** `semstrait-ir` consumes `SourceRef`s that reference an external Manifest but never constructs one. Manifest construction is `semstrait-manifest`'s responsibility per `33`.
+- **No SemanticManifest construction.** `semstrait-ir` consumes `SourceRef`s that reference an external SemanticManifest but never constructs one. SemanticManifest construction is `semstrait-manifest`'s responsibility per `33`.
 
 ### 12.2 Dependency posture
 
@@ -1164,7 +1164,7 @@ pub use semstrait_core::{Cardinality, JoinType};
 | R1 | `SemanticPlan` is the crate-owned top-level type; `LogicalPlan` is the current code name and is renamed as part of `[TD-IR-RENAME]` | Matches `00 §4.1` canonical vocabulary. Rename is a MINOR via type-alias transition (`pub type LogicalPlan = SemanticPlan;` retained one MINOR cycle). | §3.1 |
 | R2 | `PlanNode` has exactly 8 variants in v1: `Scan`, `Filter`, `Project`, `Agg`, `Join`, `Union`, `Sort`, `Fetch` | Matches the engine-IR structural inspiration (`00 §3` / `35 §1.4`). Distinct, Window, Unnest, TopN are deferred as non-breaking additions. | §4.1 |
 | R3 | Every `PlanNode` variant's inner struct is `#[non_exhaustive]` | I10 — field additions inside a variant are MINOR. | §4 |
-| R4 | `ScanNode` carries `SourceRef` (opaque handle) + `Vec<ResolvedColumn>` + `Vec<PhysicalExpr>` for pushdown. No path, URL, or format string | I1 / I3 — engine identity and path resolution live in the adapter. Adapters consult the Manifest via `SourceRef`. | §4.2 |
+| R4 | `ScanNode` carries `SourceRef` (opaque handle) + `Vec<ResolvedColumn>` + `Vec<PhysicalExpr>` for pushdown. No path, URL, or format string | I1 / I3 — engine identity and path resolution live in the adapter. Adapters consult the SemanticManifest via `SourceRef`. | §4.2 |
 | R5 | `Expr::Aggregate` is NOT carried inside `PhysicalExpr` on any plan-level surface; aggregates live on `AggregateExpr` on `AggNode.aggregates` | Matches `14 §2.3` / `31 §3.3` `PhysicalExpr` wrapper invariants. `AggregateExpr` is a plan-level wrapper carrying the same shape. | §5.7 |
 | R6 | `JoinNode.on: Vec<KeyPair>` with type-reconciled columns; non-equi predicates deferred as `[TD-IR-NON-EQUI-JOIN]` | v1 covers the common case of equijoin over reconciled types. Non-equi is a MINOR addition via `JoinNode.residual: Option<PhysicalExpr>`. | §4.6 |
 | R7 | `JoinNode.cardinality` is required (not `Option<Cardinality>`) and reflects the Relationship graph | Cardinality is always known at plan time; absent cardinality on a Join is a planner bug, not a legitimate state. | §4.6 |

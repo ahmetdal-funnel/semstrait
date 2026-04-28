@@ -3,7 +3,7 @@ prereqs: [35]
 authoritative-for:
   - the `semstrait-adapter` public-API surface (types, traits, free functions)
   - the `EngineAdapter` trait — signature, invariants, synchronous / no-I/O posture
-  - the `adapt` verb — consumption contract over `SemanticPlan` + `Manifest`, production contract over `EngineArtifact`
+  - the `adapt` verb — consumption contract over `SemanticPlan` + `SemanticManifest`, production contract over `EngineArtifact`
   - the `emit` verb — SQL-specialized form of `adapt` for SQL-emitting adapters
   - the `DialectEmit` operational trait (per-dialect identifier quoting, type spelling, function rewriting, cast semantics, null-ordering syntax, AsOf-join emission)
   - the v1 built-in adapter roster: `AnsiSqlAdapter`, `DataFusionSqlAdapter`, `DuckDbSqlAdapter`, `SparkSqlAdapter`, `SubstraitAdapter`
@@ -49,7 +49,7 @@ refined-by:
 - **Planning strategy, optimization, plan-tree construction.** `semstrait-planner` (`34`) owns plan production and optimization. `semstrait-adapter` is pure consumer.
 - **The `SemanticPlan` tree shape, `PlanNode` variants, `EngineArtifact` / `EnginePlan` / `SqlArtifact` / `DialectId` structural types.** Ratified in `semstrait-ir` (`35`). `36` consumes and emits those types but does not define them.
 - **The canonical function catalog.** Ratified in `14a`. Adapters consult the sealed `FunctionRegistry` at `function_registry()` (`31 §9.1`) and the per-engine mapping at `registry/functions_mapping.md`; they do not own the canonical set.
-- **Manifest construction, name resolution, or catalog I/O.** `semstrait-manifest` (`33`) owns the Manifest; `semstrait-catalog` (`37`) owns I/O. The adapter receives the `Manifest` as a read-only borrow alongside the `SemanticPlan` (§3.1).
+- **SemanticManifest construction, name resolution, or catalog I/O.** `semstrait-manifest` (`33`) owns the SemanticManifest; `semstrait-catalog` (`37`) owns I/O. The adapter receives the `SemanticManifest` as a read-only borrow alongside the `SemanticPlan` (§3.1).
 - **Per-engine runtime integration.** Actually executing a `SqlArtifact` or `EnginePlan` against a live engine is **out of scope** — that work lives in executor shims one layer above `semstrait-adapter`. `36` produces the artifact; someone else executes it.
 - **Authoring-layer YAML, expression parsing.** `ExprSource` / parse dispatch live in `semstrait-model` (`32`).
 
@@ -69,7 +69,7 @@ These axes are *independent* in principle — two adapters MAY share a `DialectI
 
 - **Zero I/O surface.** Concrete I11 guarantee. No `std::fs`, no `std::net`, no `reqwest`. Every method on `EngineAdapter` is an in-memory transformation.
 - **Zero async.** Every `EngineAdapter` method is `fn`, not `async fn`. I6 guarantee. `adapt` runs on the caller's thread and returns on the caller's thread; no awaits, no futures, no scheduler integration.
-- **Deterministic given `(SemanticPlan, Manifest, adapter config)`.** Two `adapt` calls with the same inputs produce byte-identical `EngineArtifact`s. Enables content-addressable caching of emitted SQL / Substrait per `00 §9` I4.
+- **Deterministic given `(SemanticPlan, SemanticManifest, adapter config)`.** Two `adapt` calls with the same inputs produce byte-identical `EngineArtifact`s. Enables content-addressable caching of emitted SQL / Substrait per `00 §9` I4.
 - **No hidden global state inside `adapt`.** The `AdapterRegistry` (§11) is used for *dispatch* (picking which adapter runs), not as a mutable workspace during `adapt`. The `FunctionRegistry` (`31 §5.2`) is consulted as read-only. No `thread_local!` side-state.
 
 ## 2. Module Layout
@@ -145,7 +145,7 @@ pub trait EngineAdapter: Send + Sync {
     ///
     /// Invariants:
     /// - Synchronous (I6).
-    /// - No I/O (I11). The `Manifest` is consumed read-only; no
+    /// - No I/O (I11). The `SemanticManifest` is consumed read-only; no
     ///   catalog-provider traffic, no filesystem reads.
     /// - Deterministic given `(plan, manifest, self)`: two invocations
     ///   with identical inputs produce byte-identical outputs.
@@ -160,7 +160,7 @@ pub trait EngineAdapter: Send + Sync {
     fn adapt(
         &self,
         plan: &SemanticPlan,
-        manifest: &Manifest,
+        manifest: &SemanticManifest,
     ) -> Result<EngineArtifact, AdaptError>;
 
     /// The SQL-specialized form of `adapt`. Produces `SqlArtifact`
@@ -173,7 +173,7 @@ pub trait EngineAdapter: Send + Sync {
     fn emit(
         &self,
         plan: &SemanticPlan,
-        manifest: &Manifest,
+        manifest: &SemanticManifest,
     ) -> Result<SqlArtifact, AdaptError> {
         // Default impl: non-SQL adapter.
         Err(AdaptError::EmissionNotSupported {
@@ -188,7 +188,7 @@ pub trait EngineAdapter: Send + Sync {
 Every `impl EngineAdapter` MUST uphold:
 
 - **I-ADAPT-1 — sync.** No `.await`, no `block_on`. `adapt` / `emit` run on the caller's thread. I6 guarantee per `30 §9`.
-- **I-ADAPT-2 — no I/O.** No filesystem access, no network access, no catalog-provider calls. I11 guarantee. The `Manifest` the adapter consumes already contains every piece of metadata needed; drift checks live outside `adapt` per `00 §9` I11.
+- **I-ADAPT-2 — no I/O.** No filesystem access, no network access, no catalog-provider calls. I11 guarantee. The `SemanticManifest` the adapter consumes already contains every piece of metadata needed; drift checks live outside `adapt` per `00 §9` I11.
 - **I-ADAPT-3 — deterministic.** Two calls with identical `(plan, manifest)` must produce byte-identical `EngineArtifact`s. UUID generation, timestamp capture, randomized ordering — all forbidden inside `adapt`.
 - **I-ADAPT-4 — quoting mandatory.** Every identifier embedded in `SqlArtifact.text` passes through the adapter's `DialectEmit::quote_identifier` (§4.3). Every literal value passes through `DialectEmit::quote_literal` or equivalent. String concatenation of unquoted identifiers is a soundness bug (§14).
 - **I-ADAPT-5 — error-first fallback.** If a `PlanNode` variant, a `FunctionCall` name, or a `DataType` is not representable in the adapter's target, `AdaptError::Unsupported*` fires at `adapt` time. Silent truncation, stub emission, runtime-deferred panics — all banned. Matches `14a §6.3`'s hard-error policy for `UnsupportedFunction`.
@@ -231,7 +231,7 @@ impl dyn EngineAdapter {
     pub fn adapt_with_diagnostics(
         &self,
         plan: &SemanticPlan,
-        manifest: &Manifest,
+        manifest: &SemanticManifest,
         diags: &mut Vec<Diagnostic>,
     ) -> Result<EngineArtifact, AdaptError>;
 }
@@ -246,7 +246,7 @@ This is a **default method on the trait object**, not a required method. Adapter
 /// `EngineAdapter` method — adapter-independent rendering per
 /// `Q-ADAPT-004`. Consumed by test harnesses, logging tools, and the
 /// `semstrait-api` plan-inspection surface.
-pub fn debug_sql(plan: &SemanticPlan, manifest: &Manifest) -> Result<String, AdaptError>;
+pub fn debug_sql(plan: &SemanticPlan, manifest: &SemanticManifest) -> Result<String, AdaptError>;
 ```
 
 Routes through `AnsiSqlAdapter::emit` internally. Non-SQL adapters (`SubstraitAdapter`) have no native "debug_sql" — callers use this free function for any plan, regardless of target adapter. Keeping it outside the trait avoids forcing every adapter to provide a SQL renderer (Substrait adapters genuinely lack one). Current code exposes `debug_sql` as a trait method with a default impl; the migration to a free function is tracked as `[TD-ADAPTER-DEBUG-SQL-FREE-FN]`.
@@ -435,13 +435,13 @@ impl EngineAdapter for AnsiSqlAdapter {
     fn id(&self) -> AdapterId { AdapterId::ANSI_SQL }
     fn dialect(&self) -> Option<&dyn DialectEmit> { Some(&AnsiDialect) }
     fn capabilities(&self) -> &AdapterCapabilities { &ANSI_CAPABILITIES }
-    fn adapt(&self, plan: &SemanticPlan, manifest: &Manifest)
+    fn adapt(&self, plan: &SemanticPlan, manifest: &SemanticManifest)
         -> Result<EngineArtifact, AdaptError>
     {
         let sql = self.emit(plan, manifest)?;
         Ok(EngineArtifact::Sql(sql))
     }
-    fn emit(&self, plan: &SemanticPlan, manifest: &Manifest)
+    fn emit(&self, plan: &SemanticPlan, manifest: &SemanticManifest)
         -> Result<SqlArtifact, AdaptError>
     {
         crate::emit::emit_sql(plan, manifest, &AnsiDialect, AdapterId::ANSI_SQL)
@@ -494,7 +494,7 @@ impl EngineAdapter for SubstraitAdapter {
     fn id(&self) -> AdapterId { AdapterId::SUBSTRAIT }
     fn dialect(&self) -> Option<&dyn DialectEmit> { None }   // non-SQL
     fn capabilities(&self) -> &AdapterCapabilities { &SUBSTRAIT_CAPABILITIES }
-    fn adapt(&self, plan: &SemanticPlan, manifest: &Manifest)
+    fn adapt(&self, plan: &SemanticPlan, manifest: &SemanticManifest)
         -> Result<EngineArtifact, AdaptError>
     {
         let substrait_plan =
@@ -676,7 +676,7 @@ flowchart TD
 /// `SqlArtifact`.
 pub(crate) fn emit_sql<D: DialectEmit>(
     plan:     &SemanticPlan,
-    manifest: &Manifest,
+    manifest: &SemanticManifest,
     dialect:  &D,
     id:       AdapterId,
 ) -> Result<SqlArtifact, AdaptError>;
@@ -700,7 +700,7 @@ The orchestrator:
 /// `EngineArtifact::Plan(EnginePlan::Substrait(Box::new(plan)))`.
 pub(crate) fn emit_substrait(
     plan:     &SemanticPlan,
-    manifest: &Manifest,
+    manifest: &SemanticManifest,
 ) -> Result<substrait::proto::Plan, AdaptError>;
 ```
 
@@ -951,7 +951,7 @@ impl Session {
         &self,
         adapter_id: AdapterId,
         plan:       &SemanticPlan,
-        manifest:   &Manifest,
+        manifest:   &SemanticManifest,
     ) -> Result<EngineArtifact, AdaptError> {
         let adapter = adapter_registry()
             .get(adapter_id)
@@ -1010,10 +1010,10 @@ Migration items: `[TD-ADAPTER-RENAME]`, `[TD-ADAPTER-ERROR-MIGRATION]`, `[TD-ADA
 ### 13.1 What `semstrait-adapter` does NOT do
 
 - **No I/O.** No filesystem, no network, no catalog-provider calls. Concrete I11 guarantee. Adapters are pure in-memory transformations. Running the emitted artifact against a live engine is an executor shim one layer above `semstrait-adapter`.
-- **No catalog.** `SemanticPlan`'s `SourceRef`s resolve against the `Manifest` the adapter receives by borrow; the adapter does not consult `semstrait-catalog`. Any drift between the Manifest's `ResolvedPhysicalSource` and a live engine's schema is the caller's concern (narrow drift-check per `00 §9` I11, outside `adapt`).
-- **No planning.** `semstrait-adapter` does not strategize over `Request` / `Manifest`. It consumes a finalized `SemanticPlan` and emits. Per `34`, the planner is the sole producer.
+- **No catalog.** `SemanticPlan`'s `SourceRef`s resolve against the `SemanticManifest` the adapter receives by borrow; the adapter does not consult `semstrait-catalog`. Any drift between the SemanticManifest's `ResolvedPhysicalSource` and a live engine's schema is the caller's concern (narrow drift-check per `00 §9` I11, outside `adapt`).
+- **No planning.** `semstrait-adapter` does not strategize over `Request` / `SemanticManifest`. It consumes a finalized `SemanticPlan` and emits. Per `34`, the planner is the sole producer.
 - **No optimization.** Rule-based rewrites over `SemanticPlan` live in `semstrait-planner` per `34`. The PlanBuilder-layer rewrites of §4.5 are engine-specific structural rewrites of individual `FunctionCall` nodes, NOT cost-based or rule-scheduled optimization passes over the plan tree.
-- **No Manifest construction.** Consumes `Manifest` by borrow; never builds one.
+- **No SemanticManifest construction.** Consumes `SemanticManifest` by borrow; never builds one.
 - **No authoring-layer YAML.** Never parses Model YAML, never sees `ExprSource`; only `PhysicalExpr` flows through.
 
 ### 13.2 Dependency posture
@@ -1053,7 +1053,7 @@ The emitter receives `SemanticPlan` values that are NOT necessarily trusted:
 
 - `Name` values were validated at `Name::new` (`35 §5.4`) and are empty-rejected + reserved-prefix-rejected.
 - `LiteralValue::String(_)` values come from author-written YAML or from planner-substituted request parameters (`SessionContext` values). Both can contain arbitrary bytes including SQL-delimiter characters.
-- `ResolvedColumn.name` values come from Manifest resolution (`15 §4.2`) and are catalog-derived — typically well-formed but may contain engine-specific special characters depending on source.
+- `ResolvedColumn.name` values come from SemanticManifest resolution (`15 §4.2`) and are catalog-derived — typically well-formed but may contain engine-specific special characters depending on source.
 - `SourceRef` resolves to a `ResolvedPhysicalSource` whose `table_name` / `path` fields are catalog-derived. Same trust model.
 
 ### 14.2 Mandatory quoting
@@ -1098,7 +1098,7 @@ Upheld across every `impl EngineAdapter`:
 - **SI-1 — no raw-identifier concatenation.** Every identifier passes through `quote_identifier`. Enforced by the internal orchestrator + a release audit scanning adapter source for raw-String `format!("{}", col_name)` patterns outside quoting helpers.
 - **SI-2 — no raw-literal concatenation.** Every string literal passes through `escape_string_literal` or `quote_literal`. Same audit scope.
 - **SI-3 — delimiter invariants hold per dialect.** Each `DialectEmit` impl documents its quote / escape character set; the audit suite validates round-trip for every fixture across every built-in adapter.
-- **SI-4 — `SourceRef` resolution does not bypass quoting.** Manifest-derived identifiers (table_name, path segments) pass through the same `quote_identifier` path. No "trust the catalog" exemption.
+- **SI-4 — `SourceRef` resolution does not bypass quoting.** SemanticManifest-derived identifiers (table_name, path segments) pass through the same `quote_identifier` path. No "trust the catalog" exemption.
 
 ## 15. Public API Surface Sketch
 
@@ -1107,7 +1107,7 @@ Upheld across every `impl EngineAdapter`:
 ```
 pub trait  EngineAdapter                                 // id, dialect, capabilities, adapt, emit
 pub struct AdapterId                                     // newtype; pub const ANSI_SQL | ... | SUBSTRAIT
-pub fn     debug_sql(&SemanticPlan, &Manifest) -> Result<String, AdaptError>
+pub fn     debug_sql(&SemanticPlan, &SemanticManifest) -> Result<String, AdaptError>
 ```
 
 ### 15.2 `dialect`
@@ -1138,7 +1138,7 @@ pub use    semstrait_ir::Capability                      // re-export per 35 §6
 
 ```
 pub struct SubstraitAdapter                              // non-SQL adapter; emits EnginePlan::Substrait
-// pub(crate) emit_substrait(&SemanticPlan, &Manifest) -> Result<substrait::proto::Plan, AdaptError>
+// pub(crate) emit_substrait(&SemanticPlan, &SemanticManifest) -> Result<substrait::proto::Plan, AdaptError>
 ```
 
 ### 15.6 `registry`
@@ -1183,7 +1183,7 @@ pub use semstrait_ir::{
 | # | Decision | Rationale | § |
 |---|---|---|---|
 | R1 | `EngineAdapter` is OPEN (not sealed) | Third-party adapter crates outside the workspace MUST be able to impl. Matches `30 §8.2`. | §3.1 |
-| R2 | `adapt(&SemanticPlan, &Manifest) -> Result<EngineArtifact, AdaptError>` bare `Result` in v1 | Simpler signature; warning surface deferred to `adapt_with_diagnostics` extension. Per `Q-ADAPT-001`. | §3.1 |
+| R2 | `adapt(&SemanticPlan, &SemanticManifest) -> Result<EngineArtifact, AdaptError>` bare `Result` in v1 | Simpler signature; warning surface deferred to `adapt_with_diagnostics` extension. Per `Q-ADAPT-001`. | §3.1 |
 | R3 | `emit` is a default method on `EngineAdapter` with `Err(EmissionNotSupported)` fallback for non-SQL adapters | Every SQL adapter's `adapt` delegates to `emit`; non-SQL adapters (`SubstraitAdapter`) inherit the Err default. | §3.1 |
 | R4 | `AdapterId` is a newtype over `&'static str` with `pub const` identities | Matches `CanonicalFn` / `DialectId` posture; third-party adapters register on their own type. | §3.3 |
 | R5 | `DialectEmit: Dialect` (supertrait chain); structural `Dialect` in `35`, operational `DialectEmit` in `36` | Keeps `semstrait-ir` free of emission concerns per `Q-ADAPT-003`. Splits survival against `35 §1.3`'s "pure IR" posture. | §4.1 |

@@ -105,7 +105,7 @@ depends-on:
 
 ## Q-41-004 — `MeasureConstraints` grandfathering vs a scheduled v2 rename
 
-**Question.** `41 §5` grandfathers `MeasureConstraints` per `[TD-CONSTRAINT-RENAME]`, citing "deferred to the broader Manifest-schema revision pass." Should the deferral carry a concrete v2 target, or remain open-ended?
+**Question.** `41 §5` grandfathers `MeasureConstraints` per `[TD-CONSTRAINT-RENAME]`, citing "deferred to the broader SemanticManifest-schema revision pass." Should the deferral carry a concrete v2 target, or remain open-ended?
 
 **Refs.**
 
@@ -113,7 +113,7 @@ depends-on:
 - `[TD-CONSTRAINT-RENAME]` — `11 §8.4.3` / `31 §6.1`.
 - `11 §8.4.3` — shared carrier surface across Measure + Metric.
 
-**Proposed (Round 1):** Open-ended. The name persists for v1; any v2 renaming lands when the Manifest-schema revision pass is scheduled, not before.
+**Proposed (Round 1):** Open-ended. The name persists for v1; any v2 renaming lands when the SemanticManifest-schema revision pass is scheduled, not before.
 
 **Arguments for a concrete v2 target (e.g. "retired in v2.0").**
 
@@ -122,12 +122,12 @@ depends-on:
 
 **Arguments against a fixed target.**
 
-- The "Manifest-schema revision pass" is not yet on the phased roadmap; scheduling its retirement now would couple two unrelated decisions.
+- The "SemanticManifest-schema revision pass" is not yet on the phased roadmap; scheduling its retirement now would couple two unrelated decisions.
 - `11 §8.4.3` phrases the rename as carrier-neutralization, not as a one-line name swap — implementation detail matters.
 
 **Current position in `41`.** Open-ended; `41 §5` marks the row "NEVER retired in v1."
 
-**Next step.** Revisit when the Manifest-schema revision pass enters the roadmap (post-v1). At that point, `41` amends the row with a concrete retirement release.
+**Next step.** Revisit when the SemanticManifest-schema revision pass enters the roadmap (post-v1). At that point, `41` amends the row with a concrete retirement release.
 
 ---
 

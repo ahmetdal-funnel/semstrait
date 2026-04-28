@@ -159,7 +159,7 @@ A Unionset composes two or more DataKinds that share (or will share, under cover
 ### 3.2 Child cardinality
 
 - **Minimum:** 2 total children across all child lists combined. A single-branch Unionset is `ValidateError::UnionsetMustHaveMultipleChildren` — semantically it's the child itself; authors should replace it directly.
-- **Maximum:** unbounded in principle; practical limits come from Manifest size and planner performance (I6 hot path).
+- **Maximum:** unbounded in principle; practical limits come from SemanticManifest size and planner performance (I6 hot path).
 
 ### 3.3 Interface source
 

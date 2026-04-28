@@ -43,24 +43,6 @@ refined-by:
 
 ---
 
-## Table of Contents
-
-1. [Purpose and Scope](#1-purpose-and-scope)
-2. [The `Unionset` variant](#2-the-unionset-variant)
-3. [Child declaration](#3-child-declaration)
-4. [UNION ALL Strategy (`UnionsetStrategy`)](#4-union-all-strategy-unionsetstrategy)
-5. [Coverage semantics](#5-coverage-semantics)
-6. [Interaction with `TemporalShape`](#6-interaction-with-temporalshape)
-7. [Interaction with `Grain`](#7-interaction-with-grain)
-8. [Validation Preconditions](#8-validation-preconditions)
-9. [Compile Preconditions](#9-compile-preconditions)
-10. [Plan-stage rules](#10-plan-stage-rules)
-11. [Worked example](#11-worked-example)
-12. [Round-1 open items](#12-round-1-open-items)
-13. [Cross-references](#13-cross-references)
-
----
-
 ## 1. Purpose and Scope
 
 ### 1.1 What `23` ratifies
@@ -73,7 +55,7 @@ refined-by:
 
 Concretely, `23` ratifies:
 
-- **§2** — the `Unionset` variant's Rust-level shape (Model-layer declaration, Manifest-layer `ResolvedUnionset`, composition tag per `16 §5.3`).
+- **§2** — the `Unionset` variant's Rust-level shape (Model-layer declaration, SemanticManifest-layer `ResolvedUnionset`, composition tag per `16 §5.3`).
 - **§3** — the YAML-surface shape for child entries and per-child Coverage overrides.
 - **§4** — `UnionsetStrategy`: the planner strategy that emits `PlanNode::Union` over per-child subplans produced by each child's own Strategy (delegation per `20 §5`).
 - **§5** — Coverage semantics at the Unionset level, including the fold from per-child Binding Coverage to per-child composition-level `FieldOwnership`.
@@ -88,7 +70,7 @@ Concretely, `23` ratifies:
 - **Per-child `Binding` resolution.** Owned by `15`. A Unionset child references a top-level or nested `DataKind`; that child's own `ResolvedBinding` (if `Simple`) or its child-of-a-child bindings (if `Complex`) are resolved by their respective specs (`21`–`24`) and `15`'s flow.
 - **`PlanNode::Union` field roster.** Owned by `35`. `23` stipulates the planner emits `PlanNode::Union { distinct, inputs, ... }` and reads back the fields it populates; the exact roster is `35`'s.
 - **Re-aggregation inference.** The "infer a re-aggregation function per measure" behavior (SUM over COUNT, etc.) is shared between Unionset and Grainset; the canonical rule-set lives in `20 §5` (taxonomy) and `22`'s Grainset-specific doc. `23 §4.5` cross-refs; it does not re-ratify the mapping table.
-- **Authored YAML grammar details.** Top-level `unionsets:` grammar is ratified in `32`. `23 §3` describes the canonical-layer shape sufficiently for the planner and Manifest; `32` is authoritative on the YAML spellings.
+- **Authored YAML grammar details.** Top-level `unionsets:` grammar is ratified in `32`. `23 §3` describes the canonical-layer shape sufficiently for the planner and SemanticManifest; `32` is authoritative on the YAML spellings.
 - **`TemporalShape` planner-side logic.** `17` is a parallel draft in this wave; planner support for shape-aware planning is `17`'s purview. `23 §6` lists advisory-warning cases the Unionset-level checker emits, forward-referencing `17` for the `TemporalShape` vocabulary itself.
 
 ### 1.3 Design posture
@@ -110,12 +92,12 @@ Concretely, `23` ratifies:
 
 | Invariant | Where `23` keeps it |
 |---|---|
-| **I1** — no raw SQL in the canonical layer | UnionsetStrategy emits `PlanNode::Union` (§4.1); NULL-fill projections carry `PhysicalExpr(Cast(Null, T))` per `14`'s tree shape (§4.3); no SQL text anywhere in a Unionset's Manifest or SemanticPlan. |
+| **I1** — no raw SQL in the canonical layer | UnionsetStrategy emits `PlanNode::Union` (§4.1); NULL-fill projections carry `PhysicalExpr(Cast(Null, T))` per `14`'s tree shape (§4.3); no SQL text anywhere in a Unionset's SemanticManifest or SemanticPlan. |
 | **I2** — logical types only | §4.4's column-type reconciliation uses canonical `DataType` (per `13 §2`); no Arrow / Spark / engine types in the Unionset's resolution path. |
-| **I3** — no engine branching | Zero engine-identity checks in `23`. Every decision reads either Manifest indices or the composition's `CompositionCoverage`. |
-| **I4** — Manifest determinism | Child ordering is author-declared (YAML list order); the resolved `ResolvedUnionset` preserves that order. NULL-fill projections are emitted per a deterministic walk over the composed surface's `UnifiedSemantics` (sorted per `16 §6`). |
+| **I3** — no engine branching | Zero engine-identity checks in `23`. Every decision reads either SemanticManifest indices or the composition's `CompositionCoverage`. |
+| **I4** — SemanticManifest determinism | Child ordering is author-declared (YAML list order); the resolved `ResolvedUnionset` preserves that order. NULL-fill projections are emitted per a deterministic walk over the composed surface's `UnifiedSemantics` (sorted per `16 §6`). |
 | **I5** — resolution at compile | Every child reference is resolved at `compile`. The planner's `UnionsetStrategy` walks `ResolvedUnionset.children` — no lookup, no name resolution, no catalog calls. |
-| **I8** — Manifest is planner-complete | `ResolvedUnionset` holds a `ComposedSemanticInterface` (from `16`), the per-child `DataKindRef` list, per-child Coverage overrides (if any), and the `UnionMode`. No further resolution at plan time. |
+| **I8** — SemanticManifest is planner-complete | `ResolvedUnionset` holds a `ComposedSemanticInterface` (from `16`), the per-child `DataKindRef` list, per-child Coverage overrides (if any), and the `UnionMode`. No further resolution at plan time. |
 | **I10** — non-exhaustive public sum types | `UnionMode` and every `23`-owned error-variant enum are `#[non_exhaustive]`. Adding `UnionMode::Intersect` or a new `PLAN_E_23xx` variant is MINOR. |
 | **I12** — first-class diagnostics | Every precondition emits a `Diagnostic` with a stable code from the `2300`–`2399` sub-range (§§8–10). No raw `String`-typed errors anywhere in `23`'s contract. |
 
@@ -171,15 +153,15 @@ pub enum UnionMode {
 
 The enum is `#[non_exhaustive]` per I10: future modes (`UnionByName` for name-keyed alignment, `Intersect` as a MINOR) may land without breaking authors.
 
-### 2.2 Manifest-layer shape
+### 2.2 SemanticManifest-layer shape
 
-At the Manifest layer (post-`compile`), the resolved counterpart materializes the composed interface (per `16 §5.5`'s "explicit compositions are materialized" rule):
+At the SemanticManifest layer (post-`compile`), the resolved counterpart materializes the composed interface (per `16 §5.5`'s "explicit compositions are materialized" rule):
 
 ```rust
 #[non_exhaustive]
 pub struct ResolvedUnionset {
-    /// Identity — assigned from the Manifest's `DataKindId` counter
-    /// (per `11 §5.1` / `20`). Stable within a Manifest per I4.
+    /// Identity — assigned from the SemanticManifest's `DataKindId` counter
+    /// (per `11 §5.1` / `20`). Stable within a SemanticManifest per I4.
     pub data_kind_id: DataKindId,
 
     /// Author-declared canonical name.
@@ -211,7 +193,7 @@ pub struct ResolvedUnionsetChild {
 }
 ```
 
-Per `16 §10`, `ResolvedUnionset.composed_interface` is built at `compile` and stored in the Manifest alongside the `ResolvedUnionset`. The exact placement — whether on the `ResolvedUnionset` struct directly (as above) or in a sibling `Manifest::composed_interfaces` index — is a `33` implementation choice; `23`'s contract surface is the struct as shown.
+Per `16 §10`, `ResolvedUnionset.composed_interface` is built at `compile` and stored in the SemanticManifest alongside the `ResolvedUnionset`. The exact placement — whether on the `ResolvedUnionset` struct directly (as above) or in a sibling `SemanticManifest::composed_interfaces` index — is a `33` implementation choice; `23`'s contract surface is the struct as shown.
 
 ### 2.3 Composition tag contract with `16`
 
@@ -344,9 +326,9 @@ PlanNode::Union {
 - **`distinct`** mirrors the author-declared `UnionMode` (§2.1). `All` → `distinct: false`; `Distinct` → `distinct: true`.
 - **`inputs`** carries the per-child subplans in child-declared order.
 
-**Single-child short-circuit.** The `12 §3.2` / §8.1 Precondition guarantees `|children| ≥ 2`, so a single-branch Unionset is a validation error, not a runtime case. Nevertheless, the planner's implementation carries a defensive branch: if the resolved Request-narrowed child set reduces to 1 (e.g. via Coverage-driven pruning in §4.6 — "a child whose every requested field is NullFill is pruned"), the `PlanNode::Union` is omitted and the single surviving child subplan flows directly into the terminal wrapper (§4.5). This is a planner optimization; the Manifest-layer `ResolvedUnionset` is unaffected.
+**Single-child short-circuit.** The `12 §3.2` / §8.1 Precondition guarantees `|children| ≥ 2`, so a single-branch Unionset is a validation error, not a runtime case. Nevertheless, the planner's implementation carries a defensive branch: if the resolved Request-narrowed child set reduces to 1 (e.g. via Coverage-driven pruning in §4.6 — "a child whose every requested field is NullFill is pruned"), the `PlanNode::Union` is omitted and the single surviving child subplan flows directly into the terminal wrapper (§4.5). This is a planner optimization; the SemanticManifest-layer `ResolvedUnionset` is unaffected.
 
-**Zero-child post-prune.** If Coverage-driven pruning reduces the surviving child set to 0 (every child's entire contribution is NullFill for the Request's selected fields), the strategy emits `PLAN_E_2303 UnionsetRequestTotallyNullFilled` (§10.3). This is exceptional; it means the Request asks for Semantics the Unionset declares but no child covers — a Manifest-inconsistency that §9.5 catches at compile time in most cases, surviving to plan time only when the Request's field set is a pathological subset.
+**Zero-child post-prune.** If Coverage-driven pruning reduces the surviving child set to 0 (every child's entire contribution is NullFill for the Request's selected fields), the strategy emits `PLAN_E_2303 UnionsetRequestTotallyNullFilled` (§10.3). This is exceptional; it means the Request asks for Semantics the Unionset declares but no child covers — a SemanticManifest-inconsistency that §9.5 catches at compile time in most cases, surviving to plan time only when the Request's field set is a pathological subset.
 
 ### 4.2 Each child's subplan is produced by the child's own Strategy
 
@@ -418,7 +400,7 @@ The UNION ALL semantic requires every input in `PlanNode::Union.inputs` to expos
 4. If `|contribs(s)| ≥ 2`:
    - **Pass-through fast path (per `14 §5.6`).** If every contributor's `DataType` for `s` is identical, no cast is needed; the unified type is that shared type. This is the common case for Unionsets of homogeneous sources.
    - **Widening reconciliation (per `13 §7`).** If contributors' types differ but all are pairwise cast-compatible under `13 §7`'s widening rules, the unified type is the least-upper-bound of the contributor types. `UnionsetStrategy` wraps each contributing child's branch `Project` in a `Cast(<child_col>, <lub>)` expression where needed. The LUB selection matches `14a`'s promotion lattice for binary operators (e.g. `Integer` + `Long` → `Long`; `Decimal(10, 2)` + `Decimal(12, 4)` → `Decimal(12, 4)` with the widest precision + scale).
-   - **Incompatible types.** If any pair of contributor types is not cast-compatible under `13 §7` (e.g. `String` × `Integer` without a cast policy), `UnionsetStrategy` emits `COMP_E_2304 CrossChildTypeDisagreement` at compile time. Cross-child type-compatibility failures fail-fast during Manifest assembly (§9.4).
+   - **Incompatible types.** If any pair of contributor types is not cast-compatible under `13 §7` (e.g. `String` × `Integer` without a cast policy), `UnionsetStrategy` emits `COMP_E_2304 CrossChildTypeDisagreement` at compile time. Cross-child type-compatibility failures fail-fast during SemanticManifest assembly (§9.4).
 
 **"First-child-wins" default.** When multiple LUB candidates tie (a pathological case, e.g. two contributors with `Decimal(10, 2)` and `Decimal(10, 2)`), the first child's declared type is authoritative. This is a determinism tie-breaker; authors who want a specific target type should author it on the Unionset's own `SemanticInterface` `DataType:` declaration (which step 2 above promotes).
 
@@ -468,7 +450,7 @@ In all other cases, the terminal Aggregate is emitted.
 
 When a child's every contribution to the Request's selected-fields set resolves to `FieldOwnership::NullFill`, that child contributes only NULL rows to the Union — its columns are all `CAST(NULL AS T)`. Its sole effect is to inflate the row count with NULL-valued rows; the terminal re-aggregation (§4.5) then groups them under NULL-valued grouping keys.
 
-Whether this is the author's intent or an oversight depends on context. `UnionsetStrategy` emits `PLAN_W_2301 UnionsetBranchPrunable` (§10.5) as an advisory and prunes the child from the Union. The pruned child's subplan is not constructed; the Manifest's `ResolvedUnionset.children` list is unchanged.
+Whether this is the author's intent or an oversight depends on context. `UnionsetStrategy` emits `PLAN_W_2301 UnionsetBranchPrunable` (§10.5) as an advisory and prunes the child from the Union. The pruned child's subplan is not constructed; the SemanticManifest's `ResolvedUnionset.children` list is unchanged.
 
 **Exceptions.**
 
@@ -508,7 +490,7 @@ The sub-tree rooted at each `Project` (a child's branch) is the child's own Stra
 
 ### 5.1 Composition-level Coverage as the decision driver
 
-Per `16 §8`, a `ComposedSemanticInterface` carries a `CompositionCoverage` keyed by `(DataKindRef, UnifiedName)` with `CoverageVariant` values from `15 §6.1` (`Native`, `NullFill`, `Derived`). For a Unionset, this coverage is the primary input the strategy reads.
+Per `16 §8`, a `ComposedSemanticInterface` carries a `CompositionCoverage` keyed by `(DataKindRef, UnifiedName)` with `CoverageVariant` values from `15 §6.1` (`Native`, `NullFill`, `Derived`, `Metadata`). For a Unionset, this coverage is the primary input the strategy reads.
 
 `UnionsetStrategy` consumes `CompositionCoverage` at three sites:
 
@@ -567,7 +549,7 @@ The check runs at `compile`, after the per-child Coverage fold. It is a Unionset
 
 ## 6. Interaction with `TemporalShape`
 
-`TemporalShape` is ratified in `17` (parallel draft in this wave). `23`'s interaction is advisory: the Unionset planner emits warnings when children's `TemporalShape`s suggest the UNION ALL is semantically ill-formed, but does not error. Authors with intentional cross-shape unions (e.g. merging an `Events` stream with a `Snapshot` cutover) are accepted, with the advisory attached to the Manifest's `Diagnostic` list.
+`TemporalShape` is ratified in `17` (parallel draft in this wave). `23`'s interaction is advisory: the Unionset planner emits warnings when children's `TemporalShape`s suggest the UNION ALL is semantically ill-formed, but does not error. Authors with intentional cross-shape unions (e.g. merging an `Events` stream with a `Snapshot` cutover) are accepted, with the advisory attached to the SemanticManifest's `Diagnostic` list.
 
 ### 6.1 Shape-alignment advisory rules
 
@@ -619,7 +601,7 @@ Children SHOULD share a common `Grain` for Union to be semantically clean: a Uni
 | Children's grains are all rollable but the Request requests a finer grain than the common coarsest | `PLAN_E_2302 UnionsetGrainIncompatibleWithRequest` | Error |
 | Children have incompatible grains (no common rollup per `17` / `13 §5`) | `COMP_W_2308 UnionsetGrainDivergent` | Warning |
 
-The compile-time advisory is a warning because the Manifest-layer decision ("which grain is the Union's grain?") depends on the Request — which the Manifest doesn't know. The plan-time error fires when a Request demands a grain no child can serve.
+The compile-time advisory is a warning because the SemanticManifest-layer decision ("which grain is the Union's grain?") depends on the Request — which the SemanticManifest doesn't know. The plan-time error fires when a Request demands a grain no child can serve.
 
 ### 7.2 Post-Union rollup shape
 
@@ -675,7 +657,7 @@ Similarly, `12 §3.2`'s `UnionsetMustHaveMultipleChildren` is the original struc
 
 ## 9. Compile Preconditions
 
-Compile Preconditions run at the `compile` stage (per `10 §3.3`). They check integrity that requires resolved names, resolved types, and Manifest-index access. The code range `COMP_E_2300`–`2399` is reserved.
+Compile Preconditions run at the `compile` stage (per `10 §3.3`). They check integrity that requires resolved names, resolved types, and SemanticManifest-index access. The code range `COMP_E_2300`–`2399` is reserved.
 
 ### 9.1 Code roster
 
@@ -756,7 +738,7 @@ Per `10 §3.3` and `15 §10.8`: structural checks accumulate; reference-resoluti
 
 ## 10. Plan-stage rules
 
-Plan-stage rules run at the `plan` stage (per `10 §3.4`). They check Request-specific integrity against the Manifest's `ResolvedUnionset`. The code range `PLAN_E_2300`–`2399` is reserved.
+Plan-stage rules run at the `plan` stage (per `10 §3.4`). They check Request-specific integrity against the SemanticManifest's `ResolvedUnionset`. The code range `PLAN_E_2300`–`2399` is reserved.
 
 ### 10.1 Code roster — errors
 
@@ -764,7 +746,7 @@ Plan-stage rules run at the `plan` stage (per `10 §3.4`). They check Request-sp
 |---|---|---|---|
 | `PLAN_E_2301` | `UnionsetRequestFieldNotCovered { unionset, field }` | A Request references a `SemanticsName` that resolves to the Unionset's surface but has `FieldOwnership::NullFill([])` — no child covers it. (Edge case; §9.5 catches most instances at compile time, but pathological field sets may slip through.) | Error |
 | `PLAN_E_2302` | `UnionsetGrainIncompatibleWithRequest { unionset, request_grain, children_grains }` | Request's grain is finer than any child's grain or finer than the coarsest-shared-grain. Rollup cannot invent detail. | Error |
-| `PLAN_E_2303` | `UnionsetRequestTotallyNullFilled { unionset, request_fields }` | After Coverage-driven pruning (§4.6), zero children survive. Every child's contribution to the Request is pure NULL. Indicates a Request/Manifest inconsistency. | Error |
+| `PLAN_E_2303` | `UnionsetRequestTotallyNullFilled { unionset, request_fields }` | After Coverage-driven pruning (§4.6), zero children survive. Every child's contribution to the Request is pure NULL. Indicates a Request/SemanticManifest inconsistency. | Error |
 | `PLAN_E_2304` | `UnionsetReAggregationInfeasible { unionset, measure, reason }` | A requested Measure's re-aggregation rule (§4.5's inference table) cannot be satisfied — e.g. `Avg` without decomposable num/den Measures AND `UnionMode::Distinct` AND multiple contributing children. Authors must restructure the Measure or switch `UnionMode::All`. | Error |
 
 ### 10.2 Code roster — warnings
@@ -957,7 +939,7 @@ Each entry there records the Round-1 default `23` currently uses.
 ## 13. Cross-references
 
 - `00 §4.1` — `Unionset` vocabulary entry; `CompositionKind::Unionset` tag.
-- `00 §9` — I1 (no raw SQL), I4 (determinism), I5 (compile-time resolution), I8 (Manifest planner-complete), I10 (non-exhaustive), I12 (diagnostics).
+- `00 §9` — I1 (no raw SQL), I4 (determinism), I5 (compile-time resolution), I8 (SemanticManifest planner-complete), I10 (non-exhaustive), I12 (diagnostics).
 - `10 §3.3, §3.4` — `compile` and `plan` stage contracts.
 - `11 §5.1, §6, §8` — name identity, Semantics roster, `Additivity` vocabulary.
 - `12 §2.2, §3` — nesting matrix (no Unionset-in-Unionset); Unionset block shape + two-child minimum.
@@ -976,7 +958,7 @@ Each entry there records the Round-1 default `23` currently uses.
 - `25` (future) — applicability matrix; per-variant cells for Unionset.
 - `30 §6.2` — cross-subsystem code-range table; `[TD-UNIONSET-CODERANGE]` reconciliation.
 - `32` (future) — YAML surface for `unionsets:` block.
-- `33` (future) — `ResolvedUnionset` persistence; `Manifest` index placement for composed interfaces.
+- `33` (future) — `ResolvedUnionset` persistence; `SemanticManifest` index placement for composed interfaces.
 - `34` (future) — `UnionsetStrategy` trait surface; re-aggregation helper.
 - `35` (future) — `PlanNode::Union` field roster.
 - `questions/open/23_questions.md` — Round-1 deferred items.

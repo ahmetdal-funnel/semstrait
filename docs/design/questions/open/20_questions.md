@@ -37,7 +37,7 @@ The stakes parallel `I10` (`#[non_exhaustive]`): `DataKind::Complex` is already 
   4. Extending the `dispatch_strategy` match arm in `20 §5.3`.
   All four steps are in-tree, single PR, single review.
 
-  **Pros:** Matches `30 §4`'s sealed-vs-open guidance for public traits where the invariants the trait carries are non-trivial. Keeps strategy dispatch provably total. No "mystery strategy" in third-party crates misbehaves silently. `I4` Manifest determinism is trivially upheld (no non-deterministic strategy can inject itself).
+  **Pros:** Matches `30 §4`'s sealed-vs-open guidance for public traits where the invariants the trait carries are non-trivial. Keeps strategy dispatch provably total. No "mystery strategy" in third-party crates misbehaves silently. `I4` SemanticManifest determinism is trivially upheld (no non-deterministic strategy can inject itself).
 
   **Cons:** Third parties cannot extend the DataKind taxonomy without patching semstrait. Ergonomic-only con — no known use case exists today.
 
@@ -55,7 +55,7 @@ The stakes parallel `I10` (`#[non_exhaustive]`): `DataKind::Complex` is already 
 
 **Drafter recommendation.** **Option A (sealed).** Rationale:
 
-- The `Strategy` trait's contract is load-bearing: it carries I4 determinism, I5 "no resolution at plan time", I6 "synchronous hot path", and I8 "Manifest is planner-complete". A third-party strategy that violates any of these invariants silently corrupts the planner's guarantees.
+- The `Strategy` trait's contract is load-bearing: it carries I4 determinism, I5 "no resolution at plan time", I6 "synchronous hot path", and I8 "SemanticManifest is planner-complete". A third-party strategy that violates any of these invariants silently corrupts the planner's guarantees.
 - The `DataKind` taxonomy is deliberately small — four variants in v1, with `#[non_exhaustive]` only to permit future in-tree additions. There is no extension point today that an open Strategy trait would unlock.
 - The `CatalogProvider` / `EngineAdapter` open-trait pattern exists because the ecosystem *requires* open extension — catalogs are vendor-specific, engines are vendor-specific. DataKind variants are not vendor-specific.
 
@@ -119,7 +119,7 @@ The question is whether `Simple`'s `Strategy::resolve` should receive the bare `
 
   **Cons:** Two dispatch paths. Code that walks a mixed tree of `Simple` + `Complex` children needs to handle both interface types (though the `SemanticsView` trait from `16 §5.1` does factor the common accessors).
 
-- **B — Degenerate composition — Simple gets a trivially-composed view.** Simple's `InterfaceView` is still `Bare(_)` at the Manifest layer (D5 is preserved), but the planner's `PlannerCtx` synthesizes a degenerate `ComposedSemanticInterface` at plan time, and `SimpleStrategy` consumes that instead. Uniform dispatch in `§5.3`.
+- **B — Degenerate composition — Simple gets a trivially-composed view.** Simple's `InterfaceView` is still `Bare(_)` at the SemanticManifest layer (D5 is preserved), but the planner's `PlannerCtx` synthesizes a degenerate `ComposedSemanticInterface` at plan time, and `SimpleStrategy` consumes that instead. Uniform dispatch in `§5.3`.
 
   **Pros:** Uniform planner code — every strategy consumes the same interface type. Simplifies recursive dispatch when a Complex strategy delegates into a Simple child.
 

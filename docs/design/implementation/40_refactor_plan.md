@@ -106,7 +106,7 @@ Each subsection fixes, for one crate: (a) what the current code substantially ma
 - `Relationship` shape uses `relationship_type:` / `source_set:` / `target_set:` → `from:` / `to:` / `cardinality:` / `join_type:` / `directionality:` per `16 §2.1` / `32 §7` (`32 §14.4` row 7).
 - `ModelError` collapsed into `ParseError` + `ValidateError` per `31 §8` / `32 §10.2` (`32 §14.4` row 8).
 - `TemporalHistorization` symbol → `TemporalShape` per `00 §4.3` banned-terms table (rename-only; `17 §1.3` records the trajectory).
-- `MeasureConstraints` reused across Measures and Metrics (`11 §8.4.3`); rename deferred to the broader Manifest-schema revision pass (`[TD-CONSTRAINT-RENAME]`).
+- `MeasureConstraints` reused across Measures and Metrics (`11 §8.4.3`); rename deferred to the broader SemanticManifest-schema revision pass (`[TD-CONSTRAINT-RENAME]`).
 - No Diagnostic-shaped error surface on the public API; error types are raw Rust enums.
 - Directory-loader helper (`parse_dir`) absent (`[TD-MODEL-DIR-LOADER]`); out-of-scope for v1.
 - `serde_yaml` in upstream maintenance mode; migration tracked as `[TD-MODEL-YAML-CRATE]`.
@@ -126,11 +126,11 @@ Each subsection fixes, for one crate: (a) what the current code substantially ma
 - Naming: `Compiled*` prefix on every resolved manifest type (`DL-062`). `00 §4.1` and `00 §4.3` banned-terms table rename this to `Resolved*` (`ResolvedDataKind`, `ResolvedInterface`, `ResolvedSource`, `ResolvedColumnMapping`). This is the single largest naming churn in the refactor.
 - No `ResolvedExprTable` as a compile-time-populated, per-`(Semantics name, Binding id)` → `PhysicalExpr` pre-computation (`14b §2` / `33 §6`). Current code re-walks expressions at plan time through per-dataset pathways.
 - Expression resolution does not pre-walk cross-DataKind paths via `Relationship`s; current code resolves path at plan time (`14b §5`).
-- `SemanticGraph` marked `#[serde(skip)]` (`TD-002`), loses shape on roundtrip. Parallel: `KindRef.variant` resets on deserialize (`TD-001`). `33 §14.1` requires the Manifest to be byte-stable round-trippable via `Repository::{save, load}`; these tech-debt items block that property.
+- `SemanticGraph` marked `#[serde(skip)]` (`TD-002`), loses shape on roundtrip. Parallel: `KindRef.variant` resets on deserialize (`TD-001`). `33 §14.1` requires the SemanticManifest to be byte-stable round-trippable via `Repository::{save, load}`; these tech-debt items block that property.
 - `RelationshipGraph` + `FieldIndex` both still in the planner's hot path despite being deprecated by `SemanticGraph` (`TD-007`); the ratified Coverage + Composition indices (`33 §7` / `33 §8`) have no mapping yet.
 - Coverage indices live at the Binding level only (`15`); the ComposedSemanticInterface-level Coverage ratified in `16 §9` is not materialized.
 - Index set is ad-hoc; the ratified deterministic name / coverage / relationship indices (`33 §7`) are absent.
-- Deterministic serialization form not contractual — Manifest bytes are not I4-stable. `33 §14` ratifies MessagePack + JSON encoders; bincode reserved (`[TD-33-BINCODE]`).
+- Deterministic serialization form not contractual — SemanticManifest bytes are not I4-stable. `33 §14` ratifies MessagePack + JSON encoders; bincode reserved (`[TD-33-BINCODE]`).
 - `io.rs` living in `semstrait-manifest` per `TD-008`; per `33`'s narrower scope, the I/O utility will move (trigger: three or more I/O utilities per `TD-008`).
 - `load_text()` is a generic text loader (local + S3); not manifest-specific. Extract to `semstrait-io` when three or more I/O utilities accumulate (per `TD-008`).
 - `FunctionRegistry` lives in `semstrait-manifest`; must move to `semstrait-core` per `14a §2` / `31 §9`.
@@ -148,12 +148,12 @@ Each subsection fixes, for one crate: (a) what the current code substantially ma
 
 - No step-0 **Constraint validator** as a first-class plan step (`11 §8.4` / `34 §*`). Constraint checks are currently scattered; the ratified plan-time step-0 discipline mandates a single validator pass per-`Request` against all realized Constraint carriers with structured `Diagnostic` output.
 - Constraint-error fan-out is a single-variant message today (per `10 §5`'s `ConstraintViolation`). Typed per-rule enum fan-out deferred as `[TD-CONSTRAINT-ERROR-FANOUT]`.
-- No **field-first resolution** — current code requires a `Request.from` target (or a heuristic replacement). `34` / `16` ratify field-first: when `Request.from = None`, the planner maps requested Semantics to their owning DataKinds via Manifest indices and — if Semantics span multiple DataKinds — traverses the top-level Relationship graph to form a `ComposedSemanticInterface`.
+- No **field-first resolution** — current code requires a `Request.from` target (or a heuristic replacement). `34` / `16` ratify field-first: when `Request.from = None`, the planner maps requested Semantics to their owning DataKinds via SemanticManifest indices and — if Semantics span multiple DataKinds — traverses the top-level Relationship graph to form a `ComposedSemanticInterface`.
 - Implicit composition depth limit not enforced. `16 §9.1` ratifies `MAX_IMPLICIT_COMPOSITION_DEPTH = 4`; planner has no constant (see `questions/open/16` `Q-COMP-001`).
 - Ambiguous-path tie → error discipline (`16 §11.4`) not materialized; current code is non-deterministic in edge cases.
 - `AdditivityResolver` is a v1 stub (`DL-058`) — semi/non-additive Measures do not restructure plans; `34`-era planner work must reconcile with `11 §7`'s Additivity classification.
 - `SCDRollupWithoutAsOf` and Unionset cross-shape error surface (`22 §5`, `23 §6.3`) not yet emitted.
-- Planner consumes `RelationshipGraph` + `FieldIndex` (deprecated per `TD-007`) rather than the Manifest's authoritative indices.
+- Planner consumes `RelationshipGraph` + `FieldIndex` (deprecated per `TD-007`) rather than the SemanticManifest's authoritative indices.
 - `Request.from = None` not accepted; field-first resolution is the blocker.
 - `Request.temporal` block is DEFERRED per `17 §10`; no vocabulary present in code today.
 - Strategy trait is informal — per-DataKind dispatch happens via module routing, not a named trait with a stable surface (`34`-ratified shape is the open-item).
@@ -176,7 +176,7 @@ Each subsection fixes, for one crate: (a) what the current code substantially ma
 - `PlanNode` variants not uniformly `#[non_exhaustive]` (`[TD-IR-NONEXHAUSTIVE]`). `00` I10 / `30 §4.2` mandate across the board.
 - `JoinNode.on: Vec<KeyPair>` without reserved non-equi `residual` field (`35 §4.6` / `[TD-IR-NON-EQUI-JOIN]`).
 - Aggregate filter carriage not uniform; some code paths lower to `Case` rather than preserving `filter: Option<PhysicalExpr>` (`[TD-IR-AGG-FILTER]`).
-- Plan-layer `Schema` is its own type, not shared with Manifest-layer `Schema` (`[TD-IR-SCHEMA-SHARING]`). Sharing is a future consolidation; not a v1 blocker.
+- Plan-layer `Schema` is its own type, not shared with SemanticManifest-layer `Schema` (`[TD-IR-SCHEMA-SHARING]`). Sharing is a future consolidation; not a v1 blocker.
 - Error codes use the old prefix/range scheme; `IR_E_3500`–`3599` reserved per `35 §10.2` with `[TD-IR-CODE-TABLE-AMEND]` against `30 §6.2`.
 - `JoinType::AsOf` variant not yet in the code-level enum (vocabulary ratified in `17 §5`; `[TD-COMPOSITION-ASOF]` tracks planner emission).
 
@@ -260,7 +260,7 @@ Legacy `docs/TECH_DEBT.md` entries (`TD-001`…`TD-009`) are retained at the bot
 
 | Tag | Source | One-liner |
 |---|---|---|
-| `[TD-14B-EXPR-INTERN]` | `14b §2`, `14b_questions §Q-14B-01` | Opt-in `PhysicalExpr` interning for large Manifests. |
+| `[TD-14B-EXPR-INTERN]` | `14b §2`, `14b_questions §Q-14B-01` | Opt-in `PhysicalExpr` interning for large SemanticManifests. |
 | `[TD-14B-PATH-UNIFICATION]` | `14b §5` | Canonicalization of multi-path resolution. |
 | `[TD-14B-EXPR-PROVENANCE-SITES]` | `14b §2.6` | Per-`EntityRef`-site provenance trails. |
 | `[TD-14B-BATCH-DIAGS]` | `14b §7` | Multi-error aggregation mode for resolution cycles. |
@@ -343,7 +343,7 @@ Legacy `docs/TECH_DEBT.md` entries (`TD-001`…`TD-009`) are retained at the bot
 | `[TD-IR-NONEXHAUSTIVE]` | `35 §13` | Non-exhaustive discipline across `PlanNode` variants. |
 | `[TD-IR-NON-EQUI-JOIN]` | `35 §4.6`, `questions/open/35` | Non-equi-join `residual` field. |
 | `[TD-IR-AGG-FILTER]` | `35 §4.5`, `questions/open/35` | Uniform `filter: Option<PhysicalExpr>` carriage. |
-| `[TD-IR-SCHEMA-SHARING]` | `questions/open/35` | Schema-type unification with Manifest-layer Schema. |
+| `[TD-IR-SCHEMA-SHARING]` | `questions/open/35` | Schema-type unification with SemanticManifest-layer Schema. |
 | `[TD-ADAPTER-DEBUG-SQL-FREE-FN]` | `36 §3.5` | `debug_sql` as free function (not trait method). |
 | `[TD-ADAPTER-SUBSTRAIT-ANCHOR]` | `36 §5` | Per-function Substrait URN override. |
 | `[TD-ADAPTER-SUBSTRAIT-ASOF]` | `36 §5` | AsOf join extension path for Substrait. |
@@ -358,13 +358,13 @@ Legacy items prefixed `TD-0NN` (no brackets in original). They are retained here
 
 | Tag | Source | Absorption / closure |
 |---|---|---|
-| `TD-001` (KindRef.variant serde) | `docs/TECH_DEBT.md` | Closed by Phase 2 (`ResolvedDataKind` rewrite; deterministic Manifest). |
-| `TD-002` (SemanticGraph serde skip) | `docs/TECH_DEBT.md` | Closed by Phase 2 (Manifest indices materialization). |
+| `TD-001` (KindRef.variant serde) | `docs/TECH_DEBT.md` | Closed by Phase 2 (`ResolvedDataKind` rewrite; deterministic SemanticManifest). |
+| `TD-002` (SemanticGraph serde skip) | `docs/TECH_DEBT.md` | Closed by Phase 2 (SemanticManifest indices materialization). |
 | `TD-003` (SemanticGraph duplicates) | `docs/TECH_DEBT.md` | Closed by Phase 2 (Coverage index dedup contract). |
 | `TD-004` (expect-panic messages) | `docs/TECH_DEBT.md` | Opportunistic when touched during Phase 2 / 3; not a phase gate. |
 | `TD-005` (AVG always Number) | `docs/TECH_DEBT.md` | Re-homed under `13 §2.1`'s `DataType::Decimal` variant ratification (Phase 1). |
 | `TD-006` (active_bindings allocates Vec) | `docs/TECH_DEBT.md` | Non-blocking; closed opportunistically in Phase 3. |
-| `TD-007` (RelationshipGraph / FieldIndex not removed) | `docs/TECH_DEBT.md` | Closed by Phase 2 (Manifest-layer rewrite); depends on `TD-002`. |
+| `TD-007` (RelationshipGraph / FieldIndex not removed) | `docs/TECH_DEBT.md` | Closed by Phase 2 (SemanticManifest-layer rewrite); depends on `TD-002`. |
 | `TD-008` (I/O utilities in manifest) | `docs/TECH_DEBT.md` | Trigger-based — when three I/O utilities accumulate, extract `semstrait-io`. Not a phase gate. |
 | `TD-009` (Unreachable metadata values) | `docs/TECH_DEBT.md` | Closed by Phase 1 (`FunctionRegistry` + expression validation pass). |
 
@@ -388,7 +388,7 @@ Several design docs narrate code-vs-spec divergence without applying the tag. Th
 |---|---|
 | `17 §1.3` | `TemporalHistorization` enum + `ScdType` enum need renaming to `TemporalShape` + `ScdSubtype`; `Type0` absent; window-payload carriage per-subtype. |
 | `31 §11` (`[TD-CORE-SERDE-GATING]`) | Core types derive serde unconditionally; must be `#[cfg(feature = "serde")]`-gated. |
-| `33 §14.1` | Manifest bytes not I4-stable; no canonical encoder selected. |
+| `33 §14.1` | SemanticManifest bytes not I4-stable; no canonical encoder selected. |
 | `35 §13` (`[TD-IR-RENAME]`) | `LogicalPlan` → `SemanticPlan` rename; `PlanNode` non-exhaustive gap. |
 | `36 §13` (`[TD-ADAPTER-*]`) | Adapter naming / errors / Dialect split / debug-sql free-function. |
 | `00 §4.3` banned-terms | `Compiled*` prefix on manifest types → `Resolved*`; `StorageProvider` → `FileSystem`; `simplify` → `optimize`; `Entity` → "named DataKind instance"; `TemporalHistorization` → `TemporalShape`. |
@@ -409,7 +409,7 @@ Eight phases. Each phase has exit criteria, owning crates, high-level migration 
 - `TemporalHistorization` renamed to `TemporalShape` with a `#[deprecated]` alias (`00 §4.3` + `17 §1.3`). Downstream crates use the new name.
 - Any rename already ratified by the banned-terms table has a `#[deprecated]` alias in place (`Compiled*` → `Resolved*` alias, `StorageProvider` → `FileSystem` alias, `simplify` → `optimize`). Aliases are one-MINOR-cycle transitions per `30 §12`.
 - Every deprecated symbol has a `41_deprecations.md` entry.
-- Test harness scaffolding: golden-file infrastructure for Manifest determinism checks (Phase 2); snapshot infrastructure for adapter emission (Phase 5). Stubs only in Phase 0.
+- Test harness scaffolding: golden-file infrastructure for SemanticManifest determinism checks (Phase 2); snapshot infrastructure for adapter emission (Phase 5). Stubs only in Phase 0.
 - Any lingering numbering / module-path inconsistencies flagged by reviewers during Round-1 drafting are fixed.
 
 **Owning crates.** All. Mostly touches `Cargo.toml`, doc headers, public `pub use`s, test-support modules.
@@ -464,7 +464,7 @@ Eight phases. Each phase has exit criteria, owning crates, high-level migration 
 
 **Rollback trigger.** Legacy YAML corpus fails to parse under both old + new grammar for more than 2% of ratified test fixtures. Or: downstream crate churn from `Diagnostic` introduction exceeds a reviewer-set threshold in a single PR batch.
 
-### 5.3 Phase 2 — Manifest-layer rewrite
+### 5.3 Phase 2 — SemanticManifest-layer rewrite
 
 **Purpose.** Rewrite `semstrait-manifest` to the `33` contract: `Resolved*` naming, `ResolvedExprTable`, Coverage + Composition indices, deterministic serialization.
 
@@ -473,10 +473,10 @@ Eight phases. Each phase has exit criteria, owning crates, high-level migration 
 - Every `Compiled*` type is renamed `Resolved*` per `00 §4.3` / `33 §3`. Legacy names remain aliased one cycle.
 - `ResolvedExprTable` materialized per `14b §2` / `33 §6` — every (Semantics, Binding) pair pre-computed into a `PhysicalExpr`.
 - Cross-DataKind path pre-resolution per `14b §5` — plan-time lookup is O(1); no `Relationship`-graph walking at plan time.
-- Coverage indices at the Binding level (`15`) and the ComposedSemanticInterface level (`16 §9`) are materialized in the Manifest per `33 §7`.
-- Manifest round-trip preserves all state (`TD-001` / `TD-002` closed). `SemanticGraph` either has bespoke serde impls or is rebuilt post-deserialize per a documented `rebuild_semantic_graph()` hook.
+- Coverage indices at the Binding level (`15`) and the ComposedSemanticInterface level (`16 §9`) are materialized in the SemanticManifest per `33 §7`.
+- SemanticManifest round-trip preserves all state (`TD-001` / `TD-002` closed). `SemanticGraph` either has bespoke serde impls or is rebuilt post-deserialize per a documented `rebuild_semantic_graph()` hook.
 - Deterministic serialization: running `compile` twice on identical `(Model, Catalog)` produces byte-identical bytes (I4 green; `33 §14`). Golden-file tests land.
-- Manifest encoder supports MessagePack + JSON per `33 §14`. Bincode parked per `[TD-33-BINCODE]`.
+- SemanticManifest encoder supports MessagePack + JSON per `33 §14`. Bincode parked per `[TD-33-BINCODE]`.
 - `CompileError` re-exports shared variants from `semstrait-core::CompileError` per `[TD-33-ERROR-UNIFY]`.
 - `RelationshipGraph` + `FieldIndex` removed (`TD-007` closed).
 - `io.rs` placement reconsidered per `TD-008`; if the utility-count threshold is crossed during Phase 2, extract to a new `semstrait-io` crate ahead of Phase 3.
@@ -487,16 +487,16 @@ Eight phases. Each phase has exit criteria, owning crates, high-level migration 
 
 - Land `Resolved*` aliases; begin migrating call sites off `Compiled*` names.
 - Introduce `ResolvedExprTable` alongside the current compiled-kind types; populate it during `compile`; planner gradually adopts.
-- Land Manifest indices; planner reads them instead of `RelationshipGraph` / `FieldIndex`.
+- Land SemanticManifest indices; planner reads them instead of `RelationshipGraph` / `FieldIndex`.
 - Bespoke serde for `SemanticGraph` (adjacency-list + rebuild).
 - Golden-file harness populated.
 - Remove `Compiled*` names at the next MAJOR cut after one MINOR cycle.
 
-**Risk tier.** High. The Manifest is the contract between compile-time and plan-time; every consumer downstream feels this phase. Golden-file determinism is the only way to safely complete it.
+**Risk tier.** High. The SemanticManifest is the contract between compile-time and plan-time; every consumer downstream feels this phase. Golden-file determinism is the only way to safely complete it.
 
 **Concurrent-safe with.** None. Phase 2 is a hard sequence point for Phase 3.
 
-**Rollback trigger.** Manifest byte-identical round-trip fails on any ratified test corpus after Phase 2's exit. Flip back to the `Compiled*` alias path, investigate. Any open-item that requires re-design (not re-implementation) bumps back to the relevant design doc.
+**Rollback trigger.** SemanticManifest byte-identical round-trip fails on any ratified test corpus after Phase 2's exit. Flip back to the `Compiled*` alias path, investigate. Any open-item that requires re-design (not re-implementation) bumps back to the relevant design doc.
 
 ### 5.4 Phase 3 — Planner-layer rewrite
 
@@ -509,7 +509,7 @@ Eight phases. Each phase has exit criteria, owning crates, high-level migration 
 - Ambiguous-path ties produce `PLAN_E_0500 AmbiguousImplicitComposition` (no heuristic; `16 §11.4`).
 - Step-0 `ConstraintValidator` runs at the start of every plan per `11 §8.4`. Failures emit `ConstraintViolation` per `10 §5` (typed fan-out deferred per `[TD-CONSTRAINT-ERROR-FANOUT]`).
 - Strategy trait (per-DataKind dispatch) exposes a named surface aligned with `34`'s Round-1 ratification.
-- Planner consumes Manifest indices directly (Phase 2's output); zero `RelationshipGraph` / `FieldIndex` references.
+- Planner consumes SemanticManifest indices directly (Phase 2's output); zero `RelationshipGraph` / `FieldIndex` references.
 - `CatalogProvider::check_schema_drift` hook wired per I11b; optional gate, pre-plan.
 - `Additivity`-driven plan restructuring still stubbed (`DL-058`) — explicitly carried forward as parked work; `34`-era planner does not close the semi/non-additive gap in Phase 3.
 
@@ -519,7 +519,7 @@ Eight phases. Each phase has exit criteria, owning crates, high-level migration 
 
 - Convert per-DataKind strategy modules into implementers of a named trait.
 - Introduce `ConstraintValidator` as a plan step-0; wire every Constraint carrier.
-- Implement field-first resolution atop the Manifest's indices.
+- Implement field-first resolution atop the SemanticManifest's indices.
 - Implement the implicit-composition BFS with depth limit + tie rule per `16 §11`.
 - Move Additivity-aware plan shapes to a named placeholder with `TODO(`[additivity-resolver-v2]`)` markers inline, clearly scoped out of Phase 3.
 
@@ -674,7 +674,7 @@ Eight phases. Each phase has exit criteria, owning crates, high-level migration 
 ```mermaid
 flowchart LR
     P0(Phase 0<br/>Preparation) --> P1(Phase 1<br/>Foundations)
-    P1 --> P2(Phase 2<br/>Manifest)
+    P1 --> P2(Phase 2<br/>SemanticManifest)
     P2 --> P3(Phase 3<br/>Planner)
     P3 --> P4(Phase 4<br/>IR)
     P4 --> P5(Phase 5<br/>Adapter)
@@ -727,7 +727,7 @@ Shims MUST be registered in `41_deprecations.md` at the moment they land. Unregi
 
 ### 6.5 What is NOT a shim
 
-- **Silently coexisting two shapes in the Manifest.** I4 determinism requires byte-stability; two-shapes-in-one Manifest breaks it.
+- **Silently coexisting two shapes in the SemanticManifest.** I4 determinism requires byte-stability; two-shapes-in-one SemanticManifest breaks it.
 - **Runtime feature flags that change public-API return types.** Use feature flags for dependency / optional-feature gating, not for surface-shape toggles.
 - **Environment-variable-driven behavior switches.** Never in the public API.
 
@@ -741,8 +741,8 @@ Every phase exits with green CI against the current test suite, plus the phase-s
 |---|---|
 | 0 | Scaffolding only: empty `tests/golden/`, `tests/snapshot/` directories; lint green. |
 | 1 | YAML parse / validate regression corpus expanded for new `data_kinds:` grammar; legacy-grammar corpus still green. Serde round-trip tests on new `DataType` variants. |
-| 2 | **Golden-file Manifest determinism.** For every fixture in `tests/golden/manifests/`, running `parse → validate → compile` twice produces byte-identical output. Gate: all green. |
-| 3 | Plan-level fixtures under `tests/planner/` extended for field-first resolution, step-0 ConstraintValidator, ambiguous-path, depth-limit. Byte-stable `SemanticPlan` output per (Manifest, Request). |
+| 2 | **Golden-file SemanticManifest determinism.** For every fixture in `tests/golden/manifests/`, running `parse → validate → compile` twice produces byte-identical output. Gate: all green. |
+| 3 | Plan-level fixtures under `tests/planner/` extended for field-first resolution, step-0 ConstraintValidator, ambiguous-path, depth-limit. Byte-stable `SemanticPlan` output per (SemanticManifest, Request). |
 | 4 | IR round-trip tests (SemanticPlan → bytes → SemanticPlan) byte-stable. All `#[non_exhaustive]` variants have wildcard-arm handling in every consuming crate's match statements (enforced via clippy / manual audit). |
 | 5 | **Snapshot tests per adapter.** For every (adapter, request) in `tests/snapshot/adapter/`, emission is byte-identical to the checked-in snapshot. Snapshot updates require reviewer sign-off. |
 | 6 | Iceberg / Unity integration tests refactored against the new trait surface. Drift-check coverage tests. |
@@ -753,10 +753,10 @@ Every phase exits with green CI against the current test suite, plus the phase-s
 
 Two byte-stable surfaces:
 
-- **`Manifest`** — Phase 2 onward.
+- **`SemanticManifest`** — Phase 2 onward.
 - **`SemanticPlan`** — Phase 3 onward (planner output, pre-adapter).
 
-A third surface — **`EngineArtifact`** — is deterministic per (`Manifest`, `Request`, adapter), enforced via snapshot tests from Phase 5. `EngineArtifact` byte-stability is not an I4 invariant; it is a snapshot contract.
+A third surface — **`EngineArtifact`** — is deterministic per (`SemanticManifest`, `Request`, adapter), enforced via snapshot tests from Phase 5. `EngineArtifact` byte-stability is not an I4 invariant; it is a snapshot contract.
 
 ### 7.3 Regression ladder
 
@@ -765,7 +765,7 @@ Each phase's tests are additive on top of the prior phase's. The full CI ladder 
 ```
 parse → validate → compile → plan → optimize → adapt
   ↓        ↓          ↓         ↓        ↓         ↓
-YAML    struct    Manifest   Plan   Plan-2    Artifact
+YAML    struct    SemanticManifest   Plan   Plan-2    Artifact
 corpus  corpus    golden    fixtures fixtures  snapshot
 ```
 
@@ -785,7 +785,7 @@ Each phase declares a named rollback trigger in §5; this section reiterates the
 
 | Category | Examples | Action |
 |---|---|---|
-| Determinism loss | Manifest byte-identical round-trip red; SemanticPlan shape drift without a ratified-design justification. | Revert to prior phase's state; investigate with the design author; amend the design doc if required; re-attempt. |
+| Determinism loss | SemanticManifest byte-identical round-trip red; SemanticPlan shape drift without a ratified-design justification. | Revert to prior phase's state; investigate with the design author; amend the design doc if required; re-attempt. |
 | Test corpus breakage | ≥ 2% of ratified fixtures regress under new behavior without a design-tracked cause. | Same as above. |
 | Cross-crate compile red lasting > 1 day | A refactor lands that blocks downstream work. | Revert; divide the refactor into smaller PR batches. |
 | Snapshot divergence (Phase 5+) | Adapter emission changes in unexpected ways. | Revert the offending commit; investigate; either justify + update the snapshot or back out the change. |

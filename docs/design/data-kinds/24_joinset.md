@@ -19,7 +19,7 @@ refined-by:
   - 17 (`foundations/17_temporal_shape.md` — `TemporalShape`, as-of activation matrix for `JoinType::AsOf`)
   - 25 (cross-kind strategy catalog — Joinset × Grainset, Joinset × Unionset composition rules)
   - 32 (`apis/32_semstrait_model.md` — YAML surface for the `joinsets:` top-level block and `path:` sub-block)
-  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedJoinset`, the Manifest entry carrying the materialized `ComposedSemanticInterface`)
+  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedJoinset`, the SemanticManifest entry carrying the materialized `ComposedSemanticInterface`)
   - 34 (`apis/34_semstrait_planner.md` — `JoinsetStrategy` implementation, path-resolve entry points)
   - 35 (`PlanNode::Join` consumption of `Joinset`-derived join sequences; `JoinNode.from_relationship` + `from_joinset` tagging)
 ---
@@ -82,7 +82,7 @@ Every Joinset could, in principle, be expressed by declaring the constituent Dat
 | Named / addressable | No (anonymous, Request-scoped) | Yes (a `DataKindRef`; valid `Request.from`) |
 | Anchor | None (BFS is symmetric over the Semantics owners) | Mandatory exactly-one root (§3) |
 | `JoinType` override per hop | Not permitted (uses `Relationship.join_type` verbatim) | Permitted subject to §5.3 legality rules |
-| Manifest lifecycle | Synthesized at `plan` (`16 §10.1`) | Materialized at `compile` (`16 §10.1`) |
+| SemanticManifest lifecycle | Synthesized at `plan` (`16 §10.1`) | Materialized at `compile` (`16 §10.1`) |
 | Depth bound | `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` (`16 §9.1`) | None (authoring a `Joinset` is the escape hatch) |
 | Ambiguous paths | `PLAN_E_0500 AmbiguousImplicitComposition` (`16 §14.3`) | Author pins via explicit path (§4.2); never an error at plan time |
 
@@ -91,10 +91,10 @@ A `Joinset` is what the author reaches for when they need (a) a named surface, (
 ### 1.4 Invariants `24` directly upholds
 
 - **I1 — canonical layer.** A `Joinset`'s anchor, members, and path references are `DataKindRef` / `RelationshipId` handles; never SQL column names. Resolution to physical join predicates happens during `JoinsetStrategy` → `PlanNode::Join` lowering, which delegates to `15`-resolved `Binding.column_mapping` at each hop.
-- **I4 — determinism.** For a fixed Manifest and a fixed `Joinset`, the materialized `ComposedSemanticInterface` is bit-identical; the planner's `JoinsetStrategy` emits the same `PlanNode::Join` sequence on every invocation. Implicit-path resolution uses `16 §11.4`'s deterministic neighbor order (extended for anchor bias in §4.1.3).
+- **I4 — determinism.** For a fixed SemanticManifest and a fixed `Joinset`, the materialized `ComposedSemanticInterface` is bit-identical; the planner's `JoinsetStrategy` emits the same `PlanNode::Join` sequence on every invocation. Implicit-path resolution uses `16 §11.4`'s deterministic neighbor order (extended for anchor bias in §4.1.3).
 - **I5 — compile-time resolution.** `Joinset.path` (whether implicit or explicit) is fully resolved to `Vec<RelationshipId>` at `compile`. The `plan` stage never re-walks the Relationship graph for a `Joinset`.
 - **I7 — strict crate DAG.** `Joinset` resolution lives in `semstrait-manifest`; `JoinsetStrategy` lives in `semstrait-planner`; `PlanNode::Join` construction consumes the resolved `Joinset` without re-resolution.
-- **I8 — Manifest is planner-complete.** A `ResolvedJoinset` carries everything the planner needs: resolved anchor, resolved `RelationshipId` sequence with forward/reverse direction per hop, resolved per-hop `JoinType` (post-override), resolved `ComposedSemanticInterface`.
+- **I8 — SemanticManifest is planner-complete.** A `ResolvedJoinset` carries everything the planner needs: resolved anchor, resolved `RelationshipId` sequence with forward/reverse direction per hop, resolved per-hop `JoinType` (post-override), resolved `ComposedSemanticInterface`.
 - **I10 — non-exhaustive extensibility.** `JoinsetDataKind`, `JoinHop`, `ExplicitPath`, `JoinsetStrategy`'s inputs / outputs are all `#[non_exhaustive]`. N-ary lift (`TD-NESTING-NARY-JOIN`) and `JoinType::AsOf` activation (pending `17`) are MINOR additions.
 - **I12 — first-class diagnostics.** Every `Joinset` Precondition has a stable error code in the `*_E_24xx` / `PLAN_W_24xx` ranges (§§9–11).
 
@@ -191,7 +191,7 @@ pub struct ExplicitPath {
 #[non_exhaustive]
 pub struct JoinHop {
     /// The Relationship traversed by this hop. MUST be a
-    /// `RelationshipId` declared in the Manifest's `relationships:`
+    /// `RelationshipId` declared in the SemanticManifest's `relationships:`
     /// top-level block per `16 §2.1`.
     pub relationship: RelationshipId,
 
@@ -360,13 +360,13 @@ JOINSET_IMPLICIT_PATH(anchor, members, manifest) -> Vec<ResolvedJoinHop> | Compi
 2. **No depth limit.** `16 §9.1`'s `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` does NOT apply. Declaring a `Joinset` is exactly what an author does when their path exceeds the implicit depth cap; imposing the same cap on the escape hatch would be pointless.
 3. **Ambiguity handling deferred to compile.** Implicit composition surfaces ambiguity at plan time (`PLAN_E_0500`). Joinset's implicit path surfaces ambiguity at **compile** time (`COMP_E_2402`), because the Joinset is a named surface whose path must be deterministic before plan-time queries land.
 
-Algorithmic I4-determinism is preserved: same Manifest + same anchor + same target → same resolved hops.
+Algorithmic I4-determinism is preserved: same SemanticManifest + same anchor + same target → same resolved hops.
 
 #### 4.1.4 When to use implicit path
 
 Authors prefer implicit when:
 
-- The Manifest has a single shortest Relationship path between anchor and target. Typical for star-schema shapes where the fact → dimension hop is unique.
+- The SemanticManifest has a single shortest Relationship path between anchor and target. Typical for star-schema shapes where the fact → dimension hop is unique.
 - The Relationship path is expected to stabilize; new Relationships that create alternative paths would be caught at the `compile` that introduces them (`COMP_E_2402`), giving the author a chance to pin.
 
 Authors prefer explicit (§4.2) when:
@@ -389,7 +389,7 @@ Explicit path validation runs across validate and compile stages:
 |---|---|---|
 | validate | `hops` non-empty | `VALID_E_2403 JoinsetExplicitPathEmpty` |
 | validate | (v1) `hops.len() == 1` | `VALID_E_2400 JoinsetArityV1Violation` |
-| compile | each `hop.relationship` resolves to a Manifest `RelationshipId` | `COMP_E_2404 JoinsetExplicitPathUnknownRelationship { position, relationship }` |
+| compile | each `hop.relationship` resolves to a SemanticManifest `RelationshipId` | `COMP_E_2404 JoinsetExplicitPathUnknownRelationship { position, relationship }` |
 | compile | `hop_0`'s walked source == `anchor` (given `direction`, the "source" endpoint matches the anchor DataKind) | `COMP_E_2405 JoinsetExplicitPathAnchorMismatch { expected_anchor, actual_source }` |
 | compile | `hop_i.to` matches the Relationship's walked target endpoint (given `direction`) | `COMP_E_2406 JoinsetExplicitPathEndpointMismatch { position, declared_to, computed_to }` |
 | compile | `hop_{i+1}`'s source (given direction) == `hop_i.to` (chain continuity) — no-op for v1 binary, but kept for N-ary forward-compatibility | `COMP_E_2407 JoinsetExplicitPathDiscontinuity { position }` |
@@ -425,7 +425,7 @@ Round 1 forbids hybrid modes ("use these specific hops plus let the planner fill
 #[non_exhaustive]
 pub struct JoinsetStrategy<'m> {
     pub joinset: &'m ResolvedJoinset,
-    pub manifest: &'m Manifest,
+    pub manifest: &'m SemanticManifest,
 }
 
 impl<'m> JoinsetStrategy<'m> {
@@ -564,10 +564,10 @@ Exact pushdown semantics (predicate pushdown, projection pruning) are `14b` / `2
 `Joinset` **consumes** top-level `Relationship`s declared in the Model's `relationships:` block (per `16 §2.1`, YAML surface per `32`). `Joinset` does NOT:
 
 - Declare new Relationships. Only the Model's `relationships:` top-level block declares Relationships. A `Joinset`'s `path:` references existing `RelationshipId`s; it does not synthesize join edges.
-- Modify existing Relationships. The `Relationship`'s declared `join_type`, `cardinality`, `directionality`, `keys` remain authoritative for implicit composition (`16 §11`). A `Joinset`'s `overrides.per_hop` affects only that Joinset's `JoinsetStrategy` output, never the Manifest's `ResolvedRelationship`.
+- Modify existing Relationships. The `Relationship`'s declared `join_type`, `cardinality`, `directionality`, `keys` remain authoritative for implicit composition (`16 §11`). A `Joinset`'s `overrides.per_hop` affects only that Joinset's `JoinsetStrategy` output, never the SemanticManifest's `ResolvedRelationship`.
 - Participate in Relationship-graph validation. `16 §12`'s well-formedness (duplicate detection, key-type agreement, self-reference, etc.) runs on the `relationships:` block independently of any `Joinset` that may consume the resulting edges.
 
-The reverse direction holds: `Relationship`s are unaware of which `Joinset`s consume them. A Relationship with no consumers (no implicit-composition walks, no `Joinset.path` references) is a perfectly valid Manifest entry; authors routinely declare Relationships defensively for future use.
+The reverse direction holds: `Relationship`s are unaware of which `Joinset`s consume them. A Relationship with no consumers (no implicit-composition walks, no `Joinset.path` references) is a perfectly valid SemanticManifest entry; authors routinely declare Relationships defensively for future use.
 
 ### 6.1 `Joinset`-side references to Relationships
 
@@ -651,7 +651,7 @@ JOINSET_COVERAGE_FOLD(joinset) -> CompositionCoverage:
     for unified_name in joinset.interface.interface.all_names():
       entries[(member, unified_name)] ←
         fold_binding_coverage(member, unified_name)
-          // returns Native, Derived, or NullFill per `16 §8.4`
+          // returns Native, Derived, NullFill, or Metadata per `16 §8.4`
   return CompositionCoverage { entries }
 ```
 
@@ -716,7 +716,7 @@ Double-emission (a single programming-level error triggering both a `12` and a `
 | `COMP_E_2401` | `JoinsetImplicitNoPath { joinset, anchor, target }` | Implicit-path BFS found no Relationship path from `anchor` to the other member (§4.1.2 step 5). Author must declare the Relationship or an explicit path. |
 | `COMP_E_2402` | `JoinsetImplicitAmbiguousPaths { joinset, anchor, target, candidates: Vec<RelationshipPath> }` | Implicit-path BFS found multiple equal-length shortest paths (§4.1.2 step 6). Author must pin via explicit path. |
 | `COMP_E_2403` | `JoinsetAnchorUnreachable { joinset, unreachable_member }` | Resolved path does not connect the anchor to one of the members. v1 binary-degenerate (the single hop either connects the two or fails at `COMP_E_2401`); N-ary-forward-looking. |
-| `COMP_E_2404` | `JoinsetExplicitPathUnknownRelationship { joinset, position, relationship }` | An explicit `JoinHop.relationship` does not resolve to a Manifest `RelationshipId`. |
+| `COMP_E_2404` | `JoinsetExplicitPathUnknownRelationship { joinset, position, relationship }` | An explicit `JoinHop.relationship` does not resolve to a SemanticManifest `RelationshipId`. |
 | `COMP_E_2405` | `JoinsetExplicitPathAnchorMismatch { joinset, expected_anchor, actual_source }` | Hop 0's walked source (given `direction`) is not the Joinset's declared anchor. |
 | `COMP_E_2406` | `JoinsetExplicitPathEndpointMismatch { joinset, position, declared_to, computed_to }` | `hop.to` does not match the Relationship's walked target endpoint (given `direction`). |
 | `COMP_E_2407` | `JoinsetExplicitPathDiscontinuity { joinset, position }` | Hop `i+1`'s walked source != hop `i`'s `to`. v1 binary-degenerate; N-ary-forward-looking. |
@@ -984,7 +984,7 @@ Joinset "orders_with_bill_address":
   overrides: {}
 ```
 
-Both Joinsets resolve cleanly; the Manifest materializes both `ResolvedJoinset`s independently. Requests choose between them via `from: Some(DataKindRef(...))`. On the unified surface, the `addresses` member's columns are namespaced to the Joinset's context — e.g. `"orders_with_ship_address".city` vs. `"orders_with_bill_address".city` — because the author has two distinct first-class surfaces, each with its own composed surface.
+Both Joinsets resolve cleanly; the SemanticManifest materializes both `ResolvedJoinset`s independently. Requests choose between them via `from: Some(DataKindRef(...))`. On the unified surface, the `addresses` member's columns are namespaced to the Joinset's context — e.g. `"orders_with_ship_address".city` vs. `"orders_with_bill_address".city` — because the author has two distinct first-class surfaces, each with its own composed surface.
 
 Because the two Joinsets cover disjoint surfaces (via distinct `RelationshipId`s), authoring both is the recommended pattern where implicit composition alone would fail. `JoinsetStrategy` lowering is identical to §12.1 except for the `from_relationship` field, which differs per Joinset.
 
@@ -1022,7 +1022,7 @@ If the declared `Relationship.join_type == Left` and the author attempts an over
 overrides: { HopPosition(0): JoinType::Full }
 ```
 
-Per §5.3.3, `Left → Full` is forbidden (widening row-preservation beyond the edge's declared preservation). Compile emits `COMP_E_2411 JoinsetIllegalJoinTypeOverride { position: 0, declared: Left, requested: Full }`, the Manifest build fails, and the author sees an actionable diagnostic pinpointing the override site.
+Per §5.3.3, `Left → Full` is forbidden (widening row-preservation beyond the edge's declared preservation). Compile emits `COMP_E_2411 JoinsetIllegalJoinTypeOverride { position: 0, declared: Left, requested: Full }`, the SemanticManifest build fails, and the author sees an actionable diagnostic pinpointing the override site.
 
 ## 13. Round-1 Open Items
 
@@ -1055,7 +1055,7 @@ Tracked in `questions/open/24_questions.md`:
 - `25` (pending) — cross-kind strategy catalog (Joinset × Grainset, Joinset × Unionset interactions).
 - `30 §4, §5, §6` — `#[non_exhaustive]` policy, `Diagnostic` shape, error-code range governance; `24` allocates `VALID_E_2400`–`2499`, `COMP_E_2400`–`2499`, `PLAN_E_2400`–`2499`, `PLAN_W_2400`–`2499` under `30 §6.2`'s per-DataKind-doc scheme.
 - `32` (pending) — YAML surface for the `joinsets:` top-level block, `path:` sub-block, `overrides:` sub-block.
-- `33` (pending) — Manifest surface: `ResolvedJoinset`, `ResolvedJoinHop`.
+- `33` (pending) — SemanticManifest surface: `ResolvedJoinset`, `ResolvedJoinHop`.
 - `34` (pending) — planner surface: `JoinsetStrategy` impl, dispatch rules between `16` generic codes and `24` specialized codes.
 - `35` (pending) — `PlanNode::Join` with `from_relationship` and `from_joinset` tagging fields.
 - `questions/open/24_questions.md` — Round-1 deferred items Q-24-01..Q-24-08.

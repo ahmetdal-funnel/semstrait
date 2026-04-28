@@ -20,24 +20,6 @@ Back-ends are thin wrappers over the `object_store` crate (Apache Arrow project)
 
 Domain-specific functions like `load_model` (`32 §10.4`), `load_catalogs` (`32 §10.4`), and `load_manifest` (`33 §16.5`) do **not** live here. They live in the crate that owns the corresponding typed artifact. Core owns the transport; consumers own the format.
 
-## Table of Contents
-
-1. [Purpose and Scope](#1-purpose-and-scope)
-2. [Module Layout](#2-module-layout)
-3. [The `Source` Trait](#3-the-source-trait)
-4. [The `Sink` Trait](#4-the-sink-trait)
-5. [`FromIoBytes` and `IntoIoBytes`](#5-fromiobytes-and-intoiobytes)
-6. [`Location` — Polymorphic Back-End Dispatch](#6-location--polymorphic-back-end-dispatch)
-7. [`IoError`](#7-ioerror)
-8. [Back-End Roster](#8-back-end-roster)
-9. [Feature Flags](#9-feature-flags)
-10. [Dependency Posture](#10-dependency-posture)
-11. [Platform Support](#11-platform-support)
-12. [Usage Patterns](#12-usage-patterns)
-13. [Structural Rules (SR-IO-*)](#13-structural-rules-sr-io-)
-
----
-
 ## 1. Purpose and Scope
 
 ### 1.1 What `semstrait-core::io` OWNS
@@ -53,7 +35,7 @@ Domain-specific functions like `load_model` (`32 §10.4`), `load_catalogs` (`32 
 ### 1.2 What `semstrait-core::io` does NOT own
 
 - `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs`. Those live in `semstrait-model::io` (`32 §10.4`) because they reference `SemanticModel` / `CatalogsConfig`.
-- `load_manifest` / `dump_manifest`. Those live in `semstrait-manifest::io` (`33 §16.5`) and reference `Manifest`.
+- `load_manifest` / `dump_manifest`. Those live in `semstrait-manifest::io` (`33 §16.5`) and reference `SemanticManifest`.
 - Directory walking, `$include` directive handling, multi-file merging. **Out of scope forever** — callers that need multi-source aggregation perform their own enumeration (`std::fs::read_dir`, `object_store::ObjectStore::list`, or a CLI-level helper) and stitch the results themselves.
 - Format decoding (YAML / JSON / MessagePack). Transport yields bytes; format is a domain-crate concern.
 - Retry policies, CDN failover, credential rotation. `object_store` handles transient retries internally; higher-level policies are caller concerns.
@@ -63,7 +45,7 @@ Domain-specific functions like `load_model` (`32 §10.4`), `load_catalogs` (`32 
 
 Three invariants drive the shape:
 
-1. **Cycle-free.** Core cannot import from `semstrait-model` / `semstrait-manifest` (they depend on core). Therefore core's `io` module knows about bytes, not about `SemanticModel` / `Manifest`.
+1. **Cycle-free.** Core cannot import from `semstrait-model` / `semstrait-manifest` (they depend on core). Therefore core's `io` module knows about bytes, not about `SemanticModel` / `SemanticManifest`.
 2. **Feature-gated cloud SDKs.** AWS (and future GCS / Azure / HTTP) back-ends compile only when opted-in, so library crates that only need local I/O don't pay the cloud-SDK compile cost.
 3. **Polymorphic ergonomics via `Location`.** A consumer holding a `Location` value can call `src.read::<String>().await` without caring which back-end is underneath. `Location` is `Clone + Debug` and carried by value in diagnostics, caches, and audit logs.
 
@@ -390,7 +372,7 @@ impl IntoDiagnostic for IoError {
 
 **`#[non_exhaustive]`** applied per `31 §8` variant-stability rules; new variants land additively (e.g. `RateLimited`, `Throttled`) without breaking consumers.
 
-**Domain error composition.** `ModelLoadError` / `ModelDumpError` / `ManifestLoadError` / etc. (defined in the owning crates, `32 §10.4` / `33 §16.5`) are `#[non_exhaustive]` enums with `Io(IoError)` as one variant. Because `IoError` is itself `#[non_exhaustive]`, adding an `IoError` variant is a MINOR change through the entire dependency chain.
+**Domain error composition.** `ModelLoadError` / `ModelDumpError` / `SemanticManifestLoadError` / etc. (defined in the owning crates, `32 §10.4` / `33 §16.5`) are `#[non_exhaustive]` enums with `Io(IoError)` as one variant. Because `IoError` is itself `#[non_exhaustive]`, adding an `IoError` variant is a MINOR change through the entire dependency chain.
 
 ---
 

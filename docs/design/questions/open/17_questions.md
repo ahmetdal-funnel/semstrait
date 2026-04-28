@@ -17,7 +17,7 @@ depends-on:
 
 > Items surfaced during Round-1 drafting of the temporal-shape foundations doc. Each entry restates the question, lists its ratified references, and records the Round-1 default `17` currently uses. Entries migrate out of this file as later docs (`20`–`25`, `32`–`35`, `registry/temporal_shape_mapping.md`) make decisions that either confirm or amend `17`'s defaults.
 
-> **Status summary (2026-04-17).** Of 8 questions, **3 are CLOSED** (Q-TEMPORAL-002, -005, -006 — all ratified by the `18`-entity consolidation pass: v1 `ScdType` roster trimmed to `{Type1, Type2}`, flat-field `ScdBody` shape, `valid_to IS NULL` as the open-ended-window signal, no `current_flag_dim` in v1, `Type0` descoped). The closed entries are retained in place for full resolution context; readers seeking only live items can skim past their closure banners or jump directly to Q-TEMPORAL-001 / -003 / -004 / -007 / -008. See the Summary table at the end of this file for the at-a-glance status roster.
+> **Status summary (2026-04-28).** Of 8 questions, **5 are CLOSED** (Q-TEMPORAL-002, -005, -006 — ratified by the `18`-entity consolidation pass: v1 `ScdType` roster trimmed to `{Type1, Type2}`, flat-field `ScdBody` shape, `valid_to IS NULL` as the open-ended-window signal, no `current_flag_dim` in v1, `Type0` descoped; Q-TEMPORAL-007 — Option A no hoisting, ratified by `17 §3.2`; Q-TEMPORAL-008 — Option A per-family enum, ratified by `17 §5.1`). The closed entries are retained in place for full resolution context; readers seeking only live items can skim past their closure banners or jump directly to Q-TEMPORAL-001 / -003 / -004. See the Summary table at the end of this file for the at-a-glance status roster.
 
 ---
 
@@ -100,9 +100,9 @@ depends-on:
 **Arguments for C.**
 - The **type-safety** benefit applies primarily to the "did the author write `valid_from_dim` on a Type 0" case; the common-windowed-subtype trio (Type 2, Type 5, Type 6) could share a struct without losing much. Option C reduces duplication in §2.3's enum sketch.
 
-**Current position in `17`.** Option A ratified. The enum sketch in §2.3 inlines the windowed-subtype fields directly into each variant; a future refactor to Option C (shared `ScdWindow` struct) is non-breaking per I10.
+**Current position in `17`.** **CLOSED — Option B (flat fields)** ratified via `18 §3.3`. `ScdBody` carries `{ scd_type: ScdType, valid_from: SemanticsName, valid_to: SemanticsName }`. Options A / C are post-v1 concerns that re-open only if `ScdType` re-expands to include subtypes with divergent payloads. Body retained as historical resolution context.
 
-**Next step.** Revisit when authoring the `32` YAML surface. If the YAML surface turns out to be naturally flat (`subtype: type_2, valid_from: ..., valid_to: ...`), the Rust model may want to match for serde ergonomics; the canonical Rust enum can always pick a shape independent of YAML through a custom `Deserialize`.
+**Next step.** None. Reactivates only on a future `ScdType` roster expansion that introduces shape-divergent subtypes.
 
 **Blocking?** No.
 
@@ -246,7 +246,9 @@ depends-on:
 
 ---
 
-## Q-TEMPORAL-007 — Hoisting `TemporalShape` to `ComplexDataKind`?
+## Q-TEMPORAL-007 — Hoisting `TemporalShape` to `ComplexDataKind`? — CLOSED (2026-04-28)
+
+**Status: CLOSED.** Option A (no hoisting) ratified. `ComplexDataKind` shape propagates via `16 §8` composition rules; no `temporal_shape:` block on the complex variants in v1. Shape hoisting is MINOR per I10 and can land later. Round-1 framing retained for historical reference.
 
 **Question.** `17 §3.2` ratifies that `ComplexDataKind` (`Unionset`, `Grainset`, `Joinset`) does not carry its own `temporal_shape:` block; shape propagates via §8's composition rules. But a `Joinset` with a single root child (say the root is a `Timeseries { grain: Day }`) could reasonably inherit its root's shape as a first-class property — the `Joinset`'s observation-cadence is the root's cadence. Should `17` ratify shape hoisting for these cases?
 
@@ -278,7 +280,9 @@ depends-on:
 
 ---
 
-## Q-TEMPORAL-008 — `AsOfAnchor` shape: per-family enum vs tagged struct
+## Q-TEMPORAL-008 — `AsOfAnchor` shape: per-family enum vs tagged struct — CLOSED (2026-04-28)
+
+**Status: CLOSED.** Option A (per-family enum) ratified — `AsOfAnchor::ScdWindow { .. }` / `AsOfAnchor::SnapshotLatestAtOrBefore { .. }`. Matches `TemporalShape`'s own per-variant payload style; exhaustiveness-checking on `match` lets `35` / `36` downstream emitters catch unhandled anchor families at compile time. Round-1 framing retained for historical reference.
 
 **Question.** `17 §5.1` specifies `AsOfAnchor` as a `#[non_exhaustive]` enum with two variants (`ScdWindow { ... }`, `SnapshotLatestAtOrBefore { ... }`). An alternative is a tagged struct with optional fields: `AsOfAnchor { probe_dim: SemanticsName, kind: AsOfAnchorKind, scd_valid_from: Option<SemanticsName>, scd_valid_to: Option<SemanticsName>, snapshot_at: Option<SemanticsName> }`. Which is canonical?
 
@@ -315,7 +319,7 @@ depends-on:
 | Q-TEMPORAL-004 | Multi-shape heterogeneous `Request.temporal` | DEFERRED; Option A likely. | No |
 | Q-TEMPORAL-005 | Default-current without `current_flag_dim` | **CLOSED** — `18 §3.3` drops `current_flag_dim` from v1; `valid_to IS NULL` is the current-row signal. | No |
 | Q-TEMPORAL-006 | `Type0` append-only enforcement | **CLOSED** — `18 §3.3` descopes `Type0` from v1 roster. | No |
-| Q-TEMPORAL-007 | `ComplexDataKind` shape hoisting | Option A — no hoisting. MINOR later. | No |
-| Q-TEMPORAL-008 | `AsOfAnchor` per-family vs tagged | Option A — per-family enum. | No |
+| Q-TEMPORAL-007 | `ComplexDataKind` shape hoisting | **CLOSED (2026-04-28)** — Option A no hoisting (MINOR later if `24`-side need surfaces). | No |
+| Q-TEMPORAL-008 | `AsOfAnchor` per-family vs tagged | **CLOSED (2026-04-28)** — Option A per-family enum (`17 §5.1`). | No |
 
 None of the open questions blocks ratification of `17`. All are governance / coordination / deferred-implementation items whose Round-1 defaults are stable enough for downstream docs to build on.

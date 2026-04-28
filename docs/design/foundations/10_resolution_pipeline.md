@@ -36,10 +36,10 @@ This document ratifies the per-stage contract of the canonical pipeline shown in
 
 `10` does **not** re-specify concept shapes (those live in the foundations and data-kind docs) and does **not** specify per-crate public surface (that lives in the `3x` API docs). It is the contract matrix that ties the pipeline to the vocabulary.
 
-**Two canonical data types bracket compile-time** (00 §4.1 `SemanticModel`, `Manifest`):
+**Two canonical data types bracket compile-time** (00 §4.1 `SemanticModel`, `SemanticManifest`):
 
 - `SemanticModel` — post-parse, in-memory, typed.
-- `Manifest` — post-compile, planner-complete, denormalized.
+- `SemanticManifest` — post-compile, planner-complete, denormalized.
 
 No intermediate `ResolvedModel` type exists; all resolution-type work (name lookup, catalog metadata fetch, glob expansion, Relationship resolution, `ExprSource` → `Expr` compilation, index construction) happens inside `compile`. The word *resolve* is retained as descriptive English ("compile resolves references") and as the `Resolved*` type-name prefix for manifest-layer types that diverge structurally from model-layer counterparts (00 §4.1 naming note); it is no longer a top-level pipeline verb.
 
@@ -47,7 +47,7 @@ No intermediate `ResolvedModel` type exists; all resolution-type work (name look
 
 **Out of scope for this doc:**
 
-- structural layouts of inputs/outputs (`SemanticModel`, `Manifest`, `SemanticPlan`, `EngineArtifact`) — see 11–17, 33, 35,
+- structural layouts of inputs/outputs (`SemanticModel`, `SemanticManifest`, `SemanticPlan`, `EngineArtifact`) — see 11–17, 33, 35,
 - planner strategy dispatch per DataKind variant — see 20–25,
 - adapter implementation specifics per engine — see 36,
 - public crate API shape — see 31–39.
@@ -60,8 +60,8 @@ Six stages. Compile-time = `parse`, `validate`, `compile`. Query-time = `plan`, 
 |---|---|---|---|---|
 | 1 | `parse` | YAML bytes | `SemanticModel` | 32 |
 | 2 | `validate` | `&SemanticModel` | `Result<(), Vec<ValidateError>>` (pure predicate) | 32 |
-| 3 | `compile` | `SemanticModel` + `CatalogProvider` + `FileSystem` | `Manifest` | 33 (orchestrator), 37 (metadata), 32 (AST source) |
-| 4 | `plan` | `&Manifest` + `Request` + optional injected `EngineAdapter` hooks | `SemanticPlan` | 34, 36 |
+| 3 | `compile` | `SemanticModel` + `CatalogProvider` + `FileSystem` | `SemanticManifest` | 33 (orchestrator), 37 (metadata), 32 (AST source) |
+| 4 | `plan` | `&SemanticManifest` + `Request` + optional injected `EngineAdapter` hooks | `SemanticPlan` | 34, 36 |
 | 5 | `optimize` | `SemanticPlan` + optional injected `EngineAdapter` hooks | `SemanticPlan` | 34, 36 |
 | 6 | `adapt` | `SemanticPlan` | `EngineArtifact` (`Sql(SqlArtifact)` via `emit` sub-form, or `Plan(EnginePlan)`) | 36 |
 
@@ -73,7 +73,7 @@ flowchart LR
         P --> SM[SemanticModel]
         SM --> V(validate)
         V --> C(compile)
-        C --> M[(Manifest)]
+        C --> M[(SemanticManifest)]
     end
 
     subgraph QT["Query-time (synchronous, I6 hot path)"]
@@ -162,9 +162,9 @@ Every subsection in §3 uses this fixed template. Fields are authoritative for t
 
 ### 3.3 `compile`
 
-- **Purpose** — Produce a planner-complete `Manifest` from a validated `SemanticModel`, performing all resolution, catalog fetching, expression compilation, and indexing in a single pass.
+- **Purpose** — Produce a planner-complete `SemanticManifest` from a validated `SemanticModel`, performing all resolution, catalog fetching, expression compilation, and indexing in a single pass.
 - **Input** — owned `SemanticModel` + `impl CatalogProvider` + `impl FileSystem`. (The caller has already invoked `validate`; `compile` does not re-run structural Preconditions.)
-- **Output** — `Manifest` (structural shape ratified in `33`).
+- **Output** — `SemanticManifest` (structural shape ratified in `33`).
 - **Owning crate** — `semstrait-manifest` (orchestrator) + `semstrait-catalog` (metadata I/O) + `semstrait-model` (AST source).
 - **Work subsumed** — this is the work that would have been split across a separate `resolve` stage and a downstream `compile` stage in an engine-style pipeline; here it is a single coherent pass:
   1. Name resolution — lexical scope traversal, reference expansion, alias expansion across DataKinds, Semantics, Bindings, and Relationships (I5).
@@ -174,13 +174,13 @@ Every subsection in §3 uses this fixed template. Fields are authoritative for t
   5. `ExprSource` → `Expr` compilation — using the `FunctionRegistry` for function identity, the resolved name scope for identifier resolution, and the resolved schema for type inference (I1 boundary).
   6. Relationship graph resolution — resolving the top-level `Relationship` block's endpoints, validating `Cardinality`, preparing the graph for `ComposedSemanticInterface` construction (I5, `16`).
   7. `TemporalShape` resolution — binding shape-specific columns (`valid_from`, `valid_to`, `occurred_at`, `snapshotted_at`, …) to physical columns; shape-gated resolution rules (`17`).
-  8. Manifest index construction — name indices, Coverage indices, `Relationship` adjacency, per-DataKind Semantics lookup tables (I8).
+  8. SemanticManifest index construction — name indices, Coverage indices, `Relationship` adjacency, per-DataKind Semantics lookup tables (I8).
   9. Denormalization and `Resolved*` type construction — manifest-layer types that diverge structurally from model-layer counterparts (00 §4.1 naming note, I8).
 - **Invariants upheld** —
-  - I1 — the `ExprSource` → `Expr` boundary. After `compile`, no `ExprSource` survives into the Manifest or anything downstream.
+  - I1 — the `ExprSource` → `Expr` boundary. After `compile`, no `ExprSource` survives into the SemanticManifest or anything downstream.
   - I4 — canonical IR only in the output (`Expr`, `DataType`, `CanonicalFn`).
-  - I5 — all name resolution is performed here and captured in the Manifest as direct references; nothing resolvable is deferred to `plan`.
-  - I8 — the Manifest is planner-complete; every pre-computed index, every flattened denormalization, every `Resolved*` type that the planner expects is constructed here.
+  - I5 — all name resolution is performed here and captured in the SemanticManifest as direct references; nothing resolvable is deferred to `plan`.
+  - I8 — the SemanticManifest is planner-complete; every pre-computed index, every flattened denormalization, every `Resolved*` type that the planner expects is constructed here.
   - I11 — all I/O is through the permitted provider traits (`CatalogProvider`, `FileSystem`), never direct filesystem or network calls.
 - **Error type** — `CompileError`. Typical variant families (exact list ratified in `33`):
   - `UnresolvedReference` — a name reference did not resolve in its scope.
@@ -192,40 +192,40 @@ Every subsection in §3 uses this fixed template. Fields are authoritative for t
   - `UnknownFunction` — an `ExprSource` referenced a function not in the `FunctionRegistry`.
   - `TypeInferenceFailure` — local type inference could not derive a type for a Semantics element (bare untyped `Null` at a Semantics boundary with no `data_type:` declared, unresolved column/entity ref, or an expression shape with no applicable inference rule). Semstrait does **not** validate cross-operand type compatibility — per `14 §5.6` operand / comparison / argument compatibility is deferred to the engine, not checked by compile.
   - `CircularRelationship` — Relationship graph contains a cycle of a kind disallowed by `16`.
-  - `IndexBuildFailed` — invariant violated during Manifest index construction (indicates a bug in the compile pass; should not arise from well-formed input).
+  - `IndexBuildFailed` — invariant violated during SemanticManifest index construction (indicates a bug in the compile pass; should not arise from well-formed input).
 - **Error policy** — `fail-fast`. Resolution, catalog I/O, and Expr compilation form dependency chains: continuing past a failure produces unreliable cascades (e.g. a downstream `TypeMismatch` caused by an earlier `UnresolvedReference` is not a real error, just noise).
 - **I/O permitted** —
   - `CatalogProvider::*` — all methods (metadata fetch, schema lookup, catalog-specific metadata). Exact trait surface ratified in `37`.
   - `FileSystem::{list, read, exists}` — read-side only; no writes. `compile` never mutates external state.
-  - `Repository` — forbidden (Manifest persistence is the caller's concern, not a compile-time I/O entry).
-- **Sync/async** — `async`. This is the pipeline's only async stage. All I/O via `CatalogProvider` and `FileSystem` is async; the orchestrator awaits everything before returning the `Manifest`.
+  - `Repository` — forbidden (SemanticManifest persistence is the caller's concern, not a compile-time I/O entry).
+- **Sync/async** — `async`. This is the pipeline's only async stage. All I/O via `CatalogProvider` and `FileSystem` is async; the orchestrator awaits everything before returning the `SemanticManifest`.
 - **EngineAdapter interaction** — none. The adapter is a query-time concern; its injection points are at `plan` / `optimize` / `adapt`. `compile` does not know about engines.
-- **Forward-refs** — `33` (`Manifest` structural shape, `CompileError` variants, orchestration details), `37` (`CatalogProvider` and `FileSystem` trait surfaces), `11` (name resolution mechanics), `14` (`ExprSource` → `Expr` compilation rules, `FunctionRegistry`), `15` (compile-time `Binding`, `SemanticMapping`, `PhysicalSource` resolution), `16` (Relationship graph and `ComposedSemanticInterface` construction), `17` (`TemporalShape` resolution).
+- **Forward-refs** — `33` (`SemanticManifest` structural shape, `CompileError` variants, orchestration details), `37` (`CatalogProvider` and `FileSystem` trait surfaces), `11` (name resolution mechanics), `14` (`ExprSource` → `Expr` compilation rules, `FunctionRegistry`), `15` (compile-time `Binding`, `SemanticMapping`, `PhysicalSource` resolution), `16` (Relationship graph and `ComposedSemanticInterface` construction), `17` (`TemporalShape` resolution).
 
 ### 3.4 `plan`
 
-- **Purpose** — Construct a canonical `SemanticPlan` from a `Manifest` and a `Request`, performing Constraint evaluation, from-resolution, per-DataKind strategy dispatch, PlanNode construction, and SessionContext materialization.
-- **Input** — `&Manifest` + owned `Request` (which carries an embedded `SessionContext`). Optional injected `EngineAdapter` in **injection mode** (see §3.4.1 below).
+- **Purpose** — Construct a canonical `SemanticPlan` from a `SemanticManifest` and a `Request`, performing Constraint evaluation, from-resolution, per-DataKind strategy dispatch, PlanNode construction, and SessionContext materialization.
+- **Input** — `&SemanticManifest` + owned `Request` (which carries an embedded `SessionContext`). Optional injected `EngineAdapter` in **injection mode** (see §3.4.1 below).
 - **Output** — `SemanticPlan` (structural shape ratified in `35`; strategy-specific construction rules in `20`–`25`; algorithm detail in `34`).
 - **Owning crate** — `semstrait-planner`.
 - **Sub-steps (contract level).** Enumerated; exact algorithms deferred to `34` and the DataKind strategy docs.
   1. **Constraint check (pre-resolution, step 0).** `ConstraintValidator::check()` (per `11 §8.6`) runs as the planner's first action — BEFORE any of the sub-steps numbered below. For v1 realized carriers (Measure, Metric per `11 §8.4`), it evaluates every `constraints:` block on each Measure / Metric named in the Request against the Request's *query scope* (`request.dimensions` ∪ filter-field Dimensions). Failure returns `PlannerError::ConstraintViolation { entity, message }` immediately — fail-fast. This precedes dataset routing, Relationship traversal, and PlanNode construction by design; Constraints can forbid combinations ("this Measure cannot be grouped by that Dimension") that would otherwise make all downstream work meaningless. (Future reserved carriers per `11 §8.5` may select other stages; the per-carrier + per-kind stage matrix is `11 §8.6`.) The sub-steps below assume this check has already passed.
-  2. **From-resolution.** If `Request.from` is set, the target DataKind is looked up directly (from-first). If `Request.from` is omitted, **field-first resolution** runs: the planner maps each requested Semantics back to its owning DataKind(s) via Manifest indices and, if the fields span multiple DataKinds, traverses the Relationship graph to form a `ComposedSemanticInterface` over the constituents (00 §4.1 `Request`, `ComposedSemanticInterface`; detailed rules in `16` and `34`).
+  2. **From-resolution.** If `Request.from` is set, the target DataKind is looked up directly (from-first). If `Request.from` is omitted, **field-first resolution** runs: the planner maps each requested Semantics back to its owning DataKind(s) via SemanticManifest indices and, if the fields span multiple DataKinds, traverses the Relationship graph to form a `ComposedSemanticInterface` over the constituents (00 §4.1 `Request`, `ComposedSemanticInterface`; detailed rules in `16` and `34`).
   3. **Strategy dispatch.** The resolved target DataKind's variant selects the planner strategy: Simple (`21`), Grainset (`22`), Unionset (`23`), Joinset (`24`). `Compose`d targets dispatch per `16` / `24` rules. Each strategy's PlanNode construction is documented in its own data-kind spec; `10` treats the dispatch as opaque here.
   4. **PlanNode construction.** The strategy emits a canonical PlanNode tree (`35`). Adapter **injection hooks** (§3.4.1) may override specific nodes at defined extension points.
   5. **Expression inlining.** Semantics-level `Expr`s (computed Dimensions, Metrics, Filters) are inlined into their use sites on the PlanNode tree. Expressions are already typed (compiled from `ExprSource` in `compile`); no type inference happens at plan time.
   6. **SessionContext materialization.** Time-sensitive values from `SessionContext` (query clock, caller timezone) are substituted into the PlanNode tree as concrete literals at this stage, not threaded through. After this sub-step, the `SemanticPlan` is self-contained and SessionContext-free (b5).
-  7. **SemanticPlan assembly.** Final PlanNode tree + Manifest reference + optional lineage metadata are packaged into the returned `SemanticPlan`.
+  7. **SemanticPlan assembly.** Final PlanNode tree + SemanticManifest reference + optional lineage metadata are packaged into the returned `SemanticPlan`.
 
 - **Invariants upheld** —
   - I4 — canonical IR only in the output (`PlanNode`, `Expr`, `DataType`, `CanonicalFn`); no engine-specific types leak in.
-  - I5 — planner performs only **Semantics lookup** via Manifest indices; no name resolution, no scope walking. Any identifier unknown to the index is `PlanError::UnknownReference`.
+  - I5 — planner performs only **Semantics lookup** via SemanticManifest indices; no name resolution, no scope walking. Any identifier unknown to the index is `PlanError::UnknownReference`.
   - I6 — synchronous; no `.await`.
-  - I8 — operates through the `Manifest` alone; no YAML parsing, no catalog queries (except the I11 out-of-band drift check, which is done **before** `plan` begins by the caller).
-  - Determinism — given `(Manifest, Request)`, `plan`'s output is deterministic. SessionContext-sourced values are materialized as concrete literals (§3.4 sub-step 6), so any non-determinism is bounded to the SessionContext supplied by the caller; the planner itself introduces none.
+  - I8 — operates through the `SemanticManifest` alone; no YAML parsing, no catalog queries (except the I11 out-of-band drift check, which is done **before** `plan` begins by the caller).
+  - Determinism — given `(SemanticManifest, Request)`, `plan`'s output is deterministic. SessionContext-sourced values are materialized as concrete literals (§3.4 sub-step 6), so any non-determinism is bounded to the SessionContext supplied by the caller; the planner itself introduces none.
 - **Error type** — `PlanError`. Typical variant families (exact list ratified in `34`):
   - `ConstraintViolation { entity, message }` — a `constraints:` block on a requested Measure / Metric rejected the Request (v1 realized carriers per `11 §8.4`). Single typed variant; the free-form `message` field encodes which rule (`one_of` / `none_of` / `all` / `allowed` / `prohibited`) fired. Typed enum fan-out per rule is deferred per `11 §8.7` (`[TD-CONSTRAINT-ERROR-FANOUT]`).
-  - `UnknownReference` — a `Request`-side identifier (field, from, filter target) does not match any Manifest index.
+  - `UnknownReference` — a `Request`-side identifier (field, from, filter target) does not match any SemanticManifest index.
   - `AmbiguousFieldFirstResolution` — field-first resolution found multiple unrelated target DataKinds and the Relationship graph does not connect them.
   - `UnsupportedRequestShape` — the `Request` asks for a combination the strategy cannot satisfy (e.g. ordering over a Metric the target DataKind does not expose).
   - `StrategyDispatchFailed` — internal; indicates a bug in strategy dispatch (should not arise from well-formed inputs).
@@ -320,7 +320,7 @@ This section cements the layering implied by §3's per-stage Owning-crate fields
 |---|---|---|
 | `parse` | `semstrait-model` | owns the Model specification and YAML parsing |
 | `validate` | `semstrait-model` | Preconditions are model-level rules, co-located with the Model spec; `validate` is a pure predicate over `SemanticModel` |
-| `compile` | `semstrait-manifest` (orchestrator) + `semstrait-catalog` (metadata I/O) + `semstrait-model` (AST source) | produces the `Manifest` from a validated `SemanticModel`: fetches catalog metadata, resolves references and names, expands globs, compiles `Expr`s, builds indices |
+| `compile` | `semstrait-manifest` (orchestrator) + `semstrait-catalog` (metadata I/O) + `semstrait-model` (AST source) | produces the `SemanticManifest` from a validated `SemanticModel`: fetches catalog metadata, resolves references and names, expands globs, compiles `Expr`s, builds indices |
 | `plan` | `semstrait-planner` | constructs the `SemanticPlan`; may call injected `EngineAdapter` hooks |
 | `optimize` | `semstrait-planner` | canonical optimization passes; may call injected `EngineAdapter` hooks |
 | `adapt` | `semstrait-adapter` | transforms `SemanticPlan` → `EngineArtifact`; `emit` is the SQL-specific form (`Sql(SqlArtifact)`) |
@@ -467,8 +467,8 @@ This matrix refines `00 §9 I11`. Every cell is either a permitted trait method 
 
 **Out-of-pipeline I/O entries** (per I11, outside every `§3.x` stage):
 
-- `Repository::load` — fetching a Manifest from persistent storage before the first `Request`. Awaited before `plan` begins. Not a pipeline stage.
-- `CatalogProvider::check_schema_drift` — narrow drift validation against a previously-compiled Manifest. Awaited before `plan` begins. Not a pipeline stage.
+- `Repository::load` — fetching a SemanticManifest from persistent storage before the first `Request`. Awaited before `plan` begins. Not a pipeline stage.
+- `CatalogProvider::check_schema_drift` — narrow drift validation against a previously-compiled SemanticManifest. Awaited before `plan` begins. Not a pipeline stage.
 
 Both entries are explicit, synchronous from the caller's perspective, and outside the `plan → optimize → adapt` synchronous chain.
 
@@ -478,10 +478,10 @@ Both entries are explicit, synchronous from the caller's perspective, and outsid
 
 The pipeline is split into two phases with distinct posture:
 
-- **Compile-time phase** — `parse` → `validate` → `compile`. Async permitted at `compile` (catalog / filesystem I/O). Produces the Manifest. Runs once per Model revision.
-- **Query-time phase** — `plan` → `optimize` → `adapt`. Fully synchronous (I6). Runs once per `Request`. Consumes the Manifest by reference.
+- **Compile-time phase** — `parse` → `validate` → `compile`. Async permitted at `compile` (catalog / filesystem I/O). Produces the SemanticManifest. Runs once per Model revision.
+- **Query-time phase** — `plan` → `optimize` → `adapt`. Fully synchronous (I6). Runs once per `Request`. Consumes the SemanticManifest by reference.
 
-The boundary artifact is the `Manifest`. Once it is in memory (either freshly compiled or loaded via `Repository::load`), the query-time phase is guaranteed synchronous and I/O-free except for the two I11 out-of-band entries listed in §6.
+The boundary artifact is the `SemanticManifest`. Once it is in memory (either freshly compiled or loaded via `Repository::load`), the query-time phase is guaranteed synchronous and I/O-free except for the two I11 out-of-band entries listed in §6.
 
 ```mermaid
 flowchart TD
@@ -491,7 +491,7 @@ flowchart TD
         parse --> SM[SemanticModel]
         SM --> validate(validate)
         validate --> compile(compile)
-        compile --> M[(Manifest - fresh)]
+        compile --> M[(SemanticManifest - fresh)]
         CP{{CatalogProvider}} -.->|async| compile
         FS{{FileSystem}} -.->|async| compile
     end
@@ -499,7 +499,7 @@ flowchart TD
     subgraph OB["Out-of-band I/O (outside pipeline stages; awaited before plan)"]
         direction LR
         M -.->|Repository persist| STORE[(persistent store)]
-        STORE -.->|Repository load| MEM[(Manifest - in memory)]
+        STORE -.->|Repository load| MEM[(SemanticManifest - in memory)]
         MEM -.->|optional| DRIFT{{CatalogProvider check-schema-drift}}
     end
 
@@ -517,10 +517,10 @@ flowchart TD
 
 **Notes on the diagram.**
 
-- The boundary artifact is the `Manifest`. Everything upstream of it (parse / validate / compile, plus the permitted I/O at compile) is Phase 1. Everything downstream (plan / optimize / adapt) is Phase 2 and is strictly synchronous.
+- The boundary artifact is the `SemanticManifest`. Everything upstream of it (parse / validate / compile, plus the permitted I/O at compile) is Phase 1. Everything downstream (plan / optimize / adapt) is Phase 2 and is strictly synchronous.
 - Two handoff paths into Phase 2 exist:
-  - **Fresh compile path** — the Manifest produced by a just-completed compile is used directly, no serialization or I/O in between. Shown as the dashed `same-process fast path` edge.
-  - **Load path** — a previously-persisted Manifest is fetched via `Repository::load` (dashed), optionally followed by `CatalogProvider::check_schema_drift`. Both are awaited before `plan` begins.
+  - **Fresh compile path** — the SemanticManifest produced by a just-completed compile is used directly, no serialization or I/O in between. Shown as the dashed `same-process fast path` edge.
+  - **Load path** — a previously-persisted SemanticManifest is fetched via `Repository::load` (dashed), optionally followed by `CatalogProvider::check_schema_drift`. Both are awaited before `plan` begins.
 - The Repository persist / load and the drift check are the **only** two I/O touchpoints outside the pipeline stages (I11). They are not stages; they are framing operations the caller performs around the pipeline. They may be async from the caller's perspective, but from the pipeline's perspective, they complete before `plan` begins, preserving the synchronous Phase 2 chain.
 - `CatalogProvider` appears twice in the diagram: once as the compile-time metadata source (inside Phase 1), and once as the out-of-band drift checker (between phases). These are the same trait; different call sites with different method signatures (ratified in `37`).
 
@@ -535,7 +535,7 @@ flowchart TD
 | `optimize` | sync | I6 hot path |
 | `adapt` | sync | I6 hot path |
 
-The async boundary is exactly one stage: `compile`. Everything downstream is synchronous from the moment the Manifest is produced. The two I11 out-of-band I/O entries (`Repository::load`, `CatalogProvider::check_schema_drift`) are awaited **before** `plan` begins and do not break the `plan → optimize → adapt` synchronous chain.
+The async boundary is exactly one stage: `compile`. Everything downstream is synchronous from the moment the SemanticManifest is produced. The two I11 out-of-band I/O entries (`Repository::load`, `CatalogProvider::check_schema_drift`) are awaited **before** `plan` begins and do not break the `plan → optimize → adapt` synchronous chain.
 
 ## 9. Non-Goals / Deferred
 

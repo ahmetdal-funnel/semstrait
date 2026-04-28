@@ -17,7 +17,7 @@ authoritative-for:
   - "`SemStraitError` unified error enum (per-stage variants; no new subsystem prefix)"
   - "warning propagation across the parse → validate → compile → plan → adapt pipeline at the API-crate boundary"
   - "one-shot convenience contract (`compile_and_plan_and_adapt`)"
-  - "streaming / incremental contract (compile-once, plan-many against a shared `Manifest`)"
+  - "streaming / incremental contract (compile-once, plan-many against a shared `SemanticManifest`)"
   - "async / sync boundary exposed on the API-crate surface (compile-stage async entries; plan / optimize / adapt sync entries; I11b drift-check async entry)"
   - "diagnostic-propagation discipline (source-order guarantee within a stage; cross-stage ordering; de-duplication)"
   - "crate boundaries: no new domain logic; no I/O beyond injected providers; no raw SQL; no catalog branching"
@@ -102,7 +102,7 @@ The minimum set of types a caller needs to drive the pipeline end-to-end:
 
 - From `31`: `Diagnostic`, `Severity`, `Request`, `SessionContext`.
 - From `32`: `SemanticModel`, `ParseErrors`, `ValidateErrors`.
-- From `33`: `Manifest`, `ManifestId`, `ManifestMetadata`, `CompileErrors`, `Repository`, `RepositoryError`.
+- From `33`: `SemanticManifest`, `SemanticManifestId`, `SemanticManifestMetadata`, `CompileErrors`, `Repository`, `RepositoryError`.
 - From `34`: `PlanErrors`.
 - From `35`: `SemanticPlan`, `EngineArtifact`, `SqlArtifact`, `EnginePlan`.
 - From `36`: `EngineAdapter`, `AdapterId`, `AdaptError`.
@@ -126,7 +126,7 @@ pub use outcome::PipelineOutcome;
 pub use semstrait_core::{Diagnostic, Severity, Request, SessionContext};
 pub use semstrait_model::{SemanticModel, ParseErrors, ValidateErrors};
 pub use semstrait_manifest::{
-    Manifest, ManifestId, ManifestMetadata, CompileErrors,
+    SemanticManifest, SemanticManifestId, SemanticManifestMetadata, CompileErrors,
     Repository,
 };
 pub use semstrait_planner::PlanErrors;
@@ -169,14 +169,14 @@ impl SemStrait {
     pub fn builder() -> SemStraitBuilder;
 
     pub async fn compile_from_yaml(&self, yaml: &str)
-        -> Result<Manifest, CompileErrors>;
+        -> Result<SemanticManifest, CompileErrors>;
     pub async fn compile_from_model(&self, model: SemanticModel)
-        -> Result<Manifest, CompileErrors>;
+        -> Result<SemanticManifest, CompileErrors>;
 
-    pub fn plan(&self, manifest: &Manifest, request: Request)
+    pub fn plan(&self, manifest: &SemanticManifest, request: Request)
         -> Result<SemanticPlan, PlanErrors>;
     pub fn adapt(&self, adapter: &dyn EngineAdapter,
-                 plan: &SemanticPlan, manifest: &Manifest)
+                 plan: &SemanticPlan, manifest: &SemanticManifest)
         -> Result<EngineArtifact, AdaptError>;
 
     pub async fn compile_and_plan_and_adapt(
@@ -184,11 +184,11 @@ impl SemStrait {
     ) -> Result<(EngineArtifact, Vec<Diagnostic>), SemStraitError>;
 
     // I11b — out-of-band gated entries
-    pub async fn save_manifest(&self, manifest: &Manifest)
-        -> Result<ManifestId, SemStraitError>;
-    pub async fn load_manifest(&self, id: ManifestId)
-        -> Result<Manifest, SemStraitError>;
-    pub async fn validate_manifest(&self, manifest: &Manifest)
+    pub async fn save_manifest(&self, manifest: &SemanticManifest)
+        -> Result<SemanticManifestId, SemStraitError>;
+    pub async fn load_manifest(&self, id: SemanticManifestId)
+        -> Result<SemanticManifest, SemStraitError>;
+    pub async fn validate_manifest(&self, manifest: &SemanticManifest)
         -> Result<DriftReport, SemStraitError>;
 
     pub fn warning_policy(&self) -> WarningPolicy;
@@ -197,13 +197,13 @@ impl SemStrait {
 }
 ```
 
-`adapt` takes `&Manifest` because adapters reach into resolved bindings (`36 §3.1`); `compile_and_plan_and_adapt` is async only so it can straddle the compile I/O boundary. `save_manifest` / `load_manifest` require `self.repository.is_some()` — otherwise they return `SemStraitError::NoRepositoryConfigured`.
+`adapt` takes `&SemanticManifest` because adapters reach into resolved bindings (`36 §3.1`); `compile_and_plan_and_adapt` is async only so it can straddle the compile I/O boundary. `save_manifest` / `load_manifest` require `self.repository.is_some()` — otherwise they return `SemStraitError::NoRepositoryConfigured`.
 
 ### 3.4 Method contracts
 
 - **`compile_from_yaml`** — `parse` (`32 §9`) → `validate` (`32 §11`) → `compile` (`33 §9`). Errors short-circuit into `CompileErrors` (fail-fast carrier per `30 §7`). Parse / validate errors are mapped into the `CompileErrors.fatal` slot via `IntoDiagnostic` (`30 §5.4`).
 - **`compile_from_model`** — Skips parse; still runs validate + compile. For callers that synthesize `SemanticModel`s or apply custom post-parse transforms.
-- **`plan`** — Wraps `semstrait_planner::plan(manifest, request, &self.optimizer_passes, self.function_registry)` (signature per `34 §*`, drafted in parallel); applies `self.warning_policy` to the returned warnings.
+- **`plan`** — Wraps `semstrait_planner::plan(&SemanticManifest, Request) -> Result<SemanticPlan, PlanErrors>` (canonical 2-arg signature per `34 §6.1`), then applies optimization via `34 §12.5`'s `OptimizerBuilder` (`OptimizerBuilder::new().with(self.optimizer_passes.clone()).build().apply(...)` when the builder slot is non-empty; otherwise `Optimizer::with_v1_passes()` per `34 §11.2`). The function-registry handle is consumed by the planner via the process-global `function_registry()` (`31 §5.2`) — not threaded as a per-call argument. `self.warning_policy` is applied to the returned warnings on success.
 - **`adapt`** — Wraps `adapter.adapt(plan, manifest)` (`36 §3.1`). Per-stage method preserves native `AdaptError`; only the fused helper wraps it as `SemStraitError::AdaptStage`.
 - **`compile_and_plan_and_adapt`** — Runs compile → plan → adapt. Accumulates warnings across stages in source order (`§10.2`). On error, returns the first failing stage as a `SemStraitError` variant with warnings up to that point preserved inside the variant.
 - **`save_manifest` / `load_manifest`** — Wrap `Repository::save` / `Repository::load` (`33 §11`). Require `self.repository.is_some()`; otherwise `SemStraitError::NoRepositoryConfigured`.
@@ -260,13 +260,13 @@ The builder itself is `pub`, but fields are `pub(crate)`; configuration flows th
 ```rust
 impl SemStraitBuilder {
     pub fn new() -> Self;            // all None / empty / default
-    pub fn catalog_provider(self, cp: Arc<dyn CatalogProvider>) -> Self;
-    pub fn file_system(self, fs: Arc<dyn FileSystem>) -> Self;
-    pub fn repository(self, repo: Arc<dyn Repository>) -> Self;
-    pub fn function_registry(self, reg: &'static FunctionRegistry) -> Self;
-    pub fn optimizer_pass(self, pass: Box<dyn OptimizerPass>) -> Self;
-    pub fn optimizer_passes(self, passes: Vec<Box<dyn OptimizerPass>>) -> Self;
-    pub fn warning_policy(self, policy: WarningPolicy) -> Self;
+    pub fn with_catalog_provider(self, cp: Arc<dyn CatalogProvider>) -> Self;
+    pub fn with_file_system(self, fs: Arc<dyn FileSystem>) -> Self;
+    pub fn with_repository(self, repo: Arc<dyn Repository>) -> Self;
+    pub fn with_function_registry(self, reg: &'static FunctionRegistry) -> Self;
+    pub fn with_optimizer_pass(self, pass: Box<dyn OptimizerPass>) -> Self;
+    pub fn with_optimizer_passes(self, passes: Vec<Box<dyn OptimizerPass>>) -> Self;
+    pub fn with_warning_policy(self, policy: WarningPolicy) -> Self;
     pub fn build(self) -> Result<SemStrait, SemStraitError>;
 }
 
@@ -275,13 +275,13 @@ impl Default for SemStraitBuilder {
 }
 ```
 
-`optimizer_pass` appends; `optimizer_passes` replaces. This mirrors common builder conventions (e.g. `reqwest::ClientBuilder`) and lets callers either additively extend the canonical-pass list or replace it wholesale.
+Setters use the Rust idiomatic `with_*` prefix to clearly signal "consume self, return modified self" — the chain-builder convention shared with `reqwest::ClientBuilder` / `tokio::runtime::Builder` / `clap::Command`. `with_optimizer_pass` appends; `with_optimizer_passes` replaces. The field names on `SemStraitBuilder` and `SemStrait` themselves stay un-prefixed (`catalog_provider`, `file_system`, …) — `with_` is a setter convention, not a field convention.
 
 ### 4.5 Field rationale
 
 - **`catalog_provider` / `file_system` / `repository`** — `Arc<dyn ...>` because the same provider commonly backs multiple `SemStrait` handles in a service, and I3 forbids branching on concrete type. All three traits are `Send + Sync` (`37 §3.2`, `37 §5.2`, `33 §11.1`). `repository` is optional; its absence gates `save_manifest` / `load_manifest` into `NoRepositoryConfigured` but does not affect compile / plan / adapt.
 - **`function_registry: &'static FunctionRegistry`** — Per `31 §5.2`, the canonical registry is process-global and sealed. The field is `Option` only so `build` can fill it from `semstrait_core::function_registry()` when unset. In v1 the process-global registry is the only option; `Q-API-006` parks the question of per-handle registries.
-- **`optimizer_passes: Vec<Box<dyn OptimizerPass>>`** — Per `34 §*`, the planner accepts an explicit pass pipeline. `optimizer_pass` appends (additive); `optimizer_passes` replaces wholesale. `build` prepends the canonical-pass list from `34` to the caller-accumulated pipeline unless replace-mode was used.
+- **`optimizer_passes: Vec<Box<dyn OptimizerPass>>`** — Per `34 §11` / `34 §12.5`, optimization runs via `OptimizerBuilder::apply` on the `SemanticPlan` returned by `plan`. `with_optimizer_pass` appends (additive); `with_optimizer_passes` replaces wholesale. `build` prepends the canonical-pass list from `34 §11.2` to the caller-accumulated pipeline unless replace-mode was used. The planner's `plan(manifest, request)` itself takes only those two arguments (`34 §6.1`); pass plumbing happens in the optimizer step that `SemStrait::plan` runs after the canonical planner call.
 - **`warning_policy: WarningPolicy`** — See `§5`.
 
 ### 4.6 Validation at `build`
@@ -296,7 +296,7 @@ On missing required fields: `Err(SemStraitError::BuilderInvalid { missing })`.
 
 ### 4.7 `const fn` constructors
 
-`SemStraitBuilder::new` is `const fn` (all fields initialize to `None` / `Vec::new()` / `WarningPolicy::Accumulate`), letting callers declare builders in `static` / `const` items. Chain methods accepting `Arc<dyn …>` cannot be `const`; `warning_policy` could in principle be made `const fn` in a future MINOR.
+`SemStraitBuilder::new` is `const fn` (all fields initialize to `None` / `Vec::new()` / `WarningPolicy::Accumulate`), letting callers declare builders in `static` / `const` items. Chain methods accepting `Arc<dyn …>` cannot be `const`; `with_warning_policy` could in principle be made `const fn` in a future MINOR.
 
 ---
 
@@ -463,8 +463,8 @@ One call site, one error mapping. `semstrait-facade` (`39`) builds on this patte
 
 ### 7.3 When NOT to use the fused helper
 
-- **Streaming / incremental.** Callers reusing a `Manifest` across many requests prefer the compile-once pattern (`§8`).
-- **Per-stage inspection.** Callers that need to inspect the `Manifest` (e.g. to write it to a cache, to log the schema, to emit a dataflow diagram) must use the per-stage methods.
+- **Streaming / incremental.** Callers reusing a `SemanticManifest` across many requests prefer the compile-once pattern (`§8`).
+- **Per-stage inspection.** Callers that need to inspect the `SemanticManifest` (e.g. to write it to a cache, to log the schema, to emit a dataflow diagram) must use the per-stage methods.
 - **Custom error routing.** Callers that want to route parse errors differently from adapt errors inspect the `SemStraitError` variant on `Err`, which is identical cost to using per-stage methods.
 
 ---
@@ -477,19 +477,19 @@ The expected pattern for services answering many requests against a stable model
 
 ```rust
 // Once at startup:
-let manifest: Arc<Manifest> = Arc::new(semstrait.compile_from_yaml(&yaml).await?);
+let manifest: Arc<SemanticManifest> = Arc::new(semstrait.compile_from_yaml(&yaml).await?);
 
 // Per request:
 let plan = semstrait.plan(&manifest, request)?;
 let artifact = semstrait.adapt(adapter, &plan, &manifest)?;
 ```
 
-`Manifest` is `Send + Sync` and cheap to `Arc`-share (`33 §7.6`). The `plan` + `adapt` hot path is synchronous (I6), so a service that holds an `Arc<Manifest>` answers requests on many threads without re-entering async.
+`SemanticManifest` is `Send + Sync` and cheap to `Arc`-share (`33 §7.6`). The `plan` + `adapt` hot path is synchronous (I6), so a service that holds an `Arc<SemanticManifest>` answers requests on many threads without re-entering async.
 
 ### 8.2 Lifecycle expectations
 
-- **Manifest freshness.** A `Manifest` captures a catalog snapshot at compile time (`33 §13.2`). Long-lived manifests SHOULD be periodically re-validated via `SemStrait::validate_manifest` (I11b); a `Breaking` `DriftStatus` means re-compile.
-- **No implicit caching.** `SemStrait` does NOT cache manifests, plans, or artifacts. Callers that want caching hold `Arc<Manifest>` themselves.
+- **SemanticManifest freshness.** A `SemanticManifest` captures a catalog snapshot at compile time (`33 §13.2`). Long-lived manifests SHOULD be periodically re-validated via `SemStrait::validate_manifest` (I11b); a `Breaking` `DriftStatus` means re-compile.
+- **No implicit caching.** `SemStrait` does NOT cache manifests, plans, or artifacts. Callers that want caching hold `Arc<SemanticManifest>` themselves.
 - **Per-request construction.** `Request` (`31 §14`) is a value type; `SessionContext` may shift per request without forcing re-compile.
 - **Fan-out.** `SemStrait` is `Send + Sync + Clone` (cheap `Arc`-clone); fan out via `Arc<SemStrait>` into worker tasks.
 
@@ -503,7 +503,7 @@ let manifest = semstrait.load_manifest(id).await?;
 let plan = semstrait.plan(&manifest, request)?;
 ```
 
-`ManifestId` round-trips; identical `(model, catalog snapshot)` pairs produce the same id (`33 §3.5`), so save/load is content-addressable.
+`SemanticManifestId` round-trips; identical `(model, catalog snapshot)` pairs produce the same id (`33 §3.5`), so save/load is content-addressable.
 
 ### 8.4 Out of v1 scope
 
@@ -545,7 +545,7 @@ Per `30 §9`, async surfaces are executor-agnostic. `semstrait-api`'s async meth
 
 ### 9.4 Fused helper: async → sync transition
 
-Inside `compile_and_plan_and_adapt`, the last `.await` is in the compile step; `plan` and `adapt` execute synchronously on the same future. From the caller's perspective, a single async call internally transitions from I/O-bearing execution to pure CPU work once the Manifest lands. This is the I6 "hot path is synchronous" discipline surfaced at the fused-helper level.
+Inside `compile_and_plan_and_adapt`, the last `.await` is in the compile step; `plan` and `adapt` execute synchronously on the same future. From the caller's perspective, a single async call internally transitions from I/O-bearing execution to pure CPU work once the SemanticManifest lands. This is the I6 "hot path is synchronous" discipline surfaced at the fused-helper level.
 
 ### 9.5 Blocking in callers
 
@@ -571,7 +571,7 @@ The accumulated warning vector in `compile_and_plan_and_adapt`'s success arm is 
 [ parse_diags ... , validate_diags ... , compile_diags ... , plan_diags ... , adapt_diags ... ]
 ```
 
-Within each stage block, source-order. Across stage blocks, pipeline order. No interleaving. This guarantees that two identical runs produce byte-identical diagnostic vectors (subject to non-determinism in the catalog — which `33 §13.2` requires to be stabilized into the Manifest).
+Within each stage block, source-order. Across stage blocks, pipeline order. No interleaving. This guarantees that two identical runs produce byte-identical diagnostic vectors (subject to non-determinism in the catalog — which `33 §13.2` requires to be stabilized into the SemanticManifest).
 
 ### 10.3 De-duplication
 
@@ -635,11 +635,11 @@ The builder exposes `Arc<dyn CatalogProvider>`, `Arc<dyn FileSystem>`, `Arc<dyn 
 | Direct I/O                                       | **NO.** Every I/O call routes through `Arc<dyn CatalogProvider>`, `Arc<dyn FileSystem>`, `Arc<dyn Repository>`. No network, disk, or process-call lives inside `semstrait-api`. |
 | Catalog-type branching (I3)                      | **NO.** Every dispatch over `&dyn CatalogProvider`; concrete type is not inspected. |
 | Function-registry construction                   | **NO.** `function_registry()` from `31` is the sole source of the global registry; the builder's field accepts a pre-built `&'static FunctionRegistry` only. |
-| Manifest mutation                                | **NO.** `Manifest` is sealed per `33 §7.4`. `SemStrait::save_manifest` takes `&Manifest` and produces a `ManifestId`; it does not mutate. |
+| SemanticManifest mutation                                | **NO.** `SemanticManifest` is sealed per `33 §7.4`. `SemStrait::save_manifest` takes `&SemanticManifest` and produces a `SemanticManifestId`; it does not mutate. |
 | Plan mutation                                    | **NO.** `SemanticPlan` is `#[non_exhaustive]` but treated as immutable downstream of the planner. |
 | Async runtime pinning                            | **NO.** `tokio`-neutral per `30 §9`. |
 | Warning-policy enforcement at stages              | **NO.** Stages are unaware of `WarningPolicy`; enforcement is strictly at `semstrait-api`'s return boundary (`§5.4`). |
-| Cross-stage dependency reasoning                 | **NO.** `SemStrait::plan` does not inspect the `Manifest`'s internal structure; it hands the `Manifest` + `Request` to the planner and consumes the result. |
+| Cross-stage dependency reasoning                 | **NO.** `SemStrait::plan` does not inspect the `SemanticManifest`'s internal structure; it hands the `SemanticManifest` + `Request` to the planner and consumes the result. |
 | One-shot convenience                             | **YES.** `compile_and_plan_and_adapt` is owned here. |
 | Warning aggregation at stage boundaries          | **YES.** `WarningPolicy` + diagnostic concatenation live here. |
 | Builder ergonomics                               | **YES.** `SemStraitBuilder` is owned here. |
@@ -688,7 +688,7 @@ Each item is parked with arguments-for, arguments-against, and a next-step in `q
 ## 15. Round-1 ratifications
 
 - §2.1 public-item roster and stability tier; §2.2 re-export set from `31`–`37`.
-- §3.4 `SemStrait` method signatures (adapting `adapt` to include `&Manifest` per `36 §3.1`); §3.6 I6 / I10 / I11 / I12 invariants at method level.
+- §3.4 `SemStrait` method signatures (adapting `adapt` to include `&SemanticManifest` per `36 §3.1`); §3.6 I6 / I10 / I11 / I12 invariants at method level.
 - §4.3–§4.4 `SemStraitBuilder` required / optional fields and chain-method roster.
 - §5.2 `WarningPolicy` three-variant set; §5.3–§5.4 escalation and boundary-application rules.
 - §6.2 `SemStraitError` nine-variant set; §6.3 no new subsystem prefix (per-stage diagnostics carry their owning subsystem's code); §6.6 `StageOrigin` enum.

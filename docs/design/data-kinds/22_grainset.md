@@ -40,23 +40,6 @@ refined-by:
 
 ---
 
-## Table of Contents
-
-1. [Purpose and Scope](#1-purpose-and-scope)
-2. [The `Grainset` variant](#2-the-grainset-variant)
-3. [Child declaration](#3-child-declaration)
-4. [Child selection algorithm](#4-child-selection-algorithm)
-5. [Interaction with `TemporalShape`](#5-interaction-with-temporalshape)
-6. [Interaction with `Coverage`](#6-interaction-with-coverage)
-7. [Validation Preconditions](#7-validation-preconditions)
-8. [Compile Preconditions](#8-compile-preconditions)
-9. [Plan-stage rules](#9-plan-stage-rules)
-10. [Plan shape](#10-plan-shape)
-11. [Worked example](#11-worked-example)
-12. [Round-1 open items](#12-round-1-open-items)
-
----
-
 ## 1. Purpose and Scope
 
 ### 1.1 What `22` ratifies
@@ -97,10 +80,10 @@ Concretely, `22` ratifies:
 | Invariant | Where `22` keeps it |
 |---|---|
 | **I1** — no raw SQL | Per-child selection is structural; the delegated sub-plan is a `SemanticPlan` subtree assembled from `PlanNode`s and `PhysicalExpr`s, never a string. |
-| **I4** — Manifest determinism | The Manifest's `ResolvedGrainsetDataKind` records children in **declaration order** (§2.2). The child-selection algorithm is a deterministic function of `(Manifest, Request)`: eligibility is a set membership check, cost is arithmetic, ties break by declaration order. Identical Manifest + Request → identical chosen child → identical plan. |
+| **I4** — SemanticManifest determinism | The SemanticManifest's `ResolvedGrainsetDataKind` records children in **declaration order** (§2.2). The child-selection algorithm is a deterministic function of `(SemanticManifest, Request)`: eligibility is a set membership check, cost is arithmetic, ties break by declaration order. Identical SemanticManifest + Request → identical chosen child → identical plan. |
 | **I5** — resolution at compile time | Every child's `SemanticInterface` / `ComposedSemanticInterface`, Coverage, and natural grain is pre-resolved at `compile`. Plan-time selection is index lookup + arithmetic. |
-| **I6** — synchronous plan hot path | `22 §4`'s algorithm has no I/O, no `.await`, no catalog call. All inputs are already in the `Manifest`. |
-| **I8** — Manifest planner-complete | `ResolvedGrainsetDataKind` carries everything the planner needs: pre-sorted child roster, per-child `natural_grain`, per-child Coverage projection, pre-built Semantics → candidate-children index. |
+| **I6** — synchronous plan hot path | `22 §4`'s algorithm has no I/O, no `.await`, no catalog call. All inputs are already in the `SemanticManifest`. |
+| **I8** — SemanticManifest planner-complete | `ResolvedGrainsetDataKind` carries everything the planner needs: pre-sorted child roster, per-child `natural_grain`, per-child Coverage projection, pre-built Semantics → candidate-children index. |
 | **I10** — non-exhaustive | `GrainsetChild`, `RollupPolicy`, and the composition-kind tag are `#[non_exhaustive]`. |
 | **I12** — first-class diagnostics | `22`'s error set lives in `VALID_E_22xx` / `COMP_E_22xx` / `PLAN_E_22xx`. §§7–9 enumerate. |
 
@@ -189,12 +172,12 @@ pub enum RollupPolicy {
 }
 ```
 
-### 2.2 Manifest-layer counterpart
+### 2.2 SemanticManifest-layer counterpart
 
 Per `20 §*` and the `Resolved*` prefix convention in `00 §4.1`:
 
 ```rust
-/// Manifest-layer Grainset. Planner-optimized: children are indexed
+/// SemanticManifest-layer Grainset. Planner-optimized: children are indexed
 /// by natural grain and pre-sorted for the eligibility scan.
 pub struct ResolvedGrainsetDataKind {
     pub children: Vec<ResolvedGrainsetChild>,
@@ -297,13 +280,14 @@ When a child's `grain:` key is omitted, the natural grain is inherited from the 
 
 The per-child `coverage: CompositionCoverage` field on `GrainsetChild` is **not** declared in YAML. It is folded at `compile` from the child's Binding-level Coverage (`15 §6`) for Simple children, or from the child's composition-level Coverage (`16 §8`) for Complex children, projected onto the Grainset's composed-surface Semantics set.
 
-Concretely, for each Semantics name `S` on the Grainset's composed surface, the compile-time fold computes the child's coverage of `S` per `16 §8.4`'s `Native > Derived > NullFill` precedence:
+Concretely, for each Semantics name `S` on the Grainset's composed surface, the compile-time fold computes the child's coverage of `S` per `16 §8.4`'s coverage-fold rules:
 
 - `Native` — the child directly provides `S`.
 - `Derived` — the child computes `S` via a `PhysicalExpr` referencing columns present on (at least one of) its sources.
+- `Metadata` — the child provides `S` as a compile-resolved metadata literal (e.g. path-token) per `15 §5.5` / `15 §8`. Folds identically to `Native` / `Derived` (per `16 §8.4`).
 - `NullFill` — the child does not provide `S` at all.
 
-`Native` and `Derived` entries participate in the eligibility predicate (§4.2); `NullFill` entries participate only under the partial-coverage fallback rule (§4.2 step 3).
+`Native`, `Derived`, and `Metadata` entries participate in the eligibility predicate (§4.2); `NullFill` entries participate only under the partial-coverage fallback rule (§4.2 step 3).
 
 ### 3.4 Constituent references
 
@@ -324,7 +308,7 @@ When a child is itself a Complex kind, the Grainset delegates through the child'
 
 ## 4. Child selection algorithm
 
-The core planner strategy for Grainset. Runs per-Request, synchronously, against `ResolvedGrainsetDataKind` and the `Manifest` indices.
+The core planner strategy for Grainset. Runs per-Request, synchronously, against `ResolvedGrainsetDataKind` and the `SemanticManifest` indices.
 
 ### 4.1 Request grain extraction
 
@@ -379,7 +363,7 @@ A child is **eligible** for a Request iff:
 2. **Coverage admissibility.** Every `SemanticsName` named in the Request — in `group_by`, `aggregations`, `filters`, `order_by`, or `select` — has a Coverage entry on the child in `{Native, Derived}`.
 3. **Rollup legality.** Per-child shape (`17`) permits rollup from `child.grain` to `request.grain`. §4.3 details.
 
-The coverage admissibility check is a **deterministic subset check**: `RequestedSemantics ⊆ NativeOrDerivedSemantics(child)`. The Manifest's `semantics_to_covering_children` index (§2.2) serves as the reverse-lookup: for each requested Semantics, enumerate the child indices that cover it Natively or Derivedly; intersect across all requested Semantics; the result is the eligibility set before grain and shape filtering.
+The coverage admissibility check is a **deterministic subset check**: `RequestedSemantics ⊆ NativeOrDerivedSemantics(child)`. The SemanticManifest's `semantics_to_covering_children` index (§2.2) serves as the reverse-lookup: for each requested Semantics, enumerate the child indices that cover it Natively or Derivedly; intersect across all requested Semantics; the result is the eligibility set before grain and shape filtering.
 
 ```text
 ELIGIBILITY(request, grainset):
@@ -444,7 +428,7 @@ COST(child, request):
 
 **Rationale.** Stats-free: we do not have row counts, partition-file sizes, or histogram data at the canonical layer (`00 §10` defers cost-based optimization). Source count is the only count-like property every adapter agrees on and every Binding carries.
 
-**Tiebreaker interaction.** Source-count cost is intentionally coarse — many real Manifests will have multiple children with equal source counts. Ties at §4.4 are resolved by the §4.5 deterministic order.
+**Tiebreaker interaction.** Source-count cost is intentionally coarse — many real SemanticManifests will have multiple children with equal source counts. Ties at §4.4 are resolved by the §4.5 deterministic order.
 
 **Forward-compatibility.** When stats-backed cost lands (`[TD-GRAINSET-COST-STATS]`), `COST` becomes a strategy-injectable function; the rest of §4 is unchanged. The hook will live on the planner's `Planner` trait per `34` (open question `Q-GRN-003`).
 
@@ -493,7 +477,7 @@ PROJECT_COVERAGE(child, grainset_semantics) -> CompositionCoverage:
   for each s in grainset_semantics:
     variant ← if child is Simple:
       fold child's Binding-level Coverage (`15 §6.2`) for s
-        across child's sources using `Native > Derived > NullFill`
+        across child's sources per `15 §6.2` / `16 §8.4` rules
     else if child is Complex:
       fold child's composition-level Coverage (`16 §8.4`) for s
         across child's constituents
@@ -505,7 +489,7 @@ The Semantics set `grainset_semantics` is the Grainset's composed-surface name s
 
 ### 6.2 Admissibility check
 
-Per §4.2 step 2, the admissibility check is `RequestedSemantics ⊆ NativeOrDerivedSemantics(child)`. The Manifest's `semantics_to_covering_children` index pre-computes, at `compile`, the reverse mapping: `SemanticsName → Vec<child_index>` filtered to children whose Coverage of the name is `Native` or `Derived`.
+Per §4.2 step 2, the admissibility check is `RequestedSemantics ⊆ NativeOrDerivedSemantics(child)`. The SemanticManifest's `semantics_to_covering_children` index pre-computes, at `compile`, the reverse mapping: `SemanticsName → Vec<child_index>` filtered to children whose Coverage of the name is `Native` or `Derived`.
 
 At plan time:
 
@@ -561,7 +545,7 @@ Run during `compile` after `validate` passes. Fail-fast per `10 §3.3`. Code ran
 
 | Code | Variant | Condition |
 |---|---|---|
-| `COMP_E_2200` | `GrainsetChildUnresolved { grainset, child_index, name }` | A child's `DataKindRef` does not resolve to any top-level DataKind in the Manifest. |
+| `COMP_E_2200` | `GrainsetChildUnresolved { grainset, child_index, name }` | A child's `DataKindRef` does not resolve to any top-level DataKind in the SemanticManifest. |
 | `COMP_E_2201` | `GrainsetGrainAxisMissingOnInterface { grainset, axis }` | `grain_axis` names a Semantics not on the Grainset's own interface. |
 | `COMP_E_2202` | `GrainsetGrainAxisMissingOnChild { grainset, child_index, axis }` | A child's interface lacks the Grainset's `grain_axis` Semantics (the child does not expose the grain axis at all). |
 | `COMP_E_2203` | `GrainsetChildGrainNotInAxis { grainset, child_index, grain, axis_grains }` | Child's declared `grain` is not a member of the Grainset's `grain_axis.grains:` list. Every child's grain must be one of the grains the Grainset declares. |
@@ -572,9 +556,9 @@ Run during `compile` after `validate` passes. Fail-fast per `10 §3.3`. Code ran
 | `COMP_E_2208` | `GrainsetChildShapeUnknown { grainset, child_index }` | `rollup_policy: ShapeDefault` applies and the child has no `TemporalShape` declared AND the Request-time shape fallback rule (`17`) does not apply. Reported at `compile` because the shape is known statically. |
 | `COMP_E_2209` | `GrainsetChildrenGrainAxisDivergent { grainset, child_indices, axes }` | Two children reference different Semantics names as their grain axis, OR the axis resolves to different canonical Dimensions in different children (after name-resolution collisions). |
 
-### 8.1 Manifest-index build
+### 8.1 SemanticManifest-index build
 
-After Preconditions pass, `compile` builds the Manifest indices consumed by §4.2 / §4.4:
+After Preconditions pass, `compile` builds the SemanticManifest indices consumed by §4.2 / §4.4:
 
 1. Sort `children` by natural grain coarseness ascending → populate `children_by_grain_ascending`.
 2. For each `SemanticsName` on the Grainset's composed surface, enumerate child indices with `CoverageVariant ∈ {Native, Derived}` → populate `semantics_to_covering_children`.
@@ -968,7 +952,7 @@ Summary of titles:
 - `24` — Joinset; Grainset children may be Joinsets, and a Grainset may participate in a Joinset path.
 - `25` — per-kind applicability matrix; Grainset cell.
 - `30 §5` / `§6.2` / `§7` — `Diagnostic` shape, `22xx` code-range allocation, severity policy.
-- `33` — `Manifest` / `ResolvedGrainsetDataKind` persistence.
+- `33` — `SemanticManifest` / `ResolvedGrainsetDataKind` persistence.
 - `34` — planner entry-point dispatching Grainset strategy.
 - `35` — `PlanNode` subtree composition.
 

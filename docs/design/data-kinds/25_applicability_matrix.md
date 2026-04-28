@@ -21,19 +21,6 @@ refined-by:
 
 ---
 
-## Table of Contents
-
-1. [Purpose and Scope](#1-purpose-and-scope)
-2. [The Matrix — Foundation Rule × DataKind Variant](#2-the-matrix--foundation-rule--datakind-variant)
-3. [Per-Variant Planner-Strategy Summary](#3-per-variant-planner-strategy-summary)
-4. [Per-Variant Rollup-Legality Summary](#4-per-variant-rollup-legality-summary)
-5. [Per-Variant Coverage & NULL-Fill Summary](#5-per-variant-coverage--null-fill-summary)
-6. [Per-Variant Error-Code Bands](#6-per-variant-error-code-bands)
-7. [Out-of-Scope for `25`](#7-out-of-scope-for-25)
-8. [Round-1 Open Items](#8-round-1-open-items)
-
----
-
 ## 1. Purpose and Scope
 
 ### 1.1 What `25` is
@@ -237,9 +224,9 @@ Round-1 decision recorded: no `Complex` variant authors `SemanticExpr` / `Physic
 
 Coverage gets re-visited at the composition layer in `§2.8` row `16 §8`; the Binding-level cell above is the leaf-per-`PhysicalSource` rule.
 
-`15`'s `Binding`-per-`Simple` rule is load-bearing enough to warrant an explicit table mapping the canonical Manifest-layer counterpart (`15 §7`) onto each variant:
+`15`'s `Binding`-per-`Simple` rule is load-bearing enough to warrant an explicit table mapping the canonical SemanticManifest-layer counterpart (`15 §7`) onto each variant:
 
-| `15` Manifest counterpart | Owned by | Consumers |
+| `15` SemanticManifest counterpart | Owned by | Consumers |
 |---|---|---|
 | `ResolvedColumnMapping` (`15 §7`) | `ResolvedSimpleDataKind.binding` (`21 §2.3`). | Every variant's plan emission reaches it via its Simple children. |
 | `ResolvedPhysicalSource` (`15 §7`) | Same. | Same. |
@@ -312,17 +299,17 @@ The cross-doc invariants `I1`–`I12` ratified in `00 §9` apply uniformly to ev
 
 | Invariant | `Simple` / Dataset | `Grainset` | `Unionset` | `Joinset` |
 |---|---|---|---|---|
-| I1 (no raw SQL in Model / Manifest) | `always`. | `always`. | `always`. | `always`. |
+| I1 (no raw SQL in Model / SemanticManifest) | `always`. | `always`. | `always`. | `always`. |
 | I2 (one canonical `Expr` AST) | `always` — per `14 §3`. | `always`. | `always`. | `always`. |
 | I3 (variant-agnostic `PlanNode` IR) | `always`. | `always`. | `always`. | `always`. |
-| I4 (Manifest deterministic) | `always`. | `always` — strategy output deterministic per `22 §10`. | `always`. | `always` — explicit-path hop order is deterministic per `24 §4.2`. |
+| I4 (SemanticManifest deterministic) | `always`. | `always` — strategy output deterministic per `22 §10`. | `always`. | `always` — explicit-path hop order is deterministic per `24 §4.2`. |
 | I5 (all resolution at compile) | `always`. | `always`. | `always`. | `always`. |
 | I6 (plan hot path synchronous) | `always`. | `always`. | `always`. | `always`. |
 | I7 (single adapter surface `lower_plan`) | `always`. | `always`. | `always`. | `always`. |
-| I8 (Manifest is planner-complete) | `always`. | `always`. | `always`. | `always`. |
+| I8 (SemanticManifest is planner-complete) | `always`. | `always`. | `always`. | `always`. |
 | I9 (Session-context-based overrides) | `always`. | `always`. | `always`. | `always`. |
 | I10 (`#[non_exhaustive]` on public sum types) | `always` — e.g. `DataType`, `Grain`, `TemporalShape`, `ColumnMappingValue`. | `always`. | `always`. | `always` — `JoinType`, `Cardinality`. |
-| I11 (separation of Model / Manifest / Planner / IR) | `always`. | `always`. | `always`. | `always`. |
+| I11 (separation of Model / SemanticManifest / Planner / IR) | `always`. | `always`. | `always`. | `always`. |
 | I12 (first-class diagnostics) | `always` — `VALID_E_21xx` / `COMP_E_21xx` / `PLAN_E_21xx` / `PLAN_W_21xx`. | `always`. | `always`. | `always`. |
 
 ---
@@ -334,8 +321,8 @@ One subsection per variant. Each summary is three-to-five bullets naming the str
 Across all four strategies, four discipline points hold uniformly (per `20 §5.2` `Strategy` trait + `10 §3.4` `plan` stage + `10 §8`):
 
 - **Synchronous hot path** per I6. No `.await` in `Strategy::resolve`; no blocking I/O; no `PhysicalSource` probe.
-- **Manifest-complete input** per I8. Every datum the strategy needs (interface, binding, coverage, provenance, relationships, temporal shape) is already in the `Manifest` by the time `plan` runs.
-- **Deterministic output** per I4. Given identical `(Manifest, Request, SessionContext)`, `Strategy::resolve` produces an identical `PlanNode` tree.
+- **SemanticManifest-complete input** per I8. Every datum the strategy needs (interface, binding, coverage, provenance, relationships, temporal shape) is already in the `SemanticManifest` by the time `plan` runs.
+- **Deterministic output** per I4. Given identical `(SemanticManifest, Request, SessionContext)`, `Strategy::resolve` produces an identical `PlanNode` tree.
 - **Emits diagnostics, not panics** per I12. Unreachable / invariant-violation states emit a `PLAN_E_*` diagnostic; panics are reserved for implementer-bug assertions.
 
 Every strategy's ratification doc repeats these points in its own voice; `§3` does not re-state them per-strategy.
@@ -469,7 +456,7 @@ The two terms both talk about "where a field comes from" but operate at differen
 
 | Question | Answered by `Coverage` / `CompositionCoverage` | Answered by `FieldProvenance` |
 |---|---|---|
-| Does this source / constituent serve this field? | Yes — `CoverageVariant` enumerates `Native` / `Derived` / `NullFill`. | No — provenance is about composition ownership, not source provision. |
+| Does this source / constituent serve this field? | Yes — `CoverageVariant` enumerates `Native` / `Derived` / `NullFill` / `Metadata`. | No — provenance is about composition ownership, not source provision. |
 | Who owns this field on the composed surface? | No. | Yes — `FieldOwnership::Native(src)` / `Shared(srcs)` / `Derived(expr)` / `NullFill(providers)`. |
 | Does this branch contribute a row? | Indirectly — `NullFill` coverage + strategy semantics imply pruning (`23 §4.6`). | No. |
 | Does this variant emit `NullFill` rows at plan? | Only Unionset (`23 §4.3`). | Only Unionset (`16 §7.3.3`). Joinset outer-join NULL-fill is `PlanNode::Join` semantics (`24 §8.3`). |
@@ -561,7 +548,7 @@ The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) follows the emissio
 - **Introduce new `CompositionKind` variants.** Per `16 §5.3` and `20 §2.1`'s `#[non_exhaustive]` posture, new variants land in `20` / `16` and propagate to `25`'s cells.
 - **Adjust error-code allocations outside `25 §6.2`.** Other docs' `*_E_21xx` / `*_E_22xx` / etc. sub-ranges are owned by `21`–`24`; `25` only owns the `*_E_2500`–`*_E_2599` band.
 - **Ratify the `PlanNode` roster.** That is `35`'s.
-- **Specify `Manifest` persistence or the `ResolvedDataKind` struct roster.** Those are `33`'s.
+- **Specify `SemanticManifest` persistence or the `ResolvedDataKind` struct roster.** Those are `33`'s.
 - **Specify the `Request` shape or the `SessionContext` payload.** Those are `34`'s (plus `00 §4.1`'s vocabulary entries).
 - **Resolve `[CROSS-DOC-FIX-NEEDED]` items.** Per the hard constraint, `25` flags contradictions but never resolves them. Each is parked in `§1.3` with the owning-doc pointer; resolution happens in the flagged doc's next revision, possibly with supporting items in `questions/open/25_questions.md`.
 - **Define `#[non_exhaustive]` policy.** That is `30 §4`'s. `25` consumes I10 without amending it.
@@ -644,7 +631,7 @@ Round-1 deferrals recorded at specific cells of `§2` reuse the owning doc's `[T
 - `23 §§2–12` — `Unionset`; consumed by `§2` Unionset columns, `§3.3`, `§4`, `§5`.
 - `24 §§2–13` — `Joinset`; consumed by `§2` Joinset columns, `§3.4`, `§4`, `§5`.
 - `30 §2, §4, §6` — SemVer discipline, `#[non_exhaustive]` policy, error-code range governance; `§6.1`'s allocation summary cross-refs `20 §8.5`'s cross-doc-fix to `30 §6.2`.
-- `33` (pending) — `Manifest` layer: `ResolvedDataKind` / `ResolvedSimpleDataKind` / `ResolvedComplexDataKind` struct rosters; `§2.7`'s Manifest counterpart table will tighten when `33` lands.
+- `33` (pending) — `SemanticManifest` layer: `ResolvedDataKind` / `ResolvedSimpleDataKind` / `ResolvedComplexDataKind` struct rosters; `§2.7`'s SemanticManifest counterpart table will tighten when `33` lands.
 - `34` (pending) — planner surface: `Strategy` trait, `PlannerCtx`, `RequestSlice`, `StrategyRegistry`; `§3` bullets consume.
 - `35` (pending) — `PlanNode` IR: `PlanNode::Union` / `PlanNode::Join` variants referenced by `§3.3` and `§3.4`.
 - `questions/open/25_questions.md` — Round-1 deferred items Q1–Q4 (`§8`).

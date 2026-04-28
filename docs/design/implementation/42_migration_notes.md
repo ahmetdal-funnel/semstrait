@@ -128,7 +128,7 @@ The delta below is pulled from `40 §2` (per-crate deviation catalog) and `41` (
 
 | BEFORE (pre-1.0 symbol) | AFTER (v1.0 symbol) | OWNING DOC |
 |---|---|---|
-| `CompiledManifest`, `CompiledDataKind`, `CompiledSimpleKind`, `CompiledInterface`, `CompiledSource`, `CompiledColumnMapping` | `Manifest`, `ResolvedDataKind`, `ResolvedSimpleKind`, `ResolvedInterface`, `ResolvedSource`, `ResolvedColumnMapping` | `00 §4.3`, `33 §3` |
+| `CompiledManifest`, `CompiledDataKind`, `CompiledSimpleKind`, `CompiledInterface`, `CompiledSource`, `CompiledColumnMapping` | `SemanticManifest`, `ResolvedDataKind`, `ResolvedSimpleKind`, `ResolvedInterface`, `ResolvedSource`, `ResolvedColumnMapping` | `00 §4.3`, `33 §3` |
 | `StorageProvider` trait | `FileSystem` trait | `00 §4.3`, `37 §1.1` |
 | `LogicalPlan` (top-level plan type in `semstrait-ir`) | `SemanticPlan` | `35 §3.1`, `[TD-IR-RENAME]` |
 | `PlanArtifact` | `EngineArtifact` (sum type: `Sql(SqlArtifact)` / `Plan(EnginePlan)`) | `36 §3`, `DL-023` |
@@ -144,7 +144,7 @@ The delta below is pulled from `40 §2` (per-crate deviation catalog) and `41` (
 | `PlanBuilder` (adapter-side construction path) | Retired; adapters consume `SemanticPlan` directly and emit via `adapt` | `[TD-ADAPTER-PLAN-BUILDER-RETIRE]` |
 | `EngineProfile` as a dialect-carrying supertrait on `EngineAdapter` | `Dialect` trait split off from `EngineAdapter`; adapters have-a `Dialect`, not are-a dialect | `36 §2`, `[TD-ADAPTER-DIALECT-SPLIT]` |
 | `CompileError` as a bespoke enum per crate | `CompileError` in `semstrait-manifest` re-exporting the shared variants from `semstrait-core::CompileError` | `[TD-33-ERROR-UNIFY]` |
-| `RelationshipGraph` + `FieldIndex` consumed by planner | Removed; planner consumes Manifest indices directly (Coverage + Composition + relationship graph materialized per `33 §7`) | `TD-007`, `33 §7` |
+| `RelationshipGraph` + `FieldIndex` consumed by planner | Removed; planner consumes SemanticManifest indices directly (Coverage + Composition + relationship graph materialized per `33 §7`) | `TD-007`, `33 §7` |
 | `active_bindings()` allocating `Vec` every call | Kept signature; allocation moved off the hot path (non-blocking; opportunistic per `40 §5.4`) | `TD-006` |
 
 #### 3.2.3 Error codes
@@ -165,10 +165,10 @@ No stable error codes are retired in v1.0 (per `30 §6.7`, v1 introduces no reti
 |---|---|---|
 | Expression resolution re-walked at plan time per DataKind pathway | Every `(Semantics name, Binding id)` pair pre-resolved at compile into a `PhysicalExpr` stored in `ResolvedExprTable`; plan-time expression lookup is O(1); no `Relationship` walking at plan time | `14b §2`, `14b §5`, `33 §6` |
 | Constraint checks scattered across planner internals | Step-0 `ConstraintValidator` runs at the start of every plan per `11 §8.4`; emits `ConstraintViolation` via structured `Diagnostic` | `11 §8.4`, `11 §8.7` |
-| `compile` accumulated best-effort; some partial Manifests escaped | `compile` is fail-fast: first `Error` aborts; accumulated `Warning`/`Info` carried to caller via the `Vec<Diagnostic>` arm | `10 §5`, `30 §7` |
-| `Request.from` was required (or a heuristic replacement used) | `Request.from = None` is accepted; planner performs **field-first resolution**, mapping requested Semantics to their owning DataKinds via Manifest indices and traversing the top-level `Relationship` graph when fields span multiple DataKinds | `16`, `34 §*`, `00 §4.1` Request row |
+| `compile` accumulated best-effort; some partial SemanticManifests escaped | `compile` is fail-fast: first `Error` aborts; accumulated `Warning`/`Info` carried to caller via the `Vec<Diagnostic>` arm | `10 §5`, `30 §7` |
+| `Request.from` was required (or a heuristic replacement used) | `Request.from = None` is accepted; planner performs **field-first resolution**, mapping requested Semantics to their owning DataKinds via SemanticManifest indices and traversing the top-level `Relationship` graph when fields span multiple DataKinds | `16`, `34 §*`, `00 §4.1` Request row |
 | Implicit composition depth unbounded; ambiguous paths resolved non-deterministically | `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` enforced with `PLAN_E_0502 CompositionDepthExceeded`; ambiguous-path ties produce `PLAN_E_0500 AmbiguousImplicitComposition` (no heuristic) | `16 §9.1`, `16 §11.4`, `34 §*` |
-| Manifest bytes not stable across `compile` invocations | Manifest is deterministic (I4): identical `(Model YAML, Catalog snapshot)` produces byte-identical Manifest bytes via `Repository::save`; MessagePack + JSON encoders supported per `33 §14` | `00 §9 I4`, `33 §14` |
+| SemanticManifest bytes not stable across `compile` invocations | SemanticManifest is deterministic (I4): identical `(Model YAML, Catalog snapshot)` produces byte-identical SemanticManifest bytes via `Repository::save`; MessagePack + JSON encoders supported per `33 §14` | `00 §9 I4`, `33 §14` |
 | `SemanticGraph` skipped on serde; `KindRef.variant` reset on deserialize | Bespoke serde impl preserves every state across `Repository::save` / `Repository::load` round-trip | `TD-001`, `TD-002`, `33 §14.1` |
 | `SqlArtifact` carried dialect informally | Every `SqlArtifact` carries `DialectId` so consumers can route emitted text to the correct engine | `30 §4.2`, `36 §3.2` |
 | `CatalogProvider` + `StorageProvider` method set overlap | `CatalogProvider` (structured metadata) and `FileSystem` (generic I/O) are independent axes per `37 §1.1`; neither conflated with the other | `37 §1.1`, `00 §4.1` |
@@ -181,7 +181,7 @@ The following symbols gain `#[deprecated]` annotations at v1.0 and are retained 
 | Deprecated symbol | Replacement | Shim removal target | `41` tombstone |
 |---|---|---|---|
 | `TemporalHistorization` (type alias + enum variants) | `TemporalShape` | v2.0 | `41 §TD-LEGACY-TEMPORAL-HISTORIZATION` |
-| `Compiled*` family (`CompiledManifest`, `CompiledDataKind`, `CompiledInterface`, `CompiledSource`, `CompiledColumnMapping`) | `Manifest` / `Resolved*` family | v2.0 | `41 §TD-LEGACY-COMPILED-PREFIX` |
+| `Compiled*` family (`CompiledManifest`, `CompiledDataKind`, `CompiledInterface`, `CompiledSource`, `CompiledColumnMapping`) | `SemanticManifest` / `Resolved*` family | v2.0 | `41 §TD-LEGACY-COMPILED-PREFIX` |
 | `StorageProvider` trait (alias) | `FileSystem` | v2.0 | `41 §TD-LEGACY-STORAGE-PROVIDER` |
 | `LogicalPlan` (`pub type LogicalPlan = SemanticPlan;`) | `SemanticPlan` | v2.0 | `41 §TD-IR-RENAME` |
 | `simplify` (pipeline verb) | `optimize` | v2.0 | `41 §TD-LEGACY-SIMPLIFY-VERB` |
@@ -200,26 +200,26 @@ Net-new surface ratified at v1.0 (not renames, not removals):
 
 - **`TemporalShape` classification** — first-class `Timeseries` / `Events` / `Snapshot` / `SCD` axis on every DataKind, with SCD subtype taxonomy (`Type0` … `Type6`, common ones named at the top level); vocabulary ratified, planner support DEFERRED (see `§5`). (`17`)
 - **`JoinType::AsOf` variant** — vocabulary-ratified for `SCD` / `Snapshot` × `Events` joins; planner emission DEFERRED to v2.0 (see `§5`). (`00 §4.1` `JoinType` row, `17 §5`)
-- **`ResolvedExprTable`** — compile-time pre-computed `(Semantics, Binding) → PhysicalExpr` map enabling O(1) plan-time expression lookup. Callers reading a Manifest can treat expression resolution as a table lookup. (`14b §2`, `33 §6`)
+- **`ResolvedExprTable`** — compile-time pre-computed `(Semantics, Binding) → PhysicalExpr` map enabling O(1) plan-time expression lookup. Callers reading a SemanticManifest can treat expression resolution as a table lookup. (`14b §2`, `33 §6`)
 - **`Dialect` machinery** — SQL dialect as a first-class trait axis separated from `EngineAdapter`. `DialectId` is carried on every `SqlArtifact`. `Ansi`, `DataFusion`, `DuckDb`, `Spark` ship as bundled `DialectId`s. (`36 §2`, `00 §4.1` `Dialect` + `SqlArtifact` rows)
 - **`CatalogProvider` + `FileSystem` separation** — structured metadata access and generic I/O are independent trait axes. A single adapter may run against any metadata source; a single metadata source may back any adapter. (`37 §1.1`, `00 §3`)
 - **Step-0 `ConstraintValidator`** — structured Constraint evaluation at the start of every plan, emitting `Diagnostic`s. Callers catch Constraint violations before any strategy dispatch runs. (`11 §8.4`, `34 §*`)
-- **Field-first resolution** — `Request.from = None` is now a first-class request shape; the planner maps Semantics to their owning DataKinds via Manifest indices and forms a `ComposedSemanticInterface` implicitly when fields span related DataKinds. (`16`, `34 §*`)
+- **Field-first resolution** — `Request.from = None` is now a first-class request shape; the planner maps Semantics to their owning DataKinds via SemanticManifest indices and forms a `ComposedSemanticInterface` implicitly when fields span related DataKinds. (`16`, `34 §*`)
 - **`ComposedSemanticInterface`** — unified interface surface arising from `Relationship` chains and from `ComplexDataKind` declarations (Unionset / Grainset / Joinset), carrying namespace-aware Semantics, per-field provenance, and a composition-kind tag. (`00 §4.1` `ComposedSemanticInterface` row, `16`)
 - **`SemanticExpr` / `PhysicalExpr` newtypes over `Expr`** — context-enforcing invariants at the type level: `EntityRef` forbidden in `PhysicalExpr`, `Column` forbidden in `SemanticExpr`, no `Aggregate` in `PhysicalExpr`. Authors of computed Semantics and of column mappings pick up compile-time guardrails they previously had to enforce by convention. (`14 §4`, `31 §4.4`)
 - **`CanonicalFn` newtype + `FunctionRegistry` in `semstrait-core`** — stable canonical function identities via `pub const` constants (`CanonicalFn::UPPER`, …), extensible by adapter-provided registries via the `RegistryExtension` trait. (`14a §2`, `14a §7`, `31 §5`, `31 §9`)
 - **`Diagnostic`-shaped errors everywhere** — every public entry point surfaces structured `Diagnostic`s with stable codes. The `IntoDiagnostic` trait is the open, cross-crate conversion boundary. (`30 §5`, `30 §8.2`)
 - **Warning propagation** — fail-fast stages carry accumulated `Info` / `Warning` diagnostics back alongside their primary output, in both success and failure arms. No warning is silently dropped. (`30 §7`)
-- **Determinism (I4) contract** — Manifest bytes are byte-stable across `compile` for identical `(Model YAML, Catalog snapshot)`; `SemanticPlan` output is byte-stable per `(Manifest, Request)`. Content-addressable caching is supported. (`00 §9 I4`, `33 §14`, `40 §7.2`)
+- **Determinism (I4) contract** — SemanticManifest bytes are byte-stable across `compile` for identical `(Model YAML, Catalog snapshot)`; `SemanticPlan` output is byte-stable per `(SemanticManifest, Request)`. Content-addressable caching is supported. (`00 §9 I4`, `33 §14`, `40 §7.2`)
 - **Capability flags on adapters** — `Cte`, `DistinctAggregate`, `AsOfJoin`, `GroupingSets`, `StructAccess` are first-class per-adapter declarations. Callers can query an adapter's supported feature set before planning. (`36 §4`)
 
 ### 3.5 Migration recipes
 
 Concrete code and YAML transformations for the common patterns.
 
-#### Recipe 3.5.1 — Reading a compiled Manifest
+#### Recipe 3.5.1 — Reading a compiled SemanticManifest
 
-A consumer that previously walked `CompiledManifest::datasets` now reads `Manifest::resolved_datakinds`.
+A consumer that previously walked `CompiledManifest::datasets` now reads `SemanticManifest::resolved_datakinds`.
 
 BEFORE:
 
@@ -235,9 +235,9 @@ fn list_dataset_names(mf: &CompiledManifest) -> Vec<String> {
 AFTER:
 
 ```rust
-use semstrait_manifest::{Manifest, ResolvedDataKind};
+use semstrait_manifest::{SemanticManifest, ResolvedDataKind};
 
-fn list_dataset_names(mf: &Manifest) -> Vec<String> {
+fn list_dataset_names(mf: &SemanticManifest) -> Vec<String> {
     mf.resolved_datakinds
         .iter()
         .filter_map(|(name, rdk)| match rdk {
@@ -273,7 +273,7 @@ struct IcebergCatalog { /* endpoint, auth, ... */ }
 #[async_trait::async_trait]
 impl CatalogProvider for IcebergCatalog {
     async fn schema(&self, table: &TableRef) -> Result<Schema, Diagnostic> { /* ... */ }
-    async fn check_schema_drift(&self, mf: &Manifest) -> Result<DriftReport, Diagnostic> { /* ... */ }
+    async fn check_schema_drift(&self, mf: &SemanticManifest) -> Result<DriftReport, Diagnostic> { /* ... */ }
     /* snapshot / partition / ... */
 }
 ```
@@ -495,7 +495,7 @@ Consolidated checklist for a v1.0 upgrade:
 7. Migrate every public API caller from raw-string / `anyhow::Error` error types to the `Diagnostic` / `Vec<Diagnostic>` shapes of `30 §7`; add wildcard arms to every `Severity` match.
 8. For custom adapters: split `EngineProfile`-style dialect handling into a `Dialect` impl and carry `DialectId` on every `SqlArtifact`; declare capability flags per `36 §4`; replace `debug_sql` trait impls with reliance on the free function; retire any `PlanBuilder` usage.
 9. For custom function registries: move from strings / bespoke enums to `CanonicalFn` constants; register adapter-specific functions via `RegistryExtension`.
-10. Verify Manifest round-trip: `Repository::save` → `Repository::load` now preserves all state; content-addressable caches can key on the Manifest bytes directly.
+10. Verify SemanticManifest round-trip: `Repository::save` → `Repository::load` now preserves all state; content-addressable caches can key on the SemanticManifest bytes directly.
 11. Adopt `Request.from = None` wherever callers had previously supplied a best-guess target; accept that `PLAN_E_0500` / `PLAN_E_0501` / `PLAN_E_0502` replace ad-hoc "no plan" outcomes.
 12. Eliminate every rustc `#[deprecated]` warning before upgrading to v2.0; all shims in `§3.3` are scheduled for removal there.
 
@@ -507,7 +507,7 @@ Machine-assisted rename suggestions are captured as an informal rename map that 
 
 ```text
 # Rust API — bulk rename map (non-binding)
-CompiledManifest        -> Manifest
+CompiledManifest        -> SemanticManifest
 CompiledDataKind        -> ResolvedDataKind
 CompiledSimpleKind      -> ResolvedSimpleKind
 CompiledInterface       -> ResolvedInterface
@@ -566,7 +566,7 @@ These are forecast based on the `[TD-*]` roster of `40 §3`. Actual scheduling i
 ### 4.3 Anticipated v1.2 additions (indicative, non-binding)
 
 - `AsOf` planner-side support lands (closes `[TD-COMPOSITION-ASOF]`). Vocabulary is already present in v1.0; planner emission is the v1.2 add. Caller-visible consequence: `JoinType::AsOf` starts producing real `SemanticPlan` output in place of `PLAN_E_*` stubs.
-- Incremental Manifest recompile (`[TD-MANIFEST-INCR-CACHE]`) if the caching substrate lands. Caller-visible consequence: `compile` may return a cached `Manifest` when the `(Model, Catalog)` pair is unchanged.
+- Incremental SemanticManifest recompile (`[TD-MANIFEST-INCR-CACHE]`) if the caching substrate lands. Caller-visible consequence: `compile` may return a cached `SemanticManifest` when the `(Model, Catalog)` pair is unchanged.
 
 Neither is committed. Both are tracked in `40 §3` and will be re-scoped when they enter a phase plan.
 
@@ -593,7 +593,7 @@ These land in provisional-crate MINORs or in workspace MINORs after v2.0:
 
 | Feature | Tag | Delivery notes |
 |---|---|---|
-| Incremental Manifest recompile | `[TD-MANIFEST-INCR-CACHE]` | Additive surface on `semstrait-manifest`; caller-visible only as performance. No break. |
+| Incremental SemanticManifest recompile | `[TD-MANIFEST-INCR-CACHE]` | Additive surface on `semstrait-manifest`; caller-visible only as performance. No break. |
 | `[TD-14B-EXPR-INTERN]` opt-in `PhysicalExpr` interning | `[TD-14B-EXPR-INTERN]` | Behind a Cargo feature flag; no default-surface change. |
 | `[TD-GRAIN-NON-TEMPORAL]` non-temporal Grain (geographic, entity) | `[TD-GRAIN-NON-TEMPORAL]` | Additive variants on `Grain`; MINOR under `30 §2.2`. |
 | N-ary Joinsets / nested Grainset | `[TD-JOINSET-NARY]`, `[TD-GRAINSET-NESTED]` | Additive under `#[non_exhaustive]`; YAML surface gains optional keys. |
@@ -604,7 +604,7 @@ These land in provisional-crate MINORs or in workspace MINORs after v2.0:
 
 | Feature | Source | Notes |
 |---|---|---|
-| MetricFlow-style conversion metrics, cumulative metrics as request-time constructs | `00 §10` (DEFERRED) | Currently expressible only through Manifest-time `Metric` declarations. v3.0 is the earliest a request-time algebra would ratify; requires a new foundations doc beyond the `1x` map. |
+| MetricFlow-style conversion metrics, cumulative metrics as request-time constructs | `00 §10` (DEFERRED) | Currently expressible only through SemanticManifest-time `Metric` declarations. v3.0 is the earliest a request-time algebra would ratify; requires a new foundations doc beyond the `1x` map. |
 | Request-level ratio metrics | `00 §10` | Same delivery mechanism as conversion / cumulative. |
 | Optional cost-based optimization | `00 §10` | `optimize` gains a statistics-driven branch; requires a separate statistics-source trait axis beyond `CatalogProvider`. |
 
