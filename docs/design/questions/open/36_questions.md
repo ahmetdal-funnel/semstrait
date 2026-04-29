@@ -18,32 +18,13 @@ depends-on:
 
 # Open Questions — `apis/36_semstrait_adapter.md`
 
-> Items surfaced during Round-1 drafting of the `semstrait-adapter` public API contract. Each entry restates the question, lists its ratified references, and records the Round-1 default `36` currently uses. Entries migrate out of this file as downstream drafts (`34`'s planner wiring, per-adapter crate `3x` appendices, and `30` amendments) confirm or amend the defaults. None of these items block the headline ratifications in `36 §17`.
+> Nine questions remain open: Q-ADAPT-002 through Q-ADAPT-010. Closed items moved to [`../closed/36_questions.md`](../closed/36_questions.md). Each entry restates the question, lists its ratified references, and records the Round-1 default `36` currently uses. Entries migrate out of this file as downstream drafts (`34`'s planner wiring, per-adapter crate `3x` appendices, and `30` amendments) confirm or amend the defaults. None of these items block the headline ratifications in `36 §17`.
 
 ---
 
-## Q-ADAPT-001 — `EngineAdapter::adapt` return shape: `Result<EngineArtifact, AdaptError>` vs `Result<(EngineArtifact, Vec<Diagnostic>), AdaptError>`
+## Q-ADAPT-001 — `EngineAdapter::adapt` return shape — CLOSED
 
-**Question.** `36 §3.1` ratifies `adapt(&SemanticPlan, &SemanticManifest) -> Result<EngineArtifact, AdaptError>`. `30 §7`'s stage-result pattern recommends `Result<(Output, Vec<Diagnostic>), ...>` so warnings propagate alongside successful output. Should `adapt` also carry `Vec<Diagnostic>` on success (e.g. "structural rewrite for `string_agg` applied on Spark")?
-
-**Refs.**
-- `30 §7` — fail-fast stage-result pattern.
-- `36 §3.1` — current bare-`Result` signature.
-- `35 §3.1` — `SemanticPlan.diagnostics` carries planner diagnostics already; adapters MAY append per `35`'s note.
-
-**Arguments for bare `Result<EngineArtifact, AdaptError>` (current Round-1 default).**
-- Simpler call-site ergonomics; matches the current-code `adapt` shape.
-- Adapter diagnostics are already accommodated by `SemanticPlan.diagnostics` append (`35 §3.1`) — adding a second channel duplicates the surface.
-- `ADAPT_W_*` codes are reserved but unused in v1 (`36 §10.2`); no v1 producer exists.
-
-**Arguments for `Result<(EngineArtifact, Vec<Diagnostic>), AdaptError>`.**
-- Matches `30 §7`'s documented stage pattern; uniform across stages.
-- Decouples the diagnostic channel from the plan (a plan consumed twice by two adapters should produce two independent diagnostic lists, not both mutating the plan's list).
-- Future `ADAPT_W_*` codes get a natural home without changing the signature again.
-
-**Current position in `36`.** Bare `Result`. Diagnostic appendage on `SemanticPlan.diagnostics` permitted but not required.
-
-**Next step.** Revisit at `34`'s planner-wiring draft. If `34` adopts the tuple pattern uniformly for `plan` / `optimize`, `36` follows.
+> **Moved to [`../closed/36_questions.md`](../closed/36_questions.md#q-adapt-001--engineadapteradapt-return-shape--closed--superseded-by-tuple-return-ratification).** The eleventh-pass typed-kind cascade ratified the workspace-wide fail-fast tuple at `30 §7` / `36 §3.1`; warnings ride alongside both arms via `Diagnostics<AdaptErrorKind>`, retiring the dual-method extension this question prefigured.
 
 ---
 

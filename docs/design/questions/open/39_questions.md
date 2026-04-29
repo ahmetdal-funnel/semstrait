@@ -1,6 +1,5 @@
 ---
-
-## doc: design/questions/open/39_questions
+doc: design/questions/open/39_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `apis/39_semstrait_facade.md`
 depends-on:
@@ -12,10 +11,11 @@ depends-on:
   - apis/36_semstrait_adapter.md
   - apis/37_semstrait_catalog.md
   - apis/38_semstrait_api.md
+---
 
 # Open Questions — `apis/39_semstrait_facade.md`
 
-> Items surfaced during Round-1 drafting of the `semstrait` facade crate public API contract. Each entry restates the question, lists its ratified references, and records the Round-1 default `39` currently uses. Entries migrate out of this file as `38` lands and downstream amendments to `30` / per-adapter / per-catalog crates make decisions that either confirm or amend `39`'s defaults. None of these items block the headline ratifications in `39 §11`.
+> Seven questions remain open: Q-FAC-001, -002, -004, -005, -006, -007, -008. Closed items moved to [`../closed/39_questions.md`](../closed/39_questions.md). Each entry restates the question, lists its ratified references, and records the Round-1 default `39` currently uses. None of these items block the headline ratifications in `39 §11`.
 
 ---
 
@@ -76,38 +76,9 @@ depends-on:
 
 ---
 
-## Q-FAC-003 — `semstrait::run` error type: `SemStraitError` vs `Diagnostic`
+## Q-FAC-003 — `semstrait::run` error type — CLOSED
 
-**Question.** `39 §4.1` signs `run` as `Result<EngineArtifact, SemStraitError>`, delegating the error type to `semstrait-api` (`38`). `30 §5.5` mandates public APIs return `Diagnostic`-shaped errors; `SemStraitError` in `38` is presumed to wrap `Diagnostic` internally, but is that the right shape for the facade's one-shot?
-
-**Refs.**
-
-- `30 §5.5` — raw-string / `anyhow::Error` / `Box<dyn Error>` banned; `Diagnostic` is the canonical public boundary.
-- `38` (pending) — `SemStraitError` ratification.
-- `39 §4.2` — `run` fail-fast + warnings contract.
-- `33 §10` — `CompileErrors` / `CompileError` shape; fail-fast stages carry `(fatal, Vec<warning>)`.
-
-**Arguments for `Result<EngineArtifact, SemStraitError>` (current Round-1 default).**
-
-- One unified error type spanning all five stages beats five stage-specific error enums leaked at the facade boundary.
-- `SemStraitError` is `38`'s authoritative surface; the facade should pass it through verbatim.
-- `SemStraitError` can still implement `IntoDiagnostic` per `31 §7.4` — callers who want a `Diagnostic` call `.into_diagnostic()` at the boundary.
-
-**Arguments for `Result<EngineArtifact, Diagnostic>`.**
-
-- Matches `30 §5.5` literally — the public boundary returns `Diagnostic` directly, no wrapper.
-- Removes `run`'s forward-dep on `38`'s error enum; the facade could ship before `38` stabilizes.
-- Simpler type signature in rustdoc (one-liner, no cross-crate hop).
-
-**Arguments for `Result<EngineArtifact, Vec<Diagnostic>>`.**
-
-- Preserves warnings alongside the fatal error, matching `30 §7`'s fail-fast-with-accumulated-warnings shape.
-- Lets the caller keep every upstream stage's warning vector in a single value.
-- Downside: single-error shape at the top looks inconsistent with the `Diagnostic` singular expectation; most one-shot callers only want the first fatal.
-
-**Current position in `39`.** `Result<EngineArtifact, SemStraitError>`. Parked pending `38`'s ratification of `SemStraitError`.
-
-**Next step.** Resolve during `38` drafting. If `38`'s top-level API returns `Result<_, Diagnostic>`, `39` adopts the same; if `38` wraps into `SemStraitError`, `39` passes through.
+> **Moved to [`../closed/39_questions.md`](../closed/39_questions.md#q-fac-003--semstraitrun-error-type--closed--superseded-by-typed-kind-transition).** Superseded by typed-kind transition.
 
 ---
 

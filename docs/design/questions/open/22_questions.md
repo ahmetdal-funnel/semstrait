@@ -1,7 +1,7 @@
 ---
 doc: design/questions/open/22_questions
 status: Living
-purpose: Parked unresolved questions surfaced while drafting `data-kinds/22_grainset.md`
+purpose: Open questions surfaced while drafting `data-kinds/22_grainset.md`
 depends-on:
   - data-kinds/22_grainset.md
   - data-kinds/20_complex_datakinds.md
@@ -18,9 +18,7 @@ depends-on:
 
 # Open Questions — `data-kinds/22_grainset.md`
 
-> Items surfaced during Round-1 drafting of the Grainset specification. Each entry restates the question, lists its ratified references, and records the Round-1 default `22` currently uses. Entries migrate out of this file as later docs (`17`, `20`, `23`–`25`, `33`, `34`) make decisions that confirm or amend `22`'s defaults.
-
-> **Status summary (2026-04-17).** Q-GRN-004 (Grainset-of-Grainset nesting) and Q-GRN-006 (single-child Grainset degeneracy) are **CLOSED** by the structural-rules ratification in `data-kinds/26_nesting_matrix.md` (R2 bans same-variant self-nesting; R3 requires ≥ 2 children on every `ComplexDataKind`). Both entries retain their original bodies for resolution context; readers seeking only live items can skim past their closure banners.
+> Three questions remain open: Q-GRN-001 (inheritance default for child grain), Q-GRN-002 (cross-child partial coverage), Q-GRN-005 (mixed-shape warnings). Closed items moved to [`../closed/22_questions.md`](../closed/22_questions.md); deferred items in [`../deferred/22_questions.md`](../deferred/22_questions.md).
 
 ---
 
@@ -76,64 +74,6 @@ depends-on:
 
 ---
 
-## Q-GRN-003 — Cost function pluggability hook site: planner trait or adapter hook?
-
-**Question.** `22 §4.4` ratifies the v1 cost function as source-count. A future stats-backed cost function is `[TD-GRAINSET-COST-STATS]`. When it lands, should the hook site be:
-- **A** — a method on `34`'s `Planner` trait (`fn grainset_cost(&self, child: &ResolvedGrainsetChild, request: &Request) -> Cost`);
-- **B** — a method on the `37` catalog-adapter trait (each adapter reports stats; the planner consumes them uniformly);
-- **C** — a separate `CostEstimator` trait injected into the `plan` call site (third-axis of extensibility)?
-
-**Refs.**
-- `22 §4.4` — Round-1: source-count proxy.
-- `34` (pending) — planner entry-point; owns the SemanticManifest-to-Plan strategy dispatch.
-- `37` — catalog adapter; owns source metadata (file sizes, partition counts, row-count estimates).
-- `30 §6.2` — the `22xx` code range is fixed regardless of cost-function placement.
-
-**Arguments for A (on `Planner`).**
-- Cost is a planner concern — it composes with the rest of the plan strategy (join-ordering, push-down) and is not uniquely Grainset's.
-- Keeps adapter surface narrow; adapters supply raw stats, planner derives cost.
-
-**Arguments for B (on adapter).**
-- The numbers live in the catalog; asking each adapter to report cost directly avoids a round-trip through stat-fetching + planner-internal computation.
-- Simpler for adapter authors who already know their own numeric characteristics.
-
-**Arguments for C (separate `CostEstimator`).**
-- Decouples cost from both planner and adapter; lets users inject a custom estimator without reimplementing either.
-- Matches Calcite / DataFusion patterns.
-
-**Current position in `22`.** Deferred. The hook site is a `34`-drafting decision; `22` does not commit.
-
-**Next step.** Confirm at `34` drafting time; `22 §4.4` will cross-reference whichever trait lands.
-
----
-
-## Q-GRN-004 — Grainset-of-Grainset nesting
-
-**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `data-kinds/26_nesting_matrix.md §R2`: no same-variant self-nesting at any depth. Grainset-of-Grainset is forbidden structurally (not just via `COMP_E_2207`). `[TD-GRAINSET-NESTED]` is retired — admitting nested Grainsets becomes a post-v1 matrix relaxation, not a Round-2 item.
-
-**Question.** `22 §3.4` / `COMP_E_2207` currently forbids a `Grainset` as a child of another `Grainset` (`[TD-GRAINSET-NESTED]`). Should Round 2 admit nested Grainsets? What is the semantic?
-
-**Refs.**
-- `22 §3.4` — deferred; `COMP_E_2207` fires at compile.
-- `12 §2` — nesting matrix; the current cell is "Grainset ⇨ Grainset: forbidden."
-- `25` — applicability matrix; the canonical location for ratifying the cell.
-- `16 §5` — `ComposedSemanticInterface`; nesting works structurally, but the semantics need to be defined.
-
-**Arguments for forbidding (Round-1 default).**
-- The author's use case is unclear: a nested Grainset is semantically equivalent to a flat Grainset with the union of children. If the inner Grainset has children {A, B, C} and the outer Grainset has children {X, inner, Z}, why not just declare {A, B, C, X, Z} flat?
-- Nesting compounds the cost-rank and tie-break axes; the inner selection happens per-invocation, and the outer selection chooses between "scan X," "select one of {A, B, C}," "scan Z." The author can reason about three children more easily than a nested tree.
-- Avoid premature abstraction; ratify when a concrete use case appears.
-
-**Arguments for admitting.**
-- Use case: an author might want to group "daily sources" in one inner Grainset (to share a rollup policy across them) and "monthly sources" in another, composed under an outer Grainset. Flattening loses the per-group rollup policy.
-- Matches the open-extension philosophy: a `ComplexDataKind` is a tree, and Grainset is one of the nodes; disallowing it as a child of itself is an artificial hole in the matrix.
-
-**Current position in `22`.** Forbidden via `COMP_E_2207`. The error message should point the author at `25` / the flattening alternative.
-
-**Next step.** Revisit at `25` drafting if a concrete use case arises. The typed-variant surface is already `#[non_exhaustive]`; admitting nesting in Round 2 is backward-compatible.
-
----
-
 ## Q-GRN-005 — Mixed-shape Grainsets: warning vs error
 
 **Question.** `22 §5` ratifies mixed `TemporalShape`s across children as a **warning** (`PLAN_W_2202 MixedShapeAdvisoryChildren`), not an error. Should Round 2 promote to error, or relax further (silent)?
@@ -156,32 +96,3 @@ depends-on:
 **Current position in `22`.** Warning. Promote-to-error or demote-to-silent is a `17`-ratification decision.
 
 **Next step.** Resolve at `17` ratification. `17` may ratify a per-combination compatibility table; `22`'s warning/error policy follows from whatever `17` declares.
-
----
-
-## Q-GRN-006 — Single-child Grainset degeneracy: lint or accept?
-
-**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `data-kinds/26_nesting_matrix.md §R3`: every `ComplexDataKind` (including `Grainset`) REQUIRES ≥ 2 children. Single-child is now a structural rejection, not a silent-accept. This unifies the policy across `Unionset`, `Grainset`, and `Joinset` (all three require ≥ 2 children). `[TD-GRAINSET-SINGLE-CHILD]` and the parallel `[TD-UNIONSET-SINGLE-CHILD]` are retired.
-
-**Question.** A Grainset with exactly one child is structurally valid per `22 §2` but semantically degenerate — it is a one-child wrapper that adds nothing over the underlying DataKind. Should Round 1 accept silently, emit a lint, or reject?
-
-**Refs.**
-- `22 §2.1` — Round-1: `children: Vec<GrainsetChild>` with `VALID_E_2201` firing only on empty.
-- `22 §9.2` — no current advisory for single-child degeneracy.
-- Similar pattern: a Unionset with one branch, a Joinset with one member — same shape of question for `23` / `24`.
-
-**Arguments for silent accept (Round-1 default).**
-- Useful during Model evolution: an author may start with one child and plan to add more. Rejecting single-child forces a temporary scaffold.
-- Symmetric with a Grainset that *loses* children via refactoring down to one: no accidental breakage.
-
-**Arguments for lint (`PLAN_W_22xx`).**
-- Signals "you probably meant to either add more children or replace with the underlying DataKind." Low-cost nudge.
-
-**Arguments for reject (`VALID_E_22xx`).**
-- Keeps the Model sharp; single-child Grainsets have no planner-visible effect.
-
-**Current position in `22`.** **CLOSED — single-child Grainset is rejected structurally** via `26 §R3` (every `ComplexDataKind` requires ≥ 2 children). `VALID_E_2201`'s "empty only" check is superseded by the unified-arity rejection. Body retained as historical resolution context.
-
-**Next step.** None. Reactivates only on a future relaxation of `26 §R3`.
-
----

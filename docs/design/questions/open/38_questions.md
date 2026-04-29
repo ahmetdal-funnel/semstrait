@@ -6,6 +6,7 @@ depends-on:
   - apis/38_semstrait_api.md
   - apis/30_api_contracts.md
   - apis/31_semstrait_core.md
+  - apis/32_semstrait_model.md
   - apis/33_semstrait_manifest.md
   - apis/34_semstrait_planner.md
   - apis/36_semstrait_adapter.md
@@ -14,105 +15,72 @@ depends-on:
 
 # Open Questions — `apis/38_semstrait_api.md`
 
-> Items surfaced during Round-1 drafting of the `semstrait-api` public API contract. Each entry restates the question, lists its ratified references, and records the Round-1 default `38` currently uses. Entries migrate out of this file as later docs (principally `34`'s planner, `39`'s facade, and amendments to `30`) confirm or amend the defaults. None of these items block the headline ratifications in `38 §15`.
+> Ten questions remain open: Q-API-002, -004 through -012 (excluding -001 / -003 closed). Closed items moved to [`../closed/38_questions.md`](../closed/38_questions.md). Each entry restates the question, lists its ratified references, and records the Round-1 default `38` currently uses. None of these items block the headline ratifications in `38 §15`.
 
 ---
 
-## Q-API-001 — Dedicated `API_E_*` subsystem prefix for structural configuration errors
+## Q-API-001 — Dedicated `API_E_*` subsystem prefix — CLOSED
 
-**Question.** `38 §6.2` adds two configuration-level `SemStraitError` variants (`BuilderInvalid`, `NoRepositoryConfigured`) that do not correspond to any stage. `38 §6.5` assigns them diagnostic code `COMP_E_0101` (the name-resolution-class slot) as a placeholder. Should these variants receive a dedicated `API_E_*` subsystem prefix registered in `30 §6.2`, or continue to re-use `COMP_E_*` codes?
-
-**Refs.**
-- `30 §6.1`–`§6.2` — reserved subsystem prefix table; `API` is not currently listed.
-- `30 §6.6` — reserved-but-unpopulated prefixes (`REG`, `IO`, `ENG`). `API` is not among them.
-- `38 §6.3` — current position: no new prefix; configuration errors piggyback on `COMP_E_*`.
-- `38 §6.5` — placeholder `COMP_E_0101` for both structural variants.
-
-**Arguments for dedicated `API_E_*` (proposed amendment).**
-- Lexical distinctness at grep time: `API_E_0101` (builder invalid) vs `COMP_E_0101` (name-resolution fatal) disambiguates upstream ("wrong wiring") from downstream ("wrong model") failures.
-- Future growth: a batch-request surface (`Q-API-009`), a diagnostics-routing policy, or a SaaS-style async wrapper would all want stable codes that aren't compile-stage.
-
-**Arguments against (current Round-1 default).**
-- Two variants do not justify a whole subsystem. `REG` and `ENG` are reserved but unpopulated after months of design; adding another unpopulated prefix is churn.
-- Configuration errors are caller-setup failures, not pipeline-stage failures — they're rare in production (caught at integration time) and don't need the same stability discipline as stage errors.
-- Using `COMP_E_0101` "misclassifies" the diagnostic in code-range tooling but a `SemStraitError::BuilderInvalid` match is the real route a caller takes.
-
-**Current position in `38`.** `BuilderInvalid` and `NoRepositoryConfigured` emit `COMP_E_0101`. Shape, variant names, severity, and discipline are ratified; only the literal digits may shift.
-
-**Next step.** Decide during `30`'s next amendment pass. If an `API_E_*` prefix is adopted, allocate at minimum `0100`–`0199` with sub-ranges mirroring `CAT_E_*` / `FS_E_*` (config / setup / runtime-policy). Tracked as amendment item `[TD-API-CODE-TABLE-AMEND]`.
+> **Moved to [`../closed/38_questions.md`](../closed/38_questions.md#q-api-001--dedicated-api_e_-subsystem-prefix-for-structural-configuration-errors--closed--superseded-by-typed-kind-transition).** Superseded by the typed-kind discipline.
 
 ---
 
-## Q-API-002 — `PipelineOutcome` struct vs `(EngineArtifact, Vec<Diagnostic>)` tuple return
+## Q-API-002 — `PipelineOutcome` struct vs fail-fast tuple return
 
-**Question.** `38 §7.1`'s `compile_and_plan_and_adapt` returns `(EngineArtifact, Vec<Diagnostic>)`. `§2.1` reserves a `PipelineOutcome` struct name, marked `Provisional`. Should the fused helper return the dedicated struct now, or keep the tuple and let `PipelineOutcome` land in a future MINOR?
+**Question.** `38 §7.1`'s `compile_and_plan_and_adapt` returns the workspace-wide fail-fast tuple over `SemStraitErrorKind` — `Result<(EngineArtifact, Diagnostics<SemStraitErrorKind>), (Diagnostic<SemStraitErrorKind>, Diagnostics<SemStraitErrorKind>)>`. `§2.1` reserves a `PipelineOutcome` struct name, marked `Provisional`. Should the fused helper return a dedicated struct now (e.g. `PipelineOutcome { artifact, warnings, per_stage_timings }`), or keep the tuple and let `PipelineOutcome` land in a future MINOR?
 
 **Refs.**
 - `38 §2.1` — `PipelineOutcome` Provisional tier.
 - `38 §7.1` — current tuple signature.
 - `30 §4.2` — `#[non_exhaustive]` struct roster; `PipelineOutcome` would join this list.
+- `30 §7` — fail-fast tuple shape that the current return shape adopts.
 
 **Arguments for a `PipelineOutcome` struct (future default).**
 - Room for additive fields: per-stage timings (`parse_duration`, `compile_duration`, etc.), adapter-id (already traceable via `SemanticPlan` but convenient to surface), manifest-id, request-id for observability.
 - Named-field access is more discoverable than tuple-position access.
-- MINOR-additive: callers who match on `pipeline.artifact` and `pipeline.diagnostics` never break when a new field appears.
+- MINOR-additive: callers who match on `pipeline.artifact` and `pipeline.warnings` never break when a new field appears.
+- Pairs with `tracing` (`30 §6`) — the struct could carry a `Span` handle for correlating with the tracing event stream.
 
 **Arguments against (current Round-1 default).**
-- Premature abstraction — v1 callers only want the artifact and the diagnostics. Introducing a struct to hold two fields is API bloat.
-- `(EngineArtifact, Vec<Diagnostic>)` is idiomatic Rust; callers destructure via `let (art, diags) = …`.
-- Per-stage timings belong in an instrumentation channel (`Q-API-004`-adjacent), not the outcome type.
+- Premature abstraction — v1 callers only want the artifact and the warnings. Introducing a struct to hold two fields is API bloat.
+- `(EngineArtifact, Diagnostics<K>)` is idiomatic Rust; callers destructure via `let (art, ws) = …`.
+- Per-stage timings already ride on `tracing` events at `info` level (`38 §3.6`); duplicating them on a struct is redundant.
 
 **Current position in `38`.** Tuple return; `PipelineOutcome` reserved but not used.
 
-**Next step.** If `Q-API-004` (diagnostic de-duplication) or an instrumentation open item lands, revisit at that point — the struct then holds more than two fields and justifies its own type.
+**Next step.** Revisit when an instrumentation surface lands (e.g. callers want timings as data, not as `tracing` events). The struct then holds more than two fields and justifies its own type.
 
 ---
 
-## Q-API-003 — Stage-ownership of escalated warnings under `WarningPolicy`
+## Q-API-003 — Stage-ownership of escalated warnings under `WarningPolicy` — CLOSED
 
-**Question.** When `WarningPolicy::FailOnWarning` escalates a compile-stage warning to a fatal, `38 §5.3` wraps it as `SemStraitError::CompileStage(CompileErrors { fatal: <warning-diag>, warnings: [...] })`. Should the outer variant be `CompileStage` (preserving origin) or a dedicated `SemStraitError::ApiEscalated { origin: StageOrigin, diag: Diagnostic }` variant (clarifying the escalation)?
-
-**Refs.**
-- `38 §5.3` — current escalation rewraps into the stage's own carrier.
-- `38 §5.6` — invariant: code/severity/message unchanged by escalation.
-- `38 §6.6` — `StageOrigin` enum already distinguishes stage-of-origin.
-
-**Arguments for stage-origin preservation (current Round-1 default).**
-- Caller code that pattern-matches on `SemStraitError::CompileStage` sees no difference between "compile emitted an error" and "compile emitted a warning escalated by policy" — both are legitimate reasons for compile to have halted from the caller's perspective. The inner `Diagnostic.severity` is the sole bit that differs.
-- Keeps the variant set small; adding `ApiEscalated` is a new discriminator to pattern-match on.
-- Aligns with `30 §7`'s per-stage fail-fast rule: the stage returns its own carrier regardless of how the fatal arose.
-
-**Arguments for `ApiEscalated`.**
-- Explicit is better than implicit. Callers that want to distinguish "compile intrinsically errored" from "compile emitted a warning and the policy escalated" gain a structural discriminator.
-- Error-reporting UX often wants to say "the policy fired" rather than "compile failed" — an explicit variant makes that phrasing easy.
-
-**Current position in `38`.** Preserve stage origin; escalation leaves the outer variant unchanged. Callers distinguish via `Diagnostic.severity`.
-
-**Next step.** Revisit if the facade crate (`39`) surfaces a "pretty error-report printer" that benefits from a dedicated escalation discriminator.
+> **Moved to [`../closed/38_questions.md`](../closed/38_questions.md#q-api-003--stage-ownership-of-escalated-warnings-under-warningpolicy).** Round-1 default ratified — preserve variant identity through escalation.
 
 ---
 
 ## Q-API-004 — Diagnostic de-duplication policy across stages
 
-**Question.** `38 §10.3` explicitly does NOT de-duplicate diagnostics across stages. A missing column may be reported once at `validate` (`VALID_E_0101`) and again at `compile` (`COMP_E_0101` over the same span). Should `semstrait-api` fold duplicates under a `(code, span)` predicate before returning?
+**Question.** `38 §10.3` explicitly does NOT de-duplicate diagnostics across stages. A missing column may be reported once at `validate` (with kind `ValidateErrorKind::ColumnNotInBindingSchema`) and again at `compile` (with kind `CompileErrorKind::BindingColumnNotInSchema`) over the same `Span`. Should `semstrait-api` fold these under a `(kind variant + Span)` predicate before returning?
 
 **Refs.**
 - `38 §10.3` — current "no de-duplication" policy.
-- `30 §5.1` — canonical `Diagnostic` shape: `code`, `severity`, `message`, `location`, `context`.
+- `30 §5` — typed-kind discipline: identification is by variant identity.
+- `31 §3` — `Diagnostic<K>` carrier shape: `kind: K`, `severity`, `message` (rendered via `Diagnose::message()`), `location`, `context`.
 
 **Arguments for de-duplication (future option).**
 - Cleaner caller UX — a `cargo check`-style printer doesn't surface the same error twice.
-- `(code, span)` pair is a natural equivalence class.
+- `(kind variant, Span)` pair is a natural equivalence class — but only across stages whose kinds use compatible variants. Cross-stage equivalence (e.g. `Validate::ColumnNotInBindingSchema` vs `Compile::BindingColumnNotInSchema`) requires an explicit equivalence map between upstream and downstream kinds.
 
 **Arguments against (current Round-1 default).**
 - Duplication across stages is informative: it means the earlier stage's warning was not acted on before the later stage re-encountered the root cause.
-- No agreed-upon equivalence: is `(code, span)` sufficient, or does `(code, span, message)` matter? Messages may interpolate per-stage context; equal codes/spans can carry different messages.
+- No agreed-upon equivalence relation: is `(kind variant, Span)` sufficient, or does the rendered `message` matter? Two diagnostics with the same kind variant may carry different per-stage payloads (different field values); structural variant equality alone may collapse meaningfully different diagnostics.
+- Cross-kind equivalence requires an explicit `is_equivalent_to(&CompileErrorKind, &ValidateErrorKind) -> bool` map that has not been ratified anywhere; that would be its own design item.
 - De-duplication requires a canonical ordering of which copy to keep — is it the first-observed (stage-earliest) or the most-specific (stage-latest)?
-- Callers with their own preferences apply their own predicate on the returned vector.
+- Callers with their own preferences apply their own predicate on the returned `Diagnostics<K>`.
 
-**Current position in `38`.** No de-duplication in v1. Callers that want it implement `.dedup_by_key(|d| (d.code, d.location.clone()))` or similar.
+**Current position in `38`.** No de-duplication in v1. Callers that want it implement `.dedup_by_key(|d| (variant_discriminant(&d.kind), d.location.span().cloned()))` or similar.
 
-**Next step.** If a production UX surfaces strong demand, define the equivalence class and the keep-which-copy rule in a `30` amendment, then implement here. Until then, this is a caller-side concern.
+**Next step.** If a production UX surfaces strong demand, define the equivalence class (kind-variant identity, optionally with location-span) and the keep-which-copy rule in a `30` amendment, then implement here. Until then, this is a caller-side concern.
 
 ---
 
@@ -258,11 +226,12 @@ depends-on:
 
 ## Q-API-011 — Direct `emit` on `SemStrait` for SQL-emission convenience
 
-**Question.** `EngineAdapter::emit` (`36 §3`) renders SQL; callers accessing it via `SemStrait::adapt` must then call `adapter.emit(&plan, &manifest)` separately. Should `SemStrait::emit(&self, adapter, &plan, &manifest) -> Result<SqlArtifact, AdaptError>` exist?
+**Question.** `EngineAdapter::emit` (`36 §3`) renders SQL; callers accessing it via `SemStrait::adapt` must then call `adapter.emit(&plan, &manifest)` separately. Should `SemStrait::emit(&self, adapter, &plan, &manifest)` exist as a passthrough that returns `Result<(SqlArtifact, Diagnostics<AdaptErrorKind>), (Diagnostic<AdaptErrorKind>, Diagnostics<AdaptErrorKind>)>` (matching `adapt`'s passthrough discipline)?
 
 **Refs.**
-- `36 §3.1` — `EngineAdapter::emit` signature.
+- `36 §3.1` — `EngineAdapter::emit` signature (returns the workspace-wide fail-fast tuple over `AdaptErrorKind`).
 - `38 §1.3` — current stance: SQL is reached via the injected adapter, not via `SemStrait`.
+- `38 §3.4` — `adapt` is a single-stage delegate that passes `AdaptErrorKind` through verbatim; an `emit` mirror would follow the same shape.
 
 **Arguments for direct `emit` (future MINOR).**
 - Ergonomic parity with `adapt` — callers who want SQL don't need to pattern-match on adapter types.
@@ -276,3 +245,36 @@ depends-on:
 **Current position in `38`.** No direct `emit`; callers reach it through the adapter.
 
 **Next step.** Revisit if `39_semstrait_facade.md` decides its ergonomic top-level includes an SQL-emission convenience; `38` would follow.
+
+---
+
+## Q-API-012 — Wrapping primitive for lifting `Diagnostic<K1>` into `Diagnostic<K2>`
+
+**Question.** Multi-stage `SemStrait` methods (§3.4) and the fused helper (§7) need to lift `Diagnostic<K1>` / `Diagnostics<K1>` from a per-stage kind (e.g. `AdaptErrorKind`) into the unified `Diagnostic<SemStraitErrorKind>` / `Diagnostics<SemStraitErrorKind>`, given the §6.3 `From<K1> for K2` impls. Three candidate shapes are available; ratifying one governs the §31 diagnostic surface and the §38 fused-helper body.
+
+**Refs.**
+- `31 §3` — `Diagnostic<K>` / `Diagnostics<K>` primitives.
+- `38 §6.3` — kind-level `From` impls (`From<AdaptErrorKind> for SemStraitErrorKind`, etc.).
+- `38 §7.2` — the lift site that motivates this question.
+
+**Option A — Blanket `impl<K1, K2> From<Diagnostic<K1>> for Diagnostic<K2> where K2: From<K1>` on `31`'s primitive.**
+
+- Most idiomatic Rust: `?` and `.into()` lift through the wrap automatically.
+- `Diagnostic<K1>: Into<Diagnostic<K2>>` and `Diagnostics<K1>: Into<Diagnostics<K2>>` come for free given any `K2: From<K1>` already declared.
+- Coherence-clean because `Diagnostic<K>` is owned by `31` (the blanket impl lives where the type is defined).
+- Trade-off: the blanket touches every `Diagnostic<*>` in the workspace; future kind designs that want to opt-out cannot.
+
+**Option B — Explicit `cast_kind::<K2>(self)` adapter method on `Diagnostic<K1>` / `Diagnostics<K1>`.**
+
+- Discoverable: `diag.cast_kind::<SemStraitErrorKind>()` makes the lift explicit at the call site.
+- Less coherence-fragile: no blanket impl, so future kind-pair-specific behavior (e.g. enriching the `context` during lift) is straightforward.
+- Trade-off: more verbose at the call site; doesn't compose with `?` natively unless paired with a `From` impl on the kind anyway.
+
+**Option C — Per-element rewrap left to callers.**
+
+- No new primitive on `31`; multi-stage methods do explicit `.into_iter().map(|d| Diagnostic::new(d.kind.into(), …))` inline.
+- Trade-off: verbose, duplicates logic across multi-stage methods, and exposes `Diagnostic` field access where a prebuilt helper would not.
+
+**Current position in `38`.** Forward-references whichever shape lands. The §7.2 example shows the lift site abstractly without committing to a specific primitive.
+
+**Next step.** Pick A or B during the next `31` revision; update §7.2 and any other lift-site prose to match. Option A is the structural default for typed wrappers; Option B is the conservative choice if `31`'s blanket-impl posture is contested.

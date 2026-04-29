@@ -1,3 +1,9 @@
+---
+doc: design/questions/open/31_questions
+status: Living
+purpose: Round-1 open items raised against `apis/31_semstrait_core.md`
+---
+
 # 31 — Open Questions
 
 Unresolved items arising while drafting `docs/design/apis/31_semstrait_core.md`. Each entry restates the question, lists the relevant ratified references, and proposes a lean next step so a later decision pass can resolve without re-reading the whole doc.

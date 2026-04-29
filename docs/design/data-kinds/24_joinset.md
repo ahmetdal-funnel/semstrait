@@ -36,7 +36,7 @@ refined-by:
 >   - `cardinality:` is required at every Relationship authoring site (SR-E-4).
 >   - `directionality:` is part of the struct (`forward` | `bidirectional`, default `bidirectional`).
 > - [`26_nesting_matrix.md`](./26_nesting_matrix.md) — nesting rules. Notably **R3** (every `ComplexDataKind` requires ≥ 2 children).
-> - [`../questions/open/24_questions.md#post-v1-shape-hint-clusters-folded-in-2026-04-17`](../questions/open/24_questions.md#post-v1-shape-hint-clusters-folded-in-2026-04-17) — Q-24-09 (`JoinAssociativity`) + Q-24-10 (star / snowflake / 3NF shape-tag vocabulary), folded from the former `joinset_shape_semantics.md` sidecar on 2026-04-17.
+> - [`../questions/deferred/24_questions.md`](../questions/deferred/24_questions.md) — Q-24-09 (`JoinAssociativity`) + Q-24-10 (star / snowflake / 3NF shape-tag vocabulary), folded from the former `joinset_shape_semantics.md` sidecar on 2026-04-17.
 >
 > This document retains authority for:
 >
@@ -66,7 +66,7 @@ refined-by:
 ### 1.2 What `24` does NOT ratify (forward-refs)
 
 - **`Relationship` shape, `Cardinality`, `JoinType`** — all three live canonically in `16 §§2–4`. `24` cites and consumes; it never redefines.
-- **Implicit composition for `Request.from = None`** — that is `16 §11`'s field-first algorithm, not `Joinset`. Implicit composition produces `CompositionKind::Relationship`; a `Joinset` produces `CompositionKind::Joinset`. §1.3 below sharpens the boundary.
+- **Implicit composition for `Request.from = None`** — that is `16 §11`'s field-first lookup over compile-time-enumerated compositions (`16 §10.4`). Both implicit and explicit Joinsets produce `CompositionKind::Joinset`; the distinguishing axis is `Origin` per `16 §5.6` (`Origin::Explicit` for author-declared, `Origin::Implicit { id }` for compile-enumerated). §1.3 below sharpens the boundary.
 - **`TemporalShape` variants and the `Additivity × TemporalShape` matrix** — `17`. `24` only records the integration point for `JoinType::AsOf` activation.
 - **N-ary `Joinset` authoring shape** — deferred. `12 §5.2` ratifies binary-arity for v1 under `TD-NESTING-NARY-JOIN`; `24 §2.5` restates the constraint and tracks the semantic shape the N-ary extension will take. The canonical struct in §2.2 is written for N-ary to keep the MINOR lift-to-N-ary purely structural (adding `path: Vec<JoinHop>` rather than swapping in a new struct).
 - **YAML surface for `joinsets:`** — `32`. The `path.on.left` / `path.on.right` structural-label-dotted-column form declared in `12 §5.1` is the v1 YAML convention; `24` reasons about the canonical-layer shape (post-parse, `ResolvedJoinset`).
@@ -413,7 +413,7 @@ With an explicit path, `overrides.per_hop[HopPosition(i)]` unambiguously targets
 | `Some(ExplicitPath { hops: vec![] })` | Rejected at validate (`VALID_E_2403`). Empty explicit paths are never an implicit-fallback. |
 | `Some(ExplicitPath { hops: [_, ..] })` | Explicit (§4.2). |
 
-Round 1 forbids hybrid modes ("use these specific hops plus let the planner fill in the rest"). Hybrid modes are tracked as `[TD-JOINSET-HYBRID-PATH]` in `questions/open/24_questions.md`.
+Round 1 forbids hybrid modes ("use these specific hops plus let the planner fill in the rest"). Hybrid modes are tracked as `[TD-JOINSET-HYBRID-PATH]` in `questions/closed/24_questions.md` (Q-24-02 — closed; TD marker carries the post-v1 reactivation).
 
 ## 5. `JoinsetStrategy`
 
@@ -448,7 +448,7 @@ For each `ResolvedJoinHop` in anchor-outward order:
 3. **Keys.** From `Relationship.keys` (`16 §2.3`), resolved to physical columns via `15`-resolved `Binding.column_mapping`. Direction-aware swap: if `hop.direction == Reverse`, `KeyPair.left` and `KeyPair.right` are swapped so the plan-tree's left-side key matches the anchor-side of the hop.
 4. **`JoinType`.** Per §5.3's override resolution.
 5. **`from_relationship`.** `Some(hop.relationship)`, carrying the originating Relationship for debug / audit.
-6. **`from_joinset`.** `Some(self.joinset.name)` — a new field on `JoinNode` per `35`'s parallel draft, distinguishing `Joinset`-derived joins from `CompositionKind::Relationship` implicit-composition-derived joins. (`24` records the requirement; `35` ratifies the struct.)
+6. **`from_joinset`.** `Some(self.joinset.name)` — a new field on `JoinNode` per `35`'s parallel draft, carrying the resolved Joinset's `DataKindName` (which is the synthetic `__implicit_joinset_<8-hex>` for `Origin::Implicit { id }` Joinsets per `16 §5.7`, or the author-declared name for `Origin::Explicit` Joinsets). The two are uniform downstream — strategy emission does not distinguish on `Origin`. (`24` records the requirement; `35` ratifies the struct.)
 
 ASCII plan tree for a binary Joinset `OrdersWithCustomers` anchor-left:
 
@@ -605,7 +605,7 @@ Per `16 §4.4.2` and `00 §4.1`'s `TemporalShape` row:
 - **Permitted `AsOf` but not mandated**: both the declared `JoinType` and an `AsOf` override are legal. The author's declaration wins.
 - **Forbidden `AsOf`**: temporal shapes do not support as-of joining; an override to `AsOf` is `COMP_E_2413`.
 
-When `17` ratifies, this section is updated to cite `17 §5.X` tables directly. Until then, the error codes `COMP_E_2412`–`COMP_E_2414` are reserved under §10.1; see `questions/open/24_questions.md` Q-24-04.
+When `17` ratifies, this section is updated to cite `17 §5.X` tables directly. Until then, the error codes `COMP_E_2412`–`COMP_E_2414` are reserved under §10.1; see `questions/closed/24_questions.md` Q-24-04 (closed — `AsOf` activation matrix shape ratified).
 
 ## 8. Interaction with `ComposedSemanticInterface`
 
@@ -747,15 +747,15 @@ Path-resolution errors (`COMP_E_2401`–`COMP_E_2410`) fire before override-lega
 |---|---|---|
 | `PLAN_E_2400` | `JoinsetRequestOutOfSurface { joinset, name }` | A Request with `from: Some(joinset)` names a `Semantics` not on the Joinset's `ComposedSemanticInterface`. Specialization of `16 §14.3 PLAN_E_0506 RequestOutOfSurface`; the specialized code carries the Joinset's name for a more actionable diagnostic. The planner MAY emit `PLAN_E_0506` OR `PLAN_E_2400`; `24`'s convention is to prefer `PLAN_E_2400` when the surface is a `CompositionKind::Joinset`. |
 | `PLAN_E_2401` | `JoinsetAmbiguousReferenceOnSurface { joinset, name, candidates }` | A bare `SemanticsName` on the Joinset's composed surface is ambiguous per `16 §6.2.3`'s namespacing rule. Specialization of `16 §14.3 PLAN_E_0505`. Same dispatch convention as `PLAN_E_2400`. |
-| `PLAN_E_2402` | `JoinsetNonAdditiveRollupRequired { joinset, measure, hop_cardinality }` | A non-additive measure requires a fanout-safe rewrite over the Joinset's fanout shape, but the Request's shape (or `17`'s `TemporalShape × Additivity` matrix) forbids the rewrite. Specialization of `16 §14.3 PLAN_E_0504`. |
+| `PLAN_E_2402` | `JoinsetNonAdditiveRollupRequired { joinset, measure, hop_cardinality }` | A non-additive measure requires a fanout-safe rewrite over the Joinset's fanout shape, but the Request's shape (or `17`'s `TemporalShape × Additivity` matrix) forbids the rewrite. Joinset-specialized variant of `16 §14.3 PLAN_E_0506 CompositionAggregationConflict`. |
 
 ### 11.2 `PlannerError` advisories
 
 | Code | Variant | Condition |
 |---|---|---|
-| `PLAN_W_2400` | `JoinsetFanoutAdvisory { joinset, position, cardinality }` | A hop introduces fanout; `JoinsetStrategy` inserted a fanout-safe rewrite. Joinset-specific companion to `16 §14.4 PLAN_W_0501`. |
+| `PLAN_W_2400` | `JoinsetFanoutAdvisory { joinset, position, cardinality }` | A hop introduces fanout; `JoinsetStrategy` inserted a fanout-safe rewrite. Joinset-specialized intent advisory; the cross-DataKind parent (`PLAN_W_0501 FanoutAdvisory`) was retired in `16 §14.4` (2026-04-29) per Q-COMP-005's intent-advisory deferral. Retention vs retirement of the Joinset-specialized variant is `[TD-JOINSET-FANOUT-ADVISORY]`. |
 | `PLAN_W_2401` | `JoinsetJoinTypeOverrideAdvisory { joinset, position, declared, effective }` | Informational: an override changed the hop's `JoinType` from the declared default. Emitted once per resolved Joinset that carries any override. Planner-diagnostic-only; does not block. |
-| `PLAN_W_2402` | `JoinsetManyToManyHopAdvisory { joinset, position, relationship }` | A hop's underlying `Relationship.cardinality == ManyToMany`; consider junction-table modeling (`16 §3.3.4`). Joinset-specific companion to `16 §14.4 PLAN_W_0502`. |
+| `PLAN_W_2402` | `JoinsetManyToManyHopAdvisory { joinset, position, relationship }` | A hop's underlying `Relationship.cardinality == ManyToMany`; consider junction-table modeling (`16 §3.3.4`). Joinset-specialized intent advisory; the cross-DataKind parent (`PLAN_W_0502 ManyToManyFanoutAdvisory`) was retired in `16 §14.4` (2026-04-29). Retention covered by `[TD-JOINSET-FANOUT-ADVISORY]`. |
 | `PLAN_W_2403` | `JoinsetMultiFanoutAdvisory { joinset, profile }` | The Joinset has more than one fan-out edge (v1 binary: a single `ManyToMany` hop; N-ary: cross-hop accumulation). `JoinsetStrategy` proceeds but the author should consider restructuring. |
 | `PLAN_W_2404` | `JoinsetAsOfActivation { joinset, position, declared, activated }` | `17 §5`'s matrix mandated `JoinType::AsOf` on a hop whose declared `JoinType` was non-`AsOf`. Informational so the author sees the activation. |
 
@@ -775,7 +775,7 @@ All `PLAN_E_24xx` are `Severity::Error`; they fail plan. All `PLAN_W_24xx` are `
 
 ### 12.1 Star schema — fact anchor, implicit paths
 
-Consider a Model with four top-level Simple DataKinds and three Relationships. (For v1 binary Joinsets, the example is narrated as three independent binary Joinsets `orders_x_customers`, `orders_x_products`, `orders_x_dates`, each a two-member pairing; the canonical N-ary star-schema Joinset unifying all four members is tracked under `TD-NESTING-NARY-JOIN` — see `questions/open/24_questions.md` Q-24-01. Each binary Joinset below exercises the full §§3–5 contract.)
+Consider a Model with four top-level Simple DataKinds and three Relationships. (For v1 binary Joinsets, the example is narrated as three independent binary Joinsets `orders_x_customers`, `orders_x_products`, `orders_x_dates`, each a two-member pairing; the canonical N-ary star-schema Joinset unifying all four members is tracked under `TD-NESTING-NARY-JOIN` — see `questions/deferred/24_questions.md` Q-24-01. Each binary Joinset below exercises the full §§3–5 contract.)
 
 ```mermaid
 erDiagram
@@ -1026,16 +1026,16 @@ Per §5.3.3, `Left → Full` is forbidden (widening row-preservation beyond the 
 
 ## 13. Round-1 Open Items
 
-Tracked in `questions/open/24_questions.md`:
+All Q-24-02 through Q-24-08 are now CLOSED — see [`questions/closed/24_questions.md`](../questions/closed/24_questions.md). Q-24-01 (N-ary Joinset lift, `TD-NESTING-NARY-JOIN`), Q-24-09 (`JoinAssociativity`), and Q-24-10 (star/snowflake/3NF shape-tag vocabulary) are deferred — see [`questions/deferred/24_questions.md`](../questions/deferred/24_questions.md). Round-1 framing for the closed items retained below for narrative reference; per-Q-ID closures live in the closed file.
 
-- **Q-24-01** — N-ary Joinset lift (`TD-NESTING-NARY-JOIN` / `[TD-JOINSET-NARY]`): when does it graduate from tech-debt to MINOR, what is the spanning-tree authoring surface, how do multi-hop Cardinality compositions accumulate?
-- **Q-24-02** — Hybrid path mode: should a Joinset be permitted to declare some hops explicitly and let the planner implicit-fill the rest? Round-1 position: prohibited.
-- **Q-24-03** — Override-reach: should `overrides` also permit overriding a hop's `Cardinality` declaration (e.g. downgrading `ManyToMany` to a pinned `OneToMany` when the author knows a specific slice satisfies the constraint)? Round-1 position: no.
-- **Q-24-04** — `AsOf` activation matrix: the exact set of `TemporalShape` pairs that mandate / permit / forbid `AsOf` joining, pending `17 §5` ratification.
-- **Q-24-05** — Joinset reuse by implicit composition: when a `Request.from = None` implicit-composition surface coincides with an existing `ResolvedJoinset`, should the planner substitute the Joinset's pre-built surface? Round-1 position: no (distinct `ComposedSemanticInterface` instances — see `16 §13.5`, `[TD-COMPOSITION-JOINSET-REUSE]`).
-- **Q-24-06** — Self-referential Joinsets (e.g. a Joinset that joins `employees` with itself along a manager relationship): tied to `[TD-COMPOSITION-SELFJOIN]`.
-- **Q-24-07** — Per-hop filter pushdown annotations: should the Joinset declare hop-level filters (e.g. "only join with `addresses` where `country = 'US'`") as part of `ExplicitPath`, or is filter-pushdown an exclusively planner concern?
-- **Q-24-08** — `FieldOwnership::NullFill` for Joinset: `16 §7.3.3` reserves it for Unionset. Should a Joinset with `Left` / `Full` outer joins record NULL-fillability structurally, or continue to rely on `JoinType` semantics at the plan-tree level?
+- **Q-24-01** — N-ary Joinset lift (`TD-NESTING-NARY-JOIN` / `[TD-JOINSET-NARY]`): when does it graduate from tech-debt to MINOR, what is the spanning-tree authoring surface, how do multi-hop Cardinality compositions accumulate? *Deferred.*
+- **Q-24-02** — Hybrid path mode: should a Joinset be permitted to declare some hops explicitly and let the planner implicit-fill the rest? *CLOSED — no hybrid mode.*
+- **Q-24-03** — Override-reach: should `overrides` also permit overriding a hop's `Cardinality` declaration (e.g. downgrading `ManyToMany` to a pinned `OneToMany` when the author knows a specific slice satisfies the constraint)? *CLOSED — no.*
+- **Q-24-04** — `AsOf` activation matrix: the exact set of `TemporalShape` pairs that mandate / permit / forbid `AsOf` joining, pending `17 §5` ratification. *CLOSED — three-bucket matrix shape ratified.*
+- **Q-24-05** — Joinset reuse by implicit composition: when a `Request.from = None` implicit-composition surface coincides with an existing `ResolvedJoinset`, should the planner substitute the Joinset's pre-built surface? *CLOSED — distinct instances (Round 2).*
+- **Q-24-06** — Self-referential Joinsets (e.g. a Joinset that joins `employees` with itself along a manager relationship): tied to `[TD-COMPOSITION-SELFJOIN]`. *CLOSED.*
+- **Q-24-07** — Per-hop filter pushdown annotations: should the Joinset declare hop-level filters (e.g. "only join with `addresses` where `country = 'US'`") as part of `ExplicitPath`, or is filter-pushdown an exclusively planner concern? *CLOSED — pushdown is planner-only.*
+- **Q-24-08** — `FieldOwnership::NullFill` for Joinset: `16 §7.3.3` reserves it for Unionset. Should a Joinset with `Left` / `Full` outer joins record NULL-fillability structurally, or continue to rely on `JoinType` semantics at the plan-tree level? *CLOSED — relies on `JoinType` semantics; no structural NullFill on Joinset.*
 
 ## 14. Cross-References
 
@@ -1058,6 +1058,6 @@ Tracked in `questions/open/24_questions.md`:
 - `33` (pending) — SemanticManifest surface: `ResolvedJoinset`, `ResolvedJoinHop`.
 - `34` (pending) — planner surface: `JoinsetStrategy` impl, dispatch rules between `16` generic codes and `24` specialized codes.
 - `35` (pending) — `PlanNode::Join` with `from_relationship` and `from_joinset` tagging fields.
-- `questions/open/24_questions.md` — Round-1 deferred items Q-24-01..Q-24-08.
+- `questions/closed/24_questions.md` — Round-1 ratified Q-24-02..Q-24-08; `questions/deferred/24_questions.md` — Q-24-01 / Q-24-09 / Q-24-10 (deferred for post-v1).
 - `questions/open/16_questions.md` — composition-level deferrals that touch Joinset (`[TD-COMPOSITION-JOINSET-REUSE]`, `[TD-COMPOSITION-SELFJOIN]`, `[TD-COMPOSITION-ASOF]`).
 - Legacy: `docs/JOINSET.md` — early reference; superseded by this document and `16 §13`.

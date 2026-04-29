@@ -1,7 +1,7 @@
 ---
 prereqs: [00, 30, 31]
 authoritative-for:
-  - the `semstrait-core::io` module surface: the `Source` / `Sink` async traits, the `FromIoBytes` / `IntoIoBytes` conversion traits, the `Location` polymorphic enum, the `IoError` error type
+  - the `semstrait-core::io` module surface: the `Source` / `Sink` async traits, the `FromIoBytes` / `IntoIoBytes` conversion traits, the `Location` polymorphic enum, the `IoErrorKind` typed-kind enum
   - the back-end roster exposed under `semstrait-core::io::backends`: `memory`, `local`, `s3` (feature-gated)
   - the adoption of `object_store` (Apache Arrow) as the internal back-end implementation; `object_store` is NEVER part of the public surface
   - the async posture (tokio) and its consequences for targets (`--no-default-features` preserves the original zero-runtime-dep posture)
@@ -14,9 +14,9 @@ refined-by:
 
 # 31b. `semstrait-core::io` — Byte-Blob I/O Transport Layer
 
-`31b` pins the byte-blob I/O protocol that every `semstrait-*` crate layers its format-specific load/dump wrappers on top of. It extends `semstrait-core` with a single new module (`io`) whose surface is deliberately minimal: two async traits (`Source`, `Sink`) plus two conversion traits (`FromIoBytes`, `IntoIoBytes`), one polymorphic scheme-dispatching enum (`Location`), one error type (`IoError`), and a small roster of back-end implementations.
+`31b` pins the byte-blob I/O protocol that every `semstrait-*` crate layers its format-specific load/dump wrappers on top of. It extends `semstrait-core` with a single new module (`io`) whose surface is deliberately minimal: two async traits (`Source`, `Sink`) plus two conversion traits (`FromIoBytes`, `IntoIoBytes`), one polymorphic scheme-dispatching enum (`Location`), one typed-kind enum (`IoErrorKind`) implementing `Diagnose` per `30 §5.4`, and a small roster of back-end implementations.
 
-Back-ends are thin wrappers over the `object_store` crate (Apache Arrow project): `object_store` provides the actual filesystem / S3 / in-memory machinery; `core::io` owns the public trait vocabulary, the `Location` scheme parser, and the `IoError` taxonomy. `object_store` is an implementation detail — consumers never see its types.
+Back-ends are thin wrappers over the `object_store` crate (Apache Arrow project): `object_store` provides the actual filesystem / S3 / in-memory machinery; `core::io` owns the public trait vocabulary, the `Location` scheme parser, and the `IoErrorKind` taxonomy. `object_store` is an implementation detail — consumers never see its types.
 
 Domain-specific functions like `load_model` (`32 §10.4`), `load_catalogs` (`32 §10.4`), and `load_manifest` (`33 §16.5`) do **not** live here. They live in the crate that owns the corresponding typed artifact. Core owns the transport; consumers own the format.
 
@@ -28,7 +28,7 @@ Domain-specific functions like `load_model` (`32 §10.4`), `load_catalogs` (`32 
 - The `FromIoBytes` and `IntoIoBytes` conversion traits that let `Source::read::<T>` and `Sink::write::<B>` accept a range of owned / borrowed types (`Bytes`, `Vec<u8>`, `String`, `&str`, `&[u8]`, …).
 - The `Location` enum covering `Local`, `InMemory`, and (feature-gated) `S3` schemes, with `FromStr` parsing and `Source` / `Sink` implementations that dispatch internally.
 - A process-global client cache for the `Location`-dispatch path so that repeated `s3://…` URIs share one `object_store` client per `(region, endpoint)` pair.
-- The `IoError` error type with its canonical variant set (`NotFound`, `PermissionDenied`, `Network`, `Unsupported`, `Malformed`) and its `IntoDiagnostic` impl per `31 §7.4`.
+- The `IoErrorKind` typed-kind enum with its canonical variant set (`NotFound`, `PermissionDenied`, `Network`, `Unsupported`, `Malformed`) and its `Diagnose` impl per `31 §7.4`. Back-end calls return `Result<…, IoErrorKind>`; callers wrap into `Diagnostic<IoErrorKind>` at the call site (typically inside a domain wrapper that has source-level location).
 - Back-end implementations: `backends::memory::InMemory`, `backends::local::LocalFile`, and (feature-gated) `backends::s3::S3Source` + `backends::s3::S3SourceBuilder`.
 - The `io` feature flag (default ON) and the `io-aws` feature flag (default OFF).
 
@@ -75,7 +75,7 @@ semstrait-core
     ├── FromIoBytes       (trait)                            // §5
     ├── IntoIoBytes       (trait)                            // §5
     ├── Location          (enum, implements Source + Sink)   // §6
-    ├── IoError           (enum)                             // §7
+    ├── IoErrorKind       (enum, implements Diagnose)        // §7
     └── backends
         ├── memory::InMemory                                 // always under "io"
         ├── local::LocalFile                                 // always under "io"
@@ -83,7 +83,7 @@ semstrait-core
         └── s3::S3SourceBuilder                              // cfg(feature = "io-aws")
 ```
 
-**Re-exports.** `semstrait_core::io::*` re-exports `Source`, `Sink`, `FromIoBytes`, `IntoIoBytes`, `Location`, `IoError`. Back-ends are reached through `semstrait_core::io::backends::{memory, local, s3}`; no back-end type is re-exported at the module root — the flat surface stays tiny, and back-end discovery goes through `backends::`.
+**Re-exports.** `semstrait_core::io::*` re-exports `Source`, `Sink`, `FromIoBytes`, `IntoIoBytes`, `Location`, `IoErrorKind`. Back-ends are reached through `semstrait_core::io::backends::{memory, local, s3}`; no back-end type is re-exported at the module root — the flat surface stays tiny, and back-end discovery goes through `backends::`.
 
 **Placement rationale.** `io` is a top-level module beside `expr` / `types` / `functions` (`31 §2`). It is not nested under any existing module because it is cross-cutting: consumers of `expr` never need it, consumers of `types` never need it, but any crate that loads YAML from disk or from S3 does. A peer module keeps the discovery story flat and the feature-flag gating surgical.
 
@@ -99,19 +99,23 @@ use std::borrow::Cow;
 ///
 /// All back-ends implement `Source`. Consumers that need polymorphic
 /// back-end dispatch use `Location` (which itself implements `Source`).
+///
+/// Back-end methods return the bare `IoErrorKind`; callers wrap into a
+/// `Diagnostic<IoErrorKind>` (per `30 §5.1`) at the call site if they
+/// have caller-level location data to attach.
 pub trait Source: Send + Sync {
     /// Read the full payload as raw bytes. This is the single method
     /// every back-end MUST implement; everything else is a default.
-    fn read_raw(&self) -> impl Future<Output = Result<Bytes, IoError>> + Send;
+    fn read_raw(&self) -> impl Future<Output = Result<Bytes, IoErrorKind>> + Send;
 
     /// Read the full payload as any type that implements `FromIoBytes`.
     /// Typical call sites:
     ///   - `src.read::<Bytes>().await`    for zero-copy bytes
     ///   - `src.read::<Vec<u8>>().await`  for an owned vector
-    ///   - `src.read::<String>().await`   for UTF-8 text (validates; emits `IoError::Malformed` on failure)
+    ///   - `src.read::<String>().await`   for UTF-8 text (validates; emits `IoErrorKind::Malformed` on failure)
     ///
     /// Default impl delegates to `read_raw` + `T::from_io_bytes`.
-    fn read<T: FromIoBytes>(&self) -> impl Future<Output = Result<T, IoError>> + Send
+    fn read<T: FromIoBytes>(&self) -> impl Future<Output = Result<T, IoErrorKind>> + Send
     where
         Self: Sync,
     {
@@ -174,15 +178,18 @@ use std::borrow::Cow;
 ///
 /// Writes are caller-atomic: either the full payload lands or the sink
 /// leaves its previous state intact (no half-written artifacts).
+///
+/// Back-end methods return the bare `IoErrorKind`; callers wrap into a
+/// `Diagnostic<IoErrorKind>` at the call site as for `Source`.
 pub trait Sink: Send + Sync {
     /// Write raw bytes. The single method every back-end MUST implement.
-    fn write_raw(&self, bytes: Bytes) -> impl Future<Output = Result<(), IoError>> + Send;
+    fn write_raw(&self, bytes: Bytes) -> impl Future<Output = Result<(), IoErrorKind>> + Send;
 
     /// Write any type that implements `IntoIoBytes` (accepts `Bytes`,
     /// `Vec<u8>`, `&[u8]`, `String`, `&str`, …).
     ///
     /// Default impl delegates to `write_raw` + `B::into_io_bytes`.
-    fn write<B: IntoIoBytes + Send>(&self, data: B) -> impl Future<Output = Result<(), IoError>> + Send
+    fn write<B: IntoIoBytes + Send>(&self, data: B) -> impl Future<Output = Result<(), IoErrorKind>> + Send
     where
         Self: Sync,
     {
@@ -222,20 +229,20 @@ use bytes::Bytes;
 /// Convert raw I/O bytes into a typed shape. Implementations MUST NOT
 /// mutate the underlying store or perform I/O — this is pure conversion.
 pub trait FromIoBytes: Sized {
-    fn from_io_bytes(bytes: Bytes) -> Result<Self, IoError>;
+    fn from_io_bytes(bytes: Bytes) -> Result<Self, IoErrorKind>;
 }
 
 impl FromIoBytes for Bytes {
-    fn from_io_bytes(bytes: Bytes) -> Result<Self, IoError> { Ok(bytes) }
+    fn from_io_bytes(bytes: Bytes) -> Result<Self, IoErrorKind> { Ok(bytes) }
 }
 
 impl FromIoBytes for Vec<u8> {
-    fn from_io_bytes(bytes: Bytes) -> Result<Self, IoError> { Ok(bytes.to_vec()) }
+    fn from_io_bytes(bytes: Bytes) -> Result<Self, IoErrorKind> { Ok(bytes.to_vec()) }
 }
 
 impl FromIoBytes for String {
-    fn from_io_bytes(bytes: Bytes) -> Result<Self, IoError> {
-        String::from_utf8(bytes.to_vec()).map_err(|e| IoError::Malformed {
+    fn from_io_bytes(bytes: Bytes) -> Result<Self, IoErrorKind> {
+        String::from_utf8(bytes.to_vec()).map_err(|e| IoErrorKind::Malformed {
             describe: String::from("<in-conversion>"),
             reason: format!("invalid UTF-8 at byte {}", e.utf8_error().valid_up_to()).into(),
         })
@@ -277,8 +284,8 @@ Both `Source` and `Sink` are implemented on `Location` by match-dispatching to t
 
 ```rust
 impl FromStr for Location {
-    type Err = IoError;
-    fn from_str(s: &str) -> Result<Self, IoError>;
+    type Err = IoErrorKind;
+    fn from_str(s: &str) -> Result<Self, IoErrorKind>;
 }
 ```
 
@@ -286,14 +293,14 @@ Dispatch table:
 
 | Input shape                       | Variant                                   | Notes                                                                         |
 | --------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------- |
-| `s3://<bucket>/<key>`             | `Location::S3(S3Source::new(bucket,key))` | requires `io-aws`; raises `IoError::Unsupported` otherwise                    |
-| `mem:<name>`                      | Looks up `<name>` in the in-memory registry, or returns `IoError::NotFound`  | `mem:` URIs refer to `InMemory` instances registered via a process-global `InMemory::register(name, bytes)` helper |
+| `s3://<bucket>/<key>`             | `Location::S3(S3Source::new(bucket,key))` | requires `io-aws`; raises `IoErrorKind::Unsupported` otherwise                |
+| `mem:<name>`                      | Looks up `<name>` in the in-memory registry, or returns `IoErrorKind::NotFound`  | `mem:` URIs refer to `InMemory` instances registered via a process-global `InMemory::register(name, bytes)` helper |
 | `file://<path>`                   | `Location::Local(LocalFile::new(<path>))` | standard file-URI form                                                        |
 | `/<abs>` / `./<rel>` / `../<rel>` | `Location::Local(LocalFile::new(input))`  | bare filesystem path                                                          |
 | any other literal                 | `Location::Local(LocalFile::new(input))`  | default-to-local                                                              |
-| `<unknown-scheme>://<rest>`       | `IoError::Unsupported`                    | only known schemes dispatch; unknown schemes error                            |
+| `<unknown-scheme>://<rest>`       | `IoErrorKind::Unsupported`                | only known schemes dispatch; unknown schemes error                            |
 
-Parse errors raise `IoError::Malformed` for shape-violations (e.g. `s3://` with no bucket).
+Parse errors raise `IoErrorKind::Malformed` for shape-violations (e.g. `s3://` with no bucket).
 
 ### 6.2 Client caching on the `Location::from_str` path
 
@@ -320,30 +327,27 @@ static S3_CLIENT_CACHE: OnceLock<DashMap<ClientKey, Arc<object_store::aws::Amazo
 
 ---
 
-## 7. `IoError`
+## 7. `IoErrorKind`
 
 ```rust
 #[non_exhaustive]
-#[derive(Debug, thiserror::Error)]
-pub enum IoError {
-    #[error("not found: {describe}")]
+#[derive(Debug)]
+pub enum IoErrorKind {
     NotFound { describe: String },
 
-    #[error("permission denied: {describe}")]
     PermissionDenied { describe: String },
 
-    #[error("network error on {describe}: {reason}")]
     Network {
         describe: String,
         reason: Cow<'static, str>,
-        #[source]
+        /// Foreign-error chain per `30 §5.4` (variant-side wrapping).
+        /// The wrapped error participates in the std::error::Error chain
+        /// via `Diagnose::cause()`.
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 
-    #[error("unsupported: {describe} ({reason})")]
     Unsupported { describe: String, reason: Cow<'static, str> },
 
-    #[error("malformed payload from {describe}: {reason}")]
     Malformed { describe: String, reason: Cow<'static, str> },
 }
 ```
@@ -358,21 +362,64 @@ pub enum IoError {
 | `Unsupported`      | Scheme or back-end not available in the current feature set, or operation not supported by a back-end | `s3://` URL parsed without `io-aws` enabled; conditional write attempted |
 | `Malformed`        | Payload or URI violates the expected shape                      | UTF-8 decode failure via `String::from_io_bytes`; `s3://` with no bucket component |
 
-**Stable codes** (per `30 §6`): `io.not-found`, `io.permission-denied`, `io.network`, `io.unsupported`, `io.malformed`.
-
-**`IntoDiagnostic`** is implemented per `31 §7.4`, so downstream error rendering (CLI, LSP) works without ceremony:
+### 7.1 `Diagnose` impl
 
 ```rust
-impl IntoDiagnostic for IoError {
-    fn into_diagnostic(self) -> Diagnostic {
-        /* severity = error; code = stable-code; message = Display; location = derived from the describe field */
+impl Diagnose for IoErrorKind {
+    fn message(&self) -> String {
+        match self {
+            Self::NotFound { describe } =>
+                format!("not found: {describe}"),
+            Self::PermissionDenied { describe } =>
+                format!("permission denied: {describe}"),
+            Self::Network { describe, reason, .. } =>
+                format!("network error on {describe}: {reason}"),
+            Self::Unsupported { describe, reason } =>
+                format!("unsupported: {describe} ({reason})"),
+            Self::Malformed { describe, reason } =>
+                format!("malformed payload from {describe}: {reason}"),
+        }
+    }
+
+    fn severity_default(&self) -> Severity { Severity::Error }
+
+    fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Network { source: Some(e), .. } => Some(e.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for IoErrorKind { /* delegates to Diagnose::message */ }
+impl std::error::Error for IoErrorKind {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Diagnose::cause(self)
     }
 }
 ```
 
-**`#[non_exhaustive]`** applied per `31 §8` variant-stability rules; new variants land additively (e.g. `RateLimited`, `Throttled`) without breaking consumers.
+### 7.2 Stage-of-origin and identification
 
-**Domain error composition.** `ModelLoadError` / `ModelDumpError` / `SemanticManifestLoadError` / etc. (defined in the owning crates, `32 §10.4` / `33 §16.5`) are `#[non_exhaustive]` enums with `Io(IoError)` as one variant. Because `IoError` is itself `#[non_exhaustive]`, adding an `IoError` variant is a MINOR change through the entire dependency chain.
+Per `30 §5`, identification is by variant identity (renaming a variant is MAJOR; adding one inside `#[non_exhaustive]` is MINOR). There is no central code allocation; matching `IoErrorKind::NotFound { .. }` is the stable contract.
+
+The stage of origin (`fs.read`, `repository.load`, etc.) appears as a `tracing` `stage` field on the surrounding span (`30 §6.5`), not in the kind. Domain wrappers building a `Diagnostic<IoErrorKind>` from a back-end call attach a caller-known location (file path, manifest ID) at construction.
+
+### 7.3 Cross-crate composition
+
+Domain error kinds in upstream crates (`semstrait_model::ModelLoadErrorKind`, `semstrait_manifest::RepositoryErrorKind`) declare `Io(IoErrorKind)` as a variant per D.ii cross-stage nesting (`30 §7.4`). Because `IoErrorKind` is `#[non_exhaustive]`, adding a variant here remains MINOR through the entire dependency chain.
+
+Example (in `33 §11`):
+
+```rust
+#[non_exhaustive]
+pub enum RepositoryErrorKind {
+    Io(IoErrorKind),                    // wraps transport failure
+    ManifestIdCollision { id: String }, // domain-level
+    EncodingMismatch { expected: String, actual: String },
+    IntegrityCheckFailed { reason: String },
+}
+```
 
 ---
 
@@ -437,7 +484,7 @@ impl S3SourceBuilder {
         builder: object_store::aws::AmazonS3Builder,
     ) -> Self;
 
-    pub fn build(self) -> Result<S3Source, IoError>;
+    pub fn build(self) -> Result<S3Source, IoErrorKind>;
 }
 ```
 
@@ -453,7 +500,7 @@ No new back-ends ship in v1. Adding `backends::http`, `backends::gcs`, `backends
 
 | Feature  | Default | Gates                                                                                                   | Pulls                                           |
 | -------- | ------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `io`     | **ON**  | The `io` module itself; `Source`, `Sink`, conversion traits, `Location`, `IoError`; `backends::memory` + `backends::local` | `tokio` (rt + fs), `bytes`, `object_store` (minimal — `Local` + `InMemory` features only) |
+| `io`     | **ON**  | The `io` module itself; `Source`, `Sink`, conversion traits, `Location`, `IoErrorKind`; `backends::memory` + `backends::local` | `tokio` (rt + fs), `bytes`, `object_store` (minimal — `Local` + `InMemory` features only) |
 | `io-aws` | OFF     | `Location::S3` variant + `backends::s3::{S3Source, S3SourceBuilder}`                                    | `object_store/aws` feature (pulls `aws-config` transitively) |
 
 **No other I/O features in v1.** `io-gcs`, `io-azure`, `io-http`, `io-wasm` are not shipped; each would be an additive MINOR that enables the corresponding `object_store` feature.
@@ -605,12 +652,12 @@ assert!(model.find_public("orders").is_some());
 | Rule         | Statement                                                                                                                                                                                                                           | Enforcement                                                                                               |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | **SR-IO-1**  | Every back-end implements at least `Source`. `Sink` is optional; read-only back-ends omit it.                                                                                                                                       | Per-back-end impl; compile-time.                                                                          |
-| **SR-IO-2**  | `read_raw` returns `Bytes`. Typed reads go through `Source::read<T>` and `FromIoBytes`. UTF-8 validation lives in `FromIoBytes for String`, emitting `IoError::Malformed` on failure.                                               | Trait contract; the default-method impl ties the two together.                                            |
+| **SR-IO-2**  | `read_raw` returns `Bytes`. Typed reads go through `Source::read<T>` and `FromIoBytes`. UTF-8 validation lives in `FromIoBytes for String`, emitting `IoErrorKind::Malformed` on failure.                                          | Trait contract; the default-method impl ties the two together.                                            |
 | **SR-IO-3**  | `describe()` is stable content-addressable identity (§3.5). Equal `describe()` ⇒ equal bytes (absent concurrent mutation). `describe()` MUST NOT emit secrets.                                                                      | Per-impl discipline; code review + unit test that `describe()` of identical back-end states is equal.     |
 | **SR-IO-4**  | `read_raw` / `read` are idempotent.                                                                                                                                                                                                 | Trait contract.                                                                                           |
-| **SR-IO-5**  | Error taxonomy is exhaustive for the v1 back-end set. New back-ends that cannot map to an existing `IoError` variant extend the enum per `30 §2.2` stability rules (`#[non_exhaustive]` makes additions MINOR).                    | `#[non_exhaustive]` + additive-MINOR rules.                                                               |
+| **SR-IO-5**  | Error taxonomy is exhaustive for the v1 back-end set. New back-ends that cannot map to an existing `IoErrorKind` variant extend the enum per `30 §2.2` stability rules (`#[non_exhaustive]` makes additions MINOR).               | `#[non_exhaustive]` + additive-MINOR rules.                                                               |
 | **SR-IO-6**  | Writes are per-operation atomic: mid-write crashes do not produce half-written artifacts. Concurrent writes are last-writer-wins (§4.3).                                                                                            | Per-back-end impl (delegated to `object_store`).                                                          |
-| **SR-IO-7**  | `Location::from_str` is total over the input domain: every input produces either a valid `Location` or an `IoError`; no panics, no silent defaults beyond the explicit "default-to-local" fallback documented in §6.1.             | Parser contract.                                                                                          |
+| **SR-IO-7**  | `Location::from_str` is total over the input domain: every input produces either a valid `Location` or an `IoErrorKind`; no panics, no silent defaults beyond the explicit "default-to-local" fallback documented in §6.1.        | Parser contract.                                                                                          |
 | **SR-IO-8**  | `object_store` is an internal detail. Consumers outside the `semstrait-*` workspace never see `object_store::ObjectStore`, `object_store::Path`, or any of its error types in a public signature. The one exception is `S3SourceBuilder::with_object_store_builder` (documented escape hatch). | Code review + API audit; enforced by visibility rules on the back-end modules. |
 | **SR-IO-9**  | `InMemory::new` requires a stable `name` argument; anonymous in-memory back-ends are not supported. This preserves SR-IO-3.                                                                                                         | Constructor signature.                                                                                    |
 | **SR-IO-10** | Core's `io` module is feature-gated behind `io` (default ON) and `io-aws` (default OFF). `--no-default-features` restores the zero-runtime-dep posture of `31 §1.3`.                                                               | `Cargo.toml` feature definition + CI job that builds `--no-default-features`.                             |

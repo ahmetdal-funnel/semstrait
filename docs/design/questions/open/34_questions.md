@@ -1,6 +1,14 @@
+---
+doc: design/questions/open/34_questions
+status: Living
+purpose: Round-1 open items raised against `apis/34_semstrait_planner.md`
+---
+
 # 34 — Open Questions
 
 Unresolved items arising while drafting `docs/design/apis/34_semstrait_planner.md`. Each entry restates the question, lists the relevant ratified references, and proposes a lean next step so a later decision pass can resolve without re-reading the whole doc.
+
+> Eight questions remain open: Q-PLAN-001, -002, -004 through -007, Q-PLAN-009, Q-PLAN-010. Closed items moved to [`../closed/34_questions.md`](../closed/34_questions.md).
 
 ---
 
@@ -54,32 +62,9 @@ Unresolved items arising while drafting `docs/design/apis/34_semstrait_planner.m
 
 ---
 
-## Q-PLAN-003 — `PLAN_E_0500` allocation conflict
+## Q-PLAN-003 — `PLAN_E_0500` allocation conflict — CLOSED
 
-**Question.** `PLAN_E_0500` is currently referenced by two distinct error conditions:
-- `ConstraintViolation` per `11 §8.7` (step-0 constraint validation).
-- `AmbiguousImplicitComposition` per `16 §14.3` (step-2 field-first resolution).
-
-Both cannot share the same stable code. Which one moves?
-
-**Refs.**
-- `11 §8.7` — `ConstraintViolation` code allocation.
-- `16 §14.3` — field-first composition-error codes.
-- `30 §6.2` — stable-code discipline; allocation conflicts are release blockers.
-- `30 §6.3` — code-stability rules.
-- `34 §13.1` — current allocation table (notes the conflict inline).
-
-**Proposal A — move `AmbiguousImplicitComposition` to `PLAN_E_0506`.**
-- Pros: keeps step-0 (constraint) at the lowest code; the composition sub-band has free slots (`0506`, `0508`, `0509`).
-- Cons: cross-doc edit in `16 §14.3`.
-
-**Proposal B — move `ConstraintViolation` to its own sub-range (e.g. `PLAN_E_0580`).**
-- Pros: constraint-validation codes get a dedicated sub-range for future variants (per `11`'s `[TD-CONSTRAINT-ERROR-FANOUT]`).
-- Cons: cross-doc edit in `11 §8.7`; longer-term the constraint sub-range may grow and bump composition's allocations.
-
-**Current position in `34`.** `34 §13.1` notes the conflict inline and flags it for reconciliation. This is a **pre-release blocker** per `30 §6.2`.
-
-**Next step.** Take Proposal A (minimum-edit). Update `16 §14.3` to cite `PLAN_E_0506` for `AmbiguousImplicitComposition`; update `30 §6.2`'s `PLAN_E` sub-band note to spell out `0500` (constraint), `0501`–`0509` (composition), `0510`–`0519` (request-shape), `0520`–`0529` (filter-shape) explicitly. Tracked as `[TD-PLAN-E-0500-REALLOC]` pending the final pass before v1.0.
+> **Moved to [`../closed/34_questions.md`](../closed/34_questions.md#q-plan-003--plan_e_0500-allocation-conflict--closed--superseded-by-typed-kind-transition).** The typed-kind transition at `30 §6` retired the stable string-code subsystem; `PlanErrorKind::ConstraintViolation` and `PlanErrorKind::AmbiguousImplicitComposition` are now distinct typed variants with no numeric identifier collision.
 
 ---
 
@@ -177,28 +162,9 @@ Both cannot share the same stable code. Which one moves?
 
 ---
 
-## Q-PLAN-008 — Field-first depth bound (`MAX_IMPLICIT_COMPOSITION_DEPTH = 3`)
+## Q-PLAN-008 — Field-first depth bound — CLOSED (2026-04-28)
 
-**Question.** `34 §10.4` sets the implicit-composition depth bound at 3 hops. Is 3 the right default? (See also `16` Q-COMP-001.)
-
-**Refs.**
-- `34 §10.4` — current constant.
-- `16 §9.1` — "depth-limited" rationale.
-- `16` Q-COMP-001 — sibling question in the composition doc.
-- `14b §4` — compile-time cross-kind path resolution (same bound).
-
-**Arguments pro 3.**
-- Covers 95%+ of realistic star-schema / snowflake / hub-and-spoke models where field-first resolution is ergonomic.
-- Keeps the Steiner-tree search tractable (worst-case `E^3`).
-- Authors who need deeper paths declare an explicit Joinset (`24`) — cleaner intent.
-
-**Arguments pro higher (e.g. 5).**
-- Complex healthcare / pharma / supply-chain models have deep chains.
-- A tighter bound forces Joinset declarations that may not match authorial intent.
-
-**Current position in `34`.** 3, with an off-by-default feature toggle (`semstrait.plan.implicit_depth_max`).
-
-**Next step.** Observe from early-adopter models. If many Models tune the toggle, raise the default to 4 or 5; otherwise keep at 3.
+> **Moved to [`../closed/34_questions.md`](../closed/34_questions.md#q-plan-008--field-first-depth-bound-max_implicit_composition_depth--closed-2026-04-28).** Mirrored from Q-COMP-001 at value `4`.
 
 ---
 

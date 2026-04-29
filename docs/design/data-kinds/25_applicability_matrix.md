@@ -259,8 +259,8 @@ The `CompositionKind` enum distribution across the matrix is summarized in `16 �
 
 | `CompositionKind` variant | Emitted by | `25` row pointer |
 |---|---|---|
-| `CompositionKind::Relationship` | `16 §11` implicit composition (any variant mix). | `§2.8` row `16 §11`. |
-| `CompositionKind::Joinset` | `Joinset` explicit composition (`24 §2.4`). | `§2.8` row `16 §5`, Joinset column. |
+| `CompositionKind::Joinset` (`Origin::Implicit`) | `16 §10.4` compile-time enumeration of Joinsets from the relationship graph. | `§2.8` row `16 §10`. |
+| `CompositionKind::Joinset` (`Origin::Explicit`) | Author-declared `Joinset` (`24 §2.4`). | `§2.8` row `16 §5`, Joinset column. |
 | `CompositionKind::Unionset` | `Unionset` explicit composition (`23 §2.3`). | `§2.8` row `16 §5`, Unionset column. |
 | `CompositionKind::Grainset` | `Grainset` explicit composition (`22 §2.3`). | `§2.8` row `16 §5`, Grainset column. |
 
@@ -276,11 +276,11 @@ Vocabulary ratified in `17`; planner-side support is DEFERRED in places (see `00
 | `17 §3.1` declaration site on `SimpleDataKind` | **`always`** — declared inline via `temporal_shape:` (`21 §5.1`). | `n/a` — Grainset itself does not carry a top-level shape; each child may (`17 §3.2`). | `n/a` — same. | `n/a` — same. |
 | `17 §3.2` Complex does NOT carry its own `TemporalShape` | `n/a`. | `always` — shape derived from children per `17`. | `always` — same; mixed-shape branches emit advisories (`23 §6.1`). | `always` — shape derived from the two members; `AsOf` activation per `17 §5` consults both sides. |
 | `17 §4` shape × `Grain` rollup matrix | `conditional` — legality gated per `17 §4.1`'s matrix; shape-less Simples default-legal (`21 §6.3`). | **`always`** — gates per-child eligibility in `22 §4.3` `ROLLUP_LEGAL` (`SnapshotRollupWithoutPin`, `SCDRollupWithoutAsOf`). | `conditional` — gates post-Union rollup shape per `23 §7` (`PLAN_E_2302`). | `conditional` — per-member rollup is each member's concern. |
-| `17 §5` `AsOf` `JoinType` | `n/a` — Simple has no `JoinType`. | `conditional` — when a Grainset child is itself an SCD, the grainset-level rollup requires as-of anchoring per `22 §5` `SCDRollupWithoutAsOf`. | `conditional` — cross-shape branches may require as-of reconciliation (`23 §6.3`, `[TD-UNIONSET-SHAPE-PLANNING]`). | **`always`** — `JoinType::AsOf` activation matrix gates per-hop overrides (`24 §7`, `COMP_E_2412`–`COMP_E_2414`). Also fires for implicit Relationship composition under `16 §11` — see next row. |
-| `17 §5` `AsOf` across implicit Relationship composition | `n/a`. | `conditional` — `16 §11`-synthesized composition over a Grainset constituent inherits the same as-of gating. | `conditional` — same. | `conditional` — redundant with explicit Joinset `AsOf`. |
+| `17 §5` `AsOf` `JoinType` | `n/a` — Simple has no `JoinType`. | `conditional` — when a Grainset child is itself an SCD, the grainset-level rollup requires as-of anchoring per `22 §5` `SCDRollupWithoutAsOf`. | `conditional` — cross-shape branches may require as-of reconciliation (`23 §6.3`, `[TD-UNIONSET-SHAPE-PLANNING]`). | **`always`** — `JoinType::AsOf` activation matrix gates per-hop overrides (`24 §7`, `COMP_E_2412`–`COMP_E_2414`). Also fires for implicit Joinsets (`Origin::Implicit`) enumerated at compile per `16 §10.4` — see next row. |
+| `17 §5` `AsOf` across implicit Joinsets | `n/a`. | `conditional` — `16 §10.4`-enumerated implicit Joinsets containing a Grainset constituent inherit the same as-of gating. | `conditional` — same. | `conditional` — uniform with `Origin::Explicit` Joinsets per the unified Joinset model. |
 | `17 §6` `Request.temporal` block (`as_of:`, time-range overrides) | DEFERRED per `17 §6.5` — no variant consumes in v1. | DEFERRED. | DEFERRED. | DEFERRED. |
 | `17 §7` `Additivity × TemporalShape` advisories | `conditional` — emits advisory when Simple's Measure `Additivity` and the Simple's `TemporalShape` appear inconsistent (`21 §5.2` / `PLAN_W_2102`). | `conditional` — emits advisory per child at strategy time (`22 §9.2` `PLAN_W_2202` mixed-shape). | `conditional` — emits advisories for cross-child shape mismatch (`23 §6.1` `COMP_W_2302`–`W_2306`). `[CROSS-DOC-FIX-NEEDED]`: `§1.3 CDF-17-01`. | `conditional` — emits advisory when `AsOf` is activated over a hop whose declared `JoinType` was non-`AsOf` (`24 §11.2` `PLAN_W_2404`). |
-| `17 §8` shape-gated composition rules (`17 §8.1` Unionset branches; `§8.2` Grainset levels; `§8.3` Joinset hops) | `n/a`. | `always` — Grainset levels are shape-gated per `17 §8.2` (consumed by `22 §4.3`). | `always` — Unionset branches are shape-gated per `17 §8.1` (consumed by `23 §6`). | `always` — Joinset hops are shape-gated per `17 §8.3` (consumed by `24 §7`). Implicit Relationship composition inherits the same gating via `16 §11` + `17 §5`. |
+| `17 §8` shape-gated composition rules (`17 §8.1` Unionset branches; `§8.2` Grainset levels; `§8.3` Joinset hops) | `n/a`. | `always` — Grainset levels are shape-gated per `17 §8.2` (consumed by `22 §4.3`). | `always` — Unionset branches are shape-gated per `17 §8.1` (consumed by `23 §6`). | `always` — Joinset hops are shape-gated per `17 §8.3` (consumed by `24 §7`). Implicit Joinsets (`Origin::Implicit`) inherit the same gating uniformly under the unified Joinset model (`16 §5.6`, `§10.4`). |
 
 Rows for `17 §5` explicitly spell out the "all variants — wherever a join hop crosses shape pairs requiring as-of semantics" rule from the user's spec by splitting the `AsOf` applicability into (a) the explicit Joinset hop and (b) the implicit-Relationship hop. Both cite `17 §5`; both inherit the matrix.
 
@@ -446,7 +446,7 @@ NULL-fill appears in two distinct axes:
 | `Unionset` | **Per-child `CompositionCoverage`**, optionally overridden by an author-declared `ChildCoverageOverride.provides` set (`23 §3.2` / `§5`). | **Yes** — `FieldOwnership::NullFill(providers)` records which children DO cover each field; non-providers inferred by set-difference (`23 §5.5`, `16 §7.3.3`). | **Yes** — per-child `Project` emits `Cast(Null, unified_type)` at the seam for every `NullFill` field (`23 §4.3`). The only variant that materializes structural NULL-fill in `PlanNode`s. |
 | `Joinset` | **Per-member `CompositionCoverage`** — fold per `24 §8.4`; every member is either `Native` or `NullFill` on each composed-surface Semantics. Most Joinset coverage rows are `Native` on one side and `NullFill` on the other. | **No** — `16 §7.3.3` reserves `FieldOwnership::NullFill` for Unionset; Joinset-side outer-join NULL-fill is carried by `JoinType` semantics at plan time (`24 §8.3` / `§5.5` step 3). | NULL-fill is emitted by the `PlanNode::Join`'s outer-join semantics (`Left` / `Right` / `Full`), not by a typed `Cast(Null, _)` projection. |
 
-Q-24-08 in `questions/open/24_questions.md` revisits whether Joinset should gain structural `NullFill` records for outer joins; Round-1 position is no.
+Q-24-08 in `questions/closed/24_questions.md` ratified the Round-1 position: Joinset does NOT gain structural `NullFill` records for outer joins (closed).
 
 Cross-refs: `15 §6` (Binding-level Coverage), `16 §7.3.3` (per-variant `FieldOwnership::NullFill` policy), `16 §8.4` (`CompositionCoverage` fold), `21 §3.2` (Simple + multi-source), `22 §6` (Grainset), `23 §5` (Unionset — the canonical NULL-fill case), `24 §8.3` / `§8.4` (Joinset).
 
@@ -637,6 +637,6 @@ Round-1 deferrals recorded at specific cells of `§2` reuse the owning doc's `[T
 - `questions/open/25_questions.md` — Round-1 deferred items Q1–Q4 (`§8`).
 - `questions/open/17_questions.md` — temporal-shape deferrals that ripple into `§2.9`'s qualifier cells.
 - `questions/open/23_questions.md` — Unionset shape-planning deferrals (`[TD-UNIONSET-SHAPE-PLANNING]`).
-- `questions/open/24_questions.md` — Joinset N-ary / `AsOf` / reuse items consumed by `§3.4`'s bullets and `§3.5`'s table.
+- `questions/deferred/24_questions.md` — Joinset N-ary deferral (Q-24-01) consumed by `§3.4`'s bullets; `questions/closed/24_questions.md` — `AsOf` activation matrix (Q-24-04), reuse policy (Q-24-05) consumed by `§3.5`'s table.
 
 No legacy-doc cross-refs: `25` is new in Round 1 and has no pre-ratification predecessor.

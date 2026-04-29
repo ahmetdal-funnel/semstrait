@@ -13,40 +13,13 @@ depends-on:
 
 # Open Questions — `apis/37_semstrait_catalog.md`
 
-> Items surfaced during Round-1 drafting of the `semstrait-catalog` public API contract. Each entry restates the question, lists its ratified references, and records the Round-1 default currently used. Entries migrate out of this file as later docs (primarily `33`, and amendments to `30`) make decisions that either confirm or amend `37`'s defaults. None of these items block the headline ratifications in `37 §15`.
+> Eleven questions remain open: Q-CAT-002 through Q-CAT-012. Closed items moved to [`../closed/37_questions.md`](../closed/37_questions.md). Each entry restates the question, lists its ratified references, and records the Round-1 default currently used. Entries migrate out of this file as later docs (primarily `33`, and amendments to `30`) make decisions that either confirm or amend `37`'s defaults. None of these items block the headline ratifications in `37 §15`.
 
 ---
 
-## Q-CAT-001 — `CAT_E_*` / `FS_E_*` subsystem-prefix registration in `30 §6.2`
+## Q-CAT-001 — `CAT_E_*` / `FS_E_*` subsystem-prefix registration in `30 §6.2` — CLOSED
 
-**Question.** `37 §8.3` proposes registering two new subsystems in `30 §6.2`'s reserved-ranges table: `CAT` (catalog, range `0100`–`0399`) and `FS` (filesystem, range `0100`–`0199`). `30 §6.2` does not currently list either. Parallel questions:
-
-- (a) Should `CAT` and `FS` be added to `30 §6.2` as distinct subsystems, or should they share one subsystem (e.g. `IO`) with internal sub-ranges?
-- (b) Are the proposed 300-wide (`CAT`) and 100-wide (`FS`) ranges sized appropriately, or should both be 1000-wide for consistency with other subsystems?
-- (c) Should the range start at `0100` (per `30 §6.2` convention for most subsystems) or at `0001` (per `PARSE`, `EXPR`)?
-
-**Refs.**
-
-- `30 §6.1` — format: `{SUBSYSTEM}_{SEVERITY}_{NUMBER}`, 4-digit zero-padded NUMBER.
-- `30 §6.2` — reserved-ranges table; no `CAT` or `FS` row.
-- `30 §6.6` — reserved future prefixes (`REG`, `IO`, `ENG`). `IO` could plausibly absorb filesystem errors.
-- `37 §8.1`–`§8.2` — 12 + 9 variants proposed under these ranges.
-
-**Arguments for separate `CAT` and `FS` subsystems (current Round-1 default).**
-
-- Clear layering signal: catalog is structured-metadata, filesystem is bytes. Collapsing them into one subsystem implies a conceptual unity that the trait surface deliberately denies (the whole point of `37 §1.1` is that these are two independent abstractions).
-- Lexical distinctness at grep time: `CAT_E_0103` vs `FS_E_0101` are easier to triage than `IO_E_0200` vs `IO_E_0103`.
-- Range sizing reflects expected variant growth: catalogs expose more diverse failure shapes (drift, malformed partition, snapshot-not-found) than filesystems (connection, not-found, auth).
-
-**Arguments for a single unified `IO` subsystem.**
-
-- `30 §6.6` already reserves `IO` as a future prefix; using it here is the path of least resistance.
-- One prefix = one mental bucket for "external I/O failures."
-- Avoids the `CAT`-vs-`FS` demarcation question at the error-code level ("is this an auth failure against the catalog or against the object store?").
-
-**Current position in `37`.** Two separate subsystems, `CAT_E_0100`–`0399` and `FS_E_0100`–`0199`. Amendment item `[TD-CAT-CODE-TABLE-AMEND]` is recorded against `30 §6.2`.
-
-**Next step.** Decide during `30`'s next amendment pass alongside `Q-IR-001` (the analogous IR prefix question from `questions/open/35`). If `30` adopts a uniform "each subsystem gets a 1000-wide band" convention, `37`'s codes update mechanically. Until then, the digit literals in `§8.1`–`§8.2` are placeholders; variant names, severity, sub-range assignment, and diagnostic shape are all ratified.
+> **Moved to [`../closed/37_questions.md`](../closed/37_questions.md#q-cat-001--cat_e_--fs_e_-subsystem-prefix-registration-in-30-62--closed--superseded-by-typed-kind-transition).** The typed-kind transition at `30 §6` retired the stable string-code subsystem; `CatalogProviderErrorKind` and `FileSystemErrorKind` are now independent typed enums with no prefix-table entry. Sub-questions (a) / (b) / (c) all dissolve.
 
 ---
 

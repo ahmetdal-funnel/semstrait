@@ -6,8 +6,8 @@ prereqs:
 authoritative-for:
   - "`CatalogProvider` trait surface (method set, signatures, async posture)"
   - "`FileSystem` trait surface (method set, signatures, async posture)"
-  - "`CatalogError` enum (variants, stable `CAT_E_*` codes)"
-  - "`FileSystemError` enum (variants, stable `FS_E_*` codes)"
+  - "`CatalogProviderErrorKind` typed-error enum (variant identity per `30 §5`; `CAT_E_*` codes retired) and its `Diagnose` impl per `31 §3`"
+  - "`FileSystemErrorKind` typed-error enum (variant identity per `30 §5`; `FS_E_*` codes retired) and its `Diagnose` impl per `31 §3`"
   - "Built-in `CatalogProvider` implementations roster (v1)"
   - "Built-in `FileSystem` implementations roster (v1)"
   - "Shared glob-expansion utility contract (`expand_glob`)"
@@ -43,7 +43,7 @@ Both traits are `async` because every real-world implementation performs network
 - Trait definitions (`CatalogProvider`, `FileSystem`) and their structural value types (`CatalogId`, `Path`, `TableRef`, `NamespaceRef`, `ResolvedTable`, `Schema`, `SchemaColumn`, `Partition`, `PartitionTransform`, `FileFormat`, `SnapshotVersion`, `SnapshotMetadata`, `DriftReport`, `DriftStatus`, `DriftKind`, `FileEntry`).
 - Built-in `CatalogProvider` implementations: `NoopCatalogProvider`, `IcebergRestCatalogProvider`, `UnityCatalogProvider`, `FilesystemCatalogProvider`.
 - Built-in `FileSystem` implementations: `LocalFileSystem`, `S3FileSystem`, `AzureFileSystem`, `GcsFileSystem`.
-- Error types (`CatalogError`, `FileSystemError`) and their stable `CAT_E_*` / `FS_E_*` code surface.
+- Error types (`CatalogProviderErrorKind`, `FileSystemErrorKind`) — typed-kind enums per `30 §5` / `31 §3`; identification by variant identity. Legacy `CAT_E_*` / `FS_E_*` codes are retired.
 - Shared glob-expansion utility (`expand_glob`) that composes `FileSystem` with a client-supplied pattern.
 - The schema-drift gated I/O contract invoked by `semstrait-manifest` under I11b, and no other query-time I/O entry point.
 
@@ -81,8 +81,8 @@ NoopCatalogProvider              AzureFileSystem
 |---------------------------------|----------------|----------------------|----------------|
 | `CatalogProvider`               | trait          | n/a (trait sealing)  | **Open**       |
 | `FileSystem`                    | trait          | n/a                  | **Open**       |
-| `CatalogError`                  | enum           | yes                  | Provisional    |
-| `FileSystemError`               | enum           | yes                  | Provisional    |
+| `CatalogProviderErrorKind`      | enum           | yes                  | Provisional    |
+| `FileSystemErrorKind`           | enum           | yes                  | Provisional    |
 | `CatalogId`                     | newtype struct | no (field-stable)    | Stable         |
 | `Path`                          | newtype struct | no (field-stable)    | Stable         |
 | `TableRef`                      | struct         | no (field-stable)    | Provisional    |
@@ -117,14 +117,14 @@ NoopCatalogProvider              AzureFileSystem
 pub mod traits;             // CatalogProvider, FileSystem
 pub mod types;              // CatalogId, Path, TableRef, NamespaceRef,
                             //   Schema, Partition, FileEntry, ResolvedTable, ...
-pub mod error;              // CatalogError, FileSystemError
+pub mod error;              // CatalogProviderErrorKind, FileSystemErrorKind
 pub mod glob;               // expand_glob
 pub mod providers;          // NoopCatalogProvider, IcebergRestCatalogProvider, ...
 pub mod filesystems;        // LocalFileSystem, S3FileSystem, ...
 
 pub use traits::{CatalogProvider, FileSystem};
 pub use types::*;
-pub use error::{CatalogError, FileSystemError};
+pub use error::{CatalogProviderErrorKind, FileSystemErrorKind};
 pub use glob::expand_glob;
 ```
 
@@ -205,7 +205,7 @@ pub enum PartitionTransform {
 }
 ```
 
-`DataType` and `Diagnostic` are re-exported from `semstrait-core` per `31 §4` / `§7`; no duplicate definitions live here. `Schema` / `SchemaColumn` shapes follow `15 §3.2`; the fully-qualified field list is deferred pending `Q-CAT-008`.
+`DataType` and `Diagnostic<K>` / `Diagnose` are re-exported from `semstrait-core` per `31 §3` / `§4`; no duplicate definitions live here. `Schema` / `SchemaColumn` shapes follow `15 §3.2`; the fully-qualified field list is deferred pending `Q-CAT-008`.
 
 ---
 
@@ -227,36 +227,42 @@ pub trait CatalogProvider: Send + Sync + std::fmt::Debug {
     async fn list_tables(
         &self,
         namespace: &NamespaceRef,
-    ) -> Result<Vec<TableRef>, CatalogError>;
+    ) -> Result<Vec<TableRef>, CatalogProviderErrorKind>;
 
     async fn resolve_table(
         &self,
         table: &TableRef,
-    ) -> Result<ResolvedTable, CatalogError>;
+    ) -> Result<ResolvedTable, CatalogProviderErrorKind>;
 
     async fn get_schema(
         &self,
         table: &TableRef,
-    ) -> Result<Schema, CatalogError>;
+    ) -> Result<Schema, CatalogProviderErrorKind>;
 
     async fn get_partitions(
         &self,
         table: &TableRef,
-    ) -> Result<Vec<Partition>, CatalogError>;
+    ) -> Result<Vec<Partition>, CatalogProviderErrorKind>;
 
     async fn get_snapshot(
         &self,
         table: &TableRef,
         version: SnapshotVersion,
-    ) -> Result<SnapshotMetadata, CatalogError>;
+    ) -> Result<SnapshotMetadata, CatalogProviderErrorKind>;
 
     async fn check_schema_drift(
         &self,
         table: &TableRef,
         expected_schema: &Schema,
-    ) -> Result<DriftReport, CatalogError>;
+    ) -> Result<DriftReport, CatalogProviderErrorKind>;
 }
 ```
+
+Each method returns a **bare** `CatalogProviderErrorKind` per `31 §3.1`'s
+construction-site convention — `CatalogProvider` is a transport trait, not a
+stage entry-point. Consumers (notably `compile` in `33`) wrap into the
+caller-side typed-kind via `From<CatalogProviderErrorKind>` for their own
+kind enum, attaching a `Location` at the wrapping point if relevant.
 
 All methods are `async`. `Send + Sync` is required so `Arc<dyn CatalogProvider>` is safely shareable across the async runtime; `Debug` supports diagnostic logging without forcing `Display`.
 
@@ -282,8 +288,8 @@ All methods are `async`. `Send + Sync` is required so `Arc<dyn CatalogProvider>`
 |-----|-----------|
 | I3  | No downstream crate branches on the concrete `CatalogProvider` type. Canonical crates see only `&dyn CatalogProvider`. |
 | I11 | Compile-time async entries MAY be called during manifest compilation. The only query-time async entry is `check_schema_drift`. No other method is reachable during planning or execution. |
-| I10 | `CatalogError`, `Partition`, `PartitionTransform`, `FileFormat`, `ResolvedTable`, `SnapshotVersion`, `SnapshotMetadata`, `DriftReport`, `DriftStatus`, `DriftKind`, `FileEntry` are `#[non_exhaustive]`. |
-| I12 | Every `CatalogError` variant carries a stable `CAT_E_*` code. Error surface follows `30 §5`–`§6`. |
+| I10 | `CatalogProviderErrorKind`, `Partition`, `PartitionTransform`, `FileFormat`, `ResolvedTable`, `SnapshotVersion`, `SnapshotMetadata`, `DriftReport`, `DriftStatus`, `DriftKind`, `FileEntry` are `#[non_exhaustive]`. |
+| I12 | `CatalogProviderErrorKind` is identified by **variant identity** per `30 §5`; numeric `CAT_E_*` codes are retired alongside the workspace-wide stable-code retirement. Severity is conveyed via `Diagnose::severity()` per `31 §3`. |
 
 ### 3.5 Non-goals
 
@@ -306,7 +312,7 @@ All methods are `async`. `Send + Sync` is required so `Arc<dyn CatalogProvider>`
 | Snapshot / partition support | None.                                                             |
 | Use cases               | Unit tests, stateless compilation paths, integration harnesses that only exercise file-based bindings. |
 
-Every method returns either `Ok(empty)` or `Err(CatalogError::TableNotFound)` (for `resolve_table` / `get_schema` / `get_partitions` / `get_snapshot` / `check_schema_drift`). This mirrors the legacy `NullCatalogProvider` behavior and preserves the "catalog-absent" graceful-degradation path from `docs/CATALOG_RESOLUTION.md §2`.
+Every method returns either `Ok(empty)` or `Err(CatalogProviderErrorKind::TableNotFound { .. })` (for `resolve_table` / `get_schema` / `get_partitions` / `get_snapshot` / `check_schema_drift`). This mirrors the legacy `NullCatalogProvider` behavior and preserves the "catalog-absent" graceful-degradation path from `docs/CATALOG_RESOLUTION.md §2`.
 
 ### 4.2 `IcebergRestCatalogProvider`
 
@@ -383,27 +389,33 @@ pub trait FileSystem: Send + Sync + std::fmt::Debug {
     async fn list(
         &self,
         prefix: &Path,
-    ) -> Result<Vec<FileEntry>, FileSystemError>;
+    ) -> Result<Vec<FileEntry>, FileSystemErrorKind>;
 
     async fn read(
         &self,
         path: &Path,
-    ) -> Result<Bytes, FileSystemError>;
+    ) -> Result<Bytes, FileSystemErrorKind>;
 
     async fn write(
         &self,
         path: &Path,
         data: Bytes,
-    ) -> Result<(), FileSystemError>;
+    ) -> Result<(), FileSystemErrorKind>;
 
     async fn exists(
         &self,
         path: &Path,
-    ) -> Result<bool, FileSystemError>;
+    ) -> Result<bool, FileSystemErrorKind>;
 }
 ```
 
-`Path` is the URI-shaped newtype defined in `§2.3` (e.g. `s3://bucket/key`, `file:///abs/path`, `gs://bucket/key`, `abfss://container@account.dfs.core.windows.net/path`). Each concrete implementation validates scheme at call boundary and rejects non-matching URIs with `FileSystemError::UnsupportedScheme` (`§8.2`). Accepting a typed `&Path` rather than a raw `&str` keeps accidental string-path confusion out of the trait surface and gives `FileSystem` impls a stable value to pattern-match.
+`Path` is the URI-shaped newtype defined in `§2.3` (e.g. `s3://bucket/key`, `file:///abs/path`, `gs://bucket/key`, `abfss://container@account.dfs.core.windows.net/path`). Each concrete implementation validates scheme at call boundary and rejects non-matching URIs with `FileSystemErrorKind::UnsupportedScheme` (`§8.2`). Accepting a typed `&Path` rather than a raw `&str` keeps accidental string-path confusion out of the trait surface and gives `FileSystem` impls a stable value to pattern-match.
+
+Each method returns a **bare** `FileSystemErrorKind` per `31 §3.1`'s
+construction-site convention — `FileSystem` is a transport trait. Consumers
+wrap into their own typed-kind via `From<FileSystemErrorKind>` impls (e.g.
+the `expand_glob` helper in `§7.1` returns `FileSystemErrorKind` directly;
+`33 §16.5` consumers wrap into `CompileErrorKind`).
 
 ### 5.3 Method contracts
 
@@ -417,8 +429,8 @@ pub trait FileSystem: Send + Sync + std::fmt::Debug {
 | Ref | Invariant |
 |-----|-----------|
 | I11 | `FileSystem` is compile-time and artifact-output async. Adapter-hot-path I/O goes through engine-native reads (not this trait). |
-| I10 | `FileSystemError`, `FileEntry` are `#[non_exhaustive]`. |
-| I12 | Every `FileSystemError` variant carries a stable `FS_E_*` code. |
+| I10 | `FileSystemErrorKind`, `FileEntry` are `#[non_exhaustive]`. |
+| I12 | `FileSystemErrorKind` is identified by **variant identity** per `30 §5`; numeric `FS_E_*` codes are retired alongside the workspace-wide stable-code retirement. Severity is conveyed via `Diagnose::severity()` per `31 §3`. |
 | —   | No format-aware logic. `read` returns bytes; interpretation is not this trait's responsibility. |
 | —   | No schema-aware logic. `FileSystem` MUST NOT parse Parquet footers, CSV headers, JSON objects, etc. |
 
@@ -478,7 +490,7 @@ Implementation selection is caller-side: the caller constructs the concrete `Fil
 pub async fn expand_glob(
     fs: &dyn FileSystem,
     pattern: &GlobPattern,
-) -> Result<Vec<Path>, FileSystemError>;
+) -> Result<Vec<Path>, FileSystemErrorKind>;
 ```
 
 `GlobPattern` is re-exported from `semstrait-core` (`31 §14.4`-adjacent per `Q-CAT-002`). `expand_glob` is the single public glob-expansion entry point. It:
@@ -502,113 +514,170 @@ SemanticManifest compilation also calls `expand_glob` directly for glob-bound `S
 
 ---
 
-## 8. `CatalogError` / `FileSystemError`
+## 8. `CatalogProviderErrorKind` / `FileSystemErrorKind`
 
-### 8.1 `CatalogError`
+> **Migration note.** Prior drafts of this document used `CatalogError` and
+> `FileSystemError` enums with embedded `diagnostic: Diagnostic` fields and
+> stable `CAT_E_*` / `FS_E_*` numeric codes. Those shapes are **retired**
+> per `30 §5` and replaced by typed-kind enums (`*ErrorKind`) per `31 §3`:
+> identification is by variant identity, severity comes from
+> `Diagnose::severity()`, and source location is carried in the wrapping
+> `Diagnostic<K>` envelope when the consumer wraps the bare kind. Body
+> prose may still cite legacy `CAT_E_NNNN` / `FS_E_NNNN` strings as
+> transitional anchors; read those as shorthand for the corresponding
+> `CatalogProviderErrorKind::*` / `FileSystemErrorKind::*` variants.
+
+### 8.1 `CatalogProviderErrorKind`
 
 ```rust
-#[derive(Debug, thiserror::Error)]
+/// Typed error-kind for the `CatalogProvider` trait surface.
+/// Identification by variant identity per `30 §5`; numeric `CAT_E_*`
+/// codes are retired. Severity is conveyed via `Diagnose::severity()`;
+/// every v1 variant is `Severity::Error` (no warning-severity catalog
+/// kinds in v1). Source location (where applicable) lives in the
+/// wrapping `Diagnostic<K>` envelope at the consumer's wrap site.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum CatalogError {
-    #[error("{CAT_E_0100}: catalog not available: {msg}")]
-    NotAvailable { msg: String, diagnostic: Diagnostic },
+pub enum CatalogProviderErrorKind {
+    // -- Availability / resource-presence --
+    /// Catalog connection / handshake established but the catalog
+    /// itself is not in a usable state (e.g. service degraded).
+    NotAvailable        { msg: String },
 
-    #[error("{CAT_E_0101}: table not found: {fqn}")]
-    TableNotFound { fqn: String, diagnostic: Diagnostic },
+    /// The requested table does not exist in the catalog.
+    TableNotFound       { fqn: String },
 
-    #[error("{CAT_E_0102}: namespace not found: {ns}")]
-    NamespaceNotFound { ns: String, diagnostic: Diagnostic },
+    /// The requested namespace does not exist in the catalog.
+    NamespaceNotFound   { ns: String },
 
-    #[error("{CAT_E_0103}: snapshot not found: {table} version={version}")]
-    SnapshotNotFound { table: String, version: String, diagnostic: Diagnostic },
+    /// The requested snapshot version of an existing table does not
+    /// exist (e.g. expired snapshot, retention pruned).
+    SnapshotNotFound    { table: String, version: String },
 
-    #[error("{CAT_E_0200}: connection failed: {msg}")]
-    ConnectionFailed { msg: String, diagnostic: Diagnostic },
+    // -- Transport / auth --
+    /// Network connect / TLS handshake / DNS failure reaching the
+    /// catalog endpoint.
+    ConnectionFailed    { msg: String },
 
-    #[error("{CAT_E_0201}: authentication failed")]
-    AuthFailed { diagnostic: Diagnostic },
+    /// Authentication credentials were rejected.
+    AuthFailed,
 
-    #[error("{CAT_E_0202}: authorization denied: {resource}")]
-    AuthDenied { resource: String, diagnostic: Diagnostic },
+    /// Authentication succeeded but the principal is not authorized to
+    /// access the named resource.
+    AuthDenied          { resource: String },
 
-    #[error("{CAT_E_0203}: request timed out after {millis}ms")]
-    Timeout { millis: u64, diagnostic: Diagnostic },
+    /// The catalog call exceeded its deadline.
+    Timeout             { millis: u64 },
 
-    #[error("{CAT_E_0300}: schema drift: {kind:?}")]
-    SchemaDrift { kind: DriftKind, diagnostic: Diagnostic },
+    // -- Protocol / contract --
+    /// `check_schema_drift` returned `DriftStatus::Breaking`.
+    /// The accompanying `DriftKind` carries the structural detail.
+    SchemaDrift         { kind: DriftKind },
 
-    #[error("{CAT_E_0301}: partition metadata malformed: {msg}")]
-    MalformedPartition { msg: String, diagnostic: Diagnostic },
+    /// Partition-spec metadata was structurally malformed
+    /// (transform unknown, source field absent, name collision).
+    MalformedPartition  { msg: String },
 
-    #[error("{CAT_E_0302}: catalog response violated contract: {msg}")]
-    MalformedResponse { msg: String, diagnostic: Diagnostic },
+    /// The catalog response violated its declared contract (e.g.
+    /// missing required fields, type mismatch, schema version drift).
+    MalformedResponse   { msg: String },
 
-    #[error("{CAT_E_0399}: provider internal error: {msg}")]
-    Internal { msg: String, diagnostic: Diagnostic },
+    /// Catch-all internal error from a `CatalogProvider`
+    /// implementation (mapping fault, panic safety net, etc.).
+    Internal            { msg: String },
+}
+
+impl semstrait_core::diagnostic::Diagnose for CatalogProviderErrorKind {
+    fn message(&self) -> std::borrow::Cow<'_, str>;
+    fn severity(&self) -> semstrait_core::Severity {
+        semstrait_core::Severity::Error
+    }
 }
 ```
 
-Each variant carries a `Diagnostic` (per `30 §5`) so callers may route catalog errors through the same reporting pipeline as other subsystems.
+Variant identity is the stable contract. Renaming a variant is MAJOR;
+adding a variant is MINOR (`#[non_exhaustive]`); refining
+`Diagnose::message()` text is PATCH. Consumers wrap into their own
+typed-kind via `From<CatalogProviderErrorKind>` (e.g.
+`CompileErrorKind` in `33 §10.1`).
 
-**Proposed `CAT_E_*` range: `0100`–`0399`.** Three sub-ranges:
-
-- `0100`–`0199` — availability / resource-presence errors (not-available, not-found).
-- `0200`–`0299` — transport / auth errors (connection, auth, timeout).
-- `0300`–`0399` — protocol / contract errors (drift, malformed responses, internal).
-
-### 8.2 `FileSystemError`
+### 8.2 `FileSystemErrorKind`
 
 ```rust
-#[derive(Debug, thiserror::Error)]
+/// Typed error-kind for the `FileSystem` trait surface.
+/// Identification by variant identity per `30 §5`; numeric `FS_E_*`
+/// codes are retired. Severity is conveyed via `Diagnose::severity()`;
+/// every v1 variant is `Severity::Error`.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum FileSystemError {
-    #[error("{FS_E_0100}: object not found: {path}")]
-    NotFound { path: Path, diagnostic: Diagnostic },
+pub enum FileSystemErrorKind {
+    // -- Input / resource-presence --
+    /// Object does not exist at the supplied path.
+    NotFound            { path: Path },
 
-    #[error("{FS_E_0101}: unsupported URI scheme: {scheme}")]
-    UnsupportedScheme { scheme: String, diagnostic: Diagnostic },
+    /// The supplied URI scheme is not handled by this `FileSystem`
+    /// implementation (e.g. `s3://` passed to `LocalFileSystem`).
+    UnsupportedScheme   { scheme: String },
 
-    #[error("{FS_E_0102}: invalid path: {path}: {msg}")]
-    InvalidPath { path: Path, msg: String, diagnostic: Diagnostic },
+    /// The supplied path is structurally invalid (e.g. malformed URI,
+    /// non-UTF-8 bytes where UTF-8 is required, scheme-internal
+    /// validation failure).
+    InvalidPath         { path: Path, msg: String },
 
-    #[error("{FS_E_0103}: invalid glob pattern: {pattern}: {msg}")]
-    InvalidGlob { pattern: String, msg: String, diagnostic: Diagnostic },
+    /// The supplied glob pattern is structurally invalid (e.g.
+    /// unmatched bracket, illegal escape sequence). Surfaces from
+    /// `expand_glob` (§7.1).
+    InvalidGlob         { pattern: String, msg: String },
 
-    #[error("{FS_E_0110}: connection failed: {msg}")]
-    ConnectionFailed { msg: String, diagnostic: Diagnostic },
+    // -- Transport / auth --
+    /// Network connect / TLS handshake / DNS failure reaching the
+    /// storage endpoint.
+    ConnectionFailed    { msg: String },
 
-    #[error("{FS_E_0111}: authentication failed")]
-    AuthFailed { diagnostic: Diagnostic },
+    /// Authentication credentials were rejected.
+    AuthFailed,
 
-    #[error("{FS_E_0112}: permission denied: {path}")]
-    PermissionDenied { path: Path, diagnostic: Diagnostic },
+    /// Authentication succeeded but the principal is not authorized to
+    /// read / write the path.
+    PermissionDenied    { path: Path },
 
-    #[error("{FS_E_0113}: request timed out after {millis}ms")]
-    Timeout { millis: u64, diagnostic: Diagnostic },
+    /// The transport call exceeded its deadline.
+    Timeout             { millis: u64 },
 
-    #[error("{FS_E_0199}: filesystem internal error: {msg}")]
-    Internal { msg: String, diagnostic: Diagnostic },
+    // -- Catch-all --
+    /// Catch-all internal error from a `FileSystem` implementation.
+    Internal            { msg: String },
+}
+
+impl semstrait_core::diagnostic::Diagnose for FileSystemErrorKind {
+    fn message(&self) -> std::borrow::Cow<'_, str>;
+    fn severity(&self) -> semstrait_core::Severity {
+        semstrait_core::Severity::Error
+    }
 }
 ```
 
-**Proposed `FS_E_*` range: `0100`–`0199`.** Sub-ranges:
+`FileSystemErrorKind` follows the same SemVer posture as
+`CatalogProviderErrorKind` (renames MAJOR; additions MINOR; message
+refinement PATCH).
 
-- `0100`–`0109` — input / resource-presence errors.
-- `0110`–`0198` — transport / auth / timeout.
-- `0199` — catch-all internal.
+### 8.3 Cross-crate wrapping
 
-### 8.3 Registration with `30 §6.2`
+`CatalogProviderErrorKind` and `FileSystemErrorKind` are produced by the
+transport traits. Stage entry-points that consume them wrap into their
+own typed-kinds via `From` impls — for example `33 §10.1`'s
+`CompileErrorKind::CatalogResolutionFailed { source: CatalogProviderErrorKind }`
+and the `FromIoBytes` chain in `31b §5`. The wrap site attaches the
+stage-relevant `Location` to the resulting `Diagnostic<K>` envelope; the
+transport layer carries no `Location` field.
 
-`30 §6.2`'s reserved-ranges table currently lists `PARSE`, `VALID`, `COMP`, `EXPR`, `PLAN`, `OPT`, `ADAPT`, and `REG / IO / ENG` as reserved. `IR` has an open item against `30` (see `questions/open/35 Q-IR-001`). Neither `CAT` nor `FS` is present today.
+### 8.4 Code range registration — closed
 
-This doc proposes adding two new rows under `30 §6.2`:
-
-| Subsystem | Prefix | Range         | Authoritative doc |
-|-----------|--------|---------------|-------------------|
-| Catalog   | `CAT`  | `0100`–`0399` | `37_semstrait_catalog` |
-| FileSystem| `FS`   | `0100`–`0199` | `37_semstrait_catalog` |
-
-Tracked as amendment item `[TD-CAT-CODE-TABLE-AMEND]` pending `30`'s next amendment pass. See `questions/open/37 Q-CAT-001`.
+Round-1 drafting proposed registering `CAT_E_0100`–`0399` and
+`FS_E_0100`–`0199` ranges in `30 §6.2`. Both proposals are **closed without
+action** as a consequence of the workspace-wide stable-code retirement
+(`30 §5` typed-kind discipline). No subsystem-prefix table amendment is
+required; consumers route on variant identity. See `Q-CAT-001` (closed).
 
 ---
 
@@ -627,7 +696,7 @@ async fn check_schema_drift(
     &self,
     table: &TableRef,
     expected_schema: &Schema,
-) -> Result<DriftReport, CatalogError>;
+) -> Result<DriftReport, CatalogProviderErrorKind>;
 ```
 
 Where:
@@ -667,7 +736,7 @@ pub enum DriftKind {
 
 - **Idempotent per snapshot.** Two calls with identical `(table, expected_schema)` against the same underlying catalog snapshot MUST return identical `DriftReport` values except for `checked_at`. `status` and `details` (excluding ordering of additive fields) are deterministic.
 - **Pure over inputs.** The method performs catalog I/O but MUST NOT mutate external state.
-- **No planner involvement.** `check_schema_drift` does NOT touch `semstrait-ir`, does NOT accept or return `SemanticPlan` / `PhysicalPlan`, and does NOT take a diagnostic sink. Failures surface as `CatalogError`.
+- **No planner involvement.** `check_schema_drift` does NOT touch `semstrait-ir`, does NOT accept or return `SemanticPlan` / `PhysicalPlan`, and does NOT take a diagnostic sink. Failures surface as `CatalogProviderErrorKind`.
 
 ### 9.4 Caller policy
 
@@ -677,7 +746,7 @@ The caller (`semstrait-manifest`'s `SemanticManifest::verify_against_catalog` or
 |---------------|---------------------------------------------------------------------------------|
 | `Unchanged`   | Proceed with execution using the compiled plan as-is.                           |
 | `Compatible`  | Proceed; optionally emit an advisory diagnostic (`Severity::Info`).             |
-| `Breaking`    | Abort execution; return `CatalogError::SchemaDrift` with the `DriftReport` embedded. |
+| `Breaking`    | Abort execution; return `CatalogProviderErrorKind::SchemaDrift { kind }` (with the `DriftKind` from `DriftReport.details`) wrapped at the consumer in their own typed-kind. |
 
 The caller MAY skip the gate entirely (e.g. dev/test mode) — this is a *caller* policy, not a trait requirement. The trait only promises to answer the question when asked.
 
@@ -723,7 +792,7 @@ Every consumer takes `&dyn CatalogProvider` / `&dyn FileSystem` (or `Arc<dyn …
 
 ### 10.4 Error propagation
 
-Callers propagate `CatalogError` and `FileSystemError` through `?` into their own error types (typically `SemanticManifestCompileError` at compile time, `ExecutionError` at I11b). Stable codes (`CAT_E_*`, `FS_E_*`) flow through the outer `Diagnostic` stream (`30 §5`).
+Callers propagate `CatalogProviderErrorKind` and `FileSystemErrorKind` through `?` into their own typed-kind enums (typically `CompileErrorKind` at compile time per `33 §10.1`; `33 §16.5`'s manifest I/O chain at I11b) via `From` impls. The wrapping site attaches stage-relevant location and emits a `Diagnostic<CompileErrorKind>` (or whatever the consumer's outer kind is). Variant identity remains stable across the wrap.
 
 ### 10.5 Async runtime
 
@@ -743,7 +812,7 @@ Both `CatalogProvider` and `FileSystem` are **open** traits per `30 §10`:
 
 To avoid the "default method lie" — where a default silently returns `None` or an empty value and a caller mistakes absence-of-support for absence-of-data — MINOR-added methods MUST have defaults that either:
 
-1. Return an error with a dedicated `CAT_E_*` / `FS_E_*` code (e.g. `MethodNotSupported`), OR
+1. Return an error with a dedicated typed-kind variant (e.g. `CatalogProviderErrorKind::MethodNotSupported` / `FileSystemErrorKind::MethodNotSupported` added under `#[non_exhaustive]`), OR
 2. Explicitly document that the default response is semantically meaningful (e.g. "returns empty when the method is genuinely not applicable, not when the provider simply lacks support").
 
 ### 11.2 Built-in implementation stability
@@ -752,7 +821,7 @@ To avoid the "default method lie" — where a default silently returns `None` or
 
 ### 11.3 Error-variant stability
 
-`CatalogError` and `FileSystemError` are `#[non_exhaustive]`. MINOR releases MAY add variants with new `CAT_E_*` / `FS_E_*` codes. Existing variants MUST NOT change shape, and existing codes MUST NOT be reused or retired within a MAJOR cycle (retirement policy follows `30 §6.7` once `questions/open/30 Q-API-006` resolves).
+`CatalogProviderErrorKind` and `FileSystemErrorKind` are `#[non_exhaustive]`. MINOR releases MAY add variants. Existing variants MUST NOT change shape (variant rename or field rename / removal is MAJOR per `30 §5`'s typed-kind SemVer rules). `Diagnose::message()` text refinement is PATCH; consumers route on variant identity, not on rendered message strings.
 
 ### 11.4 Value-type stability
 
@@ -795,7 +864,7 @@ This procedure is the MINOR-safe path; any growth that cannot be fit into it bec
 
 The following drafting decisions are **defaulted** in this document but MUST be confirmed before ratification. All are captured in `docs/design/questions/open/37_questions.md`:
 
-- **Q-CAT-001** — Register `CAT` and `FS` subsystem prefixes in `30 §6.2`, with ranges `CAT_E_0100`–`0399` and `FS_E_0100`–`0199`.
+- ~~**Q-CAT-001** — Register `CAT` and `FS` subsystem prefixes in `30 §6.2`.~~ **CLOSED.** Resolved by the workspace-wide stable-code retirement (`30 §5` typed-kind discipline). Errors are identified by `CatalogProviderErrorKind` / `FileSystemErrorKind` variant identity; no numeric-prefix table amendment is required.
 - **Q-CAT-002** — Ownership of glob-matching semantics: `semstrait-core` vs `semstrait-catalog`. Current default: core owns the predicate; catalog owns the prefix-and-filter orchestration.
 - **Q-CAT-003** — Snapshot-pinning contract for catalogs that do not expose snapshot IDs (Unity Catalog). Current default: `SnapshotMetadata` uses `SnapshotVersion::Current` without a pin ID; `check_schema_drift` still runs but cannot be snapshot-correlated.
 - **Q-CAT-004** — Should a scheme-dispatching `FileSystem` (e.g. `DispatchingFileSystem`) ship in v1 or stay caller-composed? Current default: caller-composed.
@@ -816,10 +885,10 @@ Each item is parked with arguments-for, arguments-against, and a next-step in `q
 
 - Overview: `00 §4 The Public Surface`, `00 §5 Layer 3 — Runtime Integration`.
 - Invariants: `00 §9 I3, I10, I11 (incl. I11b), I12`.
-- API contracts: `30 §3 (Open/sealed traits)`, `30 §5–§6 (Diagnostic + error codes)`, `30 §8 (Stability)`, `30 §9 (Async posture)`, `30 §10 (Per-crate async table)`.
+- API contracts: `30 §3 (Open/sealed traits)`, `30 §5 (Typed-kind discipline)`, `30 §7 (Result shapes)`, `30 §8 (Stability)`, `30 §9 (Async posture)`, `30 §10 (Per-crate async table)`.
 - Compile-time consumers: `15 §5 (Compile-Time Resolution)`, `15 §6 (Source resolution: paths, tables, globs)`.
 - Query-time consumers: `33 (semstrait-manifest, I11b gate)` — drafted adjacent to this doc.
-- Sibling crate: `31 (semstrait-core)` — shared primitives (`ColumnName`, `DataType`, `Span`, `Diagnostic`, `GlobPattern`).
+- Sibling crate: `31 (semstrait-core)` — shared primitives (`ColumnName`, `DataType`, `Span`, `Diagnostic<K>`, `Diagnose`, `GlobPattern`).
 - Downstream: `35 (semstrait-ir)`, `34 (semstrait-planner)`, `36 (semstrait-adapter)` — do NOT import from this crate.
 
 ---
@@ -832,10 +901,10 @@ Each item is parked with arguments-for, arguments-against, and a next-step in `q
 - §4 four-provider roster and capability matrix (§4.5).
 - §6 four-filesystem roster.
 - §7.1 `expand_glob` signature and contract.
-- §8.1–§8.2 `CatalogError` / `FileSystemError` variant set, carrying `Diagnostic`, under proposed `CAT_E_0100`–`0399` and `FS_E_0100`–`0199` ranges.
+- §8.1–§8.2 `CatalogProviderErrorKind` / `FileSystemErrorKind` variant set with `Diagnose` impls; identification by variant identity per `30 §5`.
 - §9 I11b schema-drift gate as the sole query-time `CatalogProvider` entry point.
 - §10 caller-wiring pattern and thread-safety requirements.
 - §11 stability posture: open traits, stable built-ins, non-exhaustive error/metadata value-types.
 - §12 crate-boundary negatives: no planning, no SQL, no format-header parsing.
 
-Numeric error code values in §8 are placeholders pending `30`'s amendment pass (`Q-CAT-001`) — the shape, variant names, severity, and sub-range assignment are ratified; only the literal digit offsets may change during reconciliation with `30 §6.2`.
+Variant identity is the stable identifier per `30 §5`; numeric `CAT_E_*` / `FS_E_*` strings are retired and `Q-CAT-001` is closed. Variant names, severity, and shape are ratified.

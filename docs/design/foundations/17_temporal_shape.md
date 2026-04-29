@@ -152,7 +152,7 @@ The variants are mutually exclusive per `SimpleDataKind`: a single `SimpleDataKi
 
 **Design rationale (still applicable to `18`'s shape).** These notes motivated the per-subtype struct-payload design and apply equally to the `18 §3` ratification:
 
-- **Per-subtype payload vs flat-fields.** The alternative — `Scd { subtype: ScdSubtype, valid_from_dim: SemanticsName, valid_to_dim: SemanticsName, current_flag_dim: Option<SemanticsName>, ... }` with the fields meaningless for `Type0` / `Type1` / `Type3` — was rejected. Per-subtype payload lets the type system refuse nonsense (you cannot accidentally author `valid_from_dim` on a `Type0` record) and makes future additions (post-v1 Type 7 dual-view fields) additive inside a single variant. Q-TEMPORAL-002 in `questions/open/17_questions.md` revisits the flat-struct alternative.
+- **Per-subtype payload vs flat-fields.** The alternative — `Scd { subtype: ScdSubtype, valid_from_dim: SemanticsName, valid_to_dim: SemanticsName, current_flag_dim: Option<SemanticsName>, ... }` with the fields meaningless for `Type0` / `Type1` / `Type3` — was rejected. Per-subtype payload lets the type system refuse nonsense (you cannot accidentally author `valid_from_dim` on a `Type0` record) and makes future additions (post-v1 Type 7 dual-view fields) additive inside a single variant. Q-TEMPORAL-002 in `questions/closed/17_questions.md` ratified this position (closed).
 - **Payload references are `SemanticsName`s.** Per I1, every time-axis Dimension reference in `TemporalShape` is a canonical Semantics name, not a physical column. Resolution to physical columns happens in `15 §4` via `SemanticMapping`.
 - **Non-exhaustive at every level.** `TemporalShape`, `TemporalShapeKind`, and `ScdType` are each `#[non_exhaustive]` per I10. Adding `ScdType::Type3` (post-v1 promotion), extending `TemporalShapeKind` with bi-temporal variants, or growing `ScdBody` with a sentinel-aware `valid_to` marker is MINOR.
 
@@ -341,7 +341,7 @@ The matrix below enumerates which shape pairs on the `from` / `to` sides of a `R
 | `Events ↔ Snapshot` (AsOf, forward) | `ManyToOne` | Each event matches one snapshot (the latest at-or-before). No fanout. |
 | `Timeseries ↔ Scd::Type2` (AsOf, forward) | `ManyToOne` | Same as Events; each tick matches one SCD window. |
 | `Snapshot ↔ Snapshot` (Inner, same cadence) | `OneToOne` (per snapshot instant) | The natural pairing when two snapshots share the same cadence. |
-| `Events ↔ Events` (Inner, same entity) | depends on volume — typically `ManyToMany` and warn-worthy | The `PLAN_W_0502 ManyToManyAdvisory` from `16 §3.3.4` applies; `17` adds the shape context. |
+| `Events ↔ Events` (Inner, same entity) | depends on volume — typically `ManyToMany` and shape-warn-worthy | `PLAN_W_0502 ManyToManyFanoutAdvisory` was retired in `16 §14.4` (2026-04-29) per Q-COMP-005's intent-advisory deferral; the volume / cardinality concern remains an authoring consideration but is no longer planner-emitted in v1. |
 
 Reverse-direction traversal of an `AsOf` `Relationship` is **forbidden**. The probe side and the anchor side are semantically asymmetric; "what events were recorded during this SCD window" is not the mirror of "what was the SCD state at this event time" — the former is a range query that returns `0..N` events per window, the latter is a point query that returns exactly one SCD row per event. The planner rejects reverse traversal with `PLAN_E_1722 AsOfReverseTraversalForbidden`. Authors needing the reverse semantics must either declare a distinct `Relationship` with `Directionality::Forward` (per `16 §2.4`) or express the query through an explicit `Joinset` with a different anchor.
 
@@ -349,9 +349,9 @@ Reverse-direction traversal of an `AsOf` `Relationship` is **forbidden**. The pr
 
 Per `35 §…` (pending), `PlanNode::Join` carries `JoinType` verbatim (`16 §4.3`). The Round-1 IR shape (`35 §…`) does not yet include `AsOfAnchor` materialization; extending `JoinNode` with the anchor payload is MINOR per I10 and lands alongside the planner implementation. The vocabulary ratified here binds `35`'s eventual shape: when `JoinType::AsOf(anchor)` appears on a `JoinNode`, the `anchor` field must be round-trippable into the plan IR per I8.
 
-### 5.5 `Joinset`-level `AsOf` overrides — DEFERRED
+### 5.5 `Joinset`-level `AsOf` overrides — DEFERRED, post-implicit ordering ratified
 
-`16 §13.3` ratifies per-traversal `JoinType` overrides in `Joinset` declarations. Round-1 overrides are limited to `Inner / Left / Right / Full`; `AsOf` override inside a Joinset traversal is DEFERRED to the same milestone that lands planner-side `AsOf` support. Q-TEMPORAL-003 tracks whether `Joinset` authoring should be extended to accept `AsOf` overrides before or after implicit-composition `AsOf` synthesis.
+`16 §13.3` ratifies per-traversal `JoinType` overrides in `Joinset` declarations. Round-1 overrides are limited to `Inner / Left / Right / Full`; `AsOf` override inside a Joinset traversal is DEFERRED to a post-implicit milestone. Q-TEMPORAL-003 ratified Option B (implicit-first, 2026-04-28): when planner-side `AsOf` lands, **milestone 1** ships matrix-driven implicit synthesis — Joinset traversals automatically receive `AsOf` per `24 §7.2.1` without YAML override admission; **milestone 2** (or a later additive MINOR) extends the `Joinset` YAML override surface to accept `AsOf`, opening the narrowing-or-forcing escape hatch documented in `24 §5.3 / §7.2.2`.
 
 ---
 
@@ -639,7 +639,7 @@ The closed list of behaviors whose **vocabulary and model surface** `17` ratifie
 |---|---|---|---|
 | D1 | `JoinType::AsOf` variant and `AsOfAnchor` payload shape | §5.1 | Planner / adapter milestone; requires `PlanNode::Join` extension in `35`, per-adapter emission in `registry/temporal_shape_mapping.md`. |
 | D2 | `AsOf` anchor selection per shape pair (§5.2 matrix) | §5.2 | Same as D1. |
-| D3 | `Joinset` per-traversal `AsOf` override | §5.5 | Tracked as Q-TEMPORAL-003. |
+| D3 | `Joinset` per-traversal `AsOf` override | §5.5 | Q-TEMPORAL-003 closed (Option B, 2026-04-28); admitted as a post-implicit additive MINOR after milestone-1 ships implicit synthesis. |
 | D4 | `Request.temporal` block (vocabulary + per-shape semantics) | §6.1–§6.4 | Planner milestone; `34 §…`. |
 | D5 | `Request.temporal` across composed surfaces with heterogeneous shapes | §6.5 | Q-TEMPORAL-004; gated on composed-shape-resolution algorithm in `34`. |
 | D6 | `PLAN_E_1753 ScdWideCompositionWithoutAnchor` (hard error version) | §8.5 | Round-2; currently `PLAN_W_1750` advisory. |
@@ -658,13 +658,13 @@ The closed list of behaviors whose **vocabulary and model surface** `17` ratifie
 
 ## 11. Round-1 audit / open items
 
-Detailed items in `questions/open/17_questions.md`. Summary of the questions this doc could not close from ratified foundations alone:
+Detailed items live across three sibling files: open Q-TEMPORAL-001 in `questions/open/17_questions.md`, ratified Q-TEMPORAL-002 / -003 / -005 / -006 / -007 / -008 in `questions/closed/17_questions.md`, deferred Q-TEMPORAL-004 in `questions/deferred/17_questions.md`. Summary of the questions this doc could not close from ratified foundations alone:
 
 | Q | Title | Blocking? |
 |---|---|---|
 | Q-TEMPORAL-001 | `30 §6.2` code-range reconciliation for 17NN (doc-aligned vs subsystem-aligned allocation) | No — adopt Option 1 per the `[CONTRADICTION-FOUND]` block, coordinate with `30` re-ratification. |
 | Q-TEMPORAL-002 | `Scd { subtype: ScdSubtype }` per-subtype payload vs flat-field carrier | No — per-subtype payload adopted in Round 1; revisit if ergonomic complaints surface. |
-| Q-TEMPORAL-003 | `Joinset` YAML surface admitting `AsOf` overrides pre- or post-implicit-composition `AsOf` support | No — YAML surface lands in `32`. |
+| Q-TEMPORAL-003 | `Joinset` YAML surface admitting `AsOf` overrides pre- or post-implicit-composition `AsOf` support | No — **CLOSED (2026-04-28)** Option B (implicit-first) ratified; admitted as a post-implicit additive MINOR. |
 | Q-TEMPORAL-004 | Multi-shape heterogeneous `Request.temporal` resolution algorithm | No — DEFERRED to `34`. |
 | Q-TEMPORAL-005 | Default-current row semantics for SCD kinds without `current_flag_dim` | No — Round-1 uses the `PLAN_W_1731` heuristic; ratified replacement lands with Round-2 planner. |
 | Q-TEMPORAL-006 | Should `Scd::Type0` emit a `PLAN_W_17xx` advisory on every update attempt at the DataKind layer, or is "enforce append-only" a runtime invariant out of scope? | No — Round-1 is silent on runtime enforcement; advisory may be added MINOR. |
@@ -726,4 +726,4 @@ Detailed items in `questions/open/17_questions.md`. Summary of the questions thi
 - `35` — `PlanNode::Join` extension for `JoinType::AsOf(anchor)` payload.
 - `36` — per-adapter emission rules for `AsOf` joins / snapshot selection / SCD window predicates.
 - `registry/temporal_shape_mapping.md` — per-engine SCD / Events / Snapshot emission catalog.
-- `questions/open/17_questions.md` — Round-1 deferred items (Q-TEMPORAL-001 through Q-TEMPORAL-008).
+- `questions/open/17_questions.md` (Q-TEMPORAL-001) · `questions/closed/17_questions.md` (Q-TEMPORAL-002 / -003 / -005 / -006 / -007 / -008) · `questions/deferred/17_questions.md` (Q-TEMPORAL-004).

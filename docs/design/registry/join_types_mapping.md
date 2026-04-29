@@ -295,7 +295,7 @@ The `§4.2` table duplicates rows present in `temporal_shape_mapping.md §4.2`. 
 The adapter MAY wrap the join output in a `SELECT DISTINCT ...` when:
 
 1. `Relationship.cardinality == ManyToMany` AND
-2. The planner's fanout-safe rewrite did NOT fire (i.e. `PLAN_W_0502 ManyToManyFanoutAdvisory` was emitted — `16 §14.4`) AND
+2. The planner's fanout-safe rewrite did NOT fire (the underlying `Relationship.cardinality == ManyToMany` is the structural trigger; the prior `PLAN_W_0502 ManyToManyFanoutAdvisory` flag was retired in `16 §14.4` (2026-04-29) per Q-COMP-005's intent-advisory deferral) AND
 3. The composed Request projects only fields that are functionally dependent on the `Relationship.from` primary key.
 
 **Per-engine support.** All five SQL engines natively support `SELECT DISTINCT`; Substrait emits via `AggregateRel` with empty measure list. This is Universal at Round-1 pins.
@@ -320,12 +320,12 @@ For `Cardinality::OneToMany` where the Request wants per-`from`-row aggregation 
 
 Per `16 §12.4`'s soft-check list, certain `(Cardinality, JoinType)` pairs emit advisories. The adapter's emission is unchanged by the advisory — the `JoinType` SQL keyword remains identical regardless of `Cardinality` — but the adapter MAY surface per-engine optimizer hints when available:
 
-| `Cardinality` × `JoinType` | Planner advisory | Adapter-level emission hint |
+| `Cardinality` × `JoinType` | Structural condition | Adapter-level emission hint |
 |---|---|---|
 | `OneToOne` + any | None (clean per `16 §3.3.1`) | — |
-| `OneToMany` + `Inner` / `Left` | `PLAN_W_0501 FanoutAdvisory` if measure on `from` side is `SemiAdditive` / `NonAdditive` | Snowflake `/*+ BROADCAST(to_side) */`-style hint 🟡 when `to` side is known-small dimension; else none. |
-| `ManyToOne` + `Inner` / `Left` | `PLAN_W_0501` if measure on `to` side at mismatched Additivity | Same broadcast hint opportunity for `from` side when dimension-like. |
-| `ManyToMany` + any | `PLAN_W_0502 ManyToManyFanoutAdvisory` | Adapter MAY append `/*+ HINT */` per Q-JOIN-MAP-006; Round-1 posture: no automatic hint emission. |
+| `OneToMany` + `Inner` / `Left` | Fanout introduced; the prior `PLAN_W_0501 FanoutAdvisory` was retired in `16 §14.4` (2026-04-29). Authors are responsible for additivity choice. | Snowflake `/*+ BROADCAST(to_side) */`-style hint 🟡 when `to` side is known-small dimension; else none. |
+| `ManyToOne` + `Inner` / `Left` | Symmetric fanout case; advisory retired alongside `PLAN_W_0501`. | Same broadcast hint opportunity for `from` side when dimension-like. |
+| `ManyToMany` + any | Junction-table modeling is preferred (`16 §3.3.4`); the prior `PLAN_W_0502 ManyToManyFanoutAdvisory` was retired in `16 §14.4`. | Adapter MAY append `/*+ HINT */` per Q-JOIN-MAP-006; Round-1 posture: no automatic hint emission. |
 
 **Engine-specific hint syntax** — reference only, NOT emitted in Round 1:
 

@@ -21,9 +21,7 @@ depends-on:
 
 # Open Questions — `data-kinds/23_unionset.md`
 
-> Items surfaced during Round-1 drafting of the Unionset specification. Each entry restates the question, lists its ratified references, and records the Round-1 default `23` currently uses. Entries migrate out of this file as later docs (`17`, `20`, `24`, `25`, `30`, `33`–`35`) make decisions that confirm or amend `23`'s defaults.
-
-> **Status summary (2026-04-17).** Q-UNI-002 (`UnionMode::Distinct` v1 or deferred) and Q-UNI-009 (single-child Unionset acceptance) are **CLOSED**. Q-UNI-002 is ratified by `foundations/18_entities.md §2` with v1 roster `{All, Unique}` (the former `Distinct` renamed to `Unique`); Q-UNI-009 is ratified by `data-kinds/26_nesting_matrix.md §R3` (every `ComplexDataKind` requires ≥ 2 children). Both retain their original bodies for resolution context.
+> Twelve questions remain open: Q-UNI-001, -003, -004, -005, -006, -007, -008, -010, -011, -012, -013, -014. Closed items moved to [`../closed/23_questions.md`](../closed/23_questions.md). Each entry restates the question, lists its ratified references, and records the Round-1 default `23` currently uses. Entries migrate out of this file as later docs (`17`, `20`, `24`, `25`, `30`, `33`–`35`) make decisions that confirm or amend `23`'s defaults.
 
 ---
 
@@ -54,32 +52,9 @@ depends-on:
 
 ---
 
-## Q-UNI-002 — `UnionMode::Distinct` in v1 or deferred?
+## Q-UNI-002 — `UnionMode::Distinct` in v1 or deferred? — CLOSED (2026-04-17)
 
-**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `foundations/18_entities.md §2` (adjacency reference): v1 `UnionMode` roster is **`{All, Unique}`**, `#[non_exhaustive]`, default `All`. The previous spelling `Distinct` is renamed to `Unique` (authors who need SQL-`DISTINCT` semantics at Union-level select `Unique`; the three-valued-logic NULL-collision caveat documented in `23 §4.3` still applies as `PLAN_W_2303`). The "defer Distinct to post-v1" alternative is rejected; `Unique` is supported in v1.
-
-**Question.** `23 §2.1` ratifies a `UnionMode` enum with two variants: `All` (default) and `Distinct`. Distinct semantics in the presence of NULL-fill are subtle (per `23 §4.3`'s three-valued-logic note): rows from different children differing only in NULL-fill positions do NOT dedupe under `DISTINCT`. Should Round 1 ship `Distinct` at all, or defer it to a later milestone?
-
-**Refs.**
-- `23 §2.1, §4.1, §4.3` — Round-1: `UnionMode::Distinct` supported, with advisory `PLAN_W_2303` for the NULL × NULL non-collision case.
-- `UNIONSET.md` (legacy) — distinguishes `UNION ALL` vs. `UNION DISTINCT`.
-- Cube.js `unionAll` — does not expose a DISTINCT mode at the cube level.
-- dbt MetricFlow — does not have a direct Unionset analog.
-- `[TD-UNIONSET-DISTINCT-SEMANTICS]` — deferred subsection under §4.3.
-
-**Arguments for including `Distinct` in v1 (Round-1 default).**
-- Shipping both modes keeps `UnionMode` extensible from day one; adding `Distinct` later is MINOR under I10 but costs a version bump.
-- Authors coming from SQL expect `UNION` vs. `UNION ALL` as a primary choice.
-- The NULL-collision advisory `PLAN_W_2303` surfaces the subtlety clearly; authors who don't need it can use `UnionMode::All`.
-
-**Arguments for deferring `Distinct`.**
-- The three-valued-logic interaction is confusing; shipping `Distinct` without a crisp story risks authoring errors.
-- Cube.js's decision to not expose DISTINCT at the composition level is evidence that the feature is rarely needed; UNION ALL + explicit deduplication at the Request level (a DISTINCT Aggregate) is the more common pattern.
-- Deferring frees up `UnionMode::Distinct` to carry refined semantics (e.g. "distinct treating NULL as equal") when it lands.
-
-**Current position in `23`.** Both modes supported in v1; `UnionMode::All` is the default.
-
-**Next step.** If Round-2 adoption feedback shows `Distinct` is rarely used OR frequently mis-used, consider demoting it to a post-v1 feature. A demotion is a feature-removal (MAJOR); keep in v1 unless strong negative signal.
+> **Moved to [`../closed/23_questions.md`](../closed/23_questions.md#q-uni-002--unionmodedistinct-in-v1-or-deferred).** v1 roster ratified as `{All, Unique}` per `18 §2`.
 
 ---
 
@@ -225,32 +200,9 @@ depends-on:
 
 ---
 
-## Q-UNI-009 — Single-child Unionset acceptance: reject (Round-1) vs silent accept vs warning
+## Q-UNI-009 — Single-child Unionset acceptance — CLOSED (2026-04-17)
 
-**CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `data-kinds/26_nesting_matrix.md §R3`: every `ComplexDataKind` (including `Unionset`) REQUIRES ≥ 2 children. Rejection stands (via R3 + `VALID_E_2302`); the "silent accept" alternative from `22 Q-GRN-006` (now also closed by R3) no longer creates asymmetry. All three Complex variants (`Unionset`, `Grainset`, `Joinset`) share the ≥ 2 children rule. `[TD-UNIONSET-SINGLE-CHILD]` is retired.
-
-**Question.** `23 §8.1` fires `VALID_E_2302 UnionsetSingleChild` on a Unionset with exactly one child. The rationale: "semantically the child itself; authors should replace." Is rejection right, or should Round 1 be more permissive (silent accept or warning)?
-
-**Refs.**
-- `23 §8.1` — Round-1: rejection via `VALID_E_2302`.
-- `12 §3.2` — `UnionsetMustHaveMultipleChildren`; structural minimum.
-- `22 Q-GRN-006` (parallel) — Grainset ratifies silent accept for single-child. Asymmetric decisions across sibling docs.
-- `24` (pending) — Joinset; what does a one-member Joinset do?
-
-**Arguments for rejection (Round-1 default).**
-- A one-child Unionset is semantically a no-op; it is safe to reject at validation.
-- Matches `12 §3.2`'s structural check.
-
-**Arguments for silent accept (parallel with `22`).**
-- During Model evolution, a Unionset may temporarily shrink to one child while an author refactors; rejection forces a scaffold.
-- Symmetric decision across sibling docs (Grainset and Unionset both accept single-child) simplifies the mental model.
-
-**Arguments for warning.**
-- "You probably meant to either add more children or replace with the underlying DataKind." Low-cost nudge without blocking.
-
-**Current position in `23`.** Rejection.
-
-**Next step.** Reconcile with `22`'s Round-1 decision at `25`-drafting. Whichever sibling doc decides first (likely `22` via its Q-GRN-006 resolution) sets the pattern; `23` / `24` align. Current asymmetry (`22` accept vs. `23` reject) is noted as `[TD-UNIONSET-SINGLE-CHILD]`.
+> **Moved to [`../closed/23_questions.md`](../closed/23_questions.md#q-uni-009--single-child-unionset-acceptance-reject-round-1-vs-silent-accept-vs-warning).** Rejection structurally enforced via `26 §R3`.
 
 ---
 

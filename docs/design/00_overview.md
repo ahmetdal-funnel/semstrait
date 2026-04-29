@@ -291,9 +291,9 @@ Gaps within a decade (e.g. between `17` and `20`) are intentional: they reserve 
 
 | #   | Path                                          | Responsibility                              | Prerequisites |
 | --- | --------------------------------------------- | ------------------------------------------- | ------------- |
-| 40  | `design/implementation/40_refactor_plan.md`   | Delta: current code → target design, phased | all above     |
-| 41  | `design/implementation/41_deprecations.md`    | Workarounds to remove, old names to retire  | 40            |
-| 42  | `design/implementation/42_migration_notes.md` | Behavioral and API changes                  | 40            |
+| 40  | `design/implementation/40_refactor_plan.md`   | **Stub.** Delta: current code → target design, phased. Authored only after design completion. | all above     |
+| 41  | `design/implementation/41_deprecations.md`    | **Stub.** Workarounds to remove, old names to retire. Authored only after design completion. | 40            |
+| 42  | `design/implementation/42_migration_notes.md` | **Stub.** Behavioral and API changes. Authored only after design completion. | 40            |
 
 
 ### 6.6 Registry (Living catalogs)

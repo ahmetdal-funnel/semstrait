@@ -4,13 +4,15 @@ authoritative-for:
   - the `semstrait-manifest` public-API surface — crate boundary, module layout, re-export posture
   - the `SemanticManifest` struct: top-level field roster, `#[non_exhaustive]` status, serde/persistence posture
   - the `ResolvedDataKind` family: `Simple | Complex(Unionset | Grainset | Joinset)` split at the SemanticManifest layer
+  - `ResolvedJoinset` / `ResolvedUnionset` carriage of `origin: Origin` per `16 §5.6`; `Grainset` is always `Origin::Explicit`
+  - `Origin` / `ImplicitId` — re-exported from `semstrait-core::composition` per `16 §5.6` / `§5.7`; carry the explicit-vs-implicit axis for compositions
   - `ResolvedBinding` / `ResolvedPhysicalSource` / `ResolvedColumnMapping` SemanticManifest-layer shape (refines `15 §9`)
   - `ResolvedExprTable` SemanticManifest-facing surface (`lookup`, `lookup_all`, `iter`; the map is owned here, shape in `14b §2`)
   - `ResolvedRelationship` SemanticManifest-layer shape (refines `16 §3` for the compiled form)
-  - `CoverageIndex` and `CompositionIndex` — planner lookup indices materialized at compile time
+  - `CoverageIndex` and `CompositionIndex` — planner lookup indices materialized at compile time, including `CompositionIndex.by_constituent_set` and `by_canonical` per `16 §10` (uniform explicit + implicit lookup)
   - `SemanticManifestMetadata` — compile timestamp, source-hash, schema version, SemanticManifest format version
-  - the `compile` function signature — `pub async fn compile(...) -> Result<SemanticManifest, CompileErrors>`; the async boundary is I11a
-  - `CompileError` / `CompileErrors` — structured fail-fast error types with stable `COMP_E_*` / `EXPR_E_*` codes
+  - the `compile` function signature — `pub async fn compile(...) -> Result<(SemanticManifest, Diagnostics<CompileErrorKind>), (Diagnostic<CompileErrorKind>, Diagnostics<CompileErrorKind>)>`; the async boundary is I11a
+  - `CompileErrorKind` — typed-kind enum for the compile stage per `30 §5`; implements `Diagnose`; identification by variant identity (no string-code surface)
   - `Repository` trait — persistence surface (`save` / `load` / `list`); `async fn load` is the I11b gated entry
   - `InMemoryRepository`, `FileSystemRepository` — the two bundled impls
   - `CatalogProvider::check_schema_drift` — the I11b gated entry for drift validation (pointer forward to `37`)
@@ -47,7 +49,7 @@ Persistence (`Repository` trait + two bundled impls, `InMemoryRepository` and `F
 
 ### 1.2 Scope
 
-`33` ratifies the public-crate surface (§2), the `SemanticManifest` struct and its `Resolved*` family (§3–§8), the `compile` signature (§9), the `CompileError` / `CompileErrors` types with stable codes (§10), the `Repository` trait and bundled impls (§11), the I11b gate for `CatalogProvider::check_schema_drift` (§12), determinism discipline (§13), serde / persistence-format policy (§14), per-leaf stability (§15), and crate boundaries (§16). Round-1 open items are parked per §17.
+`33` ratifies the public-crate surface (§2), the `SemanticManifest` struct and its `Resolved*` family (§3–§8), the `compile` signature (§9), the `CompileErrorKind` typed-kind enum and its `Diagnose` impl (§10), the `Repository` trait + `RepositoryErrorKind` (§11), the I11b gate for `CatalogProvider::check_schema_drift` (§12), determinism discipline (§13), serde / persistence-format policy (§14), per-leaf stability (§15), and crate boundaries (§16). Round-1 open items are parked per §17.
 
 `33` does NOT ratify: per-variant authoring YAML (→ `32` via `20`–`24`); expression resolution algorithm (→ `14b`); binding resolution algorithm (→ `15 §10`); composition resolution algorithm (→ `16`); per-variant planner strategy (→ `20 §5`, `21`–`24`); `CatalogProvider` / `FileSystem` method rosters (→ `37`); `Repository` byte-level encoding (the shape-stable contract is §14; encoders are caller-chosen); planner entry types (→ `34` / `35`); deprecated symbols (→ `41`).
 
@@ -68,9 +70,9 @@ Per I7, the crate's workspace dependencies are exactly three: `semstrait-core`, 
 | **I5** — resolution completes at compile time | Every `EntityRef` is substituted away in `ResolvedExprTable` per `14b §3`; every `Binding` is fully resolved into `ResolvedBinding` per `15 §10`; no post-compile stage triggers resolution. |
 | **I6** — plan-time is synchronous | No public method on `SemanticManifest` or its `Resolved*` substructures is `async`. `Repository::load` and `compile` are the only `async fn` on this crate's surface. |
 | **I8** — SemanticManifests are planner-complete | `§3`'s six-field roster covers every lookup the planner requires: resolved data kinds, resolved relationships, expression table, coverage index, composition index, metadata. Nothing is deferred to a post-compile fetch. |
-| **I10** — public sum types are `#[non_exhaustive]` | `SemanticManifest`, every `Resolved*` struct and enum, `CompileError`, `Repository*Error`, `CoverageIndex` entry variants — all `#[non_exhaustive]`. The roster is §15's. |
+| **I10** — public sum types are `#[non_exhaustive]` | `SemanticManifest`, every `Resolved*` struct and enum, `CompileErrorKind`, `RepositoryErrorKind`, `CoverageIndex` entry variants — all `#[non_exhaustive]`. The roster is §15's. |
 | **I11** — I/O is gated | I11a: `compile` is the only place I/O fires during the main pipeline. I11b: `Repository::load` and `CatalogProvider::check_schema_drift` are the two out-of-band entries. No other public function touches I/O. |
-| **I12** — diagnostics are first-class | `CompileError` variants carry stable codes in the `COMP_E_*` / `EXPR_E_*` ranges per `30 §6.2`. Every variant implements `IntoDiagnostic` per `31 §7.4`. |
+| **I12** — diagnostics are first-class | `CompileErrorKind` and `RepositoryErrorKind` implement `Diagnose` per `31 §10`; identification is by variant identity per `30 §5.4` (no string codes). Every public stage entry-point carries `#[tracing::instrument]` per `30 §6.2` for the parallel observability channel. |
 
 I1 / I2 / I3 / I7 / I9 apply transitively — `33`'s surface exposes no raw SQL, no physical types beyond the engine-agnostic `DataType` / `PhysicalSource` carriers, no engine identity, no upward deps, no `Compiled*` prefixed types (per `00 §4.3`).
 
@@ -90,8 +92,8 @@ semstrait-manifest
 │   ├── coverage          // CoverageIndex, CompositionCoverageIndex
 │   └── expr              // re-exports `ResolvedExprTable` from `semstrait-core`
 ├── compile               // compile fn, CompileCtx, sub-pass drivers (pub(crate) below the fn)
-├── error                 // CompileError, CompileErrors (extends core's CompileError)
-└── repository            // Repository trait, RepositoryError, InMemoryRepository,
+├── error                 // CompileErrorKind (extends `semstrait-core::CompileErrorKind`); Diagnose impl
+└── repository            // Repository trait, RepositoryErrorKind, InMemoryRepository,
                           //   FileSystemRepository, SemanticManifestFormatVersion
 ```
 
@@ -104,7 +106,8 @@ semstrait-manifest
 | `SemanticManifestMetadata` | `manifest` | compile timestamp, source hash, format version |
 | `SemanticManifestFormatVersion` | `repository` | on-disk format discriminator |
 | `ResolvedDataKind` | `manifest::datakind` | sum type: `Simple | Complex(Unionset | Grainset | Joinset)` |
-| `ResolvedSimpleDataKind`, `ResolvedUnionset`, `ResolvedGrainset`, `ResolvedJoinset` | `manifest::datakind` | per-variant resolved shape |
+| `ResolvedSimpleDataKind`, `ResolvedUnionset`, `ResolvedGrainset`, `ResolvedJoinset` | `manifest::datakind` | per-variant resolved shape (Joinset / Unionset carry `origin: Origin` per `16 §5.6`) |
+| `Origin`, `ImplicitId` | `manifest::datakind` | re-exports from `semstrait-core::composition` per `16 §5.6` / `§5.7`; carry the explicit-vs-implicit axis on Joinsets and Unionsets |
 | `ResolvedBinding` | `manifest::binding` | SemanticManifest-layer Binding |
 | `ResolvedPhysicalSource` | `manifest::binding` | SemanticManifest-layer PhysicalSource |
 | `ResolvedColumnMapping` | `manifest::binding` | flattened binding map |
@@ -115,10 +118,9 @@ semstrait-manifest
 | `CoverageIndex` | `manifest::coverage` | planner lookup index per `15 §6` |
 | `ResolvedExprTable` | `semstrait-core` re-export | expression table (owned by SemanticManifest; shape in `14b §2`) |
 | `compile` | `compile` | the async compile entry point |
-| `CompileError` | `error` | typed error enum (extends `semstrait-core`'s `CompileError` variant roster) |
-| `CompileErrors` | `error` | single-error fail-fast carrier with accumulated warnings |
+| `CompileErrorKind` | `error` | typed-kind enum (extends `semstrait-core::CompileErrorKind` variant roster); implements `Diagnose` |
 | `Repository` | `repository` | persistence trait |
-| `RepositoryError` | `repository` | typed repository error |
+| `RepositoryErrorKind` | `repository` | typed-kind enum for repository errors; implements `Diagnose` |
 | `InMemoryRepository` | `repository` | HashMap-backed impl |
 | `FileSystemRepository` | `repository` | local-fs-backed impl |
 
@@ -151,6 +153,9 @@ Per `00 §4.1` (SemanticManifest row) and `10 §3.3` (compile contract). `#[non_
 - Every `BindingId` referenced from `expr_table` / `coverage_index` / `composition_index` appears in exactly one `ResolvedSimpleDataKind` under `resolved_datakinds`.
 - Every `RelationshipId` referenced from `expr_table`'s `PathSignature` entries appears in `resolved_relationships`.
 - Every `SemanticsName` that any `ResolvedDataKind` exposes has at least one `(name, binding_id)` entry in `expr_table` (I8 / `14b §2.3`'s completeness guarantee).
+- **Composition completeness** (per `16 §10`). `resolved_datakinds` contains every author-declared composition (`origin: Origin::Explicit`) plus every implicit composition enumerated within the depth/count caps (`Origin::Implicit { id }`). The two populations are disjoint by canonical form per `16 §10.6` — the implicit-explicit clash check guarantees no two `Origin::Implicit { id: a }` and `Origin::Explicit` shadows share an `ImplicitId`.
+- **Composition-index uniformity.** `composition_index.by_canonical` is populated for every composition with a canonical form (Joinsets and Unionsets, both explicit and implicit); `composition_index.by_constituent_set` covers all of them. Plan-time lookup never distinguishes explicit from implicit per `34 §7`.
+- **Implicit-cap discipline.** Total `Origin::Implicit` compositions across `resolved_datakinds` ≤ `MAX_IMPLICIT_ENUMERATION_COUNT = 2000`. Exceeding the cap fails compile with `CompileErrorKind::ImplicitEnumerationExploded` (`§10.1`); a sealed SemanticManifest never observes the breach.
 - The SemanticManifest is byte-deterministic per identical `SemanticModel` + catalog snapshot (§13).
 
 ### 3.2 `SemanticManifestMetadata`
@@ -253,6 +258,7 @@ Fields per `21 §4` and `20 §4.1`. `interface` is the resolved (type-inferred, 
 #[non_exhaustive]
 pub struct ResolvedUnionset {
     pub name: DataKindName,
+    pub origin: Origin,
     pub composed_interface: ResolvedComposedSemanticInterface,
     pub branches: Vec<DataKindName>,
     pub branch_coverage: BTreeMap<(DataKindName, SemanticsName), CoverageVariant>,
@@ -261,6 +267,8 @@ pub struct ResolvedUnionset {
 ```
 
 Per `20 §3` row "Unionset" and `23`. `branches` is the declaration-ordered branch list per `23 §4`; `branch_coverage` matches `23 §6`'s union-side coverage shape; `temporal_shape` is union-level per `17 §6` / `23 §7`.
+
+**`origin` carriage (per `16 §5.6` / `§10.5`).** `Origin::Explicit` for author-declared `unionsets:` blocks; `Origin::Implicit { id: ImplicitId }` for compile-enumerated implicit Unionsets (coverage overlap, `16 §10.5`). For `Origin::Implicit`, `name` is a synthetic `__implicit_unionset_<8-hex>` per `16 §5.7`; `branches` is canonically sorted `Vec<DataKindName>` (lex order); `branch_coverage` reflects the per-branch coverage of the implicit fold.
 
 ### 4.4 `ResolvedGrainset`
 
@@ -291,6 +299,7 @@ Per `20 §3` row "Grainset" and `22`. `axis` is the shared grain axis; `levels` 
 #[non_exhaustive]
 pub struct ResolvedJoinset {
     pub name: DataKindName,
+    pub origin: Origin,
     pub composed_interface: ResolvedComposedSemanticInterface,
     pub anchor: DataKindName,
     pub path: Vec<RelationshipId>,
@@ -302,6 +311,8 @@ pub struct ResolvedJoinset {
 
 Per `20 §3` row "Joinset" and `24`. v1 ratifies binary joinsets only (per `12 §5.2`); `path` is the anchor-rooted relationship traversal materialized at compile time per `24 §5`; `constituents` is in `path`-traversal order and includes the anchor at index 0. `as_of_gate` is populated iff any constituent is `AsOf`-gated per `17 §8.2` / `24 §5.4` (shape is deferred to `17 §8.2`).
 
+**`origin` carriage (per `16 §5.6` / `§10.4`).** `Origin::Explicit` for author-declared `joinsets:` blocks; `Origin::Implicit { id: ImplicitId }` for compile-enumerated implicit Joinsets (`16 §10.4`). For `Origin::Implicit`, `name` is a synthetic `__implicit_joinset_<8-hex>` per `16 §5.7`; `anchor` is the first `DataKindName` in the canonical `constituents` order (corresponds to the canonical-form starting node); `path` is the canonically sorted relationship traversal that hashed to the `ImplicitId`. The implicit-explicit clash check (`16 §10.6`) runs at compile before materialization — an explicit `ResolvedJoinset` whose canonical form matches an implicit one is rejected with `COMP_E_0414` per §10's `CompileErrorKind` extensions.
+
 ### 4.6 Common accessor — `DataKindOps` at the SemanticManifest layer
 
 ```rust
@@ -310,6 +321,11 @@ pub trait ResolvedDataKindOps {
     fn interface(&self) -> ResolvedInterfaceView<'_>;
     fn binding(&self) -> Option<&ResolvedBinding>;
     fn temporal_shape(&self) -> Option<&ResolvedTemporalShape>;
+
+    /// `Origin::Explicit` for author-declared compositions; `Origin::Implicit { id }`
+    /// for compile-enumerated compositions. Returns `Origin::Explicit` for `Simple` /
+    /// `Grainset` (always explicit per `16 §5.6`).
+    fn origin(&self) -> Origin;
 }
 
 #[non_exhaustive]
@@ -320,6 +336,29 @@ pub enum ResolvedInterfaceView<'a> {
 ```
 
 Mirrors `DataKindOps` from `semstrait-model` per `20 §2.2`. Consumed by the planner and audit tooling; external crates may `impl` it per `30 §8` (open trait), but in v1 only the four variants implement it.
+
+### 4.7 `Origin` and `ImplicitId`
+
+Re-exported from `semstrait-core::composition` per `16 §5.6` / `§5.7`. The shape ratification is owned by `16`; `33` carries it on `ResolvedJoinset` / `ResolvedUnionset`.
+
+```rust
+pub use semstrait_core::composition::{Origin, ImplicitId};
+
+// For reference — definitions in `semstrait-core::composition`:
+//
+// #[non_exhaustive]
+// pub enum Origin {
+//     Explicit,
+//     Implicit { id: ImplicitId },
+// }
+//
+// #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+// pub struct ImplicitId(pub [u8; 32]);
+```
+
+`Origin::Explicit` for author-declared compositions; `Origin::Implicit { id }` for compile-enumerated compositions. `ImplicitId` is the BLAKE3-256 canonical-form hash per `16 §5.7`. SemanticManifest-stable but not stable across recompiles (`RelationshipId` instability per `14b OQ-7`).
+
+**Synthetic name pattern.** Implicit compositions are indexed under `DataKindName` of the form `__implicit_{joinset|unionset}_{first-8-hex-of-id}` per `16 §5.7`. The `__` prefix is informally reserved per `11 §X` (current rule: authors SHOULD avoid; `validate` does not currently reject); collisions on the 8-hex prefix are extremely rare at v1 scale. If a collision occurs at compile, `33`'s indexing extends the suffix to the full 64-hex `ImplicitId` to disambiguate.
 
 ---
 
@@ -563,12 +602,14 @@ Consumed by the planner's source-selection pass: given a desired Semantics and a
 
 ### 7.2 `CompositionIndex`
 
-Planner lookup over per-`(DataKindName, UnifiedName)` field provenance for every `ComposedSemanticInterface` the Model materialized explicitly (per `16 §8`). Implicit compositions synthesized on demand at plan time (per `16 §4`) do not populate this index.
+Planner lookup over per-`(DataKindName, UnifiedName)` field provenance for every `ComposedSemanticInterface` materialized at compile — both explicit (`origin: Origin::Explicit`) and implicit (`origin: Origin::Implicit { id }`, per `16 §10.4` / `§10.5`). Plan-time consumption is **lookup-only** per `34 §7`; implicit compositions are *not* synthesized on demand.
 
 ```rust
 #[non_exhaustive]
 pub struct CompositionIndex {
     entries: BTreeMap<CompositionKey, CompositionEntry>,
+    by_constituent_set: BTreeMap<ConstituentSet, Vec<DataKindName>>,
+    by_canonical: BTreeMap<ImplicitId, DataKindName>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -584,21 +625,48 @@ pub struct CompositionEntry {
     pub coverage: CoverageVariant,
 }
 
+/// Lex-sorted constituent set for plan-time field-first lookup per `16 §10.4` /
+/// `34 §7.3`. For Joinsets this is the canonical sorted constituent list; for
+/// Unionsets it's the canonical sorted branch list.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct ConstituentSet(pub Vec<DataKindName>);
+
 impl CompositionIndex {
+    /// `(DataKindName, UnifiedName) → CompositionEntry`. Field-provenance lookup.
     pub fn lookup(&self, datakind: &DataKindName, unified: &UnifiedName)
         -> Option<&CompositionEntry>;
+
+    /// All field provenances for one composition. Used by audit tooling.
     pub fn lookup_by_kind(&self, datakind: &DataKindName)
         -> impl Iterator<Item = (&UnifiedName, &CompositionEntry)>;
+
+    /// Constituent-set → matching composition names. Returns `Vec` because
+    /// directional Joinsets can share the same constituent set with different
+    /// path orderings (per `16 §5.7`'s canonicalization rule). Used by `34 §7`
+    /// field-first resolution for plan-time lookup over implicit + explicit.
+    pub fn by_constituent_set(&self, set: &ConstituentSet)
+        -> &[DataKindName];
+
+    /// Canonical-form hash → composition name. Used at compile by the
+    /// implicit-explicit clash check (`16 §10.6`) and by audit tooling.
+    pub fn by_canonical(&self, id: &ImplicitId)
+        -> Option<&DataKindName>;
+
+    /// Lex iteration for `Repository::save`.
     pub fn iter(&self)
         -> impl Iterator<Item = (&CompositionKey, &CompositionEntry)>;
 }
 ```
 
-`UnifiedName` is the canonical per-composition field identity ratified in `16 §6`. Each `(DataKindName, UnifiedName)` pair resolves to exactly one contributor at compile time; ambiguous contributions fail compile per `16 §8`'s error sub-range.
+`UnifiedName` is the canonical per-composition field identity ratified in `16 §6`. Each `(DataKindName, UnifiedName)` pair resolves to exactly one contributor at compile time; ambiguous contributions fail compile per `16 §6.4`. Per-row entries cover both explicit and implicit compositions; `34 §7` consumes them uniformly.
+
+**`by_constituent_set` semantics.** The `ConstituentSet` is the lex-sorted `Vec<DataKindName>` of the composition's constituents (Joinset: `constituents` field; Unionset: `branches` field). One set may map to multiple composition names when canonical-direction Joinsets differ from the explicit-declared anchor ordering — `34 §7.3` resolves the ambiguity by walking all candidates and applying the field-coverage match per `16 §11.2`.
+
+**`by_canonical` semantics.** Maps `ImplicitId` to the materialized composition name. Used at compile by the clash check (`16 §10.6`) — if an explicit Joinset's canonical form (`16 §5.7`) hashes to an `ImplicitId` already populated by implicit enumeration, the clash check fires `COMP_E_0414` per §10. After clash resolution, both implicit and explicit compositions appear in this map, so plan-time lookup is uniform.
 
 ### 7.3 Index-vs-embedded-access trade-off
 
-Both indices duplicate information available by walking `resolved_datakinds` and each binding's `source_coverage`. The duplication is deliberate: the walk form is O(n) per lookup; the index form is O(log n), and the planner hits these hot paths per plan request. Indices are built once at compile time and their cost amortizes. Lazy construction at plan time was rejected because it would push compile-ownable work into the sync stage (I6).
+Both indices duplicate information available by walking `resolved_datakinds` and each binding's `source_coverage`. The duplication is deliberate: the walk form is O(n) per lookup; the index form is O(log n), and the planner hits these hot paths per plan request. Indices are built once at compile time and their cost amortizes. Lazy construction at plan time was rejected because it would push compile-ownable work into the sync stage (I6) — and would re-introduce the on-demand synthesis path retired by `16 §10.4`.
 
 ---
 
@@ -663,16 +731,21 @@ impl SemanticManifest {
 ### 9.1 Signature
 
 ```rust
+use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+
 pub async fn compile(
     model: SemanticModel,
     provider: &dyn CatalogProvider,
     fs: &dyn FileSystem,
-) -> Result<SemanticManifest, CompileErrors>;
+) -> Result<
+    (SemanticManifest, Diagnostics<CompileErrorKind>),
+    (Diagnostic<CompileErrorKind>, Diagnostics<CompileErrorKind>),
+>;
 ```
 
-Compile a validated `SemanticModel` into a sealed `SemanticManifest`. This is the only stage in the `semstrait-*` pipeline where async I/O is permitted (per I11a). The async boundary exists solely to await catalog / filesystem trait methods at compile time; post-compile consumption is strictly synchronous.
+Compile a validated `SemanticModel` into a sealed `SemanticManifest`. Fail-fast stage per `30 §7.1`: the success arm carries the `SemanticManifest` plus any warnings emitted during compile; the failure arm carries the single fatal `Diagnostic<CompileErrorKind>` plus all warnings observed before that point. This is the only stage in the `semstrait-*` pipeline where async I/O is permitted (per I11a). The async boundary exists solely to await catalog / filesystem trait methods at compile time; post-compile consumption is strictly synchronous.
 
-Sub-passes run in the order ratified in `14b §9`: (1) reference-graph build + cycle detection; (2) catalog snapshot (schema fetch for every `PhysicalSource`); (3) binding resolution (`15 §10`); (4) relationship graph build (`14b §4.2`); (5) per-`(SemanticsName, BindingId)` expression resolution building `ResolvedExprTable` (`14b §3`); (6) coverage / composition index materialization (`15 §6`, `16 §8`); (7) metadata finalization.
+Sub-passes run in the order ratified in `14b §9`: (1) reference-graph build + cycle detection; (2) catalog snapshot (schema fetch for every `PhysicalSource`); (3) binding resolution (`15 §10`); (4) relationship graph build (`14b §4.2`); (5) per-`(SemanticsName, BindingId)` expression resolution building `ResolvedExprTable` (`14b §3`); (6) **explicit-composition materialization** (`16 §10.1`) — `ResolvedJoinset` / `ResolvedUnionset` / `ResolvedGrainset` for author-declared compositions, with `origin: Origin::Explicit`; (7) **implicit-composition enumeration** (`16 §10.4` Joinsets, `§10.5` Unionsets) — bounded by `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` and `MAX_IMPLICIT_ENUMERATION_COUNT = 2000`; emits `COMP_E_0409 ImplicitEnumerationExploded` if the count cap is exceeded; (8) **implicit-explicit clash check** (`16 §10.6`) — fails compile with `COMP_E_0414 ExplicitImplicitCompositionClash` when an explicit Joinset's canonical form (`16 §5.7`) hashes to an `ImplicitId` already populated by step 7; (9) coverage / composition index materialization (`15 §6`, `16 §8`) — populates `CompositionIndex.entries` + `by_constituent_set` + `by_canonical` over the unified explicit + implicit population; (10) metadata finalization.
 
 ### 9.2 Argument discipline
 
@@ -682,7 +755,7 @@ Sub-passes run in the order ratified in `14b §9`: (1) reference-graph build + c
 
 ### 9.3 Return shape
 
-`Result<SemanticManifest, CompileErrors>` matches `30 §7`'s per-stage return-shape table: success returns the `SemanticManifest` plus warnings on `metadata.warnings`; failure returns one fatal `CompileError` plus accumulated warnings via `CompileErrors` (shape per §10).
+The signature above matches the fail-fast row in `30 §7.1`'s per-stage table: the success arm is `(SemanticManifest, Diagnostics<CompileErrorKind>)` (warnings collected during the pass), the failure arm is `(Diagnostic<CompileErrorKind>, Diagnostics<CompileErrorKind>)` (one fatal kind + warnings preceding it). The `Diagnostic<CompileErrorKind>` envelope carries the `Location` per `30 §5.1`; the kind variant carries semantic payload only. The `SemanticManifest::metadata.warnings` field (`§3.2`) is a content-equivalent copy of the success-arm warnings vector kept on the artifact for callers that drop the warnings tuple after consuming it.
 
 ### 9.4 Async boundary (I11a)
 
@@ -694,7 +767,7 @@ Sub-passes run in the order ratified in `14b §9`: (1) reference-graph build + c
 
 ### 9.6 Warning discipline
 
-Parse / validate warnings are not re-surfaced by `compile` — those are the caller's to route. Compile-stage warnings accumulate on `SemanticManifest.metadata.warnings` on success and `CompileErrors.warnings` on failure. No warning is silently dropped (per `30 §7`).
+Parse / validate warnings are not re-surfaced by `compile` — those are the caller's to route. Compile-stage warnings ride on the `Diagnostics<CompileErrorKind>` vector of either return arm (success or failure tuple) per `30 §7.2` and are also retained on `SemanticManifest.metadata.warnings` on success. No warning is silently dropped (per `30 §7.3`).
 
 ### 9.7 Thread safety
 
@@ -702,108 +775,103 @@ Parse / validate warnings are not re-surfaced by `compile` — those are the cal
 
 ---
 
-## 10. `CompileError` / `CompileErrors`
+## 10. `CompileErrorKind`
 
-### 10.1 Typed error enum (`CompileError`)
+### 10.1 Typed-kind enum
 
-The SemanticManifest-layer `CompileError` **extends** `semstrait-core::CompileError` (per `31 §8.3`). Per `30`'s typed-error-carrier discipline, structured variants convert to `Diagnostic` at the crate boundary.
+The SemanticManifest-layer `CompileErrorKind` **extends** `semstrait-core::CompileErrorKind` (per `31 §8.3`). Per `30 §5`'s typed-kind discipline, the kind enum carries semantic payload only — primary `Location` lives on the wrapping `Diagnostic<CompileErrorKind>` envelope per `30 §5.1`.
 
 ```rust
+use semstrait_core::diagnostic::{Diagnose, Severity};
+use semstrait_core::{DataType, Location};
+
 #[non_exhaustive]
-pub enum CompileError {
-    // -- name resolution (COMP_E_01xx; shared with core per `31 §8.3`)
-    UnresolvedEntityRef            { name: String, location: Option<Location> },
-    UnreachableSemanticsReference  { name: String, from_kind: String, location: Option<Location> },
-    CircularSemanticsReference     { cycle: Vec<String>, location: Option<Location> },
-    UnresolvedColumn               { name: String, binding: String, location: Option<Location> },
-    UnresolvedCrossKindReference   { name: String, from_kind: String, location: Option<Location> },
+pub enum CompileErrorKind {
+    // -- name resolution (shared with core per `31 §8.3`)
+    UnresolvedEntityRef            { name: String },
+    UnreachableSemanticsReference  { name: String, from_kind: String },
+    CircularSemanticsReference     { cycle: Vec<String> },
+    UnresolvedColumn               { name: String, binding: String },
+    UnresolvedCrossKindReference   { name: String, from_kind: String },
 
-    // -- catalog / source resolution (COMP_E_02xx)
-    SourceNotFound                 { source: String, location: Option<Location> },
+    // -- catalog / source resolution
+    SourceNotFound                 { source: String },
     CatalogUnavailable             { detail: String },
-    SchemaResolutionFailed         { source: String, reason: String, location: Option<Location> },
-    GlobExpansionFailed            { pattern: String, reason: String, location: Option<Location> },
+    SchemaResolutionFailed         { source: String, reason: String },
+    GlobExpansionFailed            { pattern: String, reason: String },
 
-    // -- schema / binding resolution (COMP_E_03xx; per `15 §10`)
-    BindingColumnNotInSchema       { binding: String, column: String, location: Option<Location> },
+    // -- schema / binding resolution (per `15 §10`)
+    BindingColumnNotInSchema       { binding: String, column: String },
     BindingCoverageConflict        { binding: String, semantics: String, reason: String },
     BindingLiteralTypeMismatch     { binding: String, semantics: String, declared: DataType, literal: String },
     BindingShapeMalformed          { binding: String, reason: String },
     PartitionColumnNotInSchema     { binding: String, column: String },
 
-    // -- relationship / composition graph (COMP_E_04xx; per `16 §8`)
-    CircularRelationship           { cycle: Vec<RelationshipId>, location: Option<Location> },
+    // -- relationship / composition graph (per `16 §8`, `§10.4`–`§10.6`, `§14.1`)
+    CircularRelationship           { cycle: Vec<RelationshipId> },
     IndexBuildFailed               { index: &'static str, reason: String },
     AmbiguousCompositionContributor { datakind: String, unified: String, contributors: Vec<String> },
     CompositionKeyMismatch         { datakind: String, relationship: RelationshipId, reason: String },
+    /// Implicit-composition enumeration exceeded `MAX_IMPLICIT_ENUMERATION_COUNT`
+    /// (`16 §10.4`, `COMP_E_0409`). Emitted before partial materialization is
+    /// retained — compile fails fast.
+    ImplicitEnumerationExploded    { enumerated: u32, cap: u32, hint_largest_kind: Option<String> },
+    /// Author-declared explicit Joinset whose canonical form (`16 §5.7`) collides
+    /// with an enumerable implicit Joinset (`16 §10.6`, `COMP_E_0414`). Carries
+    /// both `DataKindName`s and the canonical `ImplicitId` for diagnostic
+    /// rendering. Author must add a differentiator (extra constituent, narrowed
+    /// `as_of`, distinct `keys` override) or remove the explicit Joinset.
+    ExplicitImplicitCompositionClash {
+        explicit: String,
+        implicit_synthetic: String,
+        canonical_id_hex: String,
+    },
 
-    // -- function resolution (EXPR_E_03xx; shared with core per `31 §8.3`)
-    UnknownFunction                { name: String, location: Option<Location> },
-    FunctionArityMismatch          { name: String, expected: String, got: usize, location: Option<Location> },
-    NoMatchingSignature            { name: String, arg_types: Vec<DataType>, tried_signatures: Vec<String>, location: Option<Location> },
+    // -- function resolution (shared with core per `31 §8.3`)
+    UnknownFunction                { name: String },
+    FunctionArityMismatch          { name: String, expected: String, got: usize },
+    NoMatchingSignature            { name: String, arg_types: Vec<DataType>, tried_signatures: Vec<String> },
 
-    // -- type resolution (EXPR_E_04xx; shared with core per `31 §8.3`)
-    TypeInferenceFailure           { reason: String, location: Option<Location> },
-    ComputedTypeUnifyConflict      { name: String, declared: DataType, inferred: DataType, location: Option<Location> },
-    LiteralOverflow                { value: String, target: DataType, location: Option<Location> },
-    LiteralPrecisionLoss           { value: String, target: DataType, location: Option<Location> },
+    // -- type resolution (shared with core per `31 §8.3`)
+    TypeInferenceFailure           { reason: String },
+    ComputedTypeUnifyConflict      { name: String, declared: DataType, inferred: DataType },
+    LiteralOverflow                { value: String, target: DataType },
+    LiteralPrecisionLoss           { value: String, target: DataType },
 }
 
-impl CompileError {
-    pub fn code(&self) -> &'static str;
-    pub fn severity(&self) -> Severity;
-    pub fn location(&self) -> Option<&Location>;
+impl Diagnose for CompileErrorKind {
+    fn message(&self) -> String { /* per-variant human text */ }
+    fn severity_default(&self) -> Severity { Severity::Error }
+    fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
 }
-
-impl IntoDiagnostic for CompileError { fn into_diagnostic(self) -> Diagnostic; }
-impl std::fmt::Display for CompileError {}
-impl std::error::Error for CompileError {}
 ```
 
-### 10.2 Stable code allocation
+### 10.2 Variant identity, not codes
 
-Per `30 §6.2`, ranges are structural and non-sequential. `33` allocates from:
+Identification of a compile error is by **variant identity** (`matches!(diag.kind, CompileErrorKind::UnresolvedEntityRef { .. })`), not by a string code. The retired `COMP_E_*` / `EXPR_E_*` numeric ranges from earlier drafts of this section are gone — adding a variant inside `#[non_exhaustive]` is MINOR per `30 §2.2`; renaming or removing a variant is MAJOR per `30 §2.1`.
 
-| Sub-range | Category | Variants → codes |
-|---|---|---|
-| `COMP_E_0100`–`0199` | name resolution | `UnresolvedEntityRef`→`0101`, `UnreachableSemanticsReference`→`0102`, `CircularSemanticsReference`→`0103`, `UnresolvedColumn`→`0104`, `UnresolvedCrossKindReference`→`0105` |
-| `COMP_E_0200`–`0299` | catalog / source | `SourceNotFound`→`0201`, `CatalogUnavailable`→`0202`, `SchemaResolutionFailed`→`0203`, `GlobExpansionFailed`→`0204` |
-| `COMP_E_0300`–`0399` | schema / binding | `BindingColumnNotInSchema`→`0301`, `BindingCoverageConflict`→`0302`, `BindingLiteralTypeMismatch`→`0303`, `BindingShapeMalformed`→`0304`, `PartitionColumnNotInSchema`→`0305` |
-| `COMP_E_0400`–`0499` | relationship / index / composition | `CircularRelationship`→`0401`, `IndexBuildFailed`→`0402`, `AmbiguousCompositionContributor`→`0403`, `CompositionKeyMismatch`→`0404` |
-| `EXPR_E_0300`–`0399` | function resolution | `UnknownFunction`→`0301`, `FunctionArityMismatch`→`0302`, `NoMatchingSignature`→`0303` |
-| `EXPR_E_0400`–`0499` | type resolution | `TypeInferenceFailure`→`0401`, `ComputedTypeUnifyConflict`→`0402`, `LiteralOverflow`→`0403`, `LiteralPrecisionLoss`→`0404` |
+Shared variants (`UnresolvedEntityRef`, `UnknownFunction`, etc.) are re-exported verbatim from `semstrait-core::CompileErrorKind` with identical fields; `33` adds the catalog / binding / relationship / index variants that depend on SemanticManifest-layer types (`RelationshipId`, `DataType` ranges). Downstream consumers pattern-match on one unified enum. Implementation via `#[non_exhaustive]` re-export is tracked as `[TD-33-ERROR-UNIFY]` (§17).
 
-Gaps are intentional (reserved for future additions without renumbering). Shared variants (`UnresolvedEntityRef`, `UnknownFunction`, etc.) are re-exported verbatim from `semstrait-core::CompileError` with identical fields; `33` adds the catalog / binding / relationship / index variants that depend on SemanticManifest-layer types. Downstream consumers pattern-match on one unified enum. Implementation via `#[non_exhaustive]` re-export is tracked as `[TD-33-ERROR-UNIFY]` (§17).
+### 10.3 Return-shape unification
 
-### 10.3 `CompileErrors` fail-fast carrier
+There is no separate `CompileErrors` struct in the new diagnostic shape. The fail-fast return type defined in `30 §7.2` already carries one fatal `Diagnostic<CompileErrorKind>` plus the preceding warnings:
 
 ```rust
-#[non_exhaustive]
-pub struct CompileErrors {
-    pub fatal: CompileError,
-    pub warnings: Vec<Diagnostic>,
-}
-
-impl CompileErrors {
-    pub fn fatal(&self) -> &CompileError;
-    pub fn warnings(&self) -> &[Diagnostic];
-    pub fn into_diagnostics(self) -> Vec<Diagnostic>;
-}
-
-impl IntoDiagnostic for CompileErrors { fn into_diagnostic(self) -> Diagnostic; }
-impl std::fmt::Display for CompileErrors {}
-impl std::error::Error for CompileErrors {}
+Result<
+    (SemanticManifest, Diagnostics<CompileErrorKind>),       // Ok: artifact + warnings
+    (Diagnostic<CompileErrorKind>, Diagnostics<CompileErrorKind>),  // Err: fatal + warnings
+>
 ```
 
-Carries exactly one fatal `CompileError` plus warnings / info accumulated prior to the fatal condition. Matches `30 §7`'s fail-fast return shape.
+Callers destructure directly; no helper carrier is needed. The retired `CompileErrors` struct from earlier drafts is gone.
 
 ### 10.4 Fail-fast vs. accumulate — why
 
-Per `10 §5` and `30 §7`: `compile` is fail-fast because dependency chains during expression resolution make continuation unreliable. A failed `UnresolvedEntityRef` invalidates every transitively-consuming expression; continuing yields cascades of pseudo-errors with no diagnostic value. `parse` and `validate` accumulate because their errors are structural / local and do not cascade. `14b §5`'s cycle-detection-first pass is a related choice — a single cycle report replaces tens of correlated expression-resolution errors.
+Per `10 §5` and `30 §7.1`: `compile` is fail-fast because dependency chains during expression resolution make continuation unreliable. A failed `UnresolvedEntityRef` invalidates every transitively-consuming expression; continuing yields cascades of pseudo-errors with no diagnostic value. `parse` and `validate` accumulate because their errors are structural / local and do not cascade. `14b §5`'s cycle-detection-first pass is a related choice — a single cycle report replaces tens of correlated expression-resolution errors.
 
 ### 10.5 Warnings are never silently dropped
 
-Warnings live on `manifest.metadata.warnings` (success arm) or `compile_errors.warnings` (failure arm, rendered alongside the fatal error by `into_diagnostics()`). Per `30 §7`, dropping warnings is an invariant violation, not a caller error.
+Warnings live on `manifest.metadata.warnings` (success arm) or in the failure tuple's `Diagnostics<CompileErrorKind>` second element (failure arm). Per `30 §7.3`, dropping warnings is an invariant violation, not a caller error.
 
 ---
 
@@ -812,35 +880,79 @@ Warnings live on `manifest.metadata.warnings` (success arm) or `compile_errors.w
 ### 11.1 Surface
 
 ```rust
+use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+
 pub trait Repository: Send + Sync {
-    async fn save(&self, manifest: &SemanticManifest) -> Result<SemanticManifestId, RepositoryError>;
-    async fn load(&self, id: SemanticManifestId) -> Result<SemanticManifest, RepositoryError>;
-    async fn list(&self) -> Result<Vec<SemanticManifestId>, RepositoryError>;
-    async fn delete(&self, id: SemanticManifestId) -> Result<(), RepositoryError>;
+    async fn save(
+        &self,
+        manifest: &SemanticManifest,
+    ) -> Result<
+        (SemanticManifestId, Diagnostics<RepositoryErrorKind>),
+        (Diagnostic<RepositoryErrorKind>, Diagnostics<RepositoryErrorKind>),
+    >;
+
+    async fn load(
+        &self,
+        id: SemanticManifestId,
+    ) -> Result<
+        (SemanticManifest, Diagnostics<RepositoryErrorKind>),
+        (Diagnostic<RepositoryErrorKind>, Diagnostics<RepositoryErrorKind>),
+    >;
+
+    async fn list(
+        &self,
+    ) -> Result<
+        (Vec<SemanticManifestId>, Diagnostics<RepositoryErrorKind>),
+        (Diagnostic<RepositoryErrorKind>, Diagnostics<RepositoryErrorKind>),
+    >;
+
+    async fn delete(
+        &self,
+        id: SemanticManifestId,
+    ) -> Result<
+        Diagnostics<RepositoryErrorKind>,
+        (Diagnostic<RepositoryErrorKind>, Diagnostics<RepositoryErrorKind>),
+    >;
 }
 ```
 
-Persistence trait for `SemanticManifest`s. `load` is one of the two out-of-band I/O entries permitted outside compile (I11b); `save` / `list` / `delete` share the async posture for symmetry. Implementations handle byte-level encoding, storage location, and content-addressable caching; the trait surface is encoding-independent. All four methods are `async fn` in trait per `30 §9`; the trait is **open** (third-party impls like S3-backed, GCS-backed, database-backed are expected per `30 §8.2`). `save` is idempotent (writing the same SemanticManifest twice is a no-op); `delete` of a missing id is `Ok(())`; `list` order is implementation-defined.
+Persistence trait for `SemanticManifest`s. `load` is one of the two out-of-band I/O entries permitted outside compile (I11b); `save` / `list` / `delete` share the async posture for symmetry. All four methods are fail-fast per `30 §7.1`'s last data row (`Repository::{load,save}` and analogues). Implementations handle byte-level encoding, storage location, and content-addressable caching; the trait surface is encoding-independent. All four methods are `async fn` in trait per `30 §9`; the trait is **open** (third-party impls like S3-backed, GCS-backed, database-backed are expected per `30 §8.2`). `save` is idempotent (writing the same SemanticManifest twice is a no-op); `delete` of a missing id is `Ok(empty-warnings)`; `list` order is implementation-defined.
 
-### 11.2 `RepositoryError`
+### 11.2 `RepositoryErrorKind`
 
 ```rust
+use semstrait_core::diagnostic::{Diagnose, Severity};
+use semstrait_core::io::IoErrorKind;
+
 #[non_exhaustive]
-pub enum RepositoryError {
-    NotFound { id: SemanticManifestId },
-    IncompatibleFormat { stored: String, expected: String },
-    DecodeFailed { id: SemanticManifestId, reason: String },
-    EncodeFailed { reason: String },
-    IoFailed { context: String },
-    IntegrityViolation { reason: String },
+pub enum RepositoryErrorKind {
+    NotFound            { id: SemanticManifestId },
+    IncompatibleFormat  { stored: String, expected: String },
+    DecodeFailed        { id: SemanticManifestId, reason: String },
+    EncodeFailed        { reason: String },
+    /// Underlying transport failure (object-store / filesystem). Embeds
+    /// the core `IoErrorKind` per `30 §5.6`'s cross-crate kind-nesting
+    /// pattern, so transport-level identification is preserved without
+    /// cloning variants.
+    Transport           { source: IoErrorKind },
+    IntegrityViolation  { reason: String },
 }
 
-impl std::fmt::Display for RepositoryError {}
-impl std::error::Error for RepositoryError {}
-impl IntoDiagnostic for RepositoryError {}
+impl Diagnose for RepositoryErrorKind {
+    fn message(&self) -> String { /* per-variant human text */ }
+    fn severity_default(&self) -> Severity { Severity::Error }
+    fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RepositoryErrorKind::Transport { source } => source.cause(),
+            _ => None,
+        }
+    }
+}
+
+impl From<IoErrorKind> for RepositoryErrorKind { /* … */ }
 ```
 
-**Code-range allocation.** `IO_E_0100`–`IO_E_0199` is allocated to `Repository` errors. The `IO` prefix is reserved per `30 §6.6`; `33` activates it (migration note per `30 §6.4`). Assignments: `NotFound`→`IO_E_0101`, `IncompatibleFormat`→`IO_E_0102`, `DecodeFailed`→`IO_E_0103`, `EncodeFailed`→`IO_E_0104`, `IoFailed`→`IO_E_0105`, `IntegrityViolation`→`IO_E_0106`. `IntegrityViolation` guards against hand-crafted test inputs whose `SemanticManifestId` disagrees with content hash.
+`Transport` replaces the older `IoFailed { context: String }` shape with proper kind-nesting per `30 §5.6` — `IoErrorKind` carries variant identity for the transport layer; the wrapping diagnostic adds the repository-side context via the `notes: Vec<String>` field on `Diagnostic<RepositoryErrorKind>` per `30 §5.1`. `IntegrityViolation` guards against hand-crafted test inputs whose `SemanticManifestId` disagrees with content hash. Identification is by variant identity per `30 §5.4`; there is no string-code accessor.
 
 ### 11.3 `InMemoryRepository`
 
@@ -910,7 +1022,7 @@ async fn check_schema_drift(&self, manifest: &SemanticManifest)
 Per `00 §9 I4`: byte-identical SemanticManifests for byte-identical inputs. Every key-keyed collection is a `BTreeMap`, not a `HashMap`:
 
 - `SemanticManifest.resolved_datakinds` / `resolved_relationships`.
-- `CoverageIndex.entries` / `CompositionIndex.entries`.
+- `CoverageIndex.entries` / `CompositionIndex.{entries, by_constituent_set, by_canonical}`.
 - `ResolvedColumnMapping.{columns, literals, computed, metadata, source_coverage}`.
 - `ResolvedExprTable.entries` (per `14b §2.1`).
 - `ResolvedRelationshipGraph.{kinds, by_kind}`.
@@ -965,7 +1077,7 @@ Canonical byte form for equality comparison and content-addressable hashing. Exc
 
 `SemanticManifestFormatVersion` is `#[non_exhaustive]` starting at `V1` (§3.2). Discriminator bumps — each of which requires a `42_migration_notes.md` entry — are triggered by: removing a field from any `#[non_exhaustive]` struct; reordering fields in a way that changes serde's default key emission; renaming a variant on a persisted enum; changing the serde representation (e.g. tagged → untagged). Additive growth stays at the current discriminator per `30 §2.2`.
 
-On `Repository::load`, impls MUST check the stored discriminator against the running crate's max; mismatches surface as `RepositoryError::IncompatibleFormat` (§11.2). Forward-compatible reads (newer stored on older crate) are NOT supported in v1 — a MINOR bump is still a break in the load direction.
+On `Repository::load`, impls MUST check the stored discriminator against the running crate's max; mismatches surface as `Diagnostic<RepositoryErrorKind>` whose kind is `IncompatibleFormat { stored, expected }` (§11.2). Forward-compatible reads (newer stored on older crate) are NOT supported in v1 — a MINOR bump is still a break in the load direction.
 
 ### 14.5 What `serde` does NOT gate
 
@@ -977,7 +1089,7 @@ Public struct layout (field visibility, method signatures, non-serde trait impls
 
 ### 15.1 Crate tier
 
-Per `30 §13`: `semstrait-manifest` is **Stable in v1**. The `SemanticManifest`, `Resolved*` family, `CompileError`, `Repository` trait are all ratified in this document and carry the workspace-wide MAJOR cadence discipline.
+Per `30 §13`: `semstrait-manifest` is **Stable in v1**. The `SemanticManifest`, `Resolved*` family, `CompileErrorKind`, `Repository` trait, and `RepositoryErrorKind` are all ratified in this document and carry the workspace-wide MAJOR cadence discipline.
 
 Pre-1.0 rules apply until the synchronized v1.0 cut per `30 §2.3`.
 
@@ -985,10 +1097,10 @@ Pre-1.0 rules apply until the synchronized v1.0 cut per `30 §2.3`.
 
 Per `30 §2.1`, each of the following is MAJOR:
 
-- Removing a variant from any `ResolvedDataKind::*` / `ResolvedComplexDataKind::*` / `CompileError::*` / `RepositoryError::*` enum.
+- Removing a variant from any `ResolvedDataKind::*` / `ResolvedComplexDataKind::*` / `CompileErrorKind::*` / `RepositoryErrorKind::*` enum.
+- Renaming a variant of any of those enums (variant identity is the public-API surface per `30 §5.4`).
 - Changing the type or meaning of any existing public field on `SemanticManifest`, `ResolvedSimpleDataKind`, `ResolvedBinding`, `ResolvedColumnMapping`, `ResolvedRelationship`, `CoverageIndex`, `CompositionIndex`, `SemanticManifestMetadata`, or any enum variant.
 - Changing the `compile` function signature (adding a required argument, changing return type).
-- Retiring any `COMP_E_*` / `EXPR_E_*` / `IO_E_*` error code used by this crate.
 - Bumping `SemanticManifestFormatVersion` when the new version rejects v1-stored SemanticManifests (a load-direction break).
 - Removing the `Repository` trait, renaming it, or changing any of its method signatures in a way that breaks existing impls.
 - Changing `canonical_bytes()`'s encoding to produce different bytes for existing SemanticManifests (callers using it for content-addressable caching observe a cache miss).
@@ -999,8 +1111,7 @@ Per `30 §2.2`, additive changes:
 
 - Adding a new variant to `ResolvedComplexDataKind` (future `Snapshotset`, `Windowset`, etc.) — the outer `ResolvedDataKind` is `#[non_exhaustive]`.
 - Adding a new field to `SemanticManifest` or any `Resolved*` struct (all are `#[non_exhaustive]`).
-- Adding a new variant to `CompileError` (e.g. when a new validation category lands in future docs).
-- Adding a new `IO_E_*` code within the `IO_E_0100`–`IO_E_0199` range or a new `RepositoryError` variant.
+- Adding a new variant to `CompileErrorKind` or `RepositoryErrorKind` (e.g. when a new validation category or transport class lands).
 - Adding a new field to `SemanticManifestMetadata` (e.g. a hash of the function-registry extensions).
 - Adding a new `SemanticManifestEncoding` variant.
 - Adding a new method to `Repository` that carries a `provided` default body (e.g. a batch-load variant). Adding a method without a default is MAJOR.
@@ -1012,7 +1123,7 @@ Per `30 §2.1`:
 
 - Internal algorithm improvements that preserve `canonical_bytes()` for every test fixture.
 - Doc-comment corrections.
-- Improvements to error-message rendering (the `Display` impl) that preserve the stable code.
+- Improvements to per-variant `Diagnose::message()` rendering that preserve variant identity.
 - Dependency bumps that do not change public types.
 
 ### 15.5 Deprecation policy
@@ -1034,11 +1145,11 @@ Per `30 §12`: any symbol slated for removal passes through `#[deprecated]` for 
 
 ### 16.2 What `semstrait-manifest` DOES contain
 
-The `compile` function and its sub-passes; the `SemanticManifest` struct and every `Resolved*` type; the `CompileError` / `CompileErrors` types with stable codes in the `COMP_E_*` / `EXPR_E_*` / `IO_E_*` ranges; the `Repository` trait and the two bundled impls; the convenience `::io` submodule (§16.5); determinism discipline (BTreeMap everywhere, timestamp canonicalization, `canonical_bytes()`).
+The `compile` function and its sub-passes; the `SemanticManifest` struct and every `Resolved*` type; the `CompileErrorKind` and `RepositoryErrorKind` typed-kind enums (each with `Diagnose` impls); the `Repository` trait and the two bundled impls; the convenience `::io` submodule (§16.5); determinism discipline (BTreeMap everywhere, timestamp canonicalization, `canonical_bytes()`).
 
 ### 16.3 Dependency direction
 
-Depends on exactly three workspace crates: `semstrait-core` (for `DataType`, `PhysicalExpr`, `CompileError` core variants, `Diagnostic`, `FunctionRegistry`, `ResolvedExprTable`, and the `io` transport traits from `31b`); `semstrait-model` (for `SemanticModel` and Model-layer names); `semstrait-catalog` (for the `CatalogProvider` / `FileSystem` trait surfaces and `Schema` / `PartitionColumn`). Per I7, no upward dep on `semstrait-planner`, `-ir`, `-adapter`, `-api`, or `-facade`.
+Depends on exactly three workspace crates: `semstrait-core` (for `DataType`, `PhysicalExpr`, `CompileErrorKind` core variants, `Diagnostic<K>` / `Diagnose`, `FunctionRegistry`, `ResolvedExprTable`, `IoErrorKind`, and the `io` transport traits from `31b`); `semstrait-model` (for `SemanticModel` and Model-layer names); `semstrait-catalog` (for the `CatalogProvider` / `FileSystem` trait surfaces and `Schema` / `PartitionColumn`). Per I7, no upward dep on `semstrait-planner`, `-ir`, `-adapter`, `-api`, or `-facade`.
 
 ### 16.4 Async boundary discipline
 
@@ -1049,32 +1160,45 @@ Three async surfaces cross this crate's public boundary: `compile` (I11a), `Repo
 A small feature-gated submodule exposes one-shot load / dump helpers that compose `semstrait-core::io` (`31b`) with manifest byte-level encoding, for callers that want single-function ergonomics rather than constructing a full `Repository`:
 
 ```rust
-use semstrait_core::io::{Source, Sink};
+use semstrait_core::io::{Source, Sink, IoErrorKind};
+use semstrait_core::diagnostic::{Diagnose, Diagnostic, Diagnostics, Severity};
 
 pub mod io {
     pub async fn load_manifest<S: Source + ?Sized>(
         src: &S,
         encoding: SemanticManifestEncoding,
-    ) -> Result<SemanticManifest, SemanticManifestLoadError>;
+    ) -> Result<
+        (SemanticManifest, Diagnostics<SemanticManifestLoadErrorKind>),
+        (Diagnostic<SemanticManifestLoadErrorKind>, Diagnostics<SemanticManifestLoadErrorKind>),
+    >;
 
     pub async fn dump_manifest<S: Sink + ?Sized>(
         m: &SemanticManifest,
         sink: &S,
         encoding: SemanticManifestEncoding,
-    ) -> Result<(), SemanticManifestDumpError>;
+    ) -> Result<
+        Diagnostics<SemanticManifestDumpErrorKind>,
+        (Diagnostic<SemanticManifestDumpErrorKind>, Diagnostics<SemanticManifestDumpErrorKind>),
+    >;
 
     #[non_exhaustive]
-    pub enum SemanticManifestLoadError {
-        Io(IoError),
+    pub enum SemanticManifestLoadErrorKind {
+        Io(IoErrorKind),
         Decode { encoding: SemanticManifestEncoding, reason: String },
         FormatVersion { found: SemanticManifestFormatVersion, expected: SemanticManifestFormatVersion },
     }
 
     #[non_exhaustive]
-    pub enum SemanticManifestDumpError {
-        Io(IoError),
+    pub enum SemanticManifestDumpErrorKind {
+        Io(IoErrorKind),
         Encode { encoding: SemanticManifestEncoding, reason: String },
     }
+
+    impl Diagnose for SemanticManifestLoadErrorKind { /* delegates */ }
+    impl Diagnose for SemanticManifestDumpErrorKind { /* delegates */ }
+
+    impl From<IoErrorKind> for SemanticManifestLoadErrorKind { /* … */ }
+    impl From<IoErrorKind> for SemanticManifestDumpErrorKind { /* … */ }
 }
 ```
 
@@ -1082,7 +1206,7 @@ pub mod io {
 
 **Relationship to `Repository`.** `Repository` is the full-fat persistence contract with content-addressable IDs (`SemanticManifestId`), sibling `.meta.json` files, and format-version checks. `manifest::io` is the lightweight "I have a `Source` pointing at manifest bytes; give me a `SemanticManifest`" path. A `FileSystemRepository` (or future `S3Repository`) internally uses the same `core::io` transport via the `object_store`-backed back-ends (`31b §8`); callers that only need one-shot load / dump skip the Repository machinery entirely.
 
-**Error roster.** `SemanticManifestLoadError` / `SemanticManifestDumpError` are `#[non_exhaustive]` enums over `IoError` and the encoding's decode / encode errors, each implementing `IntoDiagnostic`. Stable codes: `manifest.load.io`, `manifest.load.decode`, `manifest.load.format-version`, `manifest.dump.io`, `manifest.dump.encode`. Because `IoError` itself is `#[non_exhaustive]` (`31b §7`), adding `IoError` variants propagates as a MINOR through this layer.
+**Fused-kind composition.** Both `SemanticManifestLoadErrorKind` and `SemanticManifestDumpErrorKind` follow the cross-crate kind-nesting pattern from `30 §5.6`: the `Io` variant embeds `IoErrorKind` directly so transport-level identification is preserved without cloning variants. Because `IoErrorKind` itself is `#[non_exhaustive]` (`31b §7`), adding an `IoErrorKind` variant propagates as a MINOR through this layer per `30 §4.4`'s match-discipline rule. Identification is by variant identity per `30 §5.4`; there is no string-code accessor.
 
 **Feature flag.** Gated behind `manifest`'s `io` feature (default off), which forwards to `semstrait-core/io`. `aws` feature forwards to `semstrait-core/io-aws`.
 
@@ -1095,7 +1219,7 @@ pub mod io {
 Parked in `docs/design/questions/open/33_questions.md`. Titles:
 
 - **Q1.** `compile` — `SemanticModel` by value vs `&SemanticModel`.
-- **Q2.** `CompileError` — unified enum vs split `CoreCompileError` + `SemanticManifestCompileError`.
+- **Q2.** `CompileErrorKind` — unified enum (current ratification, §10.1) vs split `CoreCompileErrorKind` + `ManifestCompileErrorKind` (cross-crate kind-nesting per `30 §5.6`).
 - **Q3.** `canonical_bytes()` — bincode with sorted fields vs `serde_json` with `preserve_order`.
 - **Q4.** `Repository::save` — pre-condition check on `SemanticManifestId::from_manifest(&m)`.
 - **Q5.** `SemanticManifestEncoding::Bincode` — enable in v1 or defer.

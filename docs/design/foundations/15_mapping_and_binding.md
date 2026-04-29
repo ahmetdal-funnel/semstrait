@@ -243,40 +243,59 @@ pub struct PartitionColumn {
 
 **Grain inference is NOT done in `15`.** The Iceberg partition-transform vocabulary (`year`, `month`, `day`, `hour`) may carry a grain hint; consuming that hint is the planner's job (`22` Grainset, `17` TemporalShape). `15`'s `PartitionColumn` records only the resolved name/type/position; the transform, if any, is captured upstream in `37`'s `TableMetadataResponse` and attached to the `CatalogRef` / Binding via the compile-stage step that walks the catalog response. The exact placement of that transform record is a `37`-owned question.
 
-### 3.5 Glob expansion
+### 3.5 Source resolution
 
-The Model's YAML-surface binding can express its source as:
+The Model's YAML surface places a Binding's sources under `extras.storage.paths:` and `extras.storage.tables:` (per `32 §4`). Each entry resolves at compile to one or more `PhysicalSource`s; the Binding's `sources: Vec<PhysicalSource>` is the concatenation of every entry's resolution in author order across both fields. Per `21 §3.2 / §4.5`, multiple `PhysicalSource`s in one Binding compose under `Union ALL` with optional per-source pre-aggregation as a planner optimization.
 
-- a concrete file path (`"s3://bucket/data/2024-01/customers.parquet"`) → produces one `PhysicalSource::File`.
-- a glob pattern (`"s3://bucket/data/year=*/month=*/*.parquet"`) → produces 1..N `PhysicalSource::File`s.
-- a concrete table FQN (`"iceberg.sales.transactions"`) → produces one `PhysicalSource::Table` (or `Snapshot` if `at: { snapshot_id: ... }` is present).
-- a table-name glob (`"iceberg.sales.*_transactions"`) → produces 1..N `PhysicalSource::Table`s.
+A `PhysicalSource` is an **engine-level LogicalRelation** — one Substrait `ReadRel`, one DataFusion `TableScan`, one Spark `LogicalRelation`, one SQL `FROM` reference. Each resolved `PhysicalSource` carries a concrete identifier (path / FQN); engine-internal mechanics (Hive partition discovery, multi-file consolidation, schema merge for path sources; partition-spec consultation for catalog tables) live below the `PhysicalSource` boundary and are the adapter / engine's responsibility per `35 §4.2.1`.
 
-#### 3.5.1 Expansion algorithm
+#### 3.5.1 `paths:` resolution — `PhysicalSource::File`
+
+- **Concrete path** (`"s3://bucket/orders/2024-01/customers.parquet"`, `"s3://bucket/orders/"`) → produces **one** `PhysicalSource::File` with the path stored verbatim. The engine treats the source as a single LogicalRelation and handles file consolidation, schema merge, and Hive-partition discovery internally.
+- **Wildcard path** (`"s3://bucket/*/orders/"`, `"s3://lake/year=*/sales/"`) → compile enumerates each resolved variation via `FileSystem::expand_glob` → produces **one `PhysicalSource::File` per resolved variation**. Each resulting source has a concrete (wildcard-free) path string; downstream metadata extraction (`§8`'s `path_token`) operates on that concrete path per source.
+
+#### 3.5.2 `tables:` resolution — `PhysicalSource::Table` / `Snapshot`
+
+- **Concrete table FQN** (`"iceberg.sales.transactions"`) → produces **one** `PhysicalSource::Table`, or `Snapshot` if the spec carries `at: { snapshot_id: ... }`.
+- **Table-name glob** (`"iceberg.sales.*_transactions"`) → compile-expanded via `CatalogProvider::list_tables` → produces **one `PhysicalSource::Table` per resolved FQN**.
+
+#### 3.5.3 Asymmetry note — why filesystem and catalog globs differ in mechanics
+
+`paths:` globs and `tables:` globs both expand at compile, but the resolution mechanism differs by necessity: filesystem APIs natively accept globs and directly enumerate variations; catalog APIs do not (they take FQNs), so table-name globs require an explicit list-then-fan-out step. Both paths converge on the same per-variation `PhysicalSource` shape downstream.
+
+#### 3.5.4 `partition_def` carriage — manifest-side, runtime-dormant in v1
+
+`extras.storage.partition_def:` (per `32 §4`) is the canonical catalog-less partition declaration for file sources, in v1 form `Range { column }` / `List { column }`. The compile pass parses, schema-validates, and carries it verbatim onto each `PhysicalSource::File` it produces from a `paths:` entry. **No v1 plan-time logic consumes it** — adapters defer partition pruning to engine-side discovery from filter predicates per `35 §4.2.1`. The declaration is forward-compat for v2+ consumers (per-partition extraction per `Q-MAP-009`; partition-aware grain inference per `17`; planner pruning hints). This is a closure clause of `Q-MAP-002`.
+
+#### 3.5.5 Authoring guidance — "table-root" preferred for file sources
+
+When a path resolves to a Hive-partitioned table or a single-table folder containing many files, the recommended author form is the **table-root prefix only** (`"s3://bucket/orders/"`), not a Hive-partition glob (`"s3://bucket/orders/year=*/month=*/*.parquet"`). The latter is wrong usage of the wildcarding surface — it forces compile to enumerate per file or per partition, when the engine can do the same far more efficiently from the table-root alone (per `35 §4.2.1`'s 4-consumer alignment). Compile resolves whatever the author writes literally; it does not detect or reject this pattern. Authors writing many-wildcard / file-level globs may see slow compile resolution and large `Binding.sources` lists; the fix is to switch to the table-root form.
+
+#### 3.5.6 Expansion algorithm
 
 The deterministic algorithm (I4) is:
 
-1. **Classify the source spec** into `File` / `Table` based on the YAML surface key (Model parser, not `15`). `Snapshot` is produced only when the Table spec carries an `at:` subkey.
-2. **If it contains a glob metacharacter** (`*`, `?`, `[`), call the respective provider to enumerate:
-  - File sources → `FileSystem::expand_glob(pattern) → Vec<String>` (ordered).
-  - Table sources → `CatalogProvider::list_tables(namespace, pattern) → Vec<Fqn>` (ordered).
+1. **Classify each source spec** by which YAML key carried it (`paths:` → File; `tables:` → Table). `Snapshot` is produced only when a `tables:` entry carries an `at:` subkey.
+2. **If the entry contains a glob metacharacter** (`*`, `?`, `[`), call the respective provider to enumerate:
+  - `paths:` entries → `FileSystem::expand_glob(pattern) → Vec<String>` (ordered).
+  - `tables:` entries → `CatalogProvider::list_tables(namespace, pattern) → Vec<Fqn>` (ordered).
 3. **Sort the returned list lexicographically** by the full resolved identifier (absolute file path for `File`, `Fqn` for `Table`). This is the `15`-mandated determinism fence: provider ordering is not trusted to be stable across calls; `compile` sorts it explicitly.
 4. **For each resolved identifier, produce one `PhysicalSource`:**
-  - File → fetch format (inferred from extension or declared; §4) → fetch schema per §4's per-format strategy → extract `PartitionColumn`s from the Hive-style path components of the matched identifier → emit `File { ... }`.
+  - File → fetch format (inferred from extension when `extras.storage.format` is absent, else taken verbatim; §4) → fetch schema per §4's per-format strategy → extract `PartitionColumn`s from any Hive-style `key=value` segments in the resolved path → carry `partition_def` from the storage block (§3.5.4) → emit `File { ... }`.
   - Table → `CatalogProvider::load_table_metadata(fqn)` → emit `Table { ... }` (or `Snapshot { ... }` if an `at:` was present).
-5. **Check the resolved list is non-empty.** Empty → `CompileError::NoSourcesMatched { binding_id, pattern }` (§11).
+5. **Check the resolved list is non-empty per entry.** Empty → `CompileError::NoSourcesMatched { binding_id, pattern }` (§11).
 
 Ordering is fully specified: step 3's lexical sort makes the `sources: Vec<PhysicalSource>` field of the Binding a deterministic function of `(pattern, catalog/filesystem snapshot)`. Re-running `compile` against the same pattern and the same underlying set yields the same order, byte-identical SemanticManifest (I4).
 
-#### 3.5.2 Error model
+#### 3.5.7 Error model
 
 - `CompileError::NoSourcesMatched { binding_id, pattern }` — the pattern produced zero matches. Fail-fast per `10 §3.3` / `30 §7`. Proposed code: `COMP_E_0301`.
 - `CompileError::GlobExpansionFailed { binding_id, pattern, cause }` — the filesystem or catalog raised an I/O error during expansion. Surface the upstream error as `cause` (an `IntoDiagnostic`-compatible trait object). Proposed code: `COMP_E_0302`. Lives in the `COMP_E_0200-0299` sub-range (catalog/source resolution per `30 §6.2`) since the failure is at source-resolution time, not schema-assembly time — §11 maps these carefully.
 - `CompileError::CatalogUnavailable { catalog_id, cause }` — the catalog whose `CatalogId` was named in the binding spec is not registered, not reachable, or returned an unexpected error outside the per-table fetch path. Proposed code: `COMP_E_0203`.
 
-#### 3.5.3 Cross-source schema agreement within one Binding
+#### 3.5.8 Cross-source schema agreement within one Binding
 
-When glob expansion produces multiple `PhysicalSource`s, their schemas MUST agree on every column that a Semantics references (full cross-source type-agreement rule is in §9.3). Soft agreement — a column exists in some sources but not all — is a `Coverage` question (per-source `Native` vs `NullFill`; §6). Hard agreement — a column exists in all sources but with different logical `DataType`s — is a compile error (`CompileError::CrossSourceTypeDisagreement`; §11).
+When source resolution produces multiple `PhysicalSource`s (multiple author entries across `paths:` / `tables:`, or a wildcard expansion under one entry), their schemas MUST agree on every column that a Semantics references (full cross-source type-agreement rule is in §9.3). Soft agreement — a column exists in some sources but not all — is a `Coverage` question (per-source `Native` vs `NullFill`; §6). Hard agreement — a column exists in all sources but with different logical `DataType`s — is a compile error (`CompileError::CrossSourceTypeDisagreement`; §11).
 
 This is one of the `15`-specific pitfalls that peers handle inconsistently: metricflow essentially forbids the pattern (one `data_source` is one table); Cube.js leaves it to the author via `rollup_join`; Iceberg handles schema evolution at the catalog level. `15`'s answer: the Binding is the atomic unit, so every source in it either provides the column (Native) or is explicitly missing it (NullFill); mixed types at the same name across sources is a Model bug.
 
@@ -361,7 +380,7 @@ The compile-time strategy per format:
 
 Inferred schemas (CSV without declared schema; JSON without declared schema) DEGRADE the I4 determinism guarantee because the "inferred" result depends on the actual bytes of the first N records. The design admission is explicit: **Binding output is deterministic w.r.t. a given catalog snapshot + filesystem snapshot**; if the bytes at the source change between runs, the schema can change. This is captured as `COMP_W_0301 SchemaInferenceUsed` and advised against for production Models.
 
-**Proposed (Round 1):** JSON inference does not recurse into nested objects — only top-level scalar fields are typed; nested-object fields fall through as `String`. Array typing is not supported (arrays become `String`). Complex types (arrays, structs) are out of scope per `00 §10`. Authors needing nested JSON model the unnest explicitly in upstream jobs. See `questions/open/15_questions.md` Q-MAP-004.
+**Proposed (Round 1):** JSON inference does not recurse into nested objects — only top-level scalar fields are typed; nested-object fields fall through as `String`. Array typing is not supported (arrays become `String`). Complex types (arrays, structs) are out of scope per `00 §10`. Authors needing nested JSON model the unnest explicitly in upstream jobs. See `questions/closed/15_questions.md` Q-MAP-004 (closed).
 
 ### 4.5 Format inference from path
 
@@ -545,7 +564,7 @@ Variants:
 
 When a Semantics maps to `Computed`, its `Coverage` on a specific source depends on whether the expression's column references are present on that source. The `Derived` variant encodes: "the upstream columns are here, the planner computes the Semantics on this source branch." The `NullFill` variant encodes: "the upstream columns are not here, the planner emits a NULL-filled constant of the declared Semantics type on this source branch."
 
-**Proposed (Round 1):** `Derived` is a distinct variant from `Native` (rather than collapsing into `Native`) because consumers that care about provenance — notably the `16` composition layer building a `ComposedSemanticInterface` coverage map — need to distinguish "this is physically present as a column" (`Native` on a `Column`-valued Semantics) from "this is computed from upstream columns that happen to be present" (`Derived`). The distinction matters for pushdown reasoning in `34 §5`: Native reads are always pushdownable, Derived reads require pushing the computation. See `questions/open/15_questions.md` Q-MAP-005.
+**Proposed (Round 1):** `Derived` is a distinct variant from `Native` (rather than collapsing into `Native`) because consumers that care about provenance — notably the `16` composition layer building a `ComposedSemanticInterface` coverage map — need to distinguish "this is physically present as a column" (`Native` on a `Column`-valued Semantics) from "this is computed from upstream columns that happen to be present" (`Derived`). The distinction matters for pushdown reasoning in `34 §5`: Native reads are always pushdownable, Derived reads require pushing the computation. See `questions/closed/15_questions.md` Q-MAP-005 (closed).
 
 ### 6.4 Scope boundary with `16`
 
@@ -790,7 +809,7 @@ Applicable to all `PhysicalSource` variants that declare `partitions: Vec<Partit
 
 Rule: 1-indexed. `level: 1` is the first partition column (`PartitionColumn.position == 1`); `level: N` is the *N*-th partition column.
 
-For `PhysicalSource::File` with Hive-style path partitioning (`year=2024/month=01/day=15/data.parquet`), the compile-time glob expansion in §3.5.1 step 4 builds the `PartitionColumn` list from the path components. The partitions are ordered outer-to-inner in the path; `position: 1` = `year`, `position: 2` = `month`, etc.
+For `PhysicalSource::File` with Hive-style path partitioning (`year=2024/month=01/day=15/data.parquet`), the compile-time source-resolution algorithm in §3.5.6 step 4 builds the `PartitionColumn` list from the path components. The partitions are ordered outer-to-inner in the path; `position: 1` = `year`, `position: 2` = `month`, etc.
 
 For `PhysicalSource::Table` and `Snapshot` backed by Iceberg (or equivalent), the partition column list is the table's declared partition spec (the `default-spec-id` at the catalog level). Partition-transform identities (`identity`, `year`, `month`, `bucket[N]`) are carried on the catalog side (`37`) and are not surfaced on the `PartitionColumn` struct itself in `15`'s v1.
 
@@ -801,7 +820,7 @@ The extracted value is the partition column's value for a given row, typed as th
 - Hive-style path: typically `String` unless a `data_type` override is declared.
 - Iceberg / Unity table: the declared partition-column `DataType` (which may be `Integer`, `String`, `Date`, etc.).
 
-The exact result-type contract for Hive-style partitions (raw segment vs value-after-`=`, declared override grammar, type-inference fallback) is a v2 ratification item — see `questions/open/15_questions.md` Q-MAP-009 (deferred).
+The exact result-type contract for Hive-style partitions (raw segment vs value-after-`=`, declared override grammar, type-inference fallback) is a v2 ratification item — see `questions/deferred/15_questions.md` Q-MAP-009 (deferred).
 
 #### 8.2.2 Error conditions — v2 design parking
 
@@ -1076,7 +1095,7 @@ The v1 design pencils in `serde` derivations on all `15`-ratified types (with th
 
 ### 12.5 `37` — `CatalogProvider` integration
 
-`15 §3`'s `CatalogRef` is an opaque handle into `37`'s `CatalogProvider` registry. `15 §3.5.1`'s step 2 makes the provider calls; the async posture and error-enum shape are ratified in `37`. `15`'s `CompileError::CatalogUnavailable` wraps `37`'s `CatalogError` via `IntoDiagnostic` (per `30 §5`).
+`15 §3`'s `CatalogRef` is an opaque handle into `37`'s `CatalogProvider` registry. `15 §3.5.6`'s step 2 makes the provider calls; the async posture and error-enum shape are ratified in `37`. `15`'s `CompileError::CatalogUnavailable` wraps `37`'s `CatalogError` via `IntoDiagnostic` (per `30 §5`).
 
 ### 12.6 `21`–`25` — Per-DataKind strategies consume Bindings
 
@@ -1104,10 +1123,10 @@ A Q-numbered roll-up of every choice `15` ratifies in Round 1. Each entry cross-
 | R5  | `Schema.columns` is an ordered `Vec`; order is source-native.                                                                                                                                                                                                                                                                                                    | §3.2                      | ✓                                        |
 | R6  | `CatalogRef` is opaque; `catalog_id` routes to a provider, `fqn` names the table.                                                                                                                                                                                                                                                                                | §3.3                      | ✓                                        |
 | R7  | `PartitionColumn.position` is 1-indexed.                                                                                                                                                                                                                                                                                                                         | §3.4                      | ✓                                        |
-| R8  | Partition-transform record lives in `37`'s catalog response, not on `PartitionColumn`.                                                                                                                                                                                                                                                                           | §3.4                      | ? Q-MAP-002                              |
-| R9  | Glob expansion is deterministic (lexical sort after provider enumeration).                                                                                                                                                                                                                                                                                       | §3.5.1                    | ✓                                        |
-| R10 | Zero glob matches is a compile error (`COMP_E_0301`).                                                                                                                                                                                                                                                                                                            | §3.5.2                    | ✓                                        |
-| R11 | Cross-source schema hard-agreement is a compile error (`COMP_E_0317`); soft-agreement is `Coverage::NullFill`.                                                                                                                                                                                                                                                   | §3.5.3 / §6.2             | ✓                                        |
+| R8  | Partition-transform record lives in `37`'s catalog response, not on `PartitionColumn`. Partition info never reaches `35 ScanNode`; manifest-side carriage only.                                                                                                                                                                                                  | §3.4 / §3.5.4 / `35 §4.2.1` | ✓ (Q-MAP-002 closed 2026-04-28)         |
+| R9  | Source resolution is deterministic (lexical sort after provider enumeration).                                                                                                                                                                                                                                                                                    | §3.5.6                    | ✓                                        |
+| R10 | Zero matches for a glob entry is a compile error (`COMP_E_0301`).                                                                                                                                                                                                                                                                                                | §3.5.7                    | ✓                                        |
+| R11 | Cross-source schema hard-agreement is a compile error (`COMP_E_0317`); soft-agreement is `Coverage::NullFill`.                                                                                                                                                                                                                                                   | §3.5.8 / §6.2             | ✓                                        |
 | R12 | `FileFormat` v1 set: `Parquet`, `Csv(CsvOptions)`, `Json(JsonOptions)`, `Orc`, `Avro`.                                                                                                                                                                                                                                                                           | §4.1                      | ✓                                        |
 | R13 | CSV schema resolution: declared-first, then header-derived; columns are `String` unless declared.                                                                                                                                                                                                                                                                | §4.4                      | ✓                                        |
 | R14 | JSON schema resolution: declared-first, then sample-inference (scalar-only).                                                                                                                                                                                                                                                                                     | §4.4                      | ? Q-MAP-004                              |
@@ -1195,4 +1214,4 @@ Everything in this table is `pub`-visible in `semstrait-manifest` (post-resolve)
 
 ---
 
-**End of document.** Open reconciliation items and decisions parked for round-2 review are in `docs/design/questions/open/15_questions.md`.
+**End of document.** Open reconciliation items live in `docs/design/questions/open/15_questions.md`; ratified items in `docs/design/questions/closed/15_questions.md`; post-v1 items in `docs/design/questions/deferred/15_questions.md`.

@@ -30,7 +30,7 @@ Then route by topic:
 | Per-crate public API contracts | `docs/design/apis/` (see `00_overview.md §6.4`) |
 | Refactor plan, deprecations, migration notes | `docs/design/implementation/` (see `00_overview.md §6.5`) |
 | Per-engine mapping catalogs (types, functions, temporal, joins) | `docs/design/registry/` (see `00_overview.md §6.6`) |
-| Open questions for any doc `N` | `docs/design/questions/open/N_questions.md` (active backlog); fully-resolved sidecars live in `docs/design/questions/closed/`. See `docs/design/INDEX.md §Open questions` for the full doc-map. |
+| Questions for any doc `N` | `docs/design/questions/open/N_questions.md` (active v1 backlog); ratified items in `docs/design/questions/closed/N_questions.md`; post-v1 items in `docs/design/questions/deferred/N_questions.md`. The same `N_questions.md` filename can appear in multiple directories — each carries only the Q-IDs in that state. See `docs/design/INDEX.md §Open questions` for the full per-directory map. |
 
 ## Documentation Routing — Code & Refactor Work (legacy / reference-only)
 

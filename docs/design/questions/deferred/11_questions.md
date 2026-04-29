@@ -1,14 +1,20 @@
+---
+doc: design/questions/deferred/11_questions
+status: Deferred
+purpose: Session-snapshot of in-flight Constraints DSL questions raised against `foundations/11_names_and_scopes.md` §8
+---
+
 # Constraints — Deferred Session Snapshot
 
 **Status**: Deferred — to be resumed in a dedicated session.
 
-**Parent document**: `[../foundations/11_names_and_scopes.md](../foundations/11_names_and_scopes.md)` §8 (Constraints).
+**Parent document**: [`../../foundations/11_names_and_scopes.md`](../../foundations/11_names_and_scopes.md) §8 (Constraints).
 
 **Related docs**:
 
-- `[../foundations/10_resolution_pipeline.md](../foundations/10_resolution_pipeline.md)` §3.4 — step-0 validation framing
-- `[../foundations/13_types_and_grain.md](../foundations/13_types_and_grain.md)` §5.3 — Key participation
-- `[../apis/32_semstrait_model.md](../apis/32_semstrait_model.md)` — YAML shape of the `constraints:` block
+- [`../../foundations/10_resolution_pipeline.md`](../../foundations/10_resolution_pipeline.md) §3.4 — step-0 validation framing
+- [`../../foundations/13_types_and_grain.md`](../../foundations/13_types_and_grain.md) §5.3 — Key participation
+- [`../../apis/32_semstrait_model.md`](../../apis/32_semstrait_model.md) — YAML shape of the `constraints:` block
 
 ---
 

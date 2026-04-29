@@ -922,16 +922,16 @@ Had `hourly_events` not existed, step 3 would leave Candidates empty → `PLAN_E
 
 ## 12. Round-1 open items
 
-Parked in `docs/design/questions/open/22_questions.md`. Each entry restates the question, lists its refs, and records `22`'s Round-1 default. Entries migrate out of the file as later docs (`17`, `20`, `25`, `33`, `34`) ratify decisions that confirm or amend `22`'s defaults.
+Parked across three sibling files: open Q-GRN-001 / -002 / -005 in `docs/design/questions/open/22_questions.md`, ratified Q-GRN-004 / -006 in `docs/design/questions/closed/22_questions.md`, deferred Q-GRN-003 in `docs/design/questions/deferred/22_questions.md`. Each entry restates the question, lists its refs, and records `22`'s Round-1 default.
 
 Summary of titles:
 
-- **Q-GRN-001** — Inheritance default for child `grain`: finest vs declared (§3.2).
-- **Q-GRN-002** — Cross-child partial coverage: error in v1, or split-and-delegate? (`[TD-GRAINSET-PARTIAL-COVERAGE]`, §4.2 / §9.1 `PLAN_E_2208`).
-- **Q-GRN-003** — Cost function pluggability hook site: planner trait or adapter hook? (`[TD-GRAINSET-COST-STATS]`, §4.4).
-- **Q-GRN-004** — Grainset-of-Grainset nesting (`[TD-GRAINSET-NESTED]`, §3.4 / `COMP_E_2207`).
-- **Q-GRN-005** — Mixed-shape Grainsets: warning vs error (§5 / `PLAN_W_2202`).
-- **Q-GRN-006** — Single-child Grainset degeneracy: lint or accept? (§7 open item).
+- **Q-GRN-001** — Inheritance default for child `grain`: finest vs declared (§3.2). *Open.*
+- **Q-GRN-002** — Cross-child partial coverage: error in v1, or split-and-delegate? (`[TD-GRAINSET-PARTIAL-COVERAGE]`, §4.2 / §9.1 `PLAN_E_2208`). *Open.*
+- **Q-GRN-003** — Cost function pluggability hook site: planner trait or adapter hook? (`[TD-GRAINSET-COST-STATS]`, §4.4). *Deferred.*
+- **Q-GRN-004** — Grainset-of-Grainset nesting (`[TD-GRAINSET-NESTED]`, §3.4 / `COMP_E_2207`). *CLOSED.*
+- **Q-GRN-005** — Mixed-shape Grainsets: warning vs error (§5 / `PLAN_W_2202`). *Open.*
+- **Q-GRN-006** — Single-child Grainset degeneracy: lint or accept? (§7 open item). *CLOSED.*
 
 ---
 
@@ -958,4 +958,4 @@ Summary of titles:
 
 ---
 
-**End of document.** Open items in `docs/design/questions/open/22_questions.md`.
+**End of document.** Open items in `docs/design/questions/open/22_questions.md` (Q-GRN-001/-002/-005); closed items in `docs/design/questions/closed/22_questions.md` (Q-GRN-004/-006); deferred items in `docs/design/questions/deferred/22_questions.md` (Q-GRN-003).

@@ -109,13 +109,13 @@ pub struct CatalogEntry {
 - Required: `type`, `name`, `url`, `auth`.
 - Optional: `realm`, `default_namespace`.
 
-Missing required fields at parse → `parse.catalog-missing-field { alias, field }`.
+Missing required fields at parse → `CatalogsParseErrorKind::CatalogMissingField { alias, field }` (§5.2).
 
 ### 2.2 `type:` discriminator
 
 A free-form string rather than a closed enum. Adding a provider is a new feature-gated module in `semstrait-catalog` (per `37`); the model-layer grammar does not need to change when a new provider lands.
 
-Unknown `type:` values pass the model-layer parser; the error surfaces at catalog-resolution time (`33` / `37`) as `CAT_E_0xxx UnknownProviderType` when the caller tries to open a provider the runtime hasn't linked in.
+Unknown `type:` values pass the model-layer parser; the error surfaces at catalog-resolution time (`33` / `37`) as `CatalogProviderErrorKind::UnknownProviderType` (`37`) when the caller tries to open a provider the runtime hasn't linked in.
 
 ---
 
@@ -264,37 +264,54 @@ Considered and dropped. Reasons:
 ### 5.1 Signature
 
 ```rust
-/// Parse a `catalogs.yaml` document. Pure and synchronous.
-/// `${VAR}` substitutions expanded before YAML decoding (§6).
-pub fn parse_catalogs(input: &str) -> Result<CatalogsConfig, CatalogsParseError>;
+use semstrait_core::diagnostic::Diagnostics;
+
+/// Parse a `catalogs.yaml` document. Pure and synchronous. Accumulating
+/// stage per `30 §7.1` (sibling to `32 §9.1`'s `parse`). `${VAR}`
+/// substitutions expanded before YAML decoding (§6).
+pub fn parse_catalogs(
+    input: &str,
+) -> Result<
+    (CatalogsConfig, Diagnostics<CatalogsParseErrorKind>),
+    Diagnostics<CatalogsParseErrorKind>,
+>;
 ```
 
 Pure: same input + same environment → byte-identical output under a canonical serializer.
 
-### 5.2 Error enum
+### 5.2 `CatalogsParseErrorKind` roster
 
 ```rust
+use semstrait_core::diagnostic::{Diagnose, Severity};
+use semstrait_core::Location;
+
 #[non_exhaustive]
-pub enum CatalogsParseError {
-    YamlSyntax             { message: String, location: Option<Location> },
-    UnsetEnvVar            { var: String, location: Option<Location> },
-    UnknownTopLevelKey     { key: String, location: Option<Location> },
-    CatalogMissingField    { alias: String, field: String, location: Option<Location> },
-    MalformedAuthMethod    { alias: String, reason: String, location: Option<Location> },
-    UnknownField           { field: String, parent: String, location: Option<Location> },
+pub enum CatalogsParseErrorKind {
+    YamlSyntax             { message: String },
+    UnsetEnvVar            { var: String },
+    UnknownTopLevelKey     { key: String },
+    CatalogMissingField    { alias: String, field: String },
+    MalformedAuthMethod    { alias: String, reason: String },
+    UnknownField           { field: String, parent: String },
+}
+
+impl Diagnose for CatalogsParseErrorKind {
+    fn message(&self) -> String { /* per-variant human text */ }
+    fn severity_default(&self) -> Severity { Severity::Error }
+    fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
 }
 ```
 
-Stable codes: kebab-case, e.g. `"parse.catalog-missing-field"`. Per `30 §6`.
+Per `30 §5.1`, the primary source span lives on the wrapping `Diagnostic<CatalogsParseErrorKind>` (the `location: Option<Location>` field on the envelope), not on the variant. Identification is by variant identity per `30 §5`; there is no string-code accessor. Naming and stability rules mirror `32 §9.2`'s `ParseErrorKind`.
 
 ### 5.3 Composition with `parse`
 
 `parse_catalogs` is distinct from `parse` (the `semantic_model:` loader, `32 §9`). A caller typically invokes both, then hands the two products to `compile`:
 
 ```rust
-let model     = semstrait_model::parse(&model_yaml)?;
-let catalogs  = semstrait_model::parse_catalogs(&catalogs_yaml)?;
-let manifest  = semstrait_manifest::compile(&model, &catalogs)?;
+let (model, parse_warnings)        = semstrait_model::parse(&model_yaml)?;
+let (catalogs, catalog_warnings)   = semstrait_model::parse_catalogs(&catalogs_yaml)?;
+let (manifest, compile_warnings)   = semstrait_manifest::compile(&model, &catalogs)?;
 ```
 
 The exact shape of `compile` is `33`'s to pin down.
@@ -308,20 +325,20 @@ use semstrait_core::io::Location;
 use semstrait_model::io::{load_catalogs, dump_catalogs, DumpMode};
 
 let loc = "./catalogs.yaml".parse::<Location>()?;
-let catalogs = load_catalogs(&loc).await?;
+let (catalogs, warnings) = load_catalogs(&loc).await?;
 
 // ... edits ...
 
 dump_catalogs(&catalogs, &loc, DumpMode::Canonical).await?;
 ```
 
-`load_catalogs` composes `src.read::<String>().await` with `parse_catalogs`; `dump_catalogs` composes a canonical render with `sink.write(canonical).await`. Error roster (`CatalogsLoadError` / `CatalogsDumpError`) is defined in `32 §10.4.2` and is `#[non_exhaustive]` per `31b §7`. The wrappers are gated behind `semstrait-model`'s `io` feature (default off) per `32 §10.5`.
+`load_catalogs` composes `src.read::<String>().await` with `parse_catalogs`; `dump_catalogs` composes a canonical render with `sink.write(canonical).await`. Fused-kind roster (`CatalogsLoadErrorKind` / `CatalogsDumpErrorKind`) is defined in `32 §10.4.2` and is `#[non_exhaustive]` per `31b §7`. The wrappers are gated behind `semstrait-model`'s `io` feature (default off) per `32 §10.5`.
 
 ---
 
 ## 6. Environment-Variable Substitution
 
-`${IDENT}` tokens in any string field are rewritten to the value of `std::env::var("IDENT")` before YAML decoding. Identical mechanism to `32 §8`; unset variables raise `parse.unset-env-var`.
+`${IDENT}` tokens in any string field are rewritten to the value of `std::env::var("IDENT")` before YAML decoding. Identical mechanism to `32 §8`; unset variables raise `CatalogsParseErrorKind::UnsetEnvVar`.
 
 ```yaml
 catalogs:
@@ -340,14 +357,16 @@ Bare `$VAR` is treated as literal text.
 
 ## 7. Structural Rules
 
-| ID | Rule | Diagnostic |
+Each rule maps to a typed-kind variant in `CatalogsParseErrorKind` (§5.2) per `30 §5`.
+
+| ID | Rule | Kind |
 |---|---|---|
-| **SR-C1** | Exactly one `catalogs:` root key; no other top-level keys. | `parse.unknown-top-level-key` |
-| **SR-C2** | Every `CatalogEntry` carries required fields: `type`, `name`, `url`, `auth`. | `parse.catalog-missing-field` |
-| **SR-C3** | Every `CatalogAuthMethod` variant carries its variant-specific required fields (e.g. `bearer` must have `token`; `aws_secrets` must have `secret_arn`). | `parse.malformed-auth-method` |
+| **SR-C1** | Exactly one `catalogs:` root key; no other top-level keys. | `CatalogsParseErrorKind::UnknownTopLevelKey` |
+| **SR-C2** | Every `CatalogEntry` carries required fields: `type`, `name`, `url`, `auth`. | `CatalogsParseErrorKind::CatalogMissingField` |
+| **SR-C3** | Every `CatalogAuthMethod` variant carries its variant-specific required fields (e.g. `bearer` must have `token`; `aws_secrets` must have `secret_arn`). | `CatalogsParseErrorKind::MalformedAuthMethod` |
 | **SR-C4** | Aliases (keys in `catalogs:`) are unique — `BTreeMap` enforces. | (duplicate-key raised by YAML decoder) |
-| **SR-C5** | `deny_unknown_fields` applied to `CatalogsConfig`, `CatalogEntry`, every `CatalogAuthMethod` variant, and `SecretKeyMapping`. | `parse.unknown-field` |
-| **SR-C6** | `${VAR}` substitution applied before decoding; unset vars fatal. | `parse.unset-env-var` |
+| **SR-C5** | `deny_unknown_fields` applied to `CatalogsConfig`, `CatalogEntry`, every `CatalogAuthMethod` variant, and `SecretKeyMapping`. | `CatalogsParseErrorKind::UnknownField` |
+| **SR-C6** | `${VAR}` substitution applied before decoding; unset vars fatal. | `CatalogsParseErrorKind::UnsetEnvVar` |
 
 ---
 

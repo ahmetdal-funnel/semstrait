@@ -2,15 +2,15 @@
 prereqs: [10, 11, 13, 14, 14b, 15, 16, 17, 20, 21, 22, 23, 24, 25, 30, 31, 33, 35]
 authoritative-for:
   - the `semstrait-planner` public-API surface (types, traits, free functions)
-  - the `plan` free-function signature (`plan(&SemanticManifest, Request) -> Result<SemanticPlan, PlanErrors>`) and its seven pipeline sub-steps
-  - the `optimize` free-function signature (`optimize(SemanticPlan) -> Result<SemanticPlan, OptimizeErrors>`) and the canonical-pass roster
+  - the `plan` free-function signature using the fail-fast typed-kind shape per `30 §7.1` (`Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>`) and its seven pipeline sub-steps
+  - the `optimize` free-function signature (parallel fail-fast shape over `OptimizeErrorKind`) and the canonical-pass roster
   - the `Request` type and its fields (dimensions, measures, metrics, filters, order, limit, offset, from, temporal, session)
   - the `SessionContext` type and its fields (now, timezone, feature_toggles, correlation_id)
   - the `ResolvedQueryRequest` type — SemanticManifest-contextualized Request with looked-up Semantics and resolved target DataKind
   - the `Strategy` trait surface (`id`, `supports`, `plan`) and its companion types (`StrategyId`, `StrategyContext`)
   - the `OptimizerPass` trait surface and its canonical v1 passes (constant folding, metadata-Dimension substitution, predicate simplification, identity-Project elimination)
-  - the `PlanError` / `PlanErrors` / `OptimizeError` / `OptimizeErrors` typed carriers and their `PLAN_E_*` / `OPT_E_*` code ranges
-  - fail-fast diagnostics accumulation for `plan` and `optimize` (non-error diagnostics carried through both arms per `30 §7`)
+  - the `PlanErrorKind` and `OptimizeErrorKind` typed-kind enums and their `Diagnose` impls per `30 §5`
+  - fail-fast diagnostics accumulation for `plan` and `optimize` (warnings carried through both arms per `30 §7.2` / `§7.3`)
   - crate boundary posture — no I/O, no SQL emission, no YAML parsing, no catalog access on the `plan` / `optimize` hot path
 refined-by:
   - 21 (`data-kinds/21_dataset.md` — `SimpleStrategy` per-variant algorithm)
@@ -34,9 +34,9 @@ refined-by:
 > ratified upstream; `34` adds the crate-level wiring — the `plan` /
 > `optimize` entry points, the `Request` / `SessionContext` /
 > `ResolvedQueryRequest` value objects, the `Strategy` and
-> `OptimizerPass` trait shapes, and the `PLAN_E_*` / `OPT_E_*` error
-> enums that flow across the stage boundary. Round-1 open items parked
-> in `questions/open/34_questions.md`.
+> `OptimizerPass` trait shapes, and the `PlanErrorKind` / `OptimizeErrorKind`
+> typed-kind enums (per `30 §5`) that flow across the stage boundary.
+> Round-1 open items parked in `questions/open/34_questions.md`.
 
 ## 1. Purpose, scope, layering
 
@@ -49,12 +49,12 @@ refined-by:
 - The four built-in strategies: `SimpleStrategy`, `GrainsetStrategy`, `UnionsetStrategy`, `JoinsetStrategy` (§9) — crate-public wrappers whose algorithms are ratified in `21`–`24`.
 - Field-first resolution (§10) — the planner-side realization of the algorithm ratified in `16 §11`.
 - The `OptimizerPass` trait (§12) — the pluggable v1 optimizer interface.
-- The `PlanError` / `PlanErrors` / `OptimizeError` / `OptimizeErrors` typed carriers (§13) and their stable `PLAN_E_*` / `OPT_E_*` codes.
+- The `PlanErrorKind` and `OptimizeErrorKind` typed-kind enums (§13), their `Diagnose` impls per `30 §5.4`, and the variant rosters wrapping per-DataKind `Simple` / `Grainset` / `Unionset` / `Joinset` errors.
 - The `StrategyRegistry` and `StrategyContext` (§8.3 / §8.4) — internal wiring types exposed to adapter-level extensions and test doubles only.
 
 ### 1.2 What `semstrait-planner` does NOT own
 
-- **Expression / type vocabulary.** `Expr`, `PhysicalExpr`, `Aggregation`, `DataType`, `Grain`, `Diagnostic`, `Severity` all live in `semstrait-core` (`31`). `34` consumes them.
+- **Expression / type vocabulary.** `Expr`, `PhysicalExpr`, `Aggregation`, `DataType`, `Grain`, `Diagnostic<K>`, `Severity`, `Diagnose` all live in `semstrait-core` (`31`). `34` consumes them.
 - **Plan-tree shape.** `SemanticPlan`, `PlanNode`, `NodeMeta`, `SourceRef`, `Name` all live in `semstrait-ir` (`35`). `34` emits and consumes them.
 - **SemanticManifest shape.** `SemanticManifest`, `ResolvedDataKind`, `ResolvedBinding`, `ResolvedExprTable`, `CoverageIndex`, `CompositionIndex` all live in `semstrait-manifest` (`33`). `34` reads them — never mutates, never re-resolves (I5 / I8).
 - **YAML parsing / structural validation.** Lives in `semstrait-model` (`32`). The `Request` the planner accepts is already a Rust value — the API layer (`semstrait-api`) is responsible for converting user-facing JSON / gRPC / protobuf into `Request`.
@@ -75,10 +75,10 @@ The planner is the workspace's widest dispatch site — the `plan` entry point f
 |---|---|
 | **I5** — name resolution is compile-time | The planner performs **lookup only** (`14b §2.3`, `33 §3.4`). No `resolve_*` method walks names to Semantics or columns; every such walk was performed at `compile`. A CI lint forbids `EntityRef` leaves in any `PhysicalExpr` a plan node carries. |
 | **I6** — plan hot path is synchronous | **No `pub async fn` exists on `semstrait-planner`.** The `Strategy` trait's `plan` method is sync; so is every `OptimizerPass::apply`. A CI audit (`cargo clippy -- -D clippy::async_fn_in_trait`) enforces. |
-| **I8** — planner-complete SemanticManifest | Every `(SemanticsName, BindingId)` the planner might ask for is already in `manifest.expr_table` (`14b §2.3`). Every `Relationship` the planner walks is in `manifest.resolved_relationships`. A SemanticManifest whose indices fail this completeness guarantee triggers `PLAN_E_2052 SemanticManifestIndexInconsistent` at dispatch (`20 §8.2`). |
-| **I10** — non-exhaustive public sum types | `Request`, `SessionContext`, `ResolvedQueryRequest`, `PlanError`, `PlanErrors`, `OptimizeError`, `OptimizeErrors`, `StrategyId` are all `#[non_exhaustive]`. An integration test over `cargo public-api` enforces. |
+| **I8** — planner-complete SemanticManifest | Every `(SemanticsName, BindingId)` the planner might ask for is already in `manifest.expr_table` (`14b §2.3`). Every `Relationship` the planner walks is in `manifest.resolved_relationships`. A SemanticManifest whose indices fail this completeness guarantee triggers `PlanErrorKind::SemanticManifestIndexInconsistent` at dispatch (`20 §8.2`). |
+| **I10** — non-exhaustive public sum types | `Request`, `SessionContext`, `ResolvedQueryRequest`, `PlanErrorKind`, `OptimizeErrorKind`, `StrategyId` are all `#[non_exhaustive]`. An integration test over `cargo public-api` enforces. |
 | **I11** — no I/O in hot path | No `std::fs`, no `std::net`, no `tokio`, no `reqwest` in the crate's dependency graph. The `Cargo.toml` audit (§16.2) is CI-enforced. |
-| **I12** — first-class diagnostics | Every `PlanError` / `OptimizeError` variant has a stable `PLAN_E_*` / `OPT_E_*` code (§13); each converts to `Diagnostic` via `IntoDiagnostic` (`31 §7.4`). Non-error diagnostics accumulate through both success and failure arms per `30 §7`. |
+| **I12** — first-class diagnostics | `PlanErrorKind` and `OptimizeErrorKind` implement `Diagnose` per `30 §5.4`; identification is by variant identity per `30 §5.4` (no string-code surface). Warnings accumulate through both success and failure arms per `30 §7.2` / `§7.3`. The `tracing` channel (`30 §6`) carries library-internal observability events orthogonally to returned diagnostics. |
 
 ### 1.5 Constraint validation precedes Strategy dispatch
 
@@ -103,9 +103,9 @@ Every `pub` symbol below carries a doc comment, is listed in this document, and 
 semstrait-planner
 ├── request              // Request, SessionContext, ResolvedQueryRequest,
 │                        //   Filter, TemporalRequest (forward-ref to 17)
-├── plan                 // pub fn plan, PlanError, PlanErrors, plan-pipeline internals
-├── optimize             // pub fn optimize, OptimizerPass, OptimizeError,
-│                        //   OptimizeErrors, canonical v1 passes
+├── plan                 // pub fn plan, PlanErrorKind, plan-pipeline internals
+├── optimize             // pub fn optimize, OptimizerPass, OptimizeErrorKind,
+│                        //   canonical v1 passes
 ├── strategy             // Strategy trait, StrategyId, StrategyContext,
 │                        //   StrategyRegistry, dispatch_strategy
 ├── strategies           // SimpleStrategy, GrainsetStrategy, UnionsetStrategy,
@@ -120,8 +120,8 @@ Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root r
 
 | Module | Item | Kind | Section |
 |---|---|---|---|
-| (crate root) | `pub fn plan(&SemanticManifest, Request) -> Result<SemanticPlan, PlanErrors>` | free fn | §6 |
-| (crate root) | `pub fn optimize(SemanticPlan) -> Result<SemanticPlan, OptimizeErrors>` | free fn | §11 |
+| (crate root) | `pub fn plan(...) -> Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>` | free fn | §6 |
+| (crate root) | `pub fn optimize(...) -> Result<(SemanticPlan, Diagnostics<OptimizeErrorKind>), (Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>)>` | free fn | §11 |
 | `request` | `pub struct Request` | value type | §3 |
 | `request` | `pub struct SessionContext` | value type | §4 |
 | `request` | `pub struct ResolvedQueryRequest` | value type | §5 |
@@ -131,10 +131,8 @@ Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root r
 | `request` | `pub enum SortDir` | sum type | §3.6 |
 | `request` | `pub struct DataKindRef` | newtype | §3.8 |
 | `request` | `pub struct TemporalRequest` | value type (reserved) | §3.9 |
-| `plan` | `pub enum PlanError` | typed error | §13 |
-| `plan` | `pub struct PlanErrors` | error carrier | §13.2 |
-| `optimize` | `pub enum OptimizeError` | typed error | §13.4 |
-| `optimize` | `pub struct OptimizeErrors` | error carrier | §13.4 |
+| `plan` | `pub enum PlanErrorKind` | typed-kind enum (impls `Diagnose`) | §13 |
+| `optimize` | `pub enum OptimizeErrorKind` | typed-kind enum (impls `Diagnose`) | §13.3 |
 | `optimize` | `pub trait OptimizerPass` | pluggable pass | §12 |
 | `optimize` | `pub struct Optimizer` | pass chain | §12.4 |
 | `optimize` | `pub struct OptimizerBuilder` | builder | §12.5 |
@@ -391,11 +389,11 @@ pub struct ResolvedQueryRequest {
 #[non_exhaustive]
 pub enum ResolvedTarget {
     Explicit(DataKindRef),                            // Request.from = Some(d)
-    Implicit(DataKindRef),                            // `16 §11.3` fast path
-    SynthesizedComposition {                          // `16 §11.4`–§11.5
-        constituents:    Vec<DataKindRef>,
-        traversed_paths: Vec<RelationshipPath>,
-    },
+    Implicit(DataKindRef),                            // `16 §11.3` single-kind fast path
+    Composition(DataKindRef),                         // `16 §11.4` — pre-built explicit or implicit
+                                                      //   composition resolved by constituent-set
+                                                      //   lookup (`33 §7.2`); origin is on the
+                                                      //   resolved kind itself
 }
 
 #[non_exhaustive]
@@ -409,7 +407,7 @@ pub struct ResolvedSemanticRef {
 pub enum SemanticElement { Dimension, Measure, Metric, Filter, Key }
 ```
 
-For `SynthesizedComposition`, the planner does not reify a `ComposedSemanticInterface` back onto the resolved request; composition-aware strategies consume `traversed_paths` and the constituent DataKinds directly via `ctx.plan_datakind`. For Complex-owned fields, `binding_id` points at the constituent Binding the field resolves through per `16 §7`'s `FieldOwnership`.
+For `ResolvedTarget::Composition(name)`, the planner consumes the resolved kind through `manifest.datakind(&name)`; the kind's `composed_interface.traversed_paths` and `constituents` are already materialized at compile per `16 §10`. Strategies treat `Origin::Explicit` and `Origin::Implicit { id }` uniformly. For Complex-owned fields, `binding_id` points at the constituent Binding the field resolves through per `16 §7`'s `FieldOwnership`.
 
 ### 5.2 Invariants
 
@@ -417,43 +415,49 @@ A well-formed `ResolvedQueryRequest` satisfies: every `owner` names a `ResolvedD
 
 ### 5.3 Why this type is explicit
 
-Exposing the resolved form lets strategies consume a single pre-resolved value: (a) re-running name resolution per dispatch would violate I5, (b) composition targets need `constituents` / `traversed_paths` that do not live on a raw `Request`, (c) filter placement (`21 §4.6`) needs element typing resolved once, not per strategy.
+Exposing the resolved form lets strategies consume a single pre-resolved value: (a) re-running name resolution per dispatch would violate I5, (b) composition targets resolve to a pre-materialized `ResolvedJoinset` / `ResolvedUnionset` whose `composed_interface` carries `constituents` / `traversed_paths`, (c) filter placement (`21 §4.6`) needs element typing resolved once, not per strategy.
 
 ## 6. The `plan` function signature
 
 ### 6.1 Signature
 
 ```rust
+use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+
 /// Planner entry point. Per `10 §3.4`.
 ///
 /// Consumes a read-only `SemanticManifest` reference and an owned `Request`;
-/// returns a well-formed `SemanticPlan` on success or a fail-fast
-/// `PlanErrors` carrier on failure.
+/// returns a well-formed `SemanticPlan` plus warnings on success, or a
+/// fail-fast `(Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)`
+/// pair on failure (per `30 §7.2`).
 ///
 /// Sync (I6). Never mutates the SemanticManifest (I8 / I5). Performs no I/O
-/// (I11). Accumulates non-error diagnostics across both arms per
-/// `30 §7` — warnings surfaced during planning flow out through
-/// `PlanErrors.warnings` (error arm) or `SemanticPlan.diagnostics`
-/// (success arm).
+/// (I11). Accumulates warnings across both arms per `30 §7.3` — they
+/// flow on the success-tuple's second element or the failure-tuple's
+/// second element respectively. The success-arm `SemanticPlan.diagnostics`
+/// (`35 §3.1`) is a content-equivalent copy retained on the artifact.
 pub fn plan(
     manifest: &SemanticManifest,
     request: Request,
-) -> Result<SemanticPlan, PlanErrors>;
+) -> Result<
+    (SemanticPlan, Diagnostics<PlanErrorKind>),
+    (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>),
+>;
 ```
 
 **Input ownership.** `SemanticManifest` is borrowed (never consumed) — a SemanticManifest is typically cached across many `plan` calls; the planner takes a read-only view. `Request` is owned (consumed) — its fields are destructured into the internal `ResolvedQueryRequest` representation, and retaining the caller's copy has no utility.
 
-**Return shape.** `Result<SemanticPlan, PlanErrors>` rather than `Result<(SemanticPlan, Vec<Diagnostic>), (Diagnostic, Vec<Diagnostic>)>` (the `30 §7` primitive form). The `PlanErrors` carrier (§13.2) wraps the error + warnings pair; the success-arm `SemanticPlan.diagnostics` (`35 §3.1`) carries the warnings. The binary difference from `30 §7`'s shape is presentation only: a caller can trivially destructure either form.
+**Return shape.** Matches `30 §7.2`'s fail-fast pattern verbatim: success arm `(SemanticPlan, Diagnostics<PlanErrorKind>)`, failure arm `(Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)`. The fatal `Diagnostic<PlanErrorKind>` carries primary `Location` on its envelope per `30 §5.1`; the wrapped `PlanErrorKind` carries semantic payload only. No bespoke carrier struct.
 
 ### 6.2 Preconditions on `manifest`
 
-The SemanticManifest must satisfy every invariant in `33 §3.1` — in particular, `expr_table` must be populated for every exposed `(name, binding_id)` pair, and every referenced `RelationshipId` must be present in `resolved_relationships`. Feeding a partially-built SemanticManifest is a caller error; the planner's index-inconsistency checks raise `PLAN_E_2052` where possible but are not exhaustive. Multi-thread access is safe per `33 §12` — a single `SemanticManifest` may back concurrent `plan` calls.
+The SemanticManifest must satisfy every invariant in `33 §3.1` — in particular, `expr_table` must be populated for every exposed `(name, binding_id)` pair, and every referenced `RelationshipId` must be present in `resolved_relationships`. Feeding a partially-built SemanticManifest is a caller error; the planner's index-inconsistency checks raise `PlanErrorKind::SemanticManifestIndexInconsistent` where possible but are not exhaustive. Multi-thread access is safe per `33 §12` — a single `SemanticManifest` may back concurrent `plan` calls.
 
 ### 6.3 Postconditions
 
-**On success** (`Ok(plan)`): every `SemanticPlan` invariant from `35 §3.2` holds — `output_names.len()` equals `root.meta().output_schema.len()`, every `Name` is valid per `35 §5.4`, the tree satisfies `35 §7` well-formedness, and `diagnostics` carries no `Severity::Error` entries. Step 6 (§7.7) is the enforcement point.
+**On success** (`Ok((plan, warnings))`): every `SemanticPlan` invariant from `35 §3.2` holds — `output_names.len()` equals `root.meta().output_schema.len()`, every `Name` is valid per `35 §5.4`, the tree satisfies `35 §7` well-formedness, and `warnings` (and the artifact-side `plan.diagnostics`) carry no `Severity::Error` entries. Step 6 (§7.7) is the enforcement point.
 
-**On failure** (`Err(errs)`): `errs.error.severity() == Severity::Error`; `errs.error.code()` is a stable `PLAN_E_*` constant per `30 §6.2` (§13); `errs.warnings` carries every non-error `Diagnostic` emitted before the fail-fast abort.
+**On failure** (`Err((fatal, warnings))`): `fatal.severity == Severity::Error`; `fatal.kind` is a `PlanErrorKind` variant identifying the failure category; `warnings` carries every `Severity::Warning` `Diagnostic<PlanErrorKind>` emitted before the fail-fast abort.
 
 ### 6.4 Thread-safety
 
@@ -475,7 +479,7 @@ Per `10 §3.4`, `plan` executes seven sub-steps in fixed order. The ordering is 
 
 **Work.** Per `11 §5`'s lookup algorithm and `14b §2.3`'s O(1) guarantee:
 
-1. For each name in `request.dimensions` ∪ `request.measures` ∪ `request.metrics`, look up the `SemanticsName` in the SemanticManifest's name index. Unknown names raise `PLAN_E_0504 UnknownSemantics { name }`.
+1. For each name in `request.dimensions` ∪ `request.measures` ∪ `request.metrics`, look up the `SemanticsName` in the SemanticManifest's name index. Unknown names raise `PLAN_E_0508 UnknownSemantics { name }` per `16 §14.3`.
 2. Record each name's `SemanticElement` and owning `DataKindRef`. Mismatch with the field the name was placed in raises `PLAN_E_0512 RequestFieldTypeMismatch`.
 3. For each `Filter.field`, look up similarly; arity mismatch raises `PLAN_E_0520`; value-type mismatch raises `PLAN_E_0521`.
 4. Duplicate names within any field list raise `PLAN_E_0510`.
@@ -489,17 +493,16 @@ No name resolution beyond the pre-built index (I5). Complexity is O(names × log
 Two-branch decision:
 
 - **Explicit (`request.from == Some(d)`).** Per `16 §11.6`: look up `d` in `manifest.resolved_datakinds`. Absent → `PLAN_E_2040`. For every resolved Semantics, assert the owner equals `d` (Simple) or appears in `d`'s constituents (Complex); violation → `PLAN_E_0507 SemanticsNotOnSurface`. Set `target = Explicit(d)`.
-- **Implicit (`request.from == None`).** Invoke field-first resolution (§10 / `16 §11`). Output is `ResolvedTarget::Implicit(d)` (single-kind fast path) or `ResolvedTarget::SynthesizedComposition` (multi-target). Errors: `PLAN_E_0500` / `PLAN_E_0501` / `PLAN_E_0502` / `PLAN_E_0503` / `PLAN_E_0505`.
+- **Implicit (`request.from == None`).** Invoke field-first resolution (§10 / `16 §11`). Output is `ResolvedTarget::Implicit(d)` (single-kind fast path) or `ResolvedTarget::Composition(d)` (constituent-set lookup hit per §10.2 step 4). Errors: `PLAN_E_0500` / `PLAN_E_0501` / `PLAN_E_0502` / `PLAN_E_0503` / `PLAN_E_0508`.
 
-### 7.4 Step 3 — Relationship traversal
+### 7.4 Step 3 — Composition consistency check
 
-For composition targets (explicit Complex or `SynthesizedComposition`), the planner materializes the `ComposedSemanticInterface` the strategy will plan against:
+For composition targets (`ResolvedTarget::Explicit(d)` where `d` is Complex, or `ResolvedTarget::Composition(d)`), the planner consumes the pre-built `composed_interface` from `manifest.datakind(&d)`:
 
-- **Synthesized (implicit):** `traversed_paths` from step 2 are pre-walked; no extra work beyond packaging edges for strategy consumption (the synthesized interface is built on demand per `16 §10`).
-- **Explicit Complex:** the target's `composed_interface` is already in the SemanticManifest; step 3 is a consistency check.
+- **Composition target (explicit or implicit-pre-built):** `composed_interface.traversed_paths` is already materialized at compile per `16 §10`. Step 3 walks the path edges to confirm every `RelationshipId` resolves in `manifest.resolved_relationships` (a SemanticManifest-integrity check) and packages the per-edge `JoinKeyExprPair` shape strategies consume.
 - **Simple target:** step 3 is a no-op.
 
-`PLAN_E_2052 SemanticManifestIndexInconsistent` surfaces here when a recorded `RelationshipId` is missing from `manifest.resolved_relationships` — a SemanticManifest-integrity bug.
+`PLAN_E_2052 SemanticManifestIndexInconsistent` surfaces here when a recorded `RelationshipId` is missing from `manifest.resolved_relationships` — a SemanticManifest-integrity bug, not a plan-time failure mode under valid inputs.
 
 ### 7.5 Step 4 — Strategy dispatch (`20 §5.3`)
 
@@ -713,7 +716,7 @@ impl JoinsetStrategy { pub fn new() -> Self; }
 
 ### 9.5 Why no `AdHocStrategy`
 
-The legacy planner (`crates/semstrait-planner/src/ad_hoc_join.rs`) carries a fifth "ad-hoc" dispatch path for Requests whose `entity_name` is empty. `34` subsumes this via field-first resolution (§10) — a `Request` with `from: None` and a multi-target field set produces a `SynthesizedComposition` target that dispatches through `UnionsetStrategy` / `GrainsetStrategy` / `JoinsetStrategy` per the composition kind. There is no distinct "ad-hoc strategy" in the v1 taxonomy; the legacy code path is a migration item tracked as `[TD-ADHOC-INTO-FIELD-FIRST]` in the refactor plan.
+The legacy planner (`crates/semstrait-planner/src/ad_hoc_join.rs`) carries a fifth "ad-hoc" dispatch path for Requests whose `entity_name` is empty. `34` subsumes this via field-first resolution (§10) — a `Request` with `from: None` and a multi-target field set resolves through constituent-set lookup (§10.2 step 4) to a pre-built `ResolvedJoinset` or `ResolvedUnionset` (per `16 §10.4` / `§10.5`) and dispatches through `JoinsetStrategy` / `UnionsetStrategy` per the resolved variant. The pre-built composition's `origin` (`Origin::Explicit` or `Origin::Implicit { id }`) is transparent to the strategy. There is no distinct "ad-hoc strategy" in the v1 taxonomy; the legacy code path is a migration item tracked as `[TD-ADHOC-INTO-FIELD-FIRST]` in the refactor plan.
 
 ## 10. Field-first resolution
 
@@ -721,75 +724,84 @@ The legacy planner (`crates/semstrait-planner/src/ad_hoc_join.rs`) carries a fif
 
 Step 2 of the pipeline (§7.3) invokes field-first resolution when `request.from == None`. When `request.from` is `Some(d)`, step 2 takes the explicit-routing branch per `16 §11.6` and field-first resolution is skipped entirely.
 
-### 10.2 Algorithm sketch (from `16 §11`)
+### 10.2 Algorithm — lookup-only over compiled compositions (from `16 §11`)
 
-The algorithm's canonical ratification is `16 §11`; §10 here records the planner-side realization and its integration with the SemanticManifest indices.
+The algorithm's canonical ratification is `16 §11`; §10 here records the planner-side realization. Per `16 §10`, every Joinset and Unionset (explicit and implicit) is **eagerly materialized at compile** with stable `Origin` carriage; plan-time is a pure lookup over `33`'s `CompositionIndex`. There is no plan-time BFS / Steiner walk and no on-demand synthesis.
 
 1. **Name-to-kind map (`16 §11.2`).** For each `SemanticsName` in `request.dimensions ∪ request.measures ∪ request.metrics ∪ request.filters.field`, consult `manifest.name_index(name)`:
-   - `None` → `PLAN_E_0504 UnknownSemantics { name }` (re-raised from step 1 if the lookup missed there).
+   - `None` → `PLAN_E_0508 UnknownSemantics { name }` (re-raised from step 1 if the lookup missed there) per `16 §14.3`.
    - `Some(owning)` → record the `Vec<DataKindRef>`.
 
-2. **Candidate kind set `T`.** Deduplicate `⋃ owning` across selected names. If `|T| == 0`, emit `PLAN_E_0504` (unreachable here because step 1 already enforced non-empty owners).
+2. **Candidate kind set `T`.** Deduplicate `⋃ owning` across selected names. If `|T| == 0`, emit `PLAN_E_0508` (unreachable here because step 1 already enforced non-empty owners).
 
 3. **Single-kind fast path (`16 §11.3`).** If `|T| == 1`, return `ResolvedTarget::Implicit(T[0])`. The planner treats the Request as if `from: Some(T[0])` had been declared.
 
-4. **Multi-target BFS over the `RelationshipGraph` (`16 §11.4`).** If `|T| >= 2`:
-   - For `|T| == 2`: single-source shortest-path BFS between the two kinds.
-   - For `|T| >= 3`: Steiner-tree enumeration up to `MAX_IMPLICIT_COMPOSITION_DEPTH` edges.
-   - Neighbor iteration is deterministic (`(RelationshipId, direction_flag)` sort order).
-   - Ambiguous cover trees of equal edge count → `PLAN_E_0500 AmbiguousImplicitComposition`.
-   - No cover tree within depth bound → `PLAN_E_0501 NoCompositionPath`.
-   - Hop count exceeding bound → `PLAN_E_0502 CompositionDepthExceeded`.
-   - `Forward`-directionality violation → `PLAN_E_0503 CrossCompositionForbidden`.
+4. **Multi-target lookup over `CompositionIndex` (`16 §11.4`).** If `|T| >= 2`:
+   - Form the canonical `ConstituentSet` (lex-sorted `Vec<DataKindName>`) per `33 §7.2` from `T`.
+   - Query `manifest.composition_index.by_constituent_set(&set)` (`33 §7.2`) → `&[DataKindName]`.
+   - **Single match** → fast-path: pick the unique pre-built `ResolvedJoinset` or `ResolvedUnionset` (whose `origin` is either `Origin::Explicit` or `Origin::Implicit { id }`), package as `ResolvedTarget::Composition(name)`. Strategy dispatch (§9.2's table) routes by the resolved variant; explicit and implicit are uniform downstream.
+   - **Multi match** → ambiguity. The constituent set was reachable via more than one canonical form (e.g. directional Joinsets that differ in path ordering, or both an implicit Joinset and an implicit Unionset for the same set). Emit `PLAN_E_0500 AmbiguousImplicitComposition { constituent_set, candidates }` (per `16 §14.3` shape) — the author must explicitly name a Joinset or refine the Request.
+   - **No match** → no composition was materialized at compile for this set. Two sub-cases:
+     - Inspect `MAX_IMPLICIT_COMPOSITION_DEPTH` policy: if the constituent set is reachable in the relationship graph but exceeded the depth bound at compile, emit `PLAN_E_0502 CompositionDepthExceeded { from_kinds, max_depth }` (per `16 §14.3` shape) with a hint suggesting an explicit Joinset.
+     - Otherwise emit `PLAN_E_0501 NoCompositionPath { from, to }` (per `16 §14.3` shape) with a hint listing the kinds and the missing relationship.
 
-5. **Synthesize the composed surface (`16 §11.5`).** Package the cover tree into a `ResolvedTarget::SynthesizedComposition { constituents, traversed_paths }`. The planner does **not** reify a `ComposedSemanticInterface` back onto the resolved request; composition-aware strategies consume `traversed_paths` and the constituent DataKinds during step 5 via the `ctx.plan_datakind` helper.
-
-6. **Return.** `ResolvedTarget::{Implicit | SynthesizedComposition}`.
+5. **Return.** `ResolvedTarget::{Implicit | Composition(name)}`. The planner consumes the resolved composition through `manifest.datakind(&name)` (`33 §3.4`); strategies see a uniform `ResolvedDataKind::Complex(...)` payload regardless of `origin`.
 
 ### 10.3 Integration with SemanticManifest indices
 
-The algorithm is a thin reader of the SemanticManifest's pre-built indices: `manifest.name_index: BTreeMap<SemanticsName, Vec<DataKindRef>>` (`33 §5`), `manifest.relationship_graph: RelationshipGraph` (`14b §4.2`, adjacency-list with deterministic neighbor order), `manifest.resolved_relationships: BTreeMap<RelationshipId, ResolvedRelationship>` (`33 §3.1`), and the crate constant `MAX_IMPLICIT_COMPOSITION_DEPTH` (§10.4). Every lookup is O(log n); BFS / Steiner walk is O(E × depth-bound). No name resolution occurs (I5).
+The algorithm is a thin reader of two pre-built indices: `manifest.name_index: BTreeMap<SemanticsName, Vec<DataKindRef>>` (`33 §5`) and `manifest.composition_index.by_constituent_set: BTreeMap<ConstituentSet, Vec<DataKindName>>` (`33 §7.2`). Every lookup is O(log n); the constituent-set map is materialized at compile per `33 §9.1`'s sub-pass 9. No relationship-graph traversal at plan time (the graph is consumed only at compile, by `33 §9.1`'s sub-pass 7). No name resolution at plan time (I5).
 
-### 10.4 Depth bound
+The `MAX_IMPLICIT_COMPOSITION_DEPTH` constant remains a **compile-side bound** consumed by `33 §9.1`'s sub-pass 7 (implicit-Joinset enumeration); it is referenced here only for the §10.2 step-4 error message that explains why a constituent set was not enumerated at compile.
+
+### 10.4 Depth bound (compile-side reference)
 
 ```rust
-pub const MAX_IMPLICIT_COMPOSITION_DEPTH: usize = 3;
+pub const MAX_IMPLICIT_COMPOSITION_DEPTH: usize = 4;
 ```
 
-Per `16 §9.1`'s "implicit composition is bounded to unambiguous shortest-path chains, depth-limited". Attempts beyond the bound abort with `PLAN_E_0502`. Configurable only via an off-by-default feature toggle (`semstrait.plan.implicit_depth_max`); the limit is not a tunable on `SessionContext` because SemanticManifest structure dominates what is ergonomic. A Model needing deep traversal should declare an explicit `Joinset` (`24`), making intent authored and planner work a direct lookup.
+Per `16 §10.4` (Q-COMP-001 closed 2026-04-28). The constant is exported from `semstrait-manifest` (`33 §9.1` step 7) and re-exported here for cross-doc readability and for the §10.2 step-4 error-hint rendering. Plan-time does not enforce the bound — enforcement is a compile-time invariant per `33 §3.1` ("Implicit-cap discipline"). A Request that hits the depth bound at compile produces no entry in `composition_index.by_constituent_set`, and §10.2 step-4 surfaces `PLAN_E_0502` accordingly.
+
+The companion cap `MAX_IMPLICIT_ENUMERATION_COUNT = 2000` (Q-COMP-005 closed 2026-04-29; `16 §10.4`) is also compile-side; if exceeded, compile fails with `CompileErrorKind::ImplicitEnumerationExploded` (`33 §10.1`) and no SemanticManifest is produced — plan-time never observes the breach.
 
 ### 10.5 Interaction with Joinsets and `14b` path resolution
 
-A `Request` with explicit `from: Some(joinset)` skips §10 entirely. A `Request` with `from: None` that would field-first-resolve onto the same constituents as an existing Joinset emits advisory `PLAN_W_0504 ImplicitCompositionShadowsJoinset`; the author likely meant to name the Joinset. Suppression is a feature toggle (`semstrait.plan.allow_implicit_joinset_shadow`).
+A `Request` with explicit `from: Some(joinset)` skips §10 entirely. A `Request` with `from: None` whose constituent set hits a pre-built `Origin::Explicit` Joinset returns it directly — there is no "implicit composition shadows Joinset" advisory because the canonical form is uniquely the explicit Joinset's by construction (per `16 §10.6` clash rejection — an implicit composition with the same canonical form would have failed compile with `COMP_E_0414` `ExplicitImplicitCompositionClash`).
 
-Per `16 §11.7`, plan-time field-first resolution and compile-time cross-kind path resolution (`14b §4`) share the same `RelationshipGraph`, neighbor-iteration order, depth bound, and tie-break policy. The distinction is timing and input — `14b §4` runs at `compile` over one `SemanticExpr`, `34 §10` runs at `plan` over a Request's selected names. Both reuse a single `pub(crate)` BFS helper.
+Per `16 §11.7`, plan-time field-first resolution and compile-time cross-kind path resolution (`14b §4`) operate on different timing layers but share the same SemanticManifest indices. `14b §4` runs at compile and materializes `PathSignature` entries inside `ResolvedExprTable`; `34 §10` runs at plan and looks up pre-built compositions by constituent set. The depth-bound and tie-break policy are now compile-side discipline (`16 §10.4` / `§10.6`) — no shared plan-time BFS helper exists.
 
 ## 11. The `optimize` function
 
 ### 11.1 Signature
 
 ```rust
-pub fn optimize(plan: SemanticPlan) -> Result<SemanticPlan, OptimizeErrors>;
+use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+
+pub fn optimize(
+    plan: SemanticPlan,
+) -> Result<
+    (SemanticPlan, Diagnostics<OptimizeErrorKind>),
+    (Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>),
+>;
 ```
 
-Optimizer entry point per `10 §3.5`. Consumes a `SemanticPlan` and returns an equivalent plan (same observable results) with canonical-form rewrites applied. Sync (I6), no I/O (I11), fail-fast per `30 §7`. Passes are in-place rewrites over the tree (`PlanNode::transform` per `35 §8`); ownership is consumed because retaining the caller's copy has no utility.
+Optimizer entry point per `10 §3.5`. Consumes a `SemanticPlan` and returns an equivalent plan (same observable results) with canonical-form rewrites applied, plus warnings on the success arm. Sync (I6), no I/O (I11), fail-fast per `30 §7.1`. Return-shape mirrors `30 §7.2`'s fail-fast pattern: success `(SemanticPlan, Diagnostics<OptimizeErrorKind>)`, failure `(Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>)`. Passes are in-place rewrites over the tree (`PlanNode::transform` per `35 §8`); ownership is consumed because retaining the caller's copy has no utility.
 
 The free function applies `Optimizer::with_v1_passes()`, bundling the four canonical passes (§11.2). A caller wishing to skip optimization simply does not call `optimize` — there is no bypass argument. Callers composing custom pass chains use `OptimizerBuilder` (§12.5) and `Optimizer::apply` directly.
 
 ### 11.2 Canonical v1 passes
 
-| Pass | Name | Purpose | Code for failure | Section |
+| Pass | Name | Purpose | Failure variant | Section |
 |---|---|---|---|---|
-| 1 | `ConstantFolding` | Fold constant `PhysicalExpr` subtrees into `Expr::Literal` leaves. Operates on predicates, Project expressions, and Agg expressions. | `OPT_E_0101` | §11.3 |
-| 2 | `MetadataDimensionSubstitution` | Substitute metadata-source Dimensions (per `13 §4.7` / SR-10) with their declared metadata expression. | `OPT_E_0102` | §11.4 |
-| 3 | `PredicateSimplification` | Simplify predicates: `true AND x` → `x`, `false OR x` → `x`, `NOT NOT x` → `x`, range fusion (`x >= a AND x <= b` → `x BETWEEN a AND b`). | `OPT_E_0103` | §11.5 |
-| 4 | `IdentityProjectElimination` | Remove `PlanNode::Project` nodes whose projection list is a 1:1 identity on the input schema. | `OPT_E_0104` | §11.6 |
+| 1 | `ConstantFolding` | Fold constant `PhysicalExpr` subtrees into `Expr::Literal` leaves. Operates on predicates, Project expressions, and Agg expressions. | `OptimizeErrorKind::PassFailed { pass: "constant_folding", … }` | §11.3 |
+| 2 | `MetadataDimensionSubstitution` | Substitute metadata-source Dimensions (per `13 §4.7` / SR-10) with their declared metadata expression. | `OptimizeErrorKind::PassFailed { pass: "metadata_dimension_substitution", … }` | §11.4 |
+| 3 | `PredicateSimplification` | Simplify predicates: `true AND x` → `x`, `false OR x` → `x`, `NOT NOT x` → `x`, range fusion (`x >= a AND x <= b` → `x BETWEEN a AND b`). | `OptimizeErrorKind::PassFailed { pass: "predicate_simplification", … }` | §11.5 |
+| 4 | `IdentityProjectElimination` | Remove `PlanNode::Project` nodes whose projection list is a 1:1 identity on the input schema. | `OptimizeErrorKind::PassFailed { pass: "identity_project_elimination", … }` | §11.6 |
 
 Every pass is deterministic, shape-preserving, and pure over the plan tree. No pass introduces or removes a `PlanNode` variant — the tree's variant distribution is stable under the v1 pass chain. (Pass 4 removes a `Project` node, which is variant-count change but not variant-introduction.)
 
 ### 11.3 `ConstantFolding`
 
-**Algorithm.** Post-order walk over every `PhysicalExpr` the plan carries. Fold `BinaryOp`, `Negate` / `Not`, `Cast`, `Coalesce`, `NullIf`, and `Case` nodes whose operands are all `Literal` into a single `Literal` per the semantics in `31 §3.1` / `13 §4`. Non-constant subtrees pass through unchanged. Overflow, precision loss, or divide-by-zero is non-fatal — the pass returns the original expression and emits `OPT_W_0101 ConstantFoldSkipped { reason }`.
+**Algorithm.** Post-order walk over every `PhysicalExpr` the plan carries. Fold `BinaryOp`, `Negate` / `Not`, `Cast`, `Coalesce`, `NullIf`, and `Case` nodes whose operands are all `Literal` into a single `Literal` per the semantics in `31 §3.1` / `13 §4`. Non-constant subtrees pass through unchanged. Overflow, precision loss, or divide-by-zero is non-fatal — the pass returns the original expression and emits a `Severity::Warning` `Diagnostic<OptimizeErrorKind>` with kind `ConstantFoldSkipped { reason }`.
 
 **Interaction with `SessionContext`.** The pass does NOT fold session-dependent functions (`NOW()`, `CURRENT_DATE()`) even though `session.now` is available — folding them would prevent planner-level caching of the `SemanticPlan` across invocations with different `SessionContext.now`. Session-dependent folds happen at adapter time per `36`.
 
@@ -818,18 +830,23 @@ Passes run in order 1 → 2 → 3 → 4. Pass 2 must run before pass 3 so that m
 ### 12.1 Trait surface
 
 ```rust
+use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+
 pub trait OptimizerPass: Send + Sync {
     fn name(&self) -> &str;
     fn apply(
         &self,
         plan: SemanticPlan,
         ctx: &OptimizePassContext,
-    ) -> Result<SemanticPlan, OptimizeError>;
+    ) -> Result<
+        (SemanticPlan, Diagnostics<OptimizeErrorKind>),
+        (Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>),
+    >;
     fn is_applicable(&self, _plan: &SemanticPlan) -> bool { true }
 }
 ```
 
-Passes are pure, sync, deterministic (`10 §3.5`). `name` is stable per pass for diagnostics (`"constant_folding"`, `"identity_project"`, …); `apply` returns the rewritten plan or a fail-fast `OptimizeError`; `is_applicable` allows skipping a pass silently (default: always applicable). A pass that cannot produce an equivalent plan (e.g. an adapter-specific rewrite requiring dialect information) MUST NOT implement `OptimizerPass` — it belongs in the adapter's `adapt` stage per `36`.
+Passes are pure, sync, deterministic (`10 §3.5`). `name` is stable per pass for diagnostics (`"constant_folding"`, `"identity_project"`, …); `apply` returns the rewritten plan plus warnings on success or a fail-fast `(Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>)` pair on failure (per `30 §7.2`); `is_applicable` allows skipping a pass silently (default: always applicable). A pass that cannot produce an equivalent plan (e.g. an adapter-specific rewrite requiring dialect information) MUST NOT implement `OptimizerPass` — it belongs in the adapter's `adapt` stage per `36`.
 
 ### 12.2 `OptimizePassContext`
 
@@ -841,7 +858,7 @@ pub struct OptimizePassContext<'a> {
 }
 ```
 
-`manifest` and `session` are `Option` because a `SemanticPlan` passed through `optimize` does not necessarily carry its producing SemanticManifest / SessionContext — a plan deserialized from a wire form (`35 §3.3`) may arrive without either. Passes that require them MUST emit `OPT_E_0110 PassRequiresContext { pass, required }` when invoked without the needed reference.
+`manifest` and `session` are `Option` because a `SemanticPlan` passed through `optimize` does not necessarily carry its producing SemanticManifest / SessionContext — a plan deserialized from a wire form (`35 §3.3`) may arrive without either. Passes that require them MUST emit a fatal `Diagnostic<OptimizeErrorKind>` whose kind is `PassRequiresContext { pass, required }` when invoked without the needed reference.
 
 ### 12.3 Externally-implementable
 
@@ -859,12 +876,15 @@ impl Optimizer {
         &self,
         plan: SemanticPlan,
         ctx: &OptimizePassContext,
-    ) -> Result<SemanticPlan, OptimizeError>;
+    ) -> Result<
+        (SemanticPlan, Diagnostics<OptimizeErrorKind>),
+        (Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>),
+    >;
     pub fn pass_count(&self) -> usize;
 }
 ```
 
-`apply` runs the passes in registered order, fail-fast on first error; warnings accumulate across passes via the context's diagnostic sink. `with_v1_passes` bundles the four canonical passes in order.
+`apply` runs the passes in registered order, fail-fast on first error; warnings accumulate across passes via the context's diagnostic sink and ride out on the success-tuple's second element or the failure-tuple's second element. `with_v1_passes` bundles the four canonical passes in order.
 
 ### 12.5 `OptimizerBuilder`
 
@@ -881,171 +901,124 @@ impl OptimizerBuilder {
 
 The free function `optimize(plan)` is equivalent to `OptimizerBuilder::new().with_v1_passes().build().apply(plan, &default_ctx)`. Callers wishing to insert custom passes before or after the v1 chain compose explicitly via the builder.
 
-## 13. `PlanError` / `PlanErrors` / `OptimizeError` / `OptimizeErrors`
+## 13. `PlanErrorKind` / `OptimizeErrorKind`
 
-### 13.1 `PlanError`
+> **Migration note.** Body sections `§6`–`§10` and the cross-doc-fix table in `§17` retain references to legacy `PLAN_E_*` / `OPT_E_*` codes (e.g. `PLAN_E_0500 ConstraintViolation`). Those codes are **retired** per `30 §5`; the public-API surface identifies errors by `PlanErrorKind` / `OptimizeErrorKind` variant identity. The legacy code prefixes remain in body prose during the migration as cross-reference anchors and will be stripped in a follow-up doc pass. Read `PLAN_E_NNNN VariantName` in the body as shorthand for `PlanErrorKind::VariantName`.
+
+### 13.1 `PlanErrorKind`
 
 ```rust
-/// Typed planner error. Per `30 §6.2`; stable `PLAN_E_*` codes.
+use semstrait_core::diagnostic::{Diagnose, Severity};
+use semstrait_core::{DataType, Location};
+
+/// Typed-kind enum for the `plan` stage. Per `30 §5`. Identification is
+/// by variant identity (`matches!`); there is no string-code accessor.
 ///
 /// `#[non_exhaustive]` per I10: adding a variant is MINOR per
-/// `30 §2.2`.
+/// `30 §2.2`; renaming or removing a variant is MAJOR per `30 §2.1`.
 #[non_exhaustive]
-pub enum PlanError {
+pub enum PlanErrorKind {
     // -- step 0: constraint validation (§7.1 / 11 §8.7) --
-    ConstraintViolation { entity: String, message: String, location: Option<Location> },
+    ConstraintViolation { entity: String, message: String },
 
     // -- step 1: request lookup (§7.2) --
-    UnknownSemantics        { name: SemanticsName, location: Option<Location> },
-    DuplicateRequestedName  { name: SemanticsName, location: Option<Location> },
-    EmptyRequest            { location: Option<Location> },
-    RequestFieldTypeMismatch{ name: SemanticsName, placed_in: SemanticElement, resolved: SemanticElement, location: Option<Location> },
-    OrderByUnknownName      { name: Name, location: Option<Location> },
-    FilterArityMismatch     { field: SemanticsName, operator: FilterOperator, expected: usize, got: usize, location: Option<Location> },
-    FilterValueTypeMismatch { field: SemanticsName, resolved_type: DataType, value: String, location: Option<Location> },
+    UnknownSemantics         { name: SemanticsName },
+    DuplicateRequestedName   { name: SemanticsName },
+    EmptyRequest,
+    RequestFieldTypeMismatch { name: SemanticsName, placed_in: SemanticElement, resolved: SemanticElement },
+    OrderByUnknownName       { name: Name },
+    FilterArityMismatch      { field: SemanticsName, operator: FilterOperator, expected: usize, got: usize },
+    FilterValueTypeMismatch  { field: SemanticsName, resolved_type: DataType, value: String },
 
     // -- step 2/3: dataset routing and relationship traversal (§7.3 / §7.4) --
-    AmbiguousImplicitComposition   { candidates: Vec<Vec<DataKindRef>>, location: Option<Location> },
-    NoCompositionPath              { disconnected: Vec<DataKindRef>, location: Option<Location> },
-    CompositionDepthExceeded       { attempted: usize, bound: usize, location: Option<Location> },
-    CrossCompositionForbidden      { relationship: RelationshipId, location: Option<Location> },
-    AmbiguousCompositionReference  { name: SemanticsName, candidates: Vec<DataKindRef>, location: Option<Location> },
-    SemanticsNotOnSurface          { name: SemanticsName, target: DataKindRef, location: Option<Location> },
+    // Payload shapes match `16 §14.3`'s canonical `PlannerError` table.
+    AmbiguousImplicitComposition  { constituent_set: Vec<DataKindRef>, candidates: Vec<DataKindRef> },
+    NoCompositionPath             { from: DataKindRef, to: DataKindRef },
+    CompositionDepthExceeded      { from_kinds: Vec<DataKindRef>, max_depth: usize },
+    CrossCompositionForbidden     { relationship_id: RelationshipId, attempted_direction: String },
+    AmbiguousCompositionReference { name: SemanticsName, candidates: Vec<DataKindRef> },
+    CompositionAggregationConflict { name: SemanticsName, aggregations: Vec<String> },
+    SemanticsNotOnSurface         { name: SemanticsName, surface: DataKindRef },
 
     // -- step 4/5: dispatch + construction (§7.5 / §7.6) --
-    PlanNodeConstructionFailed     { strategy: StrategyId, reason: String, location: Option<Location> },
-    UnsupportedRequestShape        { reason: String, location: Option<Location> },
-    PostConstructionInvariantViolated { underlying: String, location: Option<Location> },
+    PlanNodeConstructionFailed       { strategy: StrategyId, reason: String },
+    UnsupportedRequestShape          { reason: String },
+    PostConstructionInvariantViolated { underlying: String },
 
     // -- DataKind-specific (§7.5 delegate) --
-    DataKindNotInSemanticManifest          { name: DataKindRef, location: Option<Location> },
-    StrategyDispatchFailed         { kind_variant: String, location: Option<Location> },
-    StrategyMissingForVariant      { kind_variant: String, location: Option<Location> },
-    SemanticManifestIndexInconsistent      { detail: String, location: Option<Location> },
+    DataKindNotInSemanticManifest    { name: DataKindRef },
+    StrategyDispatchFailed           { kind_variant: String },
+    StrategyMissingForVariant        { kind_variant: String },
+    SemanticManifestIndexInconsistent { detail: String },
 
-    // -- per-variant error passthrough (21–24) --
-    Simple   (SimpleError),
-    Grainset (GrainsetError),
-    Unionset (UnionsetError),
-    Joinset  (JoinsetError),
+    // -- per-variant error passthrough (21–24) — kind-nesting per `30 §5.6` --
+    Simple   (SimpleErrorKind),
+    Grainset (GrainsetErrorKind),
+    Unionset (UnionsetErrorKind),
+    Joinset  (JoinsetErrorKind),
 
     // -- temporal (17, DEFERRED) --
-    TemporalDeferred               { code: TemporalDeferredCode, location: Option<Location> },
+    TemporalDeferred { code: TemporalDeferredCode },
 }
 
-impl PlanError {
-    /// Stable `PLAN_E_*` code per `30 §6.2`. Example: `"PLAN_E_0500"`.
-    pub fn code(&self) -> &'static str;
-
-    /// `Severity::Error` for every v1 variant.
-    pub fn severity(&self) -> Severity;
-
-    pub fn location(&self) -> Option<&Location>;
+impl Diagnose for PlanErrorKind {
+    fn message(&self) -> String { /* per-variant human text */ }
+    fn severity_default(&self) -> Severity { Severity::Error }
+    fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
 }
 
-impl IntoDiagnostic for PlanError { fn into_diagnostic(self) -> Diagnostic; }
-impl std::fmt::Display for PlanError { /* per-variant messages */ }
-impl std::error::Error for PlanError {}
+impl From<SimpleErrorKind>   for PlanErrorKind { /* … */ }
+impl From<GrainsetErrorKind> for PlanErrorKind { /* … */ }
+impl From<UnionsetErrorKind> for PlanErrorKind { /* … */ }
+impl From<JoinsetErrorKind>  for PlanErrorKind { /* … */ }
 ```
 
-**Code allocation** (per `30 §6.2` / `20 §8.1`):
+**Per-variant location.** The primary source span of an error lives on the wrapping `Diagnostic<PlanErrorKind>` envelope (per `30 §5.1`'s `location: Option<Location>` field), not on the variant. Variants carry semantic payload only.
 
-| Code | Variant | Section |
-|---|---|---|
-| `PLAN_E_0500` | `ConstraintViolation` | §7.1 / `11 §8.7` |
-| `PLAN_E_0500` | `AmbiguousImplicitComposition` (alternative; see `16 §14.3`) | §10.2 |
-| `PLAN_E_0501` | `NoCompositionPath` | §10.2 |
-| `PLAN_E_0502` | `CompositionDepthExceeded` | §10.2 |
-| `PLAN_E_0503` | `CrossCompositionForbidden` | §10.2 |
-| `PLAN_E_0504` | `UnknownSemantics` | §7.2 |
-| `PLAN_E_0505` | `AmbiguousCompositionReference` | §10.2 |
-| `PLAN_E_0507` | `SemanticsNotOnSurface` | §7.3 |
-| `PLAN_E_0510` | `DuplicateRequestedName` | §7.2 |
-| `PLAN_E_0511` | `EmptyRequest` | §7.2 |
-| `PLAN_E_0512` | `RequestFieldTypeMismatch` | §7.2 |
-| `PLAN_E_0513` | `OrderByUnknownName` | §7.2 |
-| `PLAN_E_0520` | `FilterArityMismatch` | §7.2 |
-| `PLAN_E_0521` | `FilterValueTypeMismatch` | §7.2 |
-| `PLAN_E_0600` | `PlanNodeConstructionFailed` | §7.6 |
-| `PLAN_E_0601` | `UnsupportedRequestShape` | §7.6 |
-| `PLAN_E_0610` | `PostConstructionInvariantViolated` | §7.7 |
-| `PLAN_E_1700`+ | `TemporalDeferred` variants | `17 §9` (DEFERRED) |
-| `PLAN_E_2040` | `DataKindNotInSemanticManifest` | `20 §8.2` |
-| `PLAN_E_2050` | `StrategyDispatchFailed` | `20 §8.2` |
-| `PLAN_E_2051` | `StrategyMissingForVariant` | `20 §8.2` |
-| `PLAN_E_2052` | `SemanticManifestIndexInconsistent` | `20 §8.2` |
-| `PLAN_E_21xx` | `Simple(SimpleError)` | `21 §7` |
-| `PLAN_E_22xx` | `Grainset(GrainsetError)` | `22 §8` |
-| `PLAN_E_23xx` | `Unionset(UnionsetError)` | `23 §10` |
-| `PLAN_E_24xx` | `Joinset(JoinsetError)` | `24 §10` |
+**Variant rename and identity.** Renaming a variant of `PlanErrorKind` is MAJOR per `30 §2.1` because variant identity is the public-API surface for caller pattern-matching. Adding a variant inside `#[non_exhaustive]` is MINOR per `30 §2.2`.
 
-The ranges `0506`, `0508`, `0509`, `0514`–`0519`, `0522`–`0599`, `0602`–`0609`, `0611`–`0699` are reserved against future additions within step-level sub-bands.
+**Per-DataKind passthrough.** The four `Simple` / `Grainset` / `Unionset` / `Joinset` variants embed the per-DataKind kind enums (`SimpleErrorKind` per `21 §7`, `GrainsetErrorKind` per `22 §8`, `UnionsetErrorKind` per `23 §10`, `JoinsetErrorKind` per `24 §10`) using the cross-crate kind-nesting pattern from `30 §5.6`. Each `From<XxxErrorKind>` impl lifts a per-DataKind kind into the parent `PlanErrorKind` enum.
 
-Collision note: `PLAN_E_0500` is currently referenced by both `ConstraintViolation` (per `11 §8.7`, step 0) and `AmbiguousImplicitComposition` (per `16 §14.3`). This is the sole code-allocation conflict across the spec; §17 and `questions/open/34_questions.md` Q-PLAN-003 track the reconciliation — either move `AmbiguousImplicitComposition` to `PLAN_E_0506` (the next free slot in the composition sub-band) or move `ConstraintViolation` to its own dedicated code. Pending resolution, `34` uses `PLAN_E_0500` for the step-0 constraint carrier and notes the aliasing inline.
+### 13.2 Non-error diagnostic emission
 
-### 13.2 `PlanErrors`
+Strategies emit non-error diagnostics via `ctx.emit(diag)` (§8.4). The per-plan-call `DiagnosticSink` accumulates them in emission order. At step 6 the sink drains into `SemanticPlan.diagnostics` (success) and into the Ok-tuple's `Diagnostics<PlanErrorKind>` second element on success, or the Err-tuple's `Diagnostics<PlanErrorKind>` second element on failure. Warnings flow through both arms — no silent drops (per `30 §7.3`).
+
+### 13.3 `OptimizeErrorKind`
 
 ```rust
 #[non_exhaustive]
-pub struct PlanErrors {
-    pub error:    PlanError,
-    pub warnings: Vec<Diagnostic>,
+pub enum OptimizeErrorKind {
+    PassFailed          { pass: String, reason: String },
+    InvalidRewrite      { pass: String, detail: String },
+    PassRequiresContext { pass: String, required: &'static str },
+    /// Non-fatal ConstantFold result; emitted at `Severity::Warning`.
+    /// Carries the reason the pass declined to fold (overflow, precision loss, …).
+    ConstantFoldSkipped { reason: String },
 }
 
-impl PlanErrors {
-    pub fn new(error: PlanError) -> Self;
-    pub fn with_warnings(error: PlanError, warnings: Vec<Diagnostic>) -> Self;
-    pub fn code(&self) -> &'static str { self.error.code() }
-    pub fn severity(&self) -> Severity { Severity::Error }
-}
-
-impl IntoDiagnostic for PlanErrors { fn into_diagnostic(self) -> Diagnostic; }
-```
-
-`error` is the fatal error that aborted planning; `warnings` collects non-error diagnostics emitted up to the abort (typically empty when failure is at step 0/1; populated when a strategy emitted advisories during step 5 before a later sub-step failed).
-
-### 13.3 Non-error diagnostic emission
-
-Strategies emit non-error diagnostics via `ctx.emit(diag)` (§8.4). The per-plan-call `DiagnosticSink` accumulates them in emission order. At step 6 the sink drains into `SemanticPlan.diagnostics` (success) or `PlanErrors.warnings` (failure). Diagnostics flow through both arms — no silent drops (per `30 §7`).
-
-### 13.4 `OptimizeError` / `OptimizeErrors`
-
-```rust
-#[non_exhaustive]
-pub enum OptimizeError {
-    PassFailed          { pass: String, reason: String, location: Option<Location> },
-    InvalidRewrite      { pass: String, detail: String, location: Option<Location> },
-    PassRequiresContext { pass: String, required: &'static str, location: Option<Location> },
-}
-
-impl OptimizeError {
-    pub fn code(&self) -> &'static str;
-    pub fn severity(&self) -> Severity;
-    pub fn location(&self) -> Option<&Location>;
-}
-
-impl IntoDiagnostic for OptimizeError { fn into_diagnostic(self) -> Diagnostic; }
-
-#[non_exhaustive]
-pub struct OptimizeErrors {
-    pub error:    OptimizeError,
-    pub warnings: Vec<Diagnostic>,
+impl Diagnose for OptimizeErrorKind {
+    fn message(&self) -> String { /* per-variant human text */ }
+    fn severity_default(&self) -> Severity {
+        match self {
+            OptimizeErrorKind::ConstantFoldSkipped { .. } => Severity::Warning,
+            _ => Severity::Error,
+        }
+    }
+    fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
 }
 ```
 
-**Code allocation** (`OPT_E` subsystem, `0100`–`0199` per `30 §6.2`): `OPT_E_0101`–`OPT_E_0104` — `PassFailed` (one per canonical pass `constant_folding` / `metadata_dimension_substitution` / `predicate_simplification` / `identity_project_elimination`); `OPT_E_0110` `PassRequiresContext`; `OPT_E_0111` `InvalidRewrite`.
+Canonical v1 passes are specified to NOT error under well-formed inputs; the `Error`-severity variants fire in practice only for third-party passes with soundness bugs. `ConstantFoldSkipped` is the one v1-emitted `Warning`-severity variant — riding the warnings vector of either Ok or Err arm.
 
-Canonical v1 passes are specified to NOT error under well-formed inputs; `OPT_E_01xx` fires in practice only for third-party passes with soundness bugs.
+### 13.4 `Diagnose`-conversion
 
-### 13.5 `Diagnostic`-conversion
-
-Every `PlanError` and `OptimizeError` variant carries an `Option<Location>`. `IntoDiagnostic::into_diagnostic` produces a `Diagnostic { code, severity, location, message, source_chain }` per `31 §7.1` with `code` = stable constant, `severity` = `Error`, `message` = `Display` form, and the underlying `source_chain` preserved. Non-error diagnostics use the same shape with `Severity::Warning` or `Severity::Note` and `PLAN_W_*` / `OPT_W_*` codes per `30 §6.2`.
+Both `PlanErrorKind` and `OptimizeErrorKind` implement `Diagnose` per `30 §5.4`. The blanket `Display` and `std::error::Error` impls on `Diagnostic<K>` that ride from `Diagnose` (per `31 §10`) make `Diagnostic<PlanErrorKind>` / `Diagnostic<OptimizeErrorKind>` directly usable as `std::error::Error` values without any `IntoDiagnostic`-style conversion. `Diagnostic`s never carry a `code: &'static str` field — identification is the variant tag.
 
 ## 14. Diagnostics accumulation policy
 
 ### 14.1 `plan` is fail-fast
 
-Per `10 §5` and `30 §7`, the `plan` stage is fail-fast. The first `PlanError` produced by any sub-step aborts the pipeline; later sub-steps do not run (step 0 fails → steps 1–6 skipped; step 1 fails → steps 2–6 skipped; and so on). The first error becomes `PlanErrors.error`; non-error diagnostics emitted before the abort are preserved in `PlanErrors.warnings`.
+Per `10 §5` and `30 §7.1`, the `plan` stage is fail-fast. The first `Diagnostic<PlanErrorKind>` of `Severity::Error` produced by any sub-step aborts the pipeline; later sub-steps do not run (step 0 fails → steps 1–6 skipped; step 1 fails → steps 2–6 skipped; and so on). The fatal diagnostic becomes the failure-tuple's first element; warnings emitted before the abort are preserved in the failure-tuple's `Diagnostics<PlanErrorKind>` second element.
 
 ### 14.2 Constraint violations (step 0) are fail-fast per `11 §8.7`
 
@@ -1053,11 +1026,11 @@ The v1 `ConstraintValidator` short-circuits on first violation — subsequent Me
 
 ### 14.3 Non-error diagnostics accumulate
 
-Non-error diagnostics (warnings, notes) do NOT fail-fast. They accumulate in the per-invocation `DiagnosticSink` (§8.4) and flow out through `SemanticPlan.diagnostics` (success) or `PlanErrors.warnings` (failure), mirroring `30 §7`'s "warnings are never silently dropped" rule.
+`Severity::Warning` diagnostics do NOT fail-fast. They accumulate in the per-invocation `DiagnosticSink` (§8.4) and flow out through the success-tuple's `Diagnostics<PlanErrorKind>` second element (and a content-equivalent copy on `SemanticPlan.diagnostics`), or the failure-tuple's second element, mirroring `30 §7.3`'s "warnings are never silently dropped" rule.
 
-### 14.4 `optimize` is fail-fast per `30 §7`
+### 14.4 `optimize` is fail-fast per `30 §7.1`
 
-The `optimize` stage matches `plan`'s discipline. A pass returning `Err(OptimizeError)` aborts the remaining chain; non-error pass diagnostics accumulate and flow through `SemanticPlan.diagnostics` / `OptimizeErrors.warnings` identically.
+The `optimize` stage matches `plan`'s discipline. A pass producing a fatal `Diagnostic<OptimizeErrorKind>` aborts the remaining chain; warning-severity pass diagnostics accumulate and flow through the Ok / Err second element identically.
 
 ### 14.5 Idempotence of re-`optimize`
 
@@ -1089,17 +1062,17 @@ Every public `pub enum` and every public `pub struct` exposed by `34` carries `#
 - `StrategyRegistry` — stable shape by construction.
 - `Optimizer` / `OptimizerBuilder` — stable internal vector.
 
-Adding a new variant to any `#[non_exhaustive]` enum (e.g. a new `PlanError` variant for a new error condition, a new `StrategyId` variant for an externally-contributed strategy) is MINOR per `30 §2.2`.
+Adding a new variant to any `#[non_exhaustive]` enum (e.g. a new `PlanErrorKind` variant for a new error condition, a new `StrategyId` variant for an externally-contributed strategy) is MINOR per `30 §2.2`.
 
-### 15.5 Error-code stability
+### 15.5 Variant identity stability
 
-Per `30 §6.3`:
+Per `30 §2.1` / `30 §5.4`:
 
-- A published `PLAN_E_*` / `OPT_E_*` code's meaning is frozen at its first release.
-- Adding a new code in a reserved sub-range is MINOR.
-- Retiring a code is MAJOR; deprecation is MINOR with `#[deprecated(since, note)]`.
+- A published `PlanErrorKind` / `OptimizeErrorKind` variant's identity (its name + payload shape) is frozen at its first release.
+- Adding a new variant inside `#[non_exhaustive]` is MINOR.
+- Renaming or removing a variant is MAJOR. Deprecation rides via `#[deprecated(since, note)]` and is MINOR per `30 §12.3`.
 
-The `PLAN_E_0500` aliasing (§13.1) between `ConstraintViolation` and `AmbiguousImplicitComposition` is a **pre-release** allocation conflict to be resolved before v1 release; §17's reconciliation notes it.
+The `PLAN_E_0500` aliasing referenced in `§13.1`'s legacy code allocation table is no longer applicable: variant identity is the surface, and `ConstraintViolation` and `AmbiguousImplicitComposition` are distinct variants. `§17`'s Q-PLAN-003 closes accordingly.
 
 ## 16. Crate boundaries
 
@@ -1166,22 +1139,24 @@ Open items surfaced during the drafting of `34` that cannot be resolved from `10
 |---|---|---|---|
 | Q-PLAN-001 | `Request.from` shape — `DataKindRef` scalar vs `DataKindPath` for nested Complex targeting | §3.8 | no |
 | Q-PLAN-002 | `Strategy` trait openness — sealed vs open for third-party implementers | §8.1 / §15.1 | no |
-| Q-PLAN-003 | `PLAN_E_0500` aliasing between `ConstraintViolation` and `AmbiguousImplicitComposition` — re-allocate one to `PLAN_E_0506` | §13.1 | **yes** (pre-release reconciliation) |
+| Q-PLAN-003 | `PLAN_E_0500` aliasing — **CLOSED** (2026-04-28). Retired with the migration to typed-kind enums per `30 §5`. `ConstraintViolation` and `AmbiguousImplicitComposition` are distinct `PlanErrorKind` variants; identification is by variant identity, not by code. Body-prose code references in §6–§10 are legacy anchors only (see §13's migration note). | §13.1 / §15.5 | no |
 | Q-PLAN-004 | `TemporalRequest` vocabulary in `Request` — expose now vs. defer to the `17` milestone | §3.9 | no (follows `17`) |
 | Q-PLAN-005 | `SessionContext.feature_toggles` typing — free-form vs. typed catalog | §4.2 | no |
 | Q-PLAN-006 | `OptimizerPass` idempotence — enforce via a proof obligation vs. convention | §14.5 | no |
 | Q-PLAN-007 | `ResolvedQueryRequest` visibility — `pub` vs. `pub(crate)` given strategies are the only consumers | §5 | no |
-| Q-PLAN-008 | Field-first depth bound (`MAX_IMPLICIT_COMPOSITION_DEPTH = 3`) — is 3 the right default? | §10.4 / `16` Q-COMP-001 | no |
+| Q-PLAN-008 | Field-first depth bound (`MAX_IMPLICIT_COMPOSITION_DEPTH`) — **CLOSED (2026-04-28)** mirrored from Q-COMP-001; `34 §10.4` constant updated to `4`. | §10.4 / `16` Q-COMP-001 | no |
+| Q-PLAN-009 | Field-first algorithm — synthesis vs lookup — **CLOSED (2026-04-29)** mirrored from Q-COMP-016 (unified Joinset model). The plan-time algorithm is now pure lookup over `33 §7.2`'s `composition_index.by_constituent_set`; no plan-time BFS / Steiner walk; no on-demand synthesis. `ResolvedTarget::SynthesizedComposition` is replaced by `ResolvedTarget::Composition(DataKindRef)`. | §10 / `16` Q16 | no |
 
 Cross-doc fixes flagged while drafting `34`:
 
 | ID | Location | Fix |
 |---|---|---|
-| CDF-30-02 | `30 §6.2` `PLAN_E` row | Currently lists `"0500–0599 Constraint-violation + request-shape"`. Per Q-PLAN-003, the sub-band is overcommitted — extend the note to spell out the `0500`–`0509` (composition), `0510`–`0519` (request-shape), `0520`–`0529` (filter-shape) sub-bands or move `ConstraintViolation` to its own sub-range. |
-| CDF-21-01 | `21 §7` | Per-variant `PLAN_E_21xx` roster should cross-reference `34 §13` as the aggregation surface (`PlanError::Simple(SimpleError)` wraps them). |
-| CDF-22-01 | `22 §8` | Same as CDF-21-01 for `PLAN_E_22xx` and `PlanError::Grainset(GrainsetError)`. |
-| CDF-23-01 | `23 §10` | Same as CDF-21-01 for `PLAN_E_23xx` and `PlanError::Unionset(UnionsetError)`. |
-| CDF-24-01 | `24 §10` | Same as CDF-21-01 for `PLAN_E_24xx` and `PlanError::Joinset(JoinsetError)`. |
+| CDF-30-02 | `30 §6` (former code-format section) | **Resolved** by the typed-kind migration; the `PLAN_E` numeric range is retired. `30 §6` now hosts the observability policy (tracing). No further sub-band re-allocation needed. |
+| CDF-21-01 | `21 §7` | Per-DataKind `SimpleErrorKind` roster should cross-reference `34 §13.1` as the aggregation surface (`PlanErrorKind::Simple(SimpleErrorKind)` wraps them via `From` impl per `30 §5.6`). |
+| CDF-22-01 | `22 §8` | Same as CDF-21-01 for `GrainsetErrorKind` and `PlanErrorKind::Grainset(_)`. |
+| CDF-23-01 | `23 §10` | Same as CDF-21-01 for `UnionsetErrorKind` and `PlanErrorKind::Unionset(_)`. |
+| CDF-24-01 | `24 §10` | Same as CDF-21-01 for `JoinsetErrorKind` and `PlanErrorKind::Joinset(_)`. |
+| CDF-16-01 | `16 §14.3` (composition error roster) | `34 §13.1` `PlanErrorKind` now mirrors the canonical payload shapes from `16 §14.3`: `AmbiguousImplicitComposition { constituent_set, candidates }`, `NoCompositionPath { from, to }`, `CompositionDepthExceeded { from_kinds, max_depth }`, `CrossCompositionForbidden { relationship_id, attempted_direction }`, `SemanticsNotOnSurface { name, surface }`, `UnknownSemantics { name }` (now `PLAN_E_0508`). Variant `CompositionAggregationConflict` added (`PLAN_E_0506`). Variant `CompositionChainingForbidden` is **retired** per `16 §14.3` (transparent unfolding under unified Joinset model). |
 
 Deferred / known-gap items (tracked in the implementation plan, not in open-questions):
 

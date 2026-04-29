@@ -1,8 +1,7 @@
 ---
-
-## doc: design/questions/open/16_questions
+doc: design/questions/open/16_questions
 status: Living
-purpose: Parked unresolved questions surfaced while drafting `foundations/16_composition.md`
+purpose: Open questions surfaced while drafting `foundations/16_composition.md`
 depends-on:
   - foundations/16_composition.md
   - foundations/11_names_and_scopes.md
@@ -14,186 +13,11 @@ depends-on:
   - apis/32_semstrait_model.md
   - apis/33_semstrait_manifest.md
   - apis/34_semstrait_planner.md
+---
 
 # Open Questions — `foundations/16_composition.md`
 
-> Items surfaced during Round-1 drafting of the composition foundations doc. Each entry restates the question, lists its ratified references, and records the Round-1 default `16` currently uses. Entries migrate out of this file as later docs (`17`, `23`, `32`, `33`, `34`) make decisions that either confirm or amend `16`'s defaults. None of these open items block the three headline ratifications (`Q1`/`Q2`/`Q3` in `16 §16`).
-
----
-
-## Q-COMP-001 — `MAX_IMPLICIT_COMPOSITION_DEPTH` value
-
-**Question.** `16 §9.1` bullet 3 ratifies a depth limit on implicit composition. Round-1 sets `MAX_IMPLICIT_COMPOSITION_DEPTH = 4`. Is `4` the right value for v1?
-
-**Refs.**
-
-- `16 §9.1` — boundary ratification.
-- `16 §14.3` — `PLAN_E_0502 CompositionDepthExceeded`.
-- `34` (pending) — planner entry point; exposes the limit as a constant.
-
-**Proposed (Round 1):** `4` hops. Covers common star / snowflake patterns (fact → dim → outrigger → …) without endorsing arbitrarily deep anonymous walks. Authors wanting deeper compositions are nudged toward explicit `Joinset`.
-
-**Arguments for `4`.**
-
-- Kimball-style analytic workloads rarely exceed 3-hop dim outrigger chains.
-- Larger values admit implicit compositions authors likely did not mean; smaller values reject legitimate patterns.
-- Matches the industry-folklore "keep dim hierarchies shallow" guidance.
-
-**Arguments for a larger value (say, `8`).**
-
-- Some graph-oriented models (e.g. organizational hierarchies, social-network-style aggregations) genuinely need deeper walks.
-- Larger limit defers the "switch to explicit `Joinset`" moment.
-
-**Arguments for a smaller value (say, `2`).**
-
-- Encourages explicit modeling earlier.
-- Safer default for Round-1 when the implicit-composition algorithm has no real-world usage.
-
-**Current position in `16`.** `4` hops. The constant lives in `semstrait-planner` and is not author-configurable in v1.
-
-**Next step.** Revisit at `34` drafting with real-Model sample data; if early usage consistently runs into `PLAN_E_0502` on sane models, raise to `6` or `8`. If early usage indicates authors are accidentally constructing deep compositions, lower to `3`.
-
----
-
-## Q-COMP-002 — Ambiguous-path tie-breaking: could there be a deterministic heuristic?
-
-**Question.** `16 §11.4` / `§9.1` bullet 2 ratifies "ties → error, no heuristic choice." Alternatives exist — e.g. prefer the path whose `RelationshipId`s are lexically smallest, or prefer the path with fewer `ManyToMany` edges. Should v1 adopt any such heuristic?
-
-**Refs.**
-
-- `16 §11.4` — BFS determinism via neighbor order.
-- `16 §9.4` bullet 2 — rationale for error-on-tie.
-- `16 §14.3` — `PLAN_E_0500 AmbiguousImplicitComposition`.
-
-**Proposed (Round 1):** Error on ties. Authors must either declare an explicit `Joinset` (pinning the path) or remove the ambiguity by deleting / narrowing one of the candidate `Relationship`s.
-
-**Arguments for error.**
-
-- I4 determinism: the author can always predict the answer because "tie = error" is a clear rule.
-- Heuristics inject judgment authors cannot trace without reading the planner internals.
-- Explicit `Joinset` is the escape hatch and is designed for exactly this case.
-
-**Arguments for a heuristic.**
-
-- Rejects legitimate queries on Models with natural cross-join-key structures (e.g. a fact with two FKs to the same dim table via different semantic roles).
-- Authors may prefer "some answer" over a compile error for exploratory queries.
-
-**Current position in `16`.** Error on ties. Authors disambiguate by declaring a `Joinset`.
-
-**Next step.** Revisit post-v1 if user studies show the error fires on legitimate work more than it rejects malformed queries. A candidate heuristic (lexically-smallest `RelationshipId`) could be added as an opt-in planner flag.
-
----
-
-## Q-COMP-003 — Implicit-composition Steiner-tree solver sophistication
-
-**Question.** `16 §11.4`'s "multi-target BFS" is a simplified Steiner-tree approximation: find a subgraph connecting all owning kinds with minimum total hop count. Should v1 use an optimal Steiner-tree solver (NP-hard in general) or is the BFS approximation sufficient?
-
-**Refs.**
-
-- `16 §11.4` — multi-target BFS.
-- `16 §11.5` — synthesis consumer.
-
-**Proposed (Round 1):** BFS approximation. Graph size is small enough (10s–100s of `Relationship`s) that exhaustive enumeration of candidate cover trees up to `MAX_IMPLICIT_COMPOSITION_DEPTH` is feasible. For typical Models the approximation coincides with the optimum.
-
-**Arguments for the approximation.**
-
-- Round-1 scale (10s of DataKinds, 10s–100s of Relationships) is well within brute-force enumeration.
-- Exact Steiner tree is NP-hard; investing in a sophisticated solver is premature.
-- Determinism is easy to maintain with enumeration.
-
-**Arguments for a sophisticated solver.**
-
-- Pathological Models (thousands of kinds, dense Relationship graphs) would benefit.
-- If the planner's implicit-composition time becomes a hot path, better algorithms matter.
-
-**Current position in `16`.** Brute-force BFS enumeration within the depth bound.
-
-**Next step.** Revisit when / if profiling shows implicit composition as a hot path. Well-established 2-approximation algorithms for Steiner tree exist and can be dropped in without changing the surface contract.
-
----
-
-## Q-COMP-004 — Should implicit composition produce a `Joinset`-style surface or a bespoke `Relationship`-kind surface?
-
-**Question.** `16 §5.3` introduces `CompositionKind::Relationship` as the implicit-composition discriminator, distinct from `CompositionKind::Joinset`. Arguably, implicit compositions could return a `CompositionKind::Joinset` with the `Joinset` being planner-synthesized. Rejected in `16` because an unnamed surface has no YAML-level name; keeping it distinct avoids the planner faking a `Joinset` identity.
-
-**Refs.**
-
-- `16 §5.3` — `CompositionKind` roster.
-- `16 §13.5` — Joinset-reuse open item (`[TD-COMPOSITION-JOINSET-REUSE]`).
-
-**Proposed (Round 1):** Keep `CompositionKind::Relationship` distinct from `CompositionKind::Joinset`. Implicit compositions do not carry a name; they are request-local.
-
-**Arguments for distinct.**
-
-- Clean mental model: named / persisted → `Joinset`; anonymous / request-local → `Relationship`.
-- The planner dispatches differently: `Joinset` strategies may assume an author-declared anchor; implicit `Relationship` strategies work from the traversed path.
-- `Joinset` may have author-declared overrides (join-type, traversal order); implicit `Relationship` has none.
-
-**Arguments for unifying.**
-
-- Fewer discriminator branches in the planner.
-- Implicit compositions could "promote" to a named `Joinset` lazily if the author later declares one covering the same kinds — `[TD-COMPOSITION-JOINSET-REUSE]`.
-
-**Current position in `16`.** Distinct.
-
-**Next step.** Revisit at `[TD-COMPOSITION-JOINSET-REUSE]` realization. If the planner's Joinset-reuse optimization ships, the discriminator may collapse; until then, distinct.
-
----
-
-## Q-COMP-005 — Scope of `PLAN_W_0501 FanoutAdvisory`: error-by-default under `strict` mode?
-
-**Question.** `16 §14.4` ratifies `PLAN_W_0501` as a Warning (planner proceeds, advises). Should a future `strict` planner mode promote it to an Error?
-
-**Refs.**
-
-- `16 §3.3.2` — fanout-safe rewrite description.
-- `16 §14.4` — advisory ratification.
-- `30 §12` — deprecation / lifecycle policy.
-
-**Proposed (Round 1):** Warning only in v1. `strict` mode deferred.
-
-**Arguments for deferring strict mode.**
-
-- v1 planner has no configuration surface; adding one is out of scope.
-- Authors who want strict behavior can post-process the Diagnostic list.
-
-**Arguments for strict mode.**
-
-- Analytic-engineering teams may want fanout-triggering queries to fail compile rather than ship silently with a rewrite.
-- Aligns with "surprising runtime semantics are worse than compile-time rejection" stance from `15 §9.4`.
-
-**Current position in `16`.** Warning only; strict mode deferred.
-
-**Next step.** Consider in `34` if user feedback requests it. A strict-mode planner flag is an additive change (MINOR).
-
----
-
-## Q-COMP-006 — Cross-composition-kind chaining (the §9.1 bullet 5 prohibition)
-
-**Question.** `16 §9.1` bullet 5 prohibits chaining implicit composition with already-composed surfaces of another `CompositionKind`. Is the prohibition too strict for v1?
-
-**Refs.**
-
-- `16 §9.1` bullet 5 — rule.
-- `16 §9.4` — rationale.
-- `16 §13.5` — explicit `Joinset` coexistence with implicit compositions.
-
-**Proposed (Round 1):** Keep the prohibition. A composed surface from one pass is never fed into another as a constituent within the same Request.
-
-**Arguments for the prohibition.**
-
-- Preserves the mental model: implicit composition is a flat graph walk, not recursive synthesis.
-- Avoids correctness hazards (e.g. recomputing `UnifiedSemantics` over already-unified surfaces).
-- Authors with cross-composition needs can declare an explicit `Joinset` / `Unionset` that names the full composition.
-
-**Arguments for relaxing.**
-
-- Some Models would benefit from "query a `Unionset`, then pull in a related dimension from an outside kind via a `Relationship`." Prohibiting this forces declaring a dedicated `Joinset` over the `Unionset`.
-- The BFS algorithm could be extended to handle the case.
-
-**Current position in `16`.** Prohibition. Authors declare explicit surfaces for cross-kind-kind compositions.
-
-**Next step.** Revisit at `34` drafting if common use-cases demonstrate the prohibition is over-broad. Extension would be additive (lift the check, add a new `CompositionKind::Mixed` variant for the result — MINOR per I10).
+> **Status (2026-04-29).** Eight framework-level questions remain open: Q-COMP-007 (Directionality granularity), Q-COMP-008 (compile-time reverse-traversal detection), Q-COMP-009 (composite-key shape alternatives), Q-COMP-010 (CompositionCoverage serialization shape), Q-COMP-014 (PLAN_E_0505 candidate suggestions), Q-COMP-015 (FieldOwnership::Derived distinctness), Q-COMP-016 (ManyToMany reject-by-default), Q-COMP-017 (YAML default for JoinType). Closed items moved to [`../closed/16_questions.md`](../closed/16_questions.md). None of the items below block the headline ratifications in `16 §16`.
 
 ---
 
@@ -308,89 +132,6 @@ depends-on:
 
 ---
 
-## Q-COMP-011 — `traversed_paths` on implicit compositions: single path vs path per leg
-
-**Question.** `16 §11.5` step 2 says multi-target BFS may produce a tree, flattened to `Vec<RelationshipPath>`, one per "leg." Should an implicit composition instead carry a single canonical path that visits all constituents (via arbitrary ordering)?
-
-**Refs.**
-
-- `16 §5.2` — `traversed_paths: Vec<RelationshipPath>`.
-- `16 §11.5` — synthesis.
-
-**Proposed (Round 1):** Vec per leg. A tree cover is more general than a single path; Requests over 3+ owning kinds may genuinely need a tree shape.
-
-**Arguments for Vec per leg.**
-
-- General.
-- Tree-covers are real for `>2` owning kinds.
-
-**Arguments for single path.**
-
-- Simpler.
-- Only works for `<=2` owning kinds;  `3+` needs a tree.
-
-**Current position in `16`.** Vec per leg.
-
-**Next step.** No change expected. Shape is forward-compatible.
-
----
-
-## Q-COMP-012 — `Joinset` reuse optimization (`[TD-COMPOSITION-JOINSET-REUSE]`)
-
-**Question.** When an implicit-composition request spans exactly the kinds of a declared `Joinset`, could the planner reuse the `Joinset`'s pre-built `ComposedSemanticInterface` instead of synthesizing a new one?
-
-**Refs.**
-
-- `16 §13.5` — rule: do not reuse (Round 1).
-- `16 §9.1` bullet 1 — `CompositionKind` identity mismatch.
-
-**Proposed (Round 1):** Do not reuse. Implicit and explicit compositions are distinct instances even when they cover the same kinds.
-
-**Arguments for deferring reuse.**
-
-- Simplifies the planner.
-- `Joinset` may carry author-declared join-type overrides (§13.3) that an implicit-composition request did not ask for; reusing blindly would change query semantics.
-- Authors seeking the `Joinset`'s semantics can write `from: "<joinset-name>"` explicitly.
-
-**Arguments for reuse.**
-
-- Compile-time savings.
-- Coherent user story: "the `Joinset` is the canonical composition for these kinds; why synthesize another?"
-
-**Current position in `16`.** Do not reuse (`[TD-COMPOSITION-JOINSET-REUSE]`).
-
-**Next step.** Revisit if the reuse optimization's value becomes apparent in `34` planner benchmarks. If the `Joinset`'s overrides and the implicit composition's expected defaults align, reuse is safe; if they disagree, it is not.
-
----
-
-## Q-COMP-013 — Should explicit `Relationship`s between composed kinds (e.g. `Joinset → Simple`) be permitted?
-
-**Question.** `16 §2.1` says a `Relationship` is "between two top-level DataKinds." Top-level kinds include `Simple`, `Unionset`, `Grainset`, `Joinset`. Should `Relationship` between, say, a `Joinset` and a `Simple` be permitted?
-
-**Refs.**
-
-- `16 §2.1` — placement.
-- `12 §2` — nesting matrix; `Joinset` can nest other kinds but is itself top-level.
-- `16 §9.1` bullet 5 — prohibition on cross-composition-kind chaining (for implicit walks).
-
-**Proposed (Round 1):** Permitted. A `Relationship` declares joinability between any two top-level kinds, including composed ones. Implicit composition (§9.1 bullet 5) prohibits chaining different `CompositionKind`s in one walk, but authoring a `Relationship` that references a `Joinset` as a side is not implicit chaining; it's a first-class edge.
-
-**Arguments for permitting.**
-
-- Maximum expressive power.
-- `Joinset → Simple` is a common pattern: "a canonical cross-platform view joined to an outrigger dim."
-
-**Arguments against.**
-
-- The composed kind's surface is large; `KeyPair.left` referencing a namespaced name from within the composed surface is unergonomic.
-- Implicit walks cannot chain anyway, so what does the Relationship buy?
-
-**Current position in `16`.** Permitted. Author writes `KeyPair.left` as a namespaced `SemanticsName` (e.g. `"paid_media.campaign_id"`) to reference into the composed surface.
-
-**Next step.** Revisit at `32` YAML surface design — the author-facing authoring shape may make or break the feature's ergonomics.
-
----
-
 ## Q-COMP-014 — Should `PLAN_E_0505 AmbiguousCompositionReference` include suggested qualifications?
 
 **Question.** `16 §14.3` `PLAN_E_0505` fires when a bare name on a composed surface is ambiguous. Diagnostic currently carries `(name, candidates)`. Should the Diagnostic include the exact qualified-name forms the author can use (e.g. `orders.total`, `returns.total`)?
@@ -443,16 +184,17 @@ depends-on:
 
 ---
 
-## Q-COMP-016 — `Cardinality::ManyToMany` — warn-only or reject by default?
+## Q-COMP-016 — `Cardinality::ManyToMany` — permit or reject by default?
 
-**Question.** `16 §3.3.4` permits `ManyToMany` with a `PLAN_W_0502` advisory nudging authors toward junction-table modeling. Should v1 reject `ManyToMany` outright and force junction-table modeling?
+**Question.** `16 §3.3.4` permits `ManyToMany`. Should v1 reject `ManyToMany` outright and force junction-table modeling?
+
+**Status (Round 2, 2026-04-29).** Framing simplified: the advisory dimension is moot now that `PLAN_W_0502 ManyToManyFanoutAdvisory` was retired with Q-COMP-005. The remaining axis is **permit vs reject** for `ManyToMany` itself.
 
 **Refs.**
 
-- `16 §3.3.4` — per-variant semantics.
-- `16 §14.4 PLAN_W_0502`.
+- `16 §3.3.4` — per-variant semantics for `ManyToMany`.
 
-**Proposed (Round 1):** Permit with advisory. Some legitimate Models need `ManyToMany` (e.g. a tag system where tags and articles are a genuine many-to-many without a modeled junction).
+**Proposed (Round 1):** Permit. Some legitimate Models need `ManyToMany` (e.g. a tag system where tags and articles are a genuine many-to-many without a modeled junction).
 
 **Arguments for permitting.**
 
@@ -464,9 +206,9 @@ depends-on:
 - Forces clearer modeling.
 - Reduces correctness surprises.
 
-**Current position in `16`.** Permit with advisory.
+**Current position in `16`.** Permit.
 
-**Next step.** Revisit if advisory fatigue sets in. A strict mode (Q-COMP-005) could promote the advisory to an error.
+**Next step.** Revisit during a Round-3 model-discipline pass if real-world models reveal pervasive misuse.
 
 ---
 
@@ -494,32 +236,3 @@ depends-on:
 **Current position in `16`.** Required canonically; defaulted in YAML at `32`'s discretion.
 
 **Next step.** `32` ratifies the YAML default.
-
----
-
-## Q-COMP-018 — `ComposedSemanticInterface.keys` on implicit compositions: empty vs derived?
-
-**Question.** `16 §6.5` says implicit compositions have no composed-surface keys. Could the planner derive keys (e.g. from the anchor constituent's keys) when useful?
-
-**Refs.**
-
-- `16 §6.5` — rule.
-- `16 §11.5` — synthesis.
-
-**Proposed (Round 1):** Empty. Implicit compositions do not claim keys; author-addressable keys require an explicit surface (`Joinset`).
-
-**Arguments for empty.**
-
-- Implicit compositions are request-scoped; the "key" of the composed surface is meaningful only for the planner's grouping logic, not for the author's future reference.
-- Explicit key declaration is the author's privilege on explicit surfaces.
-
-**Arguments for deriving.**
-
-- Some planner strategies benefit from a key on the composed surface (e.g. deduplication with a pinned key column).
-- Author never sees the derived key; it's internal.
-
-**Current position in `16`.** Empty. Planner derives internally-needed keys from `Cardinality` / anchor constituent on a per-strategy basis, outside the `ComposedSemanticInterface.keys` field.
-
-**Next step.** Revisit at `34` if planner strategies consistently need to decorate composed surfaces with derived keys. Extension would be a MINOR field on `ComposedSemanticInterface`.
-
----

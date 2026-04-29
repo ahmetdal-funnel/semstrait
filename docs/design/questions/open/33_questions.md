@@ -1,3 +1,9 @@
+---
+doc: design/questions/open/33_questions
+status: Living
+purpose: Round-1 open items raised against `apis/33_semstrait_manifest.md`
+---
+
 # 33 — Open Questions
 
 Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.md`. Each entry restates the question, lists the relevant ratified references, and proposes a lean next step so a later decision pass can resolve without re-reading the whole doc.

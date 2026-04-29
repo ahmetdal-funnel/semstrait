@@ -961,8 +961,8 @@ Each entry there records the Round-1 default `23` currently uses.
 - `33` (future) — `ResolvedUnionset` persistence; `SemanticManifest` index placement for composed interfaces.
 - `34` (future) — `UnionsetStrategy` trait surface; re-aggregation helper.
 - `35` (future) — `PlanNode::Union` field roster.
-- `questions/open/23_questions.md` — Round-1 deferred items.
+- `questions/open/23_questions.md` (Q-UNI-001, -003 through -008, -010 through -014) · `questions/closed/23_questions.md` (Q-UNI-002, -009).
 
 ---
 
-**End of document.** Round-1 open reconciliation items are in `docs/design/questions/open/23_questions.md`.
+**End of document.** Round-1 open reconciliation items are in `docs/design/questions/open/23_questions.md`; ratified items live in `docs/design/questions/closed/23_questions.md` (Q-UNI-002 / Q-UNI-009).
