@@ -102,7 +102,7 @@ Cells that would otherwise read identical across the four columns are still writ
 
 ### 2.2 Pipeline — `10`
 
-Every variant participates in every pipeline stage. Per-variant specialization lives inside `validate_structure` / `compile_into` / `Strategy::resolve` hooks ratified in `20 §2.2` / `§5`.
+Every variant participates in every pipeline stage. Per-variant specialization lives in stage-owned hooks ratified per `20 §2.2` (lifecycle hooks live outside the sealed trait hierarchy): `validate` rules at `10 §3`, `compile` work at `15 §10` (Simple) / `16 §10.1` (Complex), and `Strategy::resolve` (`20 §5.2`).
 
 | Clause | `Simple` / Dataset | `Grainset` | `Unionset` | `Joinset` |
 |---|---|---|---|---|
@@ -115,13 +115,13 @@ Every variant participates in every pipeline stage. Per-variant specialization l
 
 Every `plan` / `optimize` / `adapt` cell is identical by construction — `20 §4.2`'s shared skeleton and I3 / I6 together forbid variant-specialization past the strategy-dispatch boundary.
 
-Per-variant specialization within each stage is confined to the hooks named in `20 §5.2`'s `DataKindOps` trait:
+Per-variant specialization within each stage is confined to the stage-owned hooks per `20 §2.2` (the sealed trait hierarchy carries only read-only accessors; lifecycle work is stage-owned):
 
 | Stage | Shared skeleton | Per-variant hook |
 |---|---|---|
-| `parse` | `parse_yaml_tree` (`10 §3.1`) | `DataKindOps::deserialize` (`20 §5.2`). |
-| `validate` | `run_structural_checks` accumulates diagnostics (`10 §3.2`). | `DataKindOps::validate_structure` (`20 §5.2`) — per-variant structural preconditions in `21 §7` / `22 §7` / `23 §8` / `24 §9`. |
-| `compile` | `resolve_bindings` + `resolve_interfaces` (`10 §3.3`). | `DataKindOps::compile_into` — emits `ResolvedSimpleDataKind` (`21 §2.3`) / `ResolvedGrainsetDataKind` (`22 §2.2`) / `ResolvedUnionset` (`23 §2.3`) / `ResolvedJoinset` (`24 §2.4`). |
+| `parse` | `parse_yaml_tree` (`10 §3.1`). | Per-variant YAML surface (`32 §3`) + `serde` derive on each `*Body` struct (`32 §3.2`). |
+| `validate` | `run_structural_checks` accumulates diagnostics (`10 §3.2`). | Per-variant structural preconditions dispatched at `10 §3` — rules in `21 §7` / `22 §7` / `23 §8` / `24 §9`. |
+| `compile` | `resolve_bindings` + `resolve_interfaces` (`10 §3.3`). | Per-variant compile work — `15 §10` for Simple (emits `ResolvedSimpleDataKind`, `21 §2.3`); `16 §10.1` for Complex (emits `ResolvedGrainsetDataKind` (`22 §2.2`) / `ResolvedUnionset` (`23 §2.3`) / `ResolvedJoinset` (`24 §2.4`)). |
 | `plan` | `Strategy::resolve` dispatched by variant tag (`20 §5.3`). | Per-variant `Strategy` impl in `21 §4` / `22 §10` / `23 §4` / `24 §5`. |
 | `optimize` | Variant-agnostic rule set (`10 §3.5`). | None. |
 | `adapt` | Variant-agnostic emission (`10 §3.6`). | None. |
@@ -502,7 +502,7 @@ No variant re-implements the lift algorithm; all three reuse the `16 §8.4` fold
 | `*_E_2500`–`*_E_2599` | Cross-variant diagnostics | **`25` (this doc)** | See `§6.2`. |
 | `*_E_2600`–`*_E_2699` | Reserved for future Complex variants per I10 | — | — |
 
-The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) continues to match the emission stage per `30 §6.1`; `20 §8.5`'s cross-doc-fix to `30 §6.2` (extending `VALID_E` / `COMP_E` / `PLAN_E` subsystem caps to include the `2000`–`2999` data-kinds block) applies to `25`'s `2500`–`2599` sub-range unchanged.
+The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) continues to match the emission stage per `30 §6.1`; `20 §8.1`'s `CDF-30-01` cross-doc-fix to `30 §6.2` (extending `VALID_E` / `COMP_E` / `PLAN_E` subsystem caps to include the `2000`–`2999` data-kinds block) applies to `25`'s `2500`–`2599` sub-range unchanged.
 
 ### 6.2 `*_E_2500`–`*_E_2599` reservations
 
@@ -625,12 +625,12 @@ Round-1 deferrals recorded at specific cells of `§2` reuse the owning doc's `[T
 - `15 §§2, §3, §5, §6, §7` — `Binding`, `PhysicalSource`, `ColumnMapping`, Binding-level `Coverage`; `§2.7` indexes.
 - `16 §§2–14` — `Relationship`, `Cardinality`, `JoinType`, `ComposedSemanticInterface`, `UnifiedSemantics`, `FieldProvenance`, `CompositionCoverage`, field-first resolution, Joinset-as-explicit-subset; `§2.8` indexes. `§2.8`'s `16 §7.3.3` row is the canonical anchor for the "Unionset-only `FieldOwnership::NullFill`" rule reproduced in `§5`.
 - `17 §§2–8` — `TemporalShape`, `AsOf` JoinType, shape-gated composition; `§2.9` indexes. Forward-refs marked where `17 §*` numbering is still landing.
-- `20 §§2–8` — `DataKind` taxonomy, `DataKindOps` trait, `Strategy` trait, strategy-dispatch discipline, error-code roster. `20 §3`'s at-a-glance table is the at-a-glance cross-reference; `25` is the exhaustive one.
+- `20 §§2–8` — `DataKind` taxonomy (sealed trait hierarchy on two orthogonal axes), `Strategy` trait, strategy-dispatch discipline, error-code roster. `20 §3`'s at-a-glance table is the cross-reference; `25` is the exhaustive one.
 - `21 §§2–9` — `Simple` / Dataset; consumed by `§2` Simple columns, `§3.1`, `§4`, `§5`.
 - `22 §§2–10` — `Grainset`; consumed by `§2` Grainset columns, `§3.2`, `§4`, `§5`.
 - `23 §§2–12` — `Unionset`; consumed by `§2` Unionset columns, `§3.3`, `§4`, `§5`.
 - `24 §§2–13` — `Joinset`; consumed by `§2` Joinset columns, `§3.4`, `§4`, `§5`.
-- `30 §2, §4, §6` — SemVer discipline, `#[non_exhaustive]` policy, error-code range governance; `§6.1`'s allocation summary cross-refs `20 §8.5`'s cross-doc-fix to `30 §6.2`.
+- `30 §2, §4, §6` — SemVer discipline, `#[non_exhaustive]` policy, error-code range governance; `§6.1`'s allocation summary cross-refs `20 §8.1`'s `CDF-30-01` cross-doc-fix to `30 §6.2`.
 - `33` (pending) — `SemanticManifest` layer: `ResolvedDataKind` / `ResolvedSimpleDataKind` / `ResolvedComplexDataKind` struct rosters; `§2.7`'s SemanticManifest counterpart table will tighten when `33` lands.
 - `34` (pending) — planner surface: `Strategy` trait, `PlannerCtx`, `RequestSlice`, `StrategyRegistry`; `§3` bullets consume.
 - `35` (pending) — `PlanNode` IR: `PlanNode::Union` / `PlanNode::Join` variants referenced by `§3.3` and `§3.4`.

@@ -45,7 +45,7 @@ Unresolved items arising while drafting `docs/design/apis/34_semstrait_planner.m
 - `34 §8.1` — `Strategy` trait surface.
 - `34 §15.1` — stability posture (open, with caveat).
 - `20 §5.2` — structural ratification of the trait.
-- `20 §9.1` Q-KIND-001 — companion question about `ResolvedDataKind` variant openness.
+- `Q-KIND-001` in [`20_questions.md`](20_questions.md) — companion question about `ResolvedDataKind` variant openness.
 - `30 §4.6` — sealed-vs-open guidance.
 
 **Arguments pro sealed.**
@@ -56,7 +56,7 @@ Unresolved items arising while drafting `docs/design/apis/34_semstrait_planner.m
 - Adapter authors MAY need custom plan shapes for novel `Complex` variants (per I10).
 - Matches `30 §4.6`'s default "extensible unless proven otherwise" posture for trait surfaces.
 
-**Current position in `34`.** Non-sealed, gated by `Q-KIND-001` (`20 §9.1`). If Q-KIND-001 seals `ResolvedDataKind`, sealing `Strategy` follows mechanically.
+**Current position in `34`.** Non-sealed, gated by `Q-KIND-001` (in [`20_questions.md`](20_questions.md)). If Q-KIND-001 seals `ResolvedDataKind`, sealing `Strategy` follows mechanically.
 
 **Next step.** Revisit jointly with Q-KIND-001 before v1.0. The default position is to follow whatever `ResolvedDataKind` does — sealing both together or keeping both open together.
 

@@ -8,7 +8,7 @@ Living session-handoff file. Updated at the end of each working session (agent p
 
 ## 1. Current phase
 
-**Phase**: Reconciliation — **per-Q-ID directory split for `questions/` landed (twelfth pass, 2026-04-29); typed-kind diagnostic discipline + `tracing` observability ratified end-to-end across `30`–`39` (eleventh pass, 2026-04-29); model + entities surface previously closed end-to-end (tenth pass, 2026-04-27); documentation consolidation landed (eighth pass, 2026-04-17); questions/ directory restructure landed (ninth pass, 2026-04-27); metadata-derived Dimension authoring surface ratified (tenth pass, 2026-04-27)**
+**Phase**: Reconciliation — **DataKind taxonomy ratified (thirteenth pass, 2026-04-30) — sealed trait hierarchy on two orthogonal axes (`SimpleDataKind` / `ComplexDataKind` × `PublicDataKind` / `NestedDataKind`); `LeafExtras` / `ComplexExtras` split with cascade-gone for leaf-only fields (`catalog` / `storage` / `semantic_mapping`); `20_taxonomy.md` trim (~39% reduction)**; **per-Q-ID directory split for `questions/` landed (twelfth pass, 2026-04-29); typed-kind diagnostic discipline + `tracing` observability ratified end-to-end across `30`–`39` (eleventh pass, 2026-04-29); model + entities surface previously closed end-to-end (tenth pass, 2026-04-27); documentation consolidation landed (eighth pass, 2026-04-17); questions/ directory restructure landed (ninth pass, 2026-04-27); metadata-derived Dimension authoring surface ratified (tenth pass, 2026-04-27)**
 
 The first-pass drafting of all numbered documents under `docs/design/` is complete. Item H (canonical entity types) and the `[TD-MAP-METADATA-FOLD]` follow-up landed on 2026-04-17 and 2026-04-27 respectively; the eleventh pass on 2026-04-29 closed the workspace-wide diagnostic + observability surface — every `3x` API contract now uses per-stage typed `*ErrorKind` enums + `Diagnose` + the workspace-wide fail-fast tuple over `30 §7`, with a parallel `tracing`-based observability channel ratified at `30 §6`. The retired `IntoDiagnostic` trait, the stable string-code subsystem prefix table, and per-stage `*Errors` carriers are gone from every API doc.
 
@@ -124,7 +124,39 @@ Per-document question files live under [`questions/`](questions/) split across t
 
 ## 5. Last checkpoint
 
-**Session**: 2026-04-29 (per-Q-ID directory split for `questions/` — twelfth pass; follow-up body relocations + INDEX.md restoration — same-day landing pass)
+**Session**: 2026-04-30 (DataKind taxonomy ratification — thirteenth pass; `20_taxonomy.md` trim same-day)
+
+**Driver.** User-led "data-kinds focus" session: define taxonomy and behavior/logic for simple/complex DataKinds. Sequencing rule explicitly set by the user: *"first taxonomy, then Dataset or SimpleDataKind definition, then Grainset"* — walk variants in order, no mixing. The session opened with an agent proposal to restructure `DataKind` as an enum-first surface; the user redirected: *"You broke hierarchy for types by this change … `SimpleDataKind` — expressing leaf nodes, with possible subtypes (right now only one — Dataset). Same for Complex."* The agent retracted and pivoted to "polish" refinements over the existing trait hierarchy, plus a follow-up document-trim on `20_taxonomy.md`.
+
+**Mechanics.**
+
+1. **P-1 — `description` moved to Public-form structs.** `DataKindBase<E>` no longer carries `description`; each `Public*` concrete type (`Dataset`, `Grainset`, `Unionset`, `Joinset`) declares its own `description: Option<String>` field alongside `ai_context` and `semantic_interface`. Nested forms expose none of the three.
+2. **P-2 — `Extras` split into `LeafExtras` and `ComplexExtras`.** `LeafExtras` (full set: `catalog` / `storage` / `semantic_mapping` / `temporal`) is the structural type for `SimpleDataKind`; `ComplexExtras` (`temporal:` only) is the structural type for `ComplexDataKind`. The split is type-level — `catalog:` / `storage:` / `semantic_mapping:` keys on a Complex YAML block are rejected at parse time (no runtime check needed).
+3. **P-3 — no shared `PublicFields` wrapper.** Each Public concrete struct declares its three Public-form fields directly; no shared wrapper struct.
+4. **Cascade-gone for leaf-only `extras` fields.** `catalog` / `storage` / `semantic_mapping` are authored exclusively on the leaf and do NOT inherit from ancestor `ComplexExtras`. Only `temporal:` cascades — and only the shape kind (`TemporalShape.kind`) cascades, not `grain` (per `26 §3.1`).
+5. **Sealed trait hierarchy ratified.** Base `DataKind` (`name()` / `variant()` / `form()`) plus exactly one trait per axis: structural (`SimpleDataKind` / `ComplexDataKind`) + behavioral (`PublicDataKind` / `NestedDataKind`). Lifecycle hooks (validate / compile / strategy) live OUTSIDE the trait hierarchy as stage-owned operations — the `DataKindOps` omnibus trait carrying `deserialize` / `validate_structure` / `compile_into` is **retired**. The `ComplexDataKind` axis is `#[non_exhaustive]` (I10) — future composers (`Snapshotset`, `Windowset`) land as MINOR.
+6. **`20_taxonomy.md` document trim.** 692 → 424 lines (~39% reduction). Cuts: §1.2 / §1.3 / §1.4 narrative scope; per-§2 "deliberate" rationale paragraphs; §2.2 "Implementer's checklist"; §3 "Reading the matrix" / "Rows NOT in the matrix"; per-invariant "Per-variant consequences" prose; §5.1 "Why one strategy per variant" rationale; §5.2 "What the trait does NOT take"; §6.1 / §6.5 narrative; §7 preview matrix; §8.4 Severity distribution; §8.5 cross-doc-fix narrative; §9 Round-1 Audit / Open Items entirely. Preserved as 1-liners: CDF-30-01 (`§8.1` footnote), `DataKindPlanner` → `Strategy` rename pointer (`§5.1`), open-questions tail pointer.
+7. **Cross-doc cite updates** so external pointers don't dangle: `25 §505` / `§633` (`20 §8.5` → `20 §8.1`); `questions/open/20_questions.md §100` (`20 §9.2` → `20 §8.1`); `apis/34_semstrait_planner.md §1047` + `questions/open/34_questions.md §48` / `§59` (`20 §9.1` Q-KIND-001 → `questions/open/20_questions.md` Q-KIND-001).
+8. **Same-session same-day trivial fixes to `25_applicability_matrix.md` §105 / §118 / §122–§124 / §628** — retired `DataKindOps::*` references replaced with stage-owned hook vocabulary aligned to the new taxonomy.
+
+**Net diff** (working tree vs. last commit on `feature/spec-driven-dev`):
+
+```
+docs/design/data-kinds/20_taxonomy.md            | rewrite — 692 → 424 lines (~39% trim); §9 cut; CDF-30-01 + rename pointer inlined
+docs/design/data-kinds/26_nesting_matrix.md      | §3 + §3.1 prose for ComplexExtras / cascade-gone; example YAML rewritten
+docs/design/data-kinds/25_applicability_matrix.md| §105 / §118 / §122–§124 / §628 — DataKindOps → stage-owned hook vocabulary; §505 / §633 — 20 §8.5 ref retargeted
+docs/design/data-kinds/21_dataset.md             | prereq pointer — Extras → LeafExtras at 32 §4
+docs/design/foundations/18_entities.md           | cross-ref — Extras pointer split into LeafExtras / ComplexExtras
+docs/design/apis/32_semstrait_model.md           | §3.1 (DataKindBase<E>); §3.2 (per-variant bodies parameterized over LeafExtras / ComplexExtras); §3.3 (Public structs carry description / ai_context / semantic_interface); §3.4 (sealed trait hierarchy with extras() per axis + description() on PublicDataKind); §4 (LeafExtras + ComplexExtras declared); §4.1 (per-effective-level validity reworked for cascade-gone); §6 SR-2 / SR-5 / SR-6 (description prohibition on nested + type-level enforcement); §10.4.3 (NotRoundTrippable guard updated)
+docs/design/apis/34_semstrait_planner.md         | §1047 — Q-KIND-001 cite retargeted to questions/open/20_questions.md
+docs/design/questions/open/20_questions.md       | §100 — CDF-30-01 cite (§9.2 → §8.1)
+docs/design/questions/open/34_questions.md       | §48 / §59 — Q-KIND-001 cite retargeted
+docs/design/questions/closed/32_questions.md     | cross-ref — DataKindBase<E> mention added
+```
+
+---
+
+**Carry-over from prior session (2026-04-29 — twelfth pass + same-day follow-up: per-Q-ID directory split for `questions/`; follow-up body relocations + INDEX.md restoration)**.
 
 **Follow-up landing pass (same session, immediately after the twelfth pass)**.
 
@@ -263,16 +295,17 @@ docs/design/questions/open/39_questions.md |  33 ++/--
 
 **Next-session starting point**:
 
-1. Read [`INDEX.md`](INDEX.md) **first** for scan-optimized topic → canonical-doc lookup, then `00_overview.md` + `STATUS.md` (mandatory) + `apis/30_api_contracts.md` §5–§7 (workspace-wide diagnostic + observability rules) + the touched `3x` API doc most relevant to the session's task.
-2. **Diagnostic / observability surface fully closed across `30`–`39`**. Two threads still call for follow-ups:
+1. Read [`INDEX.md`](INDEX.md) **first** for scan-optimized topic → canonical-doc lookup, then `00_overview.md` + `STATUS.md` (mandatory) + `data-kinds/20_taxonomy.md` (newly-trimmed canonical taxonomy) + `data-kinds/21_dataset.md` (the upcoming focus — major body drift to rebase against the new sealed-trait taxonomy).
+2. **Open Dataset chapter (`21_dataset.md`)** — major body drift to rebase against the new sealed-trait taxonomy. The current §2.1 still presents `DataKind` as a `pub enum DataKind { Simple, Unionset, Grainset, Joinset, /* non-exhaustive */ }`; the §2.2 model-layer struct shape is the pre-`32 §3` flattened form; §1.2 forward-refs treat `20 §*` as "being drafted concurrently". User's stated focus: *"define core concepts, nuances for explicit and implicit behavior"* — the chapter's working agenda is implicit-vs-explicit semantics for `Simple` (Dataset) plus the Q-DS-001..005 working defaults reviewed against the ratified taxonomy.
+3. **Held variant chapters in discussion order: Dataset → Unionset → Grainset → Joinset.** Per-variant deep-dive lands sequentially after each prior variant closes. Shape rules pre-ratified during the taxonomy session: Grainset child shapes must be symmetric (`TemporalShape.type` equal, ≥ 2 unique grains; equal grains combined via UNION ALL); Unionset requires symmetric child shapes (NULL-fill semantically compatible — `scd + scd ok`, `events + events ok`, `timeseries + timeseries ok`; cross-shape unions out of scope for V1); Joinset is unrestricted on TemporalShape (planner advisories only).
+4. **Other deferred threads** (unchanged from prior sessions):
    - **`Q-API-012` resolution** — ratify the wrapping primitive (blanket `From<Diagnostic<K1>> for Diagnostic<K2>` on `31` vs explicit `cast_kind::<K2>()` adapter vs caller-side rewrap). Drives the §38 fused-helper body; small but visible API-surface decision.
-   - **Foundations / registry cleanup** — `docs/design/foundations/{10, 13, 14, 14a, 14b, 15, 20}.md` and `docs/design/registry/functions_mapping.md` still carry references to the retired `AdaptError` / `IntoDiagnostic` / `<Stage>Error` types and stable string codes. Phase-3 mechanical cleanup: rewrite each retired-type reference to point at the current `*ErrorKind` variant identity. Zero new design decisions; pure pointer / vocabulary update. Largest single touch is `foundations/10_resolution_pipeline.md` §3 ("Internal carrier: typed per-stage error enums") and §6 ("`IntoDiagnostic` trait sketch") — both blocks need replacement with the typed-kind / `Diagnose` story.
-3. **Other deferred threads** (unchanged from prior sessions):
-   - **Per-variant doc body polish** — `21`–`24` carry pre-`18` Rust-struct / YAML examples inline. Not urgent.
+   - **Foundations / registry cleanup** — `docs/design/foundations/{10, 13, 14, 14a, 14b, 15}.md` and `docs/design/registry/functions_mapping.md` still carry references to the retired `AdaptError` / `IntoDiagnostic` / `<Stage>Error` types and stable string codes. Phase-3 mechanical cleanup: rewrite each retired-type reference to point at the current `*ErrorKind` variant identity. Zero new design decisions; pure pointer / vocabulary update. (`20` was cleaned in the thirteenth-pass trim and is no longer in this list.)
    - **Item C — Adapter / Catalog framing** — ratify the feature-gated-modules framing in `36`, `37`, `39`, `42`.
    - **Item E — Constraints session** — resume from [`questions/deferred/11_questions.md`](questions/deferred/11_questions.md).
    - **TD-008 implementation** — code migration is now unblocked; spec is ratified.
-4. **Documentation discipline**: any new cross-cutting type or rule must (a) have exactly one `authoritative-for:` home, (b) be cited from `INDEX.md` *before* the commit lands, (c) respect the directionality rule in `00 §8`. Per-stage `*ErrorKind` enums now follow the same discipline — each is owned by one `3x` doc; `38 §6.2` documents the variant-to-origin map for the unified `SemStraitErrorKind` sum. Resolve any drift via the [`00 §4.4` precedence rule](00_overview.md).
+5. **Out of scope for the current focus**: `33`-side manifest rework (`ResolvedDataKindOps` / `ResolvedInterfaceView` cleanup) and `implementation/40_refactor_plan.md` tracking (`DataKindPlanner` → `Strategy` rename, `CDF-30-01` ranges extension). Forward-pointers in `20 §5.1` / `§8.1` remain as references; no work scheduled here.
+6. **Documentation discipline**: any new cross-cutting type or rule must (a) have exactly one `authoritative-for:` home, (b) be cited from `INDEX.md` *before* the commit lands, (c) respect the directionality rule in `00 §8`. Per-stage `*ErrorKind` enums now follow the same discipline — each is owned by one `3x` doc; `38 §6.2` documents the variant-to-origin map for the unified `SemStraitErrorKind` sum. Resolve any drift via the [`00 §4.4` precedence rule](00_overview.md).
 
 ---
 

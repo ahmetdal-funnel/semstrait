@@ -100,7 +100,7 @@ Each body's shape (`32 §3.2` reproduced):
 
 ```rust
 pub struct GrainsetBody {
-    pub base:      DataKindBase,
+    pub base:      DataKindBase<ComplexExtras>,
     pub datasets:  Vec<NestedDataset>,
     pub unionsets: Vec<NestedUnionset>,
     pub joinsets:  Vec<NestedJoinset>,
@@ -108,7 +108,7 @@ pub struct GrainsetBody {
 }
 
 pub struct UnionsetBody {
-    pub base:      DataKindBase,
+    pub base:      DataKindBase<ComplexExtras>,
     pub datasets:  Vec<NestedDataset>,
     pub grainsets: Vec<NestedGrainset>,
     pub joinsets:  Vec<NestedJoinset>,
@@ -117,7 +117,7 @@ pub struct UnionsetBody {
 }
 
 pub struct JoinsetBody {
-    pub base:          DataKindBase,
+    pub base:          DataKindBase<ComplexExtras>,
     pub datasets:      Vec<NestedDataset>,
     pub grainsets:     Vec<NestedGrainset>,
     pub unionsets:     Vec<NestedUnionset>,
@@ -173,18 +173,18 @@ The author should promote `orders` to a root-level Dataset or add at least one m
 
 A nested data kind carries:
 
-- `name: String` — mandatory (debugging / traceability).
-- `description: Option<String>` — optional.
-- `extras: Extras` — optional (defaults for descendants, per `32 §4.1`).
+- `name: String` — mandatory (anchoring + structural label per §4 addressing).
+- `extras` — optional. Flavor depends on the structural axis: `LeafExtras` for `NestedDataset`; `ComplexExtras` for the three nested composers (per `32 §4`).
 - Variant-specific structural fields (nested child vectors; `mode:` on `NestedUnionset`; `relationships:` on `NestedJoinset`).
 
 A nested data kind does NOT carry:
 
-- `ai_context:` — the AI hint surface is meaningful only on top-level public data kinds (they are the queryable entry points).
+- `description:` — the human-readable description is Public-form-only (per `32 §3.3`); top-level data kinds are the queryable entry points and the only ones that surface a description on the API.
+- `ai_context:` — likewise Public-form-only.
 - `dimensions:` / `measures:` / `metrics:` / `keys:` / `filters:` — the entire `SemanticInterface`.
 - Any aggregate interface field.
 
-Enforced at the type level: `Nested*` structs (`32 §3.3`) wrap only a `*Body` — they have no `ai_context` or `semantic_interface` fields — and each `Nested*` implements the `NestedDataKind` marker trait (`32 §3.4`) as the behavioral axis. A YAML author who writes the missing fields under a nested entry hits `deny_unknown_fields`:
+Enforced at the type level: `Nested*` structs (`32 §3.3`) wrap only a `*Body` — they have no `description`, `ai_context`, or `semantic_interface` fields — and each `Nested*` implements the `NestedDataKind` marker trait (`32 §3.4`) as the behavioral axis. A YAML author who writes any of the prohibited fields under a nested entry hits `deny_unknown_fields`:
 
 ```
 parse.nested-data-kind-carries-interface {
@@ -196,30 +196,43 @@ parse.nested-data-kind-carries-interface {
 
 ### 3.1 Extras on nested data kinds
 
-`extras:` IS allowed on nested data kinds — it participates in the ancestor-defaulting merge rule for leaf fields (per `32 §4.1`):
+`extras:` IS allowed on nested data kinds, but the field set is **type-constrained by the structural axis** (`32 §4`):
+
+- A nested **leaf** (`NestedDataset`) carries the full `LeafExtras`: `catalog:` / `storage:` / `semantic_mapping:` / `temporal:`.
+- A nested **composer** (`NestedGrainset` / `NestedUnionset` / `NestedJoinset`) carries only `ComplexExtras`: `temporal:`.
+
+Authoring `catalog:` / `storage:` / `semantic_mapping:` under any complex data kind (top-level or nested) hits `parse.unknown-field` — these fields have no slot in `ComplexExtras` (per R-6 / `32 §4.1` SR-5). Each leaf dataset that needs a catalog or storage configuration authors it directly on its own `extras:` block; cascade-from-ancestor is **only** in effect for `temporal.<variant>:` (the shape kind), not for any leaf-only field.
 
 ```yaml
 grainsets:
   - name: sales
     extras:
-      catalog: polaris_prod               # default for all nested leaves
+      temporal:                           # shape kind cascades to every leaf descendant
+        timeseries:
+          occurred_at: order_date
     unionsets:
       - name: regions
-        extras:
-          storage:                        # narrows default for this sub-branch
-            format: parquet
+        # ComplexExtras here may carry only `temporal:` — no `catalog:`, no `storage:`.
         datasets:
           - name: sales_us
             extras:
+              catalog: polaris_prod       # leaf-only — authored on the leaf
               storage:
+                format: parquet
                 paths: ["s3://.../us/*.parquet"]
+              temporal:
+                grain: day                # leaf-only; cascades nothing
           - name: sales_eu
             extras:
+              catalog: polaris_prod
               storage:
+                format: parquet
                 paths: ["s3://.../eu/*.parquet"]
+              temporal:
+                grain: day
 ```
 
-Each leaf dataset inherits `catalog: polaris_prod` from the root grainset, `format: parquet` from the intermediate unionset, and its own `paths:` — composed per `32 §4.1`'s "more-specific-overrides-default" rule.
+Each leaf dataset inherits the `timeseries:` shape kind from the root grainset (cascade-from-ancestor, "more-specific-overrides-default" merge per `32 §4.1`) and authors its own `catalog:` / `storage:` / `temporal.grain:` directly. Leaf-only fields do not cascade.
 
 ---
 
@@ -259,7 +272,7 @@ The address is stable across renames of Rust types — it is anchored to the YAM
 | R1 (leaves don't nest) | Type-level — `DatasetBody` (`32 §3.2`) has no child-vector fields; both `Dataset` and `NestedDataset` wrap it and implement `SimpleDataKind` (`32 §3.4`) | `parse.unknown-field { parent: "dataset", field: … }` |
 | R2 (no same-variant self-nesting) | Type-level — each `*Body` struct's child-field set (`32 §3.2`) omits its own variant | `parse.illegal-self-nesting { parent_variant, nested_variant }` |
 | R3 (complex ≥ 2 children) | Validate-stage — post-parse walk over every Public / Nested complex body counts admissible children and asserts `>= 2` | `validate.complex-data-kind-insufficient-children { data_kind, variant, child_count }` |
-| Nested-form structural-only | Type-level — `Nested*` structs (`32 §3.3`) omit `ai_context` / `semantic_interface`; each implements `NestedDataKind` (`32 §3.4`) as the behavioral marker | `parse.nested-data-kind-carries-interface` |
+| Nested-form structural-only | Type-level — `Nested*` structs (`32 §3.3`) omit `description` / `ai_context` / `semantic_interface`; each implements `NestedDataKind` (`32 §3.4`) as the behavioral marker | `parse.nested-data-kind-carries-interface` |
 | Matrix cells (Public vs Nested) | Type-level — body child-vector element types are `Nested*` structs; top-level maps hold `Public*` types, so the form is fixed by position | — |
 
 R1 / R2 correspond to SR-4 in `32 §6`. R3 corresponds to SR-10 in `32 §6`. The Nested-form structural-only rule is SR-2 in `32 §6`.

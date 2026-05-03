@@ -1072,7 +1072,7 @@ SR-E-* numbering is append-only; adding a rule is MINOR per `30 §2`.
 
 - `32 §1` — root YAML shape and where the shared pools / relationships / data-kinds / semantic-mapping blocks live.
 - `32 §3` — `DataKind` hierarchy; `DatasetBody` / `GrainsetBody` / `UnionsetBody` / `JoinsetBody`. `JoinsetBody.relationships: Vec<Relationship>` uses the unified struct from §2.
-- `32 §4` — `Extras` block; `semantic_mapping:` lives inside, value shape per §10.
+- `32 §4` — `LeafExtras` / `ComplexExtras` blocks; `semantic_mapping:` lives inside `LeafExtras`, value shape per §10.
 - `32 §6` — root `SR-*` rules; complementary to `SR-E-*` here.
 - `32b` — catalog grammar; `CatalogRef` referenced from `extras.catalog:`.
 - `26` — nesting matrix; complements the ≥ 2 children structural rule.

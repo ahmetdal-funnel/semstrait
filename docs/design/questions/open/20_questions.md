@@ -97,7 +97,7 @@ But this splits the 100-code block into three sub-blocks (one per stage), each o
 
 **Blocking?** No. Option A is what `20 §8` currently ratifies. The open-question entry exists so `21`–`25` drafters, and anyone updating `30 §6.2`, can consider the alternative before the roster is populated.
 
-**Expected resolution point.** `30 §6.2` — the ranges-table update that `CDF-30-01` in `20 §9.2` flags will incidentally re-confirm the option-A split, or will amend if option B/C is preferred.
+**Expected resolution point.** `30 §6.2` — the ranges-table update that `CDF-30-01` in `20 §8.1` flags will incidentally re-confirm the option-A split, or will amend if option B/C is preferred.
 
 ---
 

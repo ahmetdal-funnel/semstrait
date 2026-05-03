@@ -3,8 +3,8 @@ prereqs: [00, 10, 11, 12, 13, 14, 14a, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 2
 authoritative-for:
   - the root YAML shape for a `semstrait` model — `semantic_model:` wrapper, per-variant plural arrays, shared Semantics pools, `relationships:`
   - the in-memory `SemanticModel` root type — per-variant typed maps, shared pools as `BTreeMap`, `relationships` as `Vec`
-  - the DataKind type hierarchy — `DataKindBase` common-fields struct, per-variant `*Body` structs, `Public*` / `Nested*` concrete types, sealed `DataKind` trait hierarchy on structural + behavioral axes, and view enums for heterogeneous iteration
-  - the unified `Extras` field set
+  - the DataKind type hierarchy — `DataKindBase<E>` common-fields struct generic over the per-axis extras flavor, per-variant `*Body` structs, `Public*` / `Nested*` concrete types, sealed `DataKind` trait hierarchy on structural + behavioral axes, and view enums for heterogeneous iteration
+  - the per-axis extras shapes — `LeafExtras` (full set) and `ComplexExtras` (`temporal:` only)
   - structural rules (SR-*) that govern a valid root-level document
   - the `parse` and `validate` free-function signatures, the `ParseErrorKind` and `ValidateErrorKind` rosters (per `30 §5`), and their `Diagnose` impls
   - the `semstrait-model::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` wrappers, `DumpMode`, and the load / dump error rosters (composes `31b` transport)
@@ -144,38 +144,39 @@ impl SemanticModel {
 
 Six layers: a common-fields struct, per-variant shared bodies, concrete types in two forms, a sealed trait hierarchy on two axes, per-concrete trait impls, and view enums for heterogeneous iteration.
 
-### 3.1 Common-fields struct — `DataKindBase`
+### 3.1 Common-fields struct — `DataKindBase<E>`
 
 ```rust
-pub struct DataKindBase {
-    pub name: String,
-    pub description: Option<String>,
-    pub extras: Extras,
+pub struct DataKindBase<E> {
+    pub name:   String,
+    pub extras: E,
 }
 ```
 
-Held inside every per-variant body (§3.2). Carries the universal fields every data kind exposes regardless of variant or form.
+Held inside every per-variant body (§3.2). Carries the two universal fields every data kind exposes regardless of variant or form: a `name` (anchoring + structural label per `26 §4`) and an `extras` block parameterized over the per-axis flavor — `LeafExtras` for the leaf body and `ComplexExtras` for the three composer bodies (§4).
+
+`description`, `ai_context`, and `semantic_interface` are NOT on the base — they are Public-form-only, and live on each Public concrete type directly (§3.3).
 
 ### 3.2 Per-variant bodies
 
-Each variant has a single `*Body` struct holding `base: DataKindBase` plus variant-intrinsic structural fields. Public and Nested forms of the same variant wrap the same body (§3.3).
+Each variant has a single `*Body` struct holding `base: DataKindBase<E>` (§3.1) plus variant-intrinsic structural fields. The `<E>` parameter is `LeafExtras` for the leaf body and `ComplexExtras` for the three composer bodies — the type-level expression of R-6 (`storage` / `catalog` / `semantic_mapping` are leaf-only). Public and Nested forms of the same variant wrap the same body (§3.3).
 
 Self-nesting is type-level forbidden by field absence: no `grainsets:` field on `GrainsetBody`, no `unionsets:` field on `UnionsetBody`, no `joinsets:` field on `JoinsetBody`.
 
 ```rust
 pub struct DatasetBody {
-    pub base: DataKindBase,
+    pub base: DataKindBase<LeafExtras>,
 }
 
 pub struct GrainsetBody {
-    pub base:      DataKindBase,
+    pub base:      DataKindBase<ComplexExtras>,
     pub datasets:  Vec<NestedDataset>,
     pub unionsets: Vec<NestedUnionset>,
     pub joinsets:  Vec<NestedJoinset>,
 }
 
 pub struct UnionsetBody {
-    pub base:      DataKindBase,
+    pub base:      DataKindBase<ComplexExtras>,
     pub datasets:  Vec<NestedDataset>,
     pub grainsets: Vec<NestedGrainset>,
     pub joinsets:  Vec<NestedJoinset>,
@@ -183,7 +184,7 @@ pub struct UnionsetBody {
 }
 
 pub struct JoinsetBody {
-    pub base:          DataKindBase,
+    pub base:          DataKindBase<ComplexExtras>,
     pub datasets:      Vec<NestedDataset>,
     pub grainsets:     Vec<NestedGrainset>,
     pub unionsets:     Vec<NestedUnionset>,
@@ -200,14 +201,34 @@ The full nesting matrix is at `26 §1`; structural rules (R1 leaves don't nest; 
 
 ### 3.3 Concrete types — Public and Nested forms
 
-Each variant has two concrete forms. Public wraps a body plus `ai_context` plus a `SemanticInterface`. Nested wraps only the body.
+Each variant has two concrete forms. Public wraps a body plus three Public-form-only fields — `description`, `ai_context`, `semantic_interface`. Nested wraps only the body.
 
 ```rust
-// Public (top-level) forms — carry interface + ai_context.
-pub struct Dataset  { pub body: DatasetBody,  pub ai_context: Option<AiContext>, pub semantic_interface: SemanticInterface }
-pub struct Grainset { pub body: GrainsetBody, pub ai_context: Option<AiContext>, pub semantic_interface: SemanticInterface }
-pub struct Unionset { pub body: UnionsetBody, pub ai_context: Option<AiContext>, pub semantic_interface: SemanticInterface }
-pub struct Joinset  { pub body: JoinsetBody,  pub ai_context: Option<AiContext>, pub semantic_interface: SemanticInterface }
+// Public (top-level) forms — carry description + ai_context + interface.
+pub struct Dataset {
+    pub body:               DatasetBody,
+    pub description:        Option<String>,
+    pub ai_context:         Option<AiContext>,
+    pub semantic_interface: SemanticInterface,
+}
+pub struct Grainset {
+    pub body:               GrainsetBody,
+    pub description:        Option<String>,
+    pub ai_context:         Option<AiContext>,
+    pub semantic_interface: SemanticInterface,
+}
+pub struct Unionset {
+    pub body:               UnionsetBody,
+    pub description:        Option<String>,
+    pub ai_context:         Option<AiContext>,
+    pub semantic_interface: SemanticInterface,
+}
+pub struct Joinset {
+    pub body:               JoinsetBody,
+    pub description:        Option<String>,
+    pub ai_context:         Option<AiContext>,
+    pub semantic_interface: SemanticInterface,
+}
 
 // Nested (structural) forms — body only.
 pub struct NestedDataset  { pub body: DatasetBody }
@@ -220,30 +241,36 @@ YAML deserialization uses `#[serde(flatten)]` on the `body:` field so per-varian
 
 ### 3.4 Sealed trait hierarchy — `DataKind` + two axes
 
-All traits are sealed inside the crate. The base trait is `DataKind`; two orthogonal axes of sub-traits classify *structural* shape (leaf vs composer) and *behavioral* shape (queryable top-level vs structural shell).
+All traits are sealed inside the crate. The base trait `DataKind` carries only the universal name + tag accessors; two orthogonal axes of sub-traits classify *structural* shape (leaf vs composer) and *behavioral* shape (queryable top-level vs structural shell). Each axis trait owns the accessors specific to its axis.
 
 ```rust
 mod sealed { pub trait Sealed {} }
 
 pub trait DataKind: sealed::Sealed {
     fn name(&self) -> &str;
-    fn description(&self) -> Option<&str>;
-    fn extras(&self) -> &Extras;
     fn variant(&self) -> DataKindVariant;
     fn form(&self) -> DataKindForm;
 }
 
 // ── Structural axis ──────────────────────────────────────────────
-pub trait SimpleDataKind:  DataKind {}
+// Each subtype distributes its own `extras` flavor (LeafExtras vs ComplexExtras)
+// per the `DataKindBase<E>` parameterization in §3.1 / §3.2.
+pub trait SimpleDataKind: DataKind {
+    fn extras(&self) -> &LeafExtras;
+}
 
 pub trait ComplexDataKind: DataKind {
+    fn extras(&self) -> &ComplexExtras;
     fn allowed_child_variants(&self) -> &'static [DataKindVariant];
     fn child_count(&self) -> usize;
     fn children_ref(&self) -> Box<dyn Iterator<Item = NestedDataKindRef<'_>> + '_>;
 }
 
 // ── Behavioral axis ──────────────────────────────────────────────
+// PublicDataKind owns the three Public-form-only accessors; NestedDataKind
+// is a pure marker.
 pub trait PublicDataKind: DataKind {
+    fn description(&self) -> Option<&str>;
     fn ai_context(&self) -> Option<&AiContext>;
     fn semantic_interface(&self) -> &SemanticInterface;
 }
@@ -257,7 +284,7 @@ pub enum DataKindVariant { Dataset, Grainset, Unionset, Joinset }
 pub enum DataKindForm { Public, Nested }
 ```
 
-`SimpleDataKind` and `NestedDataKind` are pure markers: their contribution is the trait bound itself, which lets generic code require leaf-ness or nested-ness without inspecting tags. `ComplexDataKind` and `PublicDataKind` carry axis-specific accessors.
+`NestedDataKind` is a pure marker: its contribution is the trait bound itself, which lets generic code require nested-ness without inspecting tags. The other three sub-traits carry axis-specific accessors. `SimpleDataKind::extras` and `ComplexDataKind::extras` differ in return type by design — leaf vs complex extras shapes are not interchangeable (§4).
 
 ### 3.5 Trait implementation matrix
 
@@ -345,19 +372,26 @@ The Public / Nested split is enforced at the type level: no Public-form value ca
 
 ---
 
-## 4. The `Extras` Block
+## 4. The `Extras` Blocks — `LeafExtras` and `ComplexExtras`
 
-One `Extras` type, used at every data-kind level:
+Two `Extras` types, one per structural axis. The split is the type-level expression of R-6 (`storage` / `catalog` / `semantic_mapping` are leaf-only — never authored on a Complex variant):
 
 ```rust
 #[non_exhaustive]
-pub struct Extras {
+pub struct LeafExtras {
     pub catalog:          Option<CatalogRef>,
     pub storage:          Option<StorageConfig>,
     pub semantic_mapping: Option<SemanticMapping>,
     pub temporal:         Option<TemporalShape>,
 }
+
+#[non_exhaustive]
+pub struct ComplexExtras {
+    pub temporal:         Option<TemporalShape>,
+}
 ```
+
+Both apply `#[serde(deny_unknown_fields)]`. A YAML author who places `catalog:` / `storage:` / `semantic_mapping:` under a Complex variant's `extras:` block hits `ParseErrorKind::UnknownField` at parse time — the field has no slot to deserialize into.
 
 `StorageConfig` carries the physical-source list (`paths:` for files / folders / globs; `tables:` for catalog FQNs / table-name globs) and an optional declared partition layout (`partition_def:`):
 
@@ -448,19 +482,21 @@ extras:
 
 ### 4.1 Per-effective-level validity
 
-`Extras` fields have different effective levels. A field may be authored on an ancestor complex kind as a default; the effective value at a leaf is computed by walking from the data kind outward to the root, field-by-field, with **more specific overriding default**.
+Each extras field is constrained by **two independent type-level rules**: which extras flavor (Leaf / Complex) carries the field, and which structural-axis trait owns it. Cascade-from-ancestor remains in v1 only for `temporal.<variant>:` (the shape kind); no other extras field cascades.
 
-| Field | Effective at | Defaultable from ancestors |
-|---|---|---|
-| `catalog` | Leaf (`Dataset` / `NestedDataset`) | Any ancestor complex data kind |
-| `storage` (incl. nested `partition_def`) | Leaf | Any ancestor |
-| `semantic_mapping` | Leaf | Any ancestor (default is `auto` when absent entirely) |
-| `temporal.<variant>:` (shape) | Leaf `Dataset`; inherited from any ancestor | Any ancestor complex data kind |
-| `temporal.grain:` | Leaf `Dataset` only — **forbidden** on ComplexDataKinds (SR-E-7) | Never inherited (SR-E-8: Grainset children must author explicitly) |
+| Field | Carrier | Effective at | Cascadable from ancestor? |
+|---|---|---|---|
+| `catalog` | `LeafExtras` | Leaf (`Dataset` / `NestedDataset`) | **No** — type-level (not in `ComplexExtras`) |
+| `storage` (incl. nested `partition_def`) | `LeafExtras` | Leaf | **No** — type-level |
+| `semantic_mapping` | `LeafExtras` | Leaf (default `auto` when absent) | **No** — type-level |
+| `temporal.<variant>:` (shape kind) | both | Leaf; inherited from any ancestor complex | **Yes** (more-specific-overrides-default merge) |
+| `temporal.grain:` | `LeafExtras` only — **forbidden** on Complex (SR-E-7) | Leaf `Dataset` only | **No** (SR-E-8: Grainset children must author explicitly) |
 
-Setting a field at a scope with no eligible descendant is a structural warning (dead config, not fatal). Entity-level invariants (SR-E-6 through SR-E-8) live at `18 §11`.
+The cascade rule applies to the variant-tag layer of `temporal:` only. An author may declare `temporal: { timeseries: {...} }` on a root grainset and have that shape kind cascade to every leaf descendant; the `grain:` value never cascades.
 
-### 4.2 Variant-intrinsic fields that are NOT in `Extras`
+Authoring `temporal:` at a scope with no eligible descendant is a structural warning (dead config, not fatal). Entity-level invariants (SR-E-6 through SR-E-8) live at `18 §11`.
+
+### 4.2 Variant-intrinsic fields that are NOT in either `Extras` flavor
 
 - `UnionMode` is a direct field on `UnionsetBody`. Always required; default `All`. Roster `{All, Unique}` — see `23 §4.1` for the full enum and `16 §5` for composition semantics.
 - `relationships` on `JoinsetBody` is the variant's intrinsic structural field — never overridable through extras. Uses the unified `Relationship` shape per `18 §2`.
@@ -528,11 +564,11 @@ Root-level invariants enforced at `parse` and the `validate` stage. Each rule ma
 | ID | Rule | Kind |
 |---|---|---|
 | **SR-1** | Exactly one `semantic_model:` root key; `deny_unknown_fields` at root. | `ParseErrorKind::UnknownTopLevelBlock` |
-| **SR-2** | Nested data kinds MUST NOT carry `ai_context`, `dimensions`, `measures`, `metrics`, `keys`, `filters`. Enforced at the type level: `Nested*` structs (§3.3) wrap only a `*Body` — they have no `ai_context` or `semantic_interface` fields — and implement `NestedDataKind` (§3.4) as the behavioral marker; `deny_unknown_fields` then rejects the interface tags at parse. | `ParseErrorKind::NestedDataKindCarriesInterface` |
+| **SR-2** | Nested data kinds MUST NOT carry `description`, `ai_context`, `dimensions`, `measures`, `metrics`, `keys`, `filters`. Enforced at the type level: `Nested*` structs (§3.3) wrap only a `*Body` — they have no `description`, `ai_context`, or `semantic_interface` fields — and implement `NestedDataKind` (§3.4) as the behavioral marker; `deny_unknown_fields` then rejects the Public-only tags at parse. | `ParseErrorKind::NestedDataKindCarriesInterface` |
 | **SR-3** | Names are globally unique across the four top-level data-kind maps (§2.1). | `ParseErrorKind::DuplicateDataKindName` |
 | **SR-4** | Same-variant self-nesting is forbidden: no grainset inside a grainset, no unionset inside a unionset, no joinset inside a joinset. Dataset leaves do not nest. Enforced at the type level by each `*Body` struct's child-field set (§3.2). | `ParseErrorKind::IllegalSelfNesting` |
-| **SR-5** | `semantic_mapping` in `extras` is effective only at leaves. Presence on a complex kind is a default for descendant leaves, never the complex kind's own mapping. | (no error; semantic rule) |
-| **SR-6** | Post-merge effective-level validation: the merged `Extras` at each data kind must satisfy variant-specific structural requirements (e.g. every grainset subtree must resolve a `temporal:` value). | `ValidateErrorKind::MissingRequiredExtras` |
+| **SR-5** | `catalog`, `storage`, `semantic_mapping` are leaf-only — they live on `LeafExtras` and have no slot in `ComplexExtras`. Authoring any of them under a Complex variant's `extras:` block is a parse error. Cascade-from-ancestor does not apply to these fields (R-6 / §4.1). | `ParseErrorKind::UnknownField` |
+| **SR-6** | Post-merge effective-level validation: the cascaded `temporal.<variant>:` at each leaf data kind must satisfy variant-specific structural requirements (e.g. every grainset subtree must resolve a `temporal:` shape kind on every leaf descendant). | `ValidateErrorKind::MissingRequiredExtras` |
 | **SR-7** | `deny_unknown_fields` is applied at every struct parse site (model root, data-kind blocks, extras, relationships, semantic elements). | `ParseErrorKind::UnknownField` |
 | **SR-8** | Identifier rules: data-kind names and semantic-element names follow `11 §4`. | `ParseErrorKind::InvalidIdentifier` |
 | **SR-9** | `${VAR}` substitution is applied before YAML decoding; unset variables are fatal parse errors (§8). | `ParseErrorKind::UnsetEnvVar` |
@@ -971,7 +1007,7 @@ Both `IoErrorKind` and every domain wrapper enum are `#[non_exhaustive]` per `31
 - Every `String` field (`name`, `description`, `alias`, path segments, constraint tokens) is YAML-safe — no control characters, no embedded `---` document separators, no bytes that `serde_yaml` cannot quote.
 - Every identifier obeys `00 §4.1`'s identifier grammar.
 - Every `Expr` round-trips through its `ExprSource` YAML form (`14 §4`).
-- Every `Extras` field that `32b §5` accepts as input is exposed on the output shape.
+- Every `LeafExtras` / `ComplexExtras` field that `32b §5` accepts as input is exposed on the output shape.
 
 Failures surface as `Diagnostic<ModelDumpErrorKind>` whose kind is `NotRoundTrippable { path, reason }` where `path` is a dotted-plural addressing expression per `26 §3` (e.g. `datasets.orders.dimensions.weird_name`). Callers rename the offending identifier, strip the offending character from a description, or pre-validate with an author-owned linter before calling `dump_model`.
 

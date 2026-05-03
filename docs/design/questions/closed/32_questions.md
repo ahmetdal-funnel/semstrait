@@ -62,7 +62,7 @@ The late-session Q&A sweep ratified 18 model-level decisions, consolidated into 
 
 **Status.** Superseded by the ratified YAML surface in `32 §2.1` and the per-variant plural tag convention (`datasets:` / `unionsets:` / `grainsets:` / `joinsets:`). There is no single `kind:` discriminator in the ratified model; every variant has its own block-level plural tag, so the "which spelling" question no longer applies.
 
-**Cross-reference.** See `32 §2.1` (top-level YAML roster) and `32 §3.1` — `DataKindBase` common-field struct + per-variant `*Body` structs replace the earlier `DataKind { kind: ... }` sketch.
+**Cross-reference.** See `32 §2.1` (top-level YAML roster) and `32 §3.1` — `DataKindBase<E>` common-field struct + per-variant `*Body` structs replace the earlier `DataKind { kind: ... }` sketch.
 
 ---
 

@@ -1044,7 +1044,7 @@ The `Strategy` trait is **non-sealed** (`30 §4.6`). Third-party crates MAY impl
 
 **Caveat.** The built-in variant dispatch (`dispatch_strategy`, §8.5) matches on the ratified `ResolvedDataKind` variant set — a third-party strategy is useful only when paired with a third-party `ResolvedDataKind` variant (also under I10 per `20 §5.1`). The v1 built-in registry holds exactly the four built-in strategies; a custom strategy requires building a custom registry.
 
-Whether the trait should be **sealed** (restricting impls to the workspace) is tracked as `Q-PLAN-002` in open questions. The Round-1 default is non-sealed per `20 §9.1`'s Q-KIND-001 pending resolution.
+Whether the trait should be **sealed** (restricting impls to the workspace) is tracked as `Q-PLAN-002` in open questions. The Round-1 default is non-sealed per `Q-KIND-001` (in [`questions/open/20_questions.md`](../questions/open/20_questions.md)) pending resolution.
 
 ### 15.2 Built-in strategies — stable
 
