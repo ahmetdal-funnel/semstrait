@@ -64,7 +64,7 @@ Unresolved items arising while drafting `docs/design/apis/34_semstrait_planner.m
 
 ## Q-PLAN-003 — `PLAN_E_0500` allocation conflict — CLOSED
 
-> **Moved to [`../closed/34_questions.md`](../closed/34_questions.md#q-plan-003--plan_e_0500-allocation-conflict--closed--superseded-by-typed-kind-transition).** The typed-kind transition at `30 §6` retired the stable string-code subsystem; `PlanErrorKind::ConstraintViolation` and `PlanErrorKind::AmbiguousImplicitComposition` are now distinct typed variants with no numeric identifier collision.
+> **Moved to [`../closed/34_questions.md`](../closed/34_questions.md).** The typed-kind transition at `30 §6` retired the stable string-code subsystem; `PlanErrorKind::ConstraintViolation` and `PlanErrorKind::AmbiguousImplicitComposition` are now distinct typed variants with no numeric identifier collision.
 
 ---
 
@@ -164,7 +164,7 @@ Unresolved items arising while drafting `docs/design/apis/34_semstrait_planner.m
 
 ## Q-PLAN-008 — Field-first depth bound — CLOSED (2026-04-28)
 
-> **Moved to [`../closed/34_questions.md`](../closed/34_questions.md#q-plan-008--field-first-depth-bound-max_implicit_composition_depth--closed-2026-04-28).** Mirrored from Q-COMP-001 at value `4`.
+> **Moved to [`../closed/34_questions.md`](../closed/34_questions.md).** Mirrored from Q-COMP-001 at value `4`.
 
 ---
 

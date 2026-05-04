@@ -683,12 +683,6 @@ required; consumers route on variant identity. See `Q-CAT-001` (closed).
 
 ## 9. Schema-drift gated I/O (I11b)
 
-### 9.1 Context
-
-Per `00 §9 I11` and `30 §9`, `semstrait-catalog` is **compile-time async**. The one exception is the I11b schema-drift gate: a single `async fn` call permitted immediately before query execution begins, used to confirm that the physical schema captured at compile time still matches reality.
-
-This gate is invoked by `semstrait-manifest` (not by `semstrait-planner`, not by `semstrait-ir`, not by any adapter). The planner and the adapters remain fully synchronous and format-aware-only.
-
 ### 9.2 Signature
 
 ```rust
@@ -860,27 +854,6 @@ This procedure is the MINOR-safe path; any growth that cannot be fit into it bec
 
 ---
 
-## 13. Round-1 open items
-
-The following drafting decisions are **defaulted** in this document but MUST be confirmed before ratification. All are captured in `docs/design/questions/open/37_questions.md`:
-
-- ~~**Q-CAT-001** — Register `CAT` and `FS` subsystem prefixes in `30 §6.2`.~~ **CLOSED.** Resolved by the workspace-wide stable-code retirement (`30 §5` typed-kind discipline). Errors are identified by `CatalogProviderErrorKind` / `FileSystemErrorKind` variant identity; no numeric-prefix table amendment is required.
-- **Q-CAT-002** — Ownership of glob-matching semantics: `semstrait-core` vs `semstrait-catalog`. Current default: core owns the predicate; catalog owns the prefix-and-filter orchestration.
-- **Q-CAT-003** — Snapshot-pinning contract for catalogs that do not expose snapshot IDs (Unity Catalog). Current default: `SnapshotMetadata` uses `SnapshotVersion::Current` without a pin ID; `check_schema_drift` still runs but cannot be snapshot-correlated.
-- **Q-CAT-004** — Should a scheme-dispatching `FileSystem` (e.g. `DispatchingFileSystem`) ship in v1 or stay caller-composed? Current default: caller-composed.
-- **Q-CAT-005** — Streaming reads (`read_stream`) and deletion (`delete`) on `FileSystem`: v1 omission or v1 inclusion with default-error impls? Current default: omitted from v1.
-- **Q-CAT-006** — Catalog mutation surface (`create_table`, `commit_snapshot`): separate companion trait in a future MINOR, or attached to `CatalogProvider` via default-error methods. Current default: separate companion trait.
-- **Q-CAT-007** — `async fn` in traits: keep `async_trait` macro in v1 for object-safety ergonomics, or move to native `async fn` + `trait_variant::make`? Current default: `async_trait` in v1.
-- **Q-CAT-008** — `Schema` / `SchemaColumn` ownership: define here (provider returns catalog-local types; manifest converts) or in `semstrait-core` (shared vocabulary). Current default: define here, since the types are catalog-shaped first.
-- **Q-CAT-009** — `expand_glob` return type: `Vec<Path>` (current) vs `Vec<FileEntry>`. The former is lighter; the latter preserves size/modified-at for caller determinism audits.
-- **Q-CAT-010** — Partition-transform enumeration: mirror Iceberg v2 exactly, or expose a portable subset plus a `PartitionTransform::Other(String)` fallback. Current default: mirror Iceberg exactly, `#[non_exhaustive]`.
-- **Q-CAT-011** — `FilesystemCatalogProvider` schema source: empty schema + manifest-declared (current default) vs user-supplied schema-callback plug-in.
-- **Q-CAT-012** — `CatalogRegistry` ownership: `semstrait-manifest` (current default) vs `semstrait-catalog` (legacy code location).
-
-Each item is parked with arguments-for, arguments-against, and a next-step in `questions/open/37`.
-
----
-
 ## 14. Cross-references
 
 - Overview: `00 §4 The Public Surface`, `00 §5 Layer 3 — Runtime Integration`.
@@ -893,18 +866,3 @@ Each item is parked with arguments-for, arguments-against, and a next-step in `q
 
 ---
 
-## 15. Round-1 ratifications
-
-- §2.1 roster of public items and their stability tier.
-- §3.2 `CatalogProvider` method set and signatures.
-- §5.2 `FileSystem` method set and signatures.
-- §4 four-provider roster and capability matrix (§4.5).
-- §6 four-filesystem roster.
-- §7.1 `expand_glob` signature and contract.
-- §8.1–§8.2 `CatalogProviderErrorKind` / `FileSystemErrorKind` variant set with `Diagnose` impls; identification by variant identity per `30 §5`.
-- §9 I11b schema-drift gate as the sole query-time `CatalogProvider` entry point.
-- §10 caller-wiring pattern and thread-safety requirements.
-- §11 stability posture: open traits, stable built-ins, non-exhaustive error/metadata value-types.
-- §12 crate-boundary negatives: no planning, no SQL, no format-header parsing.
-
-Variant identity is the stable identifier per `30 §5`; numeric `CAT_E_*` / `FS_E_*` strings are retired and `Q-CAT-001` is closed. Variant names, severity, and shape are ratified.

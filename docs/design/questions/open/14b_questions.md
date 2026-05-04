@@ -91,7 +91,7 @@ Two options:
 
 ## OQ-4. Cycle-detection algorithm — Tarjan vs. linear scan — CLOSED (2026-04-28)
 
-> **Moved to [`../closed/14b_questions.md`](../closed/14b_questions.md#oq-4-cycle-detection-algorithm--tarjan-vs-linear-scan--closed-2026-04-28).** Option A (Tarjan SCC) ratified by `14b §5.3` + `14b §12 Q8`.
+> **Moved to [`../closed/14b_questions.md`](../closed/14b_questions.md).** Option A (Tarjan SCC) ratified by `14b §5.3` + `14b §12 Q8`.
 
 ---
 
@@ -137,7 +137,7 @@ Two options:
 
 ## OQ-7. Stability of `BindingId` / `RelationshipId` across compiles
 
-> **Cross-link (2026-04-28).** This is the same decision surface as `[Q-MAP-001](../open/15_questions.md#q-map-001--bindingid-uniqueness-per-manifest-or-cross-manifest)` (per-SemanticManifest vs cross-SemanticManifest BindingId scope). When ratification lands, **resolve at `Q-MAP-001`** — that entry owns the `BindingId` decision per `15`'s authoritative-for scope; OQ-7 here is the consumer-side restatement (14b reads the ID; 15 defines it). Updates here will mirror the `Q-MAP-001` resolution.
+> **Cross-link (2026-04-28).** This is the same decision surface as `[Q-MAP-001](../open/15_questions.md)` (per-SemanticManifest vs cross-SemanticManifest BindingId scope). When ratification lands, **resolve at `Q-MAP-001`** — that entry owns the `BindingId` decision per `15`'s authoritative-for scope; OQ-7 here is the consumer-side restatement (14b reads the ID; 15 defines it). Updates here will mirror the `Q-MAP-001` resolution.
 
 **Question.** 14b Round-1 assigns these IDs in parsed-Model iteration order; they shift if an upstream item is inserted. Should IDs be stabilized (e.g. a content hash of the declaring node) so SemanticManifest diffs between compiles are minimized?
 

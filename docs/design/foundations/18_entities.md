@@ -927,10 +927,6 @@ datasets:
           target_columns: [id]
 ```
 
-### 9.1 Why bare Semantic names
-
-Keys refer to Semantics, not physical columns. Binding through `semantic_mapping` resolves each Semantic to its physical column (or expression) at `compile`. Authors never touch physical shape at this layer.
-
 ### 9.2 Keys are metadata, not constraints
 
 Keys are consumed for:

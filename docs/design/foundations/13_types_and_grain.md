@@ -20,7 +20,7 @@ refined-by:
 
 # 13. Types and Grain
 
-> **Struct ownership (2026-04-17 consolidation).** The `DimensionType` enum roster and its payload structs (`TemporalDimensionBody`, `BucketedDimensionBody`, `BucketSpec`, `BucketBound`, `MetadataDimensionBody`) are ratified in [`18 §4.1`](./18_entities.md#4-1-dimensiontype-roster). This doc owns the *planner-level and authoring-level semantics* of each variant — what the role means, v1 vs. post-v1 shape boundary, and cross-references to `15 §8` (metadata runtime), `12 §4.4` (Grainset temporal-grain eligibility), and `17` (`TemporalShape` gating).
+> **Struct ownership (2026-04-17 consolidation).** The `DimensionType` enum roster and its payload structs (`TemporalDimensionBody`, `BucketedDimensionBody`, `BucketSpec`, `BucketBound`, `MetadataDimensionBody`) are ratified in [`18 §4.1`](./18_entities.md). This doc owns the *planner-level and authoring-level semantics* of each variant — what the role means, v1 vs. post-v1 shape boundary, and cross-references to `15 §8` (metadata runtime), `12 §4.4` (Grainset temporal-grain eligibility), and `17` (`TemporalShape` gating).
 >
 > **Status:** ratified. Canonical scalar `DataType` set, `Grain` total order, and the `DimensionType` semantics layer (per-variant roles) are all content-complete. Complex types (arrays, structs, maps, JSON/VARIANT) are explicitly out of scope for v1 (§2.5).
 
@@ -284,7 +284,7 @@ Adding non-temporal grains is I10-non-breaking.
 
 ## 4. DimensionType Discriminator
 
-The `DimensionType` enum roster and per-variant body structs (`TemporalDimensionBody`, `BucketedDimensionBody`, `BucketSpec`, `BucketBound`, `MetadataDimensionBody`) are ratified in [`18 §4.1`](./18_entities.md#4-1-dimensiontype-roster). Six variants — `Temporal(TemporalDimensionBody)`, `Categorical`, `Binary`, `Geo`, `Bucketed(BucketedDimensionBody)`, `Metadata(MetadataDimensionBody)` — with the payload-bearing variants (`Temporal` / `Bucketed` / `Metadata`) carrying the fields the planner uses; `Categorical` / `Binary` / `Geo` are payload-free in v1 per the sub-shape-polish posture (see `18 §4.1`'s "Sub-shape polish" note for post-v1 extensions like `CategoricalBody::enum_values` / `GeoBody::{lat,lon}`).
+The `DimensionType` enum roster and per-variant body structs (`TemporalDimensionBody`, `BucketedDimensionBody`, `BucketSpec`, `BucketBound`, `MetadataDimensionBody`) are ratified in [`18 §4.1`](./18_entities.md). Six variants — `Temporal(TemporalDimensionBody)`, `Categorical`, `Binary`, `Geo`, `Bucketed(BucketedDimensionBody)`, `Metadata(MetadataDimensionBody)` — with the payload-bearing variants (`Temporal` / `Bucketed` / `Metadata`) carrying the fields the planner uses; `Categorical` / `Binary` / `Geo` are payload-free in v1 per the sub-shape-polish posture (see `18 §4.1`'s "Sub-shape polish" note for post-v1 extensions like `CategoricalBody::enum_values` / `GeoBody::{lat,lon}`).
 
 This section owns the **planner-level and authoring-level semantics** of each variant — what the role means, where each type fits in the resolution pipeline, what the v1 v. post-v1 boundary is.
 
@@ -338,16 +338,6 @@ The `type:` block is a single-key map — exactly one discriminator name with it
 ## 5. Keys and Dimensions — Separation of Concerns
 
 In Round 1 framing the question "should Keys be a `DimensionType` variant?" was raised. The answer is **no**, for reasons that are worth recording.
-
-### 5.1 Why Keys are NOT a `DimensionType`
-
-- **Different roles.** A Dimension is a *grouping/filtering axis* — something a Request names in `group_by:` or `filter:`. A Key is a *row-identity assertion at the DataKind's grain* — a structural claim about uniqueness, used by the planner for Joinset cardinality inference, Unionset dedup policy, and Grainset rollup target selection (`20–25`). These purposes rarely overlap; collapsing them conflates two orthogonal concerns.
-
-- **Composite nature.** Keys are frequently composite: a `primary` Key on `(customer_id, order_date)` identifies rows by a tuple. Making Key a `DimensionType` would force either (a) treating each Key as a single-Dimension specialization — which loses composition — or (b) introducing a "meta-Dimension" that wraps multiple Dimensions, which is strictly worse than the current clear separation in `11 §6.5` ("Keys are arrangements of Dimensions").
-
-- **Structural vs. semantic surface.** Keys do not appear in expressions; no `expr:` references a Key by name. The Request never names a Key directly. Keys are consumed by the planner internally. A `DimensionType` variant for Key would introduce a name that authors cannot use anywhere except the Key declaration itself — a design smell.
-
-- **SQL correspondence.** In SQL, primary keys and foreign keys are **table-level constraints**, not column types. The current design (Keys as top-level arrangements of Dimensions, per `11 §6.5`) mirrors this conventional structure. Collapsing into `DimensionType` would create a semstrait-specific pattern that engineers versed in SQL would have to un-learn.
 
 ### 5.2 The common-resolution path already exists
 

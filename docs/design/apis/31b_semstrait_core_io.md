@@ -1,5 +1,6 @@
 ---
-prereqs: [00, 30, 31]
+
+## prereqs: [00, 30, 31]
 authoritative-for:
   - the `semstrait-core::io` module surface: the `Source` / `Sink` async traits, the `FromIoBytes` / `IntoIoBytes` conversion traits, the `Location` polymorphic enum, the `IoErrorKind` typed-kind enum
   - the back-end roster exposed under `semstrait-core::io::backends`: `memory`, `local`, `s3` (feature-gated)
@@ -10,7 +11,6 @@ authoritative-for:
 refined-by:
   - 32 §10.4 (`semstrait-model::io::{load_model, dump_model, load_catalogs, dump_catalogs}` — domain wrappers composing with `core::io`)
   - 33 §16.5 (`semstrait-manifest::io::{load_manifest, dump_manifest}` — manifest-level wrappers)
----
 
 # 31b. `semstrait-core::io` — Byte-Blob I/O Transport Layer
 
@@ -49,19 +49,6 @@ Three invariants drive the shape:
 2. **Feature-gated cloud SDKs.** AWS (and future GCS / Azure / HTTP) back-ends compile only when opted-in, so library crates that only need local I/O don't pay the cloud-SDK compile cost.
 3. **Polymorphic ergonomics via `Location`.** A consumer holding a `Location` value can call `src.read::<String>().await` without caring which back-end is underneath. `Location` is `Clone + Debug` and carried by value in diagnostics, caches, and audit logs.
 
-### 1.4 Why `object_store`
-
-`object_store` is the Apache Arrow project's abstraction over cloud-and-local storage. Choosing it:
-
-- Eliminates ~300 LOC of hand-rolled S3 / local glue.
-- Gives us `AmazonS3`, `LocalFileSystem`, `InMemory` back-ends with battle-tested retry, multipart uploads, credential chain, proxy config, and atomic-replace semantics out of the box.
-- Positions `semstrait` on the same transport as DataFusion / Delta Lake / Iceberg — future adapter integrations become cheaper.
-- Is Apache-2.0 licensed; API-stable; widely deployed.
-
-We **thin-wrap** it: our `Source` / `Sink` / `Location` are the public surface; back-ends internally hold and delegate to `object_store::ObjectStore` impls. Consumers never see `object_store` types. If `object_store` ever needs to be swapped (for a hypothetically broader `opendal` or homegrown alternative), the change is internal — the public `31b` contract is stable.
-
----
-
 ## 2. Module Layout
 
 Top-level `pub mod` structure of the new `io` module:
@@ -83,7 +70,7 @@ semstrait-core
         └── s3::S3SourceBuilder                              // cfg(feature = "io-aws")
 ```
 
-**Re-exports.** `semstrait_core::io::*` re-exports `Source`, `Sink`, `FromIoBytes`, `IntoIoBytes`, `Location`, `IoErrorKind`. Back-ends are reached through `semstrait_core::io::backends::{memory, local, s3}`; no back-end type is re-exported at the module root — the flat surface stays tiny, and back-end discovery goes through `backends::`.
+**Re-exports.** `semstrait_core::io::`* re-exports `Source`, `Sink`, `FromIoBytes`, `IntoIoBytes`, `Location`, `IoErrorKind`. Back-ends are reached through `semstrait_core::io::backends::{memory, local, s3}`; no back-end type is re-exported at the module root — the flat surface stays tiny, and back-end discovery goes through `backends::`.
 
 **Placement rationale.** `io` is a top-level module beside `expr` / `types` / `functions` (`31 §2`). It is not nested under any existing module because it is cross-cutting: consumers of `expr` never need it, consumers of `types` never need it, but any crate that loads YAML from disk or from S3 does. A peer module keeps the discovery story flat and the feature-flag gating surgical.
 
@@ -291,14 +278,16 @@ impl FromStr for Location {
 
 Dispatch table:
 
-| Input shape                       | Variant                                   | Notes                                                                         |
-| --------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------- |
-| `s3://<bucket>/<key>`             | `Location::S3(S3Source::new(bucket,key))` | requires `io-aws`; raises `IoErrorKind::Unsupported` otherwise                |
-| `mem:<name>`                      | Looks up `<name>` in the in-memory registry, or returns `IoErrorKind::NotFound`  | `mem:` URIs refer to `InMemory` instances registered via a process-global `InMemory::register(name, bytes)` helper |
-| `file://<path>`                   | `Location::Local(LocalFile::new(<path>))` | standard file-URI form                                                        |
-| `/<abs>` / `./<rel>` / `../<rel>` | `Location::Local(LocalFile::new(input))`  | bare filesystem path                                                          |
-| any other literal                 | `Location::Local(LocalFile::new(input))`  | default-to-local                                                              |
-| `<unknown-scheme>://<rest>`       | `IoErrorKind::Unsupported`                | only known schemes dispatch; unknown schemes error                            |
+
+| Input shape                       | Variant                                                                         | Notes                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `s3://<bucket>/<key>`             | `Location::S3(S3Source::new(bucket,key))`                                       | requires `io-aws`; raises `IoErrorKind::Unsupported` otherwise                                                     |
+| `mem:<name>`                      | Looks up `<name>` in the in-memory registry, or returns `IoErrorKind::NotFound` | `mem:` URIs refer to `InMemory` instances registered via a process-global `InMemory::register(name, bytes)` helper |
+| `file://<path>`                   | `Location::Local(LocalFile::new(<path>))`                                       | standard file-URI form                                                                                             |
+| `/<abs>` / `./<rel>` / `../<rel>` | `Location::Local(LocalFile::new(input))`                                        | bare filesystem path                                                                                               |
+| any other literal                 | `Location::Local(LocalFile::new(input))`                                        | default-to-local                                                                                                   |
+| `<unknown-scheme>://<rest>`       | `IoErrorKind::Unsupported`                                                      | only known schemes dispatch; unknown schemes error                                                                 |
+
 
 Parse errors raise `IoErrorKind::Malformed` for shape-violations (e.g. `s3://` with no bucket).
 
@@ -314,12 +303,6 @@ static S3_CLIENT_CACHE: OnceLock<DashMap<ClientKey, Arc<object_store::aws::Amazo
 - **Cache semantics.** First `from_str("s3://…")` for a given `(region, endpoint)` pair constructs the `AmazonS3` client and inserts it; subsequent calls reuse the cached client. Credentials are resolved inside the client (object_store manages refresh).
 - **No eviction in v1.** Processes typically hit 1–3 distinct regions. An LRU cap lands as MINOR if ever needed.
 - **Escape hatch.** Custom-built S3 clients (via `S3SourceBuilder`, §8) bypass the cache entirely; the builder produces a fresh `S3Source` that the caller stores and reuses.
-
-### 6.3 Why an enum rather than a boxed trait
-
-`Location` is a closed set of schemes, `Clone`, `Debug`, and carried by value. Downstream code that stores "where a payload came from" in diagnostics (`Diagnostic.location`), caches (`(Location, ModelHash) -> SemanticModel`), or audit logs uses `Location` without boxing or lifetime plumbing.
-
-`Box<dyn Source>` remains available for consumers that need runtime extensibility over back-ends not known at compile time; `Location` is the "known scheme" shortcut and covers every v1 back-end.
 
 ### 6.4 Future extensions
 
@@ -354,13 +337,15 @@ pub enum IoErrorKind {
 
 **Variant taxonomy.**
 
-| Variant            | Trigger                                                         | Example                                                  |
-| ------------------ | --------------------------------------------------------------- | -------------------------------------------------------- |
-| `NotFound`         | Target path / key does not exist                                | `LocalFile::read_raw` on a non-existent path; S3 `NoSuchKey` |
-| `PermissionDenied` | Access denied by the back-end                                   | Unix `EACCES`; S3 `AccessDenied`                         |
-| `Network`          | Transport-level failure (connection refused, DNS, timeout, TLS) | S3 call timed out; endpoint unreachable                  |
-| `Unsupported`      | Scheme or back-end not available in the current feature set, or operation not supported by a back-end | `s3://` URL parsed without `io-aws` enabled; conditional write attempted |
-| `Malformed`        | Payload or URI violates the expected shape                      | UTF-8 decode failure via `String::from_io_bytes`; `s3://` with no bucket component |
+
+| Variant            | Trigger                                                                                               | Example                                                                            |
+| ------------------ | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `NotFound`         | Target path / key does not exist                                                                      | `LocalFile::read_raw` on a non-existent path; S3 `NoSuchKey`                       |
+| `PermissionDenied` | Access denied by the back-end                                                                         | Unix `EACCES`; S3 `AccessDenied`                                                   |
+| `Network`          | Transport-level failure (connection refused, DNS, timeout, TLS)                                       | S3 call timed out; endpoint unreachable                                            |
+| `Unsupported`      | Scheme or back-end not available in the current feature set, or operation not supported by a back-end | `s3://` URL parsed without `io-aws` enabled; conditional write attempted           |
+| `Malformed`        | Payload or URI violates the expected shape                                                            | UTF-8 decode failure via `String::from_io_bytes`; `s3://` with no bucket component |
+
 
 ### 7.1 `Diagnose` impl
 
@@ -425,12 +410,14 @@ pub enum RepositoryErrorKind {
 
 ## 8. Back-End Roster
 
-| Back-end         | Module path                              | Implements       | Feature flag           | Internal wrapping                                        |
-| ---------------- | ---------------------------------------- | ---------------- | ---------------------- | -------------------------------------------------------- |
-| In-memory        | `backends::memory::InMemory`             | `Source`, `Sink` | always under `io`      | `object_store::memory::InMemory`                         |
-| Local filesystem | `backends::local::LocalFile`             | `Source`, `Sink` | always under `io`      | `object_store::local::LocalFileSystem`                   |
-| S3               | `backends::s3::S3Source`                 | `Source`, `Sink` | `io-aws`               | `object_store::aws::AmazonS3`                            |
-| S3 builder       | `backends::s3::S3SourceBuilder`          | (constructor)    | `io-aws`               | wraps `object_store::aws::AmazonS3Builder`               |
+
+| Back-end         | Module path                     | Implements       | Feature flag      | Internal wrapping                          |
+| ---------------- | ------------------------------- | ---------------- | ----------------- | ------------------------------------------ |
+| In-memory        | `backends::memory::InMemory`    | `Source`, `Sink` | always under `io` | `object_store::memory::InMemory`           |
+| Local filesystem | `backends::local::LocalFile`    | `Source`, `Sink` | always under `io` | `object_store::local::LocalFileSystem`     |
+| S3               | `backends::s3::S3Source`        | `Source`, `Sink` | `io-aws`          | `object_store::aws::AmazonS3`              |
+| S3 builder       | `backends::s3::S3SourceBuilder` | (constructor)    | `io-aws`          | wraps `object_store::aws::AmazonS3Builder` |
+
 
 ### 8.1 `InMemory`
 
@@ -498,10 +485,12 @@ No new back-ends ship in v1. Adding `backends::http`, `backends::gcs`, `backends
 
 ## 9. Feature Flags
 
-| Feature  | Default | Gates                                                                                                   | Pulls                                           |
-| -------- | ------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+
+| Feature  | Default | Gates                                                                                                                          | Pulls                                                                                     |
+| -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
 | `io`     | **ON**  | The `io` module itself; `Source`, `Sink`, conversion traits, `Location`, `IoErrorKind`; `backends::memory` + `backends::local` | `tokio` (rt + fs), `bytes`, `object_store` (minimal — `Local` + `InMemory` features only) |
-| `io-aws` | OFF     | `Location::S3` variant + `backends::s3::{S3Source, S3SourceBuilder}`                                    | `object_store/aws` feature (pulls `aws-config` transitively) |
+| `io-aws` | OFF     | `Location::S3` variant + `backends::s3::{S3Source, S3SourceBuilder}`                                                           | `object_store/aws` feature (pulls `aws-config` transitively)                              |
+
 
 **No other I/O features in v1.** `io-gcs`, `io-azure`, `io-http`, `io-wasm` are not shipped; each would be an additive MINOR that enables the corresponding `object_store` feature.
 
@@ -514,44 +503,38 @@ semstrait-core = { version = "…", default-features = false }
 
 With `--no-default-features`, the `io` module disappears from `semstrait-core`. `tokio`, `bytes`, `object_store` are not in the dep graph. The crate's original "zero-runtime-dep leaf" posture (`31 §1.3`) is preserved. Consumers that only want `Expr` / `DataType` / `Diagnostic` — no I/O — take this path.
 
-### 9.2 Rationale for `io` default-on
-
-The overwhelming majority of downstream crates (`semstrait-model`, `semstrait-manifest`, `semstrait-api`, `semstrait-facade`, CLI) want I/O. Making the common case one-line ergonomic (`use semstrait_core::io::*`) outweighs the edge case of the pure-type consumer that disables it. Default-off forces every common consumer to re-enable explicitly; default-on makes the pure-type consumer pass `default-features = false`. The latter is cheaper overall.
-
-### 9.3 Rationale for `io-aws` default-off
-
-`object_store/aws` transitively pulls `aws-config`, `aws-credential-types`, `aws-sdk-sts`, and related crates (≈40 transitive deps). Default-off keeps the common consumer's build lean. Crates that need S3 (CLI, api, facade) enable it explicitly in their own `Cargo.toml`.
-
----
-
 ## 10. Dependency Posture
 
-| Dep            | Gated by | Purpose                                                                                  |
-| -------------- | -------- | ---------------------------------------------------------------------------------------- |
-| `tokio`        | `io`     | Async runtime + `tokio::fs` used internally by `object_store`; required for `async fn` in trait Send bounds |
-| `bytes`        | `io`     | `Bytes` zero-copy buffer type returned by `Source::read_raw` / accepted by `Sink::write_raw` |
-| `object_store` | `io`     | Back-end implementations (LocalFileSystem, InMemory — via minimal-features set)          |
-| `object_store` (with `aws` feature) | `io-aws` | S3 back-end (`AmazonS3` + builder) |
-| `thiserror`    | —        | Already a `semstrait-core` dep for error types (`31 §12`)                                |
-| `dashmap`      | `io`     | `OnceLock<DashMap<ClientKey, Arc<AmazonS3>>>` for the `Location`-dispatch client cache   |
+
+| Dep                                 | Gated by | Purpose                                                                                                     |
+| ----------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `tokio`                             | `io`     | Async runtime + `tokio::fs` used internally by `object_store`; required for `async fn` in trait Send bounds |
+| `bytes`                             | `io`     | `Bytes` zero-copy buffer type returned by `Source::read_raw` / accepted by `Sink::write_raw`                |
+| `object_store`                      | `io`     | Back-end implementations (LocalFileSystem, InMemory — via minimal-features set)                             |
+| `object_store` (with `aws` feature) | `io-aws` | S3 back-end (`AmazonS3` + builder)                                                                          |
+| `thiserror`                         | —        | Already a `semstrait-core` dep for error types (`31 §12`)                                                   |
+| `dashmap`                           | `io`     | `OnceLock<DashMap<ClientKey, Arc<AmazonS3>>>` for the `Location`-dispatch client cache                      |
+
 
 **Amendment to `31 §1.3`.** The original "`semstrait-core` is the leaf of the workspace DAG — depends on nothing" posture is refined: under default features, `semstrait-core` depends on `tokio`, `bytes`, `object_store`, and `dashmap`. Under `--no-default-features`, the original zero-runtime-dep shape is preserved. This amendment is ratified here and cross-referenced in `31 §12`.
 
 **No transitive dep escalation in downstream crates.** `semstrait-model` disables `io` in its default feature set and uses `parse(&str)`; it gains I/O by enabling its own `io` feature, which forwards to `semstrait-core/io`. `semstrait-api` / `semstrait-facade` / CLI enable `io-aws` explicitly if they need S3.
 
-**`object_store` is not re-exported.** Consumers never see `object_store::ObjectStore`, `object_store::Path`, or any of its error types. The one exception is `S3SourceBuilder::with_object_store_builder`, which accepts an `object_store::aws::AmazonS3Builder` as the advanced escape hatch — callers who opt into this API implicitly opt into `object_store` evolution.
+`**object_store` is not re-exported.** Consumers never see `object_store::ObjectStore`, `object_store::Path`, or any of its error types. The one exception is `S3SourceBuilder::with_object_store_builder`, which accepts an `object_store::aws::AmazonS3Builder` as the advanced escape hatch — callers who opt into this API implicitly opt into `object_store` evolution.
 
 ---
 
 ## 11. Platform Support
 
-| Target                                            | `io`         | `io-aws` | Notes                                                |
-| ------------------------------------------------- | ------------ | -------- | ---------------------------------------------------- |
-| `x86_64-unknown-linux-gnu`, `aarch64-*-linux-gnu` | ✓            | ✓        | Primary target; full support                         |
-| `x86_64-apple-darwin`, `aarch64-apple-darwin`     | ✓            | ✓        | Full support                                         |
-| `x86_64-pc-windows-msvc`                          | ✓            | ✓        | Full support                                         |
-| `wasm32-unknown-unknown`                          | **unsupported** | **unsupported** | **Out of scope in v1.** See §13 (closed). |
-| `no_std` embedded                                 | disable `io` | ✗        | `default-features = false` removes the I/O module entirely |
+
+| Target                                            | `io`            | `io-aws`        | Notes                                                      |
+| ------------------------------------------------- | --------------- | --------------- | ---------------------------------------------------------- |
+| `x86_64-unknown-linux-gnu`, `aarch64-*-linux-gnu` | ✓               | ✓               | Primary target; full support                               |
+| `x86_64-apple-darwin`, `aarch64-apple-darwin`     | ✓               | ✓               | Full support                                               |
+| `x86_64-pc-windows-msvc`                          | ✓               | ✓               | Full support                                               |
+| `wasm32-unknown-unknown`                          | **unsupported** | **unsupported** | **Out of scope in v1.** See §13 (closed).                  |
+| `no_std` embedded                                 | disable `io`    | ✗               | `default-features = false` removes the I/O module entirely |
+
 
 v1 does not support the wasm target. Adding wasm support (any flavour — `InMemory` only, `fetch`-backed HTTP, …) is out of scope for v1 and any follow-on MINOR unless a concrete tooling need surfaces.
 
@@ -649,18 +632,20 @@ assert!(model.find_public("orders").is_some());
 
 ## 13. Structural Rules (SR-IO-*)
 
-| Rule         | Statement                                                                                                                                                                                                                           | Enforcement                                                                                               |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| **SR-IO-1**  | Every back-end implements at least `Source`. `Sink` is optional; read-only back-ends omit it.                                                                                                                                       | Per-back-end impl; compile-time.                                                                          |
-| **SR-IO-2**  | `read_raw` returns `Bytes`. Typed reads go through `Source::read<T>` and `FromIoBytes`. UTF-8 validation lives in `FromIoBytes for String`, emitting `IoErrorKind::Malformed` on failure.                                          | Trait contract; the default-method impl ties the two together.                                            |
-| **SR-IO-3**  | `describe()` is stable content-addressable identity (§3.5). Equal `describe()` ⇒ equal bytes (absent concurrent mutation). `describe()` MUST NOT emit secrets.                                                                      | Per-impl discipline; code review + unit test that `describe()` of identical back-end states is equal.     |
-| **SR-IO-4**  | `read_raw` / `read` are idempotent.                                                                                                                                                                                                 | Trait contract.                                                                                           |
-| **SR-IO-5**  | Error taxonomy is exhaustive for the v1 back-end set. New back-ends that cannot map to an existing `IoErrorKind` variant extend the enum per `30 §2.2` stability rules (`#[non_exhaustive]` makes additions MINOR).               | `#[non_exhaustive]` + additive-MINOR rules.                                                               |
-| **SR-IO-6**  | Writes are per-operation atomic: mid-write crashes do not produce half-written artifacts. Concurrent writes are last-writer-wins (§4.3).                                                                                            | Per-back-end impl (delegated to `object_store`).                                                          |
-| **SR-IO-7**  | `Location::from_str` is total over the input domain: every input produces either a valid `Location` or an `IoErrorKind`; no panics, no silent defaults beyond the explicit "default-to-local" fallback documented in §6.1.        | Parser contract.                                                                                          |
-| **SR-IO-8**  | `object_store` is an internal detail. Consumers outside the `semstrait-*` workspace never see `object_store::ObjectStore`, `object_store::Path`, or any of its error types in a public signature. The one exception is `S3SourceBuilder::with_object_store_builder` (documented escape hatch). | Code review + API audit; enforced by visibility rules on the back-end modules. |
-| **SR-IO-9**  | `InMemory::new` requires a stable `name` argument; anonymous in-memory back-ends are not supported. This preserves SR-IO-3.                                                                                                         | Constructor signature.                                                                                    |
-| **SR-IO-10** | Core's `io` module is feature-gated behind `io` (default ON) and `io-aws` (default OFF). `--no-default-features` restores the zero-runtime-dep posture of `31 §1.3`.                                                               | `Cargo.toml` feature definition + CI job that builds `--no-default-features`.                             |
+
+| Rule         | Statement                                                                                                                                                                                                                                                                                      | Enforcement                                                                                           |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **SR-IO-1**  | Every back-end implements at least `Source`. `Sink` is optional; read-only back-ends omit it.                                                                                                                                                                                                  | Per-back-end impl; compile-time.                                                                      |
+| **SR-IO-2**  | `read_raw` returns `Bytes`. Typed reads go through `Source::read<T>` and `FromIoBytes`. UTF-8 validation lives in `FromIoBytes for String`, emitting `IoErrorKind::Malformed` on failure.                                                                                                      | Trait contract; the default-method impl ties the two together.                                        |
+| **SR-IO-3**  | `describe()` is stable content-addressable identity (§3.5). Equal `describe()` ⇒ equal bytes (absent concurrent mutation). `describe()` MUST NOT emit secrets.                                                                                                                                 | Per-impl discipline; code review + unit test that `describe()` of identical back-end states is equal. |
+| **SR-IO-4**  | `read_raw` / `read` are idempotent.                                                                                                                                                                                                                                                            | Trait contract.                                                                                       |
+| **SR-IO-5**  | Error taxonomy is exhaustive for the v1 back-end set. New back-ends that cannot map to an existing `IoErrorKind` variant extend the enum per `30 §2.2` stability rules (`#[non_exhaustive]` makes additions MINOR).                                                                            | `#[non_exhaustive]` + additive-MINOR rules.                                                           |
+| **SR-IO-6**  | Writes are per-operation atomic: mid-write crashes do not produce half-written artifacts. Concurrent writes are last-writer-wins (§4.3).                                                                                                                                                       | Per-back-end impl (delegated to `object_store`).                                                      |
+| **SR-IO-7**  | `Location::from_str` is total over the input domain: every input produces either a valid `Location` or an `IoErrorKind`; no panics, no silent defaults beyond the explicit "default-to-local" fallback documented in §6.1.                                                                     | Parser contract.                                                                                      |
+| **SR-IO-8**  | `object_store` is an internal detail. Consumers outside the `semstrait-`* workspace never see `object_store::ObjectStore`, `object_store::Path`, or any of its error types in a public signature. The one exception is `S3SourceBuilder::with_object_store_builder` (documented escape hatch). | Code review + API audit; enforced by visibility rules on the back-end modules.                        |
+| **SR-IO-9**  | `InMemory::new` requires a stable `name` argument; anonymous in-memory back-ends are not supported. This preserves SR-IO-3.                                                                                                                                                                    | Constructor signature.                                                                                |
+| **SR-IO-10** | Core's `io` module is feature-gated behind `io` (default ON) and `io-aws` (default OFF). `--no-default-features` restores the zero-runtime-dep posture of `31 §1.3`.                                                                                                                           | `Cargo.toml` feature definition + CI job that builds `--no-default-features`.                         |
+
 
 ---
 

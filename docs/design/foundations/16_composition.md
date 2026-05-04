@@ -100,7 +100,9 @@ refined in the `refined-by` docs.
 
 `16` ratifies: the `Relationship` struct + `KeyPair` + `Directionality`
 (§2); `Cardinality` (§3); `JoinType` + `PlanNode::Join` carriage (§4);
-`ComposedSemanticInterface` + `CompositionKind` (3 variants) + `Origin`
+`ComposedSemanticInterface` + `CompositionKind` (2 variants V1 — `Joinset`
+and `Grainset` post-thirteenth-pass cascade rebase 2026-05-03; Unionset
+retired per §5 ratification note) + `Origin`
 axis + `ImplicitId` + `SemanticsView` trait (§5, **resolves (i)**);
 `UnifiedSemantics` merge logic (§6); `FieldProvenance` +
 `FieldOwnership` (§7); `CompositionCoverage` extending `15 §6` (§8); the
@@ -395,7 +397,7 @@ substitutes the effective form per-direction at plan emission.
 
 ## 3. `Cardinality`
 
-Enum defined in [`18 §2.4`](./18_entities.md#24-cardinality--required-at-every-site). v1 variants: `OneToOne`, `OneToMany`, `ManyToOne`, `ManyToMany`.
+Enum defined in [`18 §2.4`](./18_entities.md). v1 variants: `OneToOne`, `OneToMany`, `ManyToOne`, `ManyToMany`.
 
 Declared on every `Relationship`. `Cardinality` is **planning metadata**,
 not a runtime enforcement — `semstrait` does not scan data to verify that
@@ -581,6 +583,37 @@ would, when reducible to a `Semi` rewrite by the adapter, lose
 
 ## 5. `ComposedSemanticInterface`
 
+> **Scope reconciliation (post-thirteenth-pass cascade rebase, 2026-05-03).**
+> The `ComposedSemanticInterface` shape ratified below survives, but its
+> scope is narrowed in V1 to **two `CompositionKind` variants**:
+> `{Grainset, Joinset}`. The `Unionset` variant is retired from
+> `CompositionKind` because Unionset uses its own bare `SemanticInterface`
+> (per [`../data-kinds/23_unionset.md §3.2`](../data-kinds/23_unionset.md));
+> Unionset's row-wise composition is plan-emission-only and does not need
+> the unified-surface / per-field-provenance machinery `ComposedSemanticInterface`
+> provides. Grainset is added in V1 (per `22 §3.4`) for **cross-grain
+> LEFT OUTER JOIN composition** when no single effective routing unit
+> covers a Request — driver + attached units are equi-joined on shared
+> Keys per `18 §2.5`, mediated by a `ComposedSemanticInterface`.
+> Joinset's per-hop relationship-walk shape is unchanged. Same-grain
+> implicit Unionsets that arise inside a Grainset (per `22 §3.3`) do
+> NOT route through `ComposedSemanticInterface` — they use the bare
+> Unionset SemanticInterface like any explicit Unionset. Cross-grain
+> JOIN-tree details (driver/attached pairing, equi-join Keys per pair)
+> live on `ResolvedGrainset` per `33`, not on `ComposedSemanticInterface`
+> itself; the `traversed_paths: Vec<RelationshipPath>` field below
+> remains Joinset-only.
+>
+> Body sections below preserve the pre-rebase wording for readability;
+> readers should mentally apply the V1 scope: `CompositionKind` reads as
+> `{Grainset, Joinset}`; references to `CompositionKind::Unionset` and
+> "implicit-Unionset enumeration" (§9.3 / §10.5) are inert in V1
+> (Unionset enumeration / inference happens inside Grainset and Dataset
+> per their own chapters, not via `ComposedSemanticInterface`). The
+> deeper structural rewrite of §§9.3 / 10.5 lands in a follow-up sweep
+> tracked in [`../questions/open/16_questions.md`](../questions/open/16_questions.md)
+> as `Q-COMP-006` (post-rebase Unionset-retirement structural cleanup).
+
 ```rust
 #[non_exhaustive]
 pub struct ComposedSemanticInterface {
@@ -590,7 +623,10 @@ pub struct ComposedSemanticInterface {
     pub interface: UnifiedSemantics,             // §6 — namespace-aware merge
     pub provenance: FieldProvenance,             // §7 — per-field ownership
     pub coverage: CompositionCoverage,           // §8 — extends 15 §6
-    pub traversed_paths: Vec<RelationshipPath>,  // §5.2
+    pub traversed_paths: Vec<RelationshipPath>,  // §5.2 — Joinset only;
+                                                 //        Grainset cross-grain
+                                                 //        JOIN-tree lives on
+                                                 //        ResolvedGrainset per 33
 }
 ```
 
@@ -606,7 +642,8 @@ reconciled under `UnifiedSemantics`, with per-field ownership
 ### 5.1 Structure
 
 - `composition_kind: CompositionKind` — the kind discriminator (§5.3).
-  Three variants: `Joinset` / `Unionset` / `Grainset`.
+  V1 carries **two variants**: `Joinset` / `Grainset` (Unionset retired
+  per the §5 ratification note).
 - `origin: Origin` — the provenance axis (§5.6). `Origin::Explicit` for
   author-declared compositions; `Origin::Implicit { id: ImplicitId }`
   for compile-enumerated compositions. `Grainset` is always `Explicit`.
@@ -614,14 +651,18 @@ reconciled under `UnifiedSemantics`, with per-field ownership
   participating. Exactly the kinds that contribute at least one field
   or one edge to the composition. Order is significant — author-declared
   for `Origin::Explicit`; canonical (sorted by `DataKindName`) for
-  `Origin::Implicit`.
+  `Origin::Implicit`. For Grainset cross-grain composition (per `22 §3.4`),
+  `constituents` is the effective routing unit list (one per distinct
+  grain), in the canonical order specified by `22 §3.1`.
 - `interface: UnifiedSemantics` — the merged semantic surface (§6).
 - `provenance: FieldProvenance` — per-unified-name ownership (§7).
 - `coverage: CompositionCoverage` — per-constituent per-name coverage
   (§8).
 - `traversed_paths: Vec<RelationshipPath>` — the `Relationship`
-  traversal that produced the composition (§5.2). Empty for `Unionset`
-  and `Grainset`; non-empty for `Joinset` (regardless of `Origin`).
+  traversal that produced the composition (§5.2). Empty for `Grainset`
+  (cross-grain composition uses Keys per `18 §2.5`, not Relationships;
+  the per-pair JOIN-key index lives on `ResolvedGrainset` per `33`);
+  non-empty for `Joinset` (regardless of `Origin`).
 
 ### 5.2 `traversed_paths`
 
@@ -635,8 +676,11 @@ implicit-Joinset enumeration (§10.4) may yield a **tree cover** over
 the tree. Explicit Joinsets with multi-leg traversals (deferred per
 `[TD-JOINSET-NARY]`) follow the same shape.
 
-For `CompositionKind::Unionset` and `CompositionKind::Grainset`, this
-field is empty (vertical compositions do not traverse `Relationship`s).
+For `CompositionKind::Grainset`, this field is empty: Grainset cross-grain
+composition (per `22 §3.4`) uses entity-level `Key`s per `18 §2.5` for
+its equi-join structure, not declared `Relationship`s. The per-pair
+JOIN-key index, the chosen driver, and the attached unit list live on
+`ResolvedGrainset` per `33 §<ResolvedGrainset>` (forthcoming).
 
 `traversed_paths` is consistent with `14b §4.5`'s `PathSignature`: for a
 cross-kind reference inside a composed Request, the per-expression
@@ -648,16 +692,28 @@ cross-kind reference inside a composed Request, the per-expression
 #[non_exhaustive]
 pub enum CompositionKind {
     Joinset,    // horizontal — Relationship-mediated traversal
-    Unionset,   // vertical — UNION ALL append
-    Grainset,   // grain-sharded — coarsest-to-finest router
+    Grainset,   // grain-sharded — cross-grain LEFT OUTER JOIN tree on shared Keys
+                //                 (single-unit delegation does not synthesize
+                //                  a ComposedSemanticInterface; cross-grain
+                //                  JOIN composition does)
+    // `Unionset` retired in V1 (post-thirteenth-pass cascade rebase, 2026-05-03);
+    // see ratification note at top of §5. Unionset uses its own bare
+    // `SemanticInterface` per `23 §3.2`. Same-grain implicit Unionsets
+    // arising inside a Grainset (per `22 §3.3`) are a Grainset-internal
+    // construct and do not surface a `CompositionKind` discriminator.
 }
 ```
 
-Three variants. The fourth Round-1 variant — `CompositionKind::Relationship`
-for "implicit Relationship-driven composition" — was retired
-(2026-04-29) when the unified Joinset model collapsed implicit and
-explicit composition into a single kind discriminator + an `Origin`
-axis (§5.6). Implicit Relationship-mediated compositions are now
+V1 has **two variants**, narrowed from three. The fourth Round-1 variant
+— `CompositionKind::Relationship` for "implicit Relationship-driven
+composition" — was retired (2026-04-29) when the unified Joinset model
+collapsed implicit and explicit composition into a single kind
+discriminator + an `Origin` axis (§5.6). The `CompositionKind::Unionset`
+variant was retired (2026-05-03) per the post-thirteenth-pass cascade
+ratification: Unionset's row-wise composition does not need
+`ComposedSemanticInterface`'s unified-surface machinery (a bare
+`SemanticInterface` plus per-child Coverage suffices, per `23 §3.2`).
+Implicit Relationship-mediated compositions remain
 `CompositionKind::Joinset` with `Origin::Implicit`.
 
 **Per-variant origin matrix** (per §5.6):
@@ -665,10 +721,9 @@ axis (§5.6). Implicit Relationship-mediated compositions are now
 | Variant | `Origin::Explicit` | `Origin::Implicit` |
 |---|---|---|
 | `Joinset` | author-declared `joinsets:` block (§13, `12 §5`) | compile-enumerated from declared `Relationship`s (§10.4, §11) |
-| `Unionset` | author-declared `unionsets:` block (`12 §3`) | compile-enumerated for coverage overlap (§10.5) |
-| `Grainset` | author-declared `grainsets:` block (`12 §4`) | n/a — Grainset is always explicit (no implicit grain inference in v1) |
+| `Grainset` | author-declared `grainsets:` block (`12 §4`); cross-grain LEFT OUTER JOIN tree built at compile per `22 §3.4` from declared Keys (per `18 §2.5`) | n/a — Grainset is always explicit (no implicit grain inference in v1) |
 
-All three variants are materialized in the `SemanticManifest` per §10.
+Both variants are materialized in the `SemanticManifest` per §10.
 The author addresses explicit compositions by their declared name
 (`from: <name>`); implicit compositions are addressed by their
 `ImplicitId` canonical hash (§5.7), surfaced under a synthetic name
@@ -676,6 +731,28 @@ the planner assigns at compile (`§10.4.4`).
 
 `#[non_exhaustive]` per I10. Future MINOR additions (e.g.
 `Snapshotset`, `Windowset`) are admissible without semver breakage.
+
+**Grainset cross-grain composition shape.** A Grainset's
+`ComposedSemanticInterface` exists only when the planner needs to assemble
+a cross-grain JOIN tree (per `22 §3.4` / §4.3) — i.e. when no single
+effective routing unit covers a Request. The shape:
+
+- `composition_kind = Grainset`.
+- `origin = Explicit` (Grainset is always author-declared in V1).
+- `constituents` = the effective routing units (one per distinct grain
+  across the Grainset's children, after same-grain pre-merge per `22 §3.3`).
+- `interface` = `UnifiedSemantics` lifted from the Grainset's own
+  authored `SemanticInterface`.
+- `provenance` = per-Semantics ownership across units (Native / Shared /
+  NullFill per §7).
+- `coverage` = per-(unit, Semantics) Coverage entries.
+- `traversed_paths` = empty (Grainset cross-grain composition uses Keys
+  per `18 §2.5`, not Relationships; the per-pair JOIN-key index lives
+  on `ResolvedGrainset` per `33 §<ResolvedGrainset>`, not on
+  `ComposedSemanticInterface` itself).
+
+Joinset's per-hop relationship-walk shape is unchanged from prior
+ratifications and remains the canonical use of `traversed_paths`.
 
 ### 5.4 Distinct type vs bare `SemanticInterface` — resolves open item (i)
 
@@ -1340,63 +1417,6 @@ At compile, after per-kind `Coverage` derivation:
 
 Full algorithm in §10.5.
 
-### 9.4 Rationale — eager materialization
-
-**Why eager (vs Round-1 on-demand).** Round-1 had implicit
-compositions synthesized at plan time per Request. The unified Joinset
-model (2026-04-29) ratified eager materialization: compile enumerates
-every implicit Joinset / Unionset within bounds and stores them in the
-SemanticManifest. Three reasons:
-
-- **Repeat-Request amortization.** A model serving N Requests with
-  similar shape pays plan-time synthesis N times under the on-demand
-  model; eager pays the cost once at compile and N lookups. At v1
-  scale (10s–100s of Relationships, depth ≤ 4, cap 2000), compile
-  cost is sub-second; per-lookup cost is microseconds.
-- **Manifest-as-single-source-of-truth (I8).** The planner reads
-  exclusively from the SemanticManifest. Synthesis at plan time
-  conflicts with this — implicit compositions would exist
-  ephemerally, never persisted, never inspectable by audit tooling.
-  Eager materialization makes the SemanticManifest planner-complete
-  for compositions too.
-- **Clash detection at compile.** The implicit-explicit clash rule
-  (§10.6) requires both forms exist in the same compile pass.
-  On-demand synthesis would defer clash detection to plan time
-  (worse author UX and harder to diagnose).
-
-**Why bound + cap implicit enumeration.** Unbounded enumeration
-admits `O(2^|relationships|)` candidates on dense graphs — a
-combinatorial explosion. The depth bound (`4`) covers Kimball-style
-analytic patterns; the count cap (`2000`) protects against
-pathologically connected models. Above the cap, compile errors
-(`COMP_E_0409`) and the author tightens the model.
-
-**Why path-ambiguity errors at plan time.** I4 (determinism). When
-two implicit Joinsets of equal shortest cost cover the same Request
-constituent set, the planner cannot pick without author intent.
-Heuristic tie-breakers (lex-smallest `RelationshipId`, fewest
-`ManyToMany`) silently change semantics on Relationship reordering.
-Error-on-tie keeps the author-facing contract crisp; the explicit
-`Joinset` is the disambiguation surface.
-
-**Why coverage-ambiguity becomes a Unionset, not an error.** A model
-that declares two top-level kinds both covering `revenue` (with no
-`Relationship` between them) is making the editorial claim "these
-are alternative sources of the same semantics." `UNION ALL` with
-optional pre-aggregation is the correct compositional answer. The
-planner builds the implicit Unionset and the Request resolves
-naturally — no author intervention required for the common case.
-Where the author wants to suppress this, they remove one of the
-constituents from the model or rename to disambiguate semantics.
-
-**Why transparent unfolding through composed surfaces.** Round-1
-prohibited chaining (`PLAN_E_0504`). The unified Joinset model
-removes the prohibition: compile sees the unfolded graph (composed
-surfaces decomposed into their constituents during enumeration), so
-"walking through" a `Unionset` to reach a `Simple` kind beyond it is
-mechanically the same as walking the underlying `Relationship`s
-directly. The clash check (§10.6) prevents accidental duplication.
-
 ## 10. Materialization Policy
 
 **Ratified (Q2, revised 2026-04-29):** all compositions —
@@ -1443,14 +1463,6 @@ At `compile`, after explicit compositions are materialized:
   SemanticManifest.
 - The planner addresses implicit compositions via the same lookup
   path as explicit ones.
-
-### 10.3 Rationale
-
-(See §9.4 for the detailed why-eager argument.) In summary: eager
-materialization amortizes synthesis cost across Requests, preserves
-SemanticManifest-as-source-of-truth (I8), enables compile-time clash
-detection (§10.6), and is bounded by the depth + cap so combinatorial
-explosion is ruled out.
 
 ### 10.4 Implicit-`Joinset` enumeration
 
@@ -2175,20 +2187,34 @@ pre-join aggregation preserves correctness.
 
 ### 15.4 `20-25` — per-`DataKind` strategies
 
-- `20` (planner strategies overview) consumes `Cardinality` for
-  fanout decisions and emits `PLAN_W_05xx` advisories.
-- `21` (Simple / Dataset) is the leaf participant in any composition;
-  `16`'s `FieldProvenance::Native` for a single-kind composition
-  targets a `21`-owned `SemanticInterface`.
-- `22` (Grainset) consumes `16`'s `CompositionCoverage` to select
-  grain-shards for partial-coverage Requests.
-- `23` (Joinset) details the full `Joinset` authoring and planning
-  surface; `16 §13` ratifies the type-level contract.
-- `24` (Unionset) details vertical composition; `16 §5.3`'s
-  `CompositionKind::Unionset` flags the surface for `24`-specific
-  planning.
-- `25` (Metric surface) details how metrics wire through composition;
-  `16 §6.4`'s measure / metric composition rules are the boundary.
+- `20` (`data-kinds/20_taxonomy.md` — DataKind taxonomy / shared
+  invariants) consumes `Cardinality` for fanout decisions and emits
+  `PLAN_W_05xx` advisories from per-variant strategies.
+- `21` (`data-kinds/21_dataset.md` — Simple / Dataset) is the leaf
+  participant in any composition; `16`'s `FieldProvenance::Native` for
+  a single-kind composition targets a `21`-owned `SemanticInterface`.
+- `22` (`data-kinds/22_grainset.md` — Grainset) consumes `16`'s
+  `CompositionCoverage` to select effective routing units; for
+  partial-coverage Requests across grains, `22 §3.4` builds a
+  `ComposedSemanticInterface` per `16 §5` and emits a LEFT OUTER JOIN
+  tree on shared `Key`s per `18 §2.5`. Same-grain pre-merge inside a
+  Grainset (per `22 §3.3`) produces an implicit Unionset shaped per
+  `23 §3.2`; that Unionset's `SemanticInterface` is bare (NOT a
+  `ComposedSemanticInterface`).
+- `23` (`data-kinds/23_unionset.md` — Unionset) details vertical
+  composition. Post-thirteenth-pass cascade rebase (2026-05-03):
+  Unionset uses its own bare `SemanticInterface` and per-child Coverage,
+  NOT a `ComposedSemanticInterface`; the `CompositionKind::Unionset`
+  variant in `16 §5.3` was retired accordingly. Plan emission detail
+  in `23 §4` (parked in `_drafts/34_unionset_strategy.md`).
+- `24` (`data-kinds/24_joinset.md` — Joinset) details the full Joinset
+  authoring and planning surface; `16 §13` ratifies the type-level
+  contract; `16 §5`'s `ComposedSemanticInterface` carries the
+  per-hop relationship-walk shape via `traversed_paths`.
+- `25` (`data-kinds/25_applicability_matrix.md` — Applicability
+  Matrix) cross-tabulates which `DataKind` consumes which composition
+  rules from `16`; per-variant cells should be re-checked when `16`
+  ratifies anything new at the top.
 
 ### 15.5 `32` / `33` / `34` / `35` — surface / artefact / planner / IR
 
@@ -2204,77 +2230,3 @@ pre-join aggregation preserves correctness.
 - `35` (IR) carries `JoinType`, `Cardinality`, `RelationshipId` on
   `PlanNode::Join` per `16 §4.4`.
 
-## 16. Ratified Decisions Index
-
-Framework choices ratified in this document. Row order is chronological
-within the document; the "Q" numbers are stable identifiers for
-downstream citation.
-
-| Q | Topic | Decision | Location |
-|---|---|---|---|
-| Q1 | Structural shape of `ComposedSemanticInterface` vs `SemanticInterface` (**resolves open item (i) from `00 §4.1`**) | Distinct type; shared `SemanticsView` trait for common accessors; not a variant or subtype of `SemanticInterface`. | §5.4, §5.5 |
-| Q2 | Materialization policy for composed interfaces (**resolves open item (ii) from `00 §4.1`**) — *revised 2026-04-29* | All compositions (explicit + implicit, all `composition_kind`s) materialized at compile in the `SemanticManifest`. Implicit enumeration bounded by `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` and capped at `MAX_IMPLICIT_ENUMERATION_COUNT = 2000`. Plan-time is pure lookup. | §10 |
-| Q3 | Scope of implicit composition (**resolves open item (iii) from `00 §4.1`**) — *revised 2026-04-29* | Only over declared `Relationship`s (Joinset) or coverage overlap (Unionset). Path ambiguity → `PLAN_E_0500` at plan time. Coverage ambiguity → implicit `Unionset`. Depth-limited (4 hops). Hard cap (2000). Transparent unfolding through composed surfaces. Implicit-explicit clash → `COMP_E_0414`. | §9.1, §10.6 |
-| Q4 | `Relationship` placement | Global top-level blocks in the `SemanticModel` (not inside any `DataKind`). Visible at `Root` scope per `11 §2`. | §2.1 |
-| Q5 | `KeyPair` shape | Positional pairs — `Vec<KeyPair { left: SemanticsName, right: SemanticsName }>`. Both sides must resolve to `Key` or `Dimension` role; `Measure` / `Metric` / `Filter` rejected. | §2.3 |
-| Q6 | Composite key ordering | Positional; `keys[i].left` pairs with `keys[i].right`. Multiple `KeyPair` entries represent one composite join condition under `AND`. | §2.3 |
-| Q7 | `Directionality` variants | Two variants in v1: `Bidirectional` (default) and `Forward`. `#[non_exhaustive]` per I10. | §2.4 |
-| Q8 | `Cardinality` variants | Four variants: `OneToOne`, `OneToMany`, `ManyToOne`, `ManyToMany`. `#[non_exhaustive]` per I10. Declared, not verified. | §3.1 |
-| Q9 | `JoinType` variants (v1) | Four variants: `Inner`, `Left`, `Right`, `Full`. `Semi` / `Anti` / `AsOf` deferred. `#[non_exhaustive]` per I10. | §4.1, §4.3 |
-| Q10 | `ComposedSemanticInterface` fields — *revised 2026-04-29* | `composition_kind`, `origin: Origin`, `constituents`, `interface: UnifiedSemantics`, `provenance: FieldProvenance`, `coverage: CompositionCoverage`, `traversed_paths: Vec<RelationshipPath>`. New `origin` field carries `Explicit` vs `Implicit { id }`. | §5.1, §5.6 |
-| Q11 | `CompositionKind` variants — *revised 2026-04-29* | Three variants: `Joinset`, `Unionset`, `Grainset`. The Round-1 fourth variant `Relationship` retired; implicit Relationship-mediated compositions are now `Joinset` with `Origin::Implicit`. `#[non_exhaustive]` per I10. | §5.3 |
-| Q12 | `UnifiedSemantics` name-collision policy — *revised 2026-04-29* | `Unionset` / `Grainset` unify on compatible names (`FieldOwnership::Shared`). `Joinset` (regardless of `Origin`) qualifies on collision (`constituent.name`). Bare name on collision under qualified form triggers `PLAN_E_0505`. | §6.2 |
-| Q13 | `FieldOwnership` variants | `Native(DataKindRef)`, `Shared(Vec<DataKindRef>)`, `NullFill(Vec<DataKindRef>)`, `Derived(PhysicalExpr)`. `#[non_exhaustive]` per I10. | §7.2 |
-| Q14 | `CompositionCoverage` shape | Keyed by `(DataKindRef, UnifiedName)` — per-constituent per-name entries. Reuses `15 §6`'s `CoverageVariant` enum (`Native` / `NullFill` / `Derived` / `Metadata`). | §8.2 |
-| Q15 | Field-first resolution algorithm — *revised 2026-04-29* | Pure lookup over the SemanticManifest's pre-built `composition_index` and `composition_by_constituent_set`. Single-kind fast path, then constituent-set lookup; path ambiguity (multiple compositions cover same set) → `PLAN_E_0500`. No synthesis at plan. | §11 |
-| Q16 | Implicit composition under unified Joinset model — *revised 2026-04-29* | Implicit compositions are first-class: `Origin::Implicit { id: ImplicitId }` on `Joinset` / `Unionset`. Compile enumerates all viable implicit compositions within depth + cap; clash with explicit canonical form → `COMP_E_0414`. Synthetic name `__implicit_…` per §5.7. | §5.6, §5.7, §10.6, §13.5 |
-| Q17 | Error-code allocation | `COMP_E_04xx` for compile / validate composition errors; `PLAN_E_05xx` for plan composition errors; `PLAN_W_05xx` for plan advisories; `COMP_W_04xx` for compile advisories. v1 retires `PLAN_W_0501` / `0502` (intent advisories), `PLAN_E_0504` (chaining prohibition). New: `COMP_E_0409` (cap), `COMP_E_0414` (clash). | §14.5 |
-| Q18 | Composed-surface keys policy — *new 2026-04-29* | Always populated post-compile. `Unionset` / `Grainset` derive from intersection of constituent keys. `Joinset` (any `Origin`) declares-or-derives from anchor's primary key. Closes Q-COMP-018. | §6.5 |
-| Q19 | Implicit-explicit reconciliation — *new 2026-04-29* | REJECT clashes at compile (`COMP_E_0414`). Author must drop the explicit declaration or add a differentiator (per-leg `JoinType` override, `filter:`, declared `keys`, or non-shortest path). | §10.6, §13.5 |
-
-**Round-2 revisit candidates** (not in Q-numbered index; parked as
-open questions):
-
-- `Directionality` granularity (`Q-COMP-007`).
-- Compile-time vs plan-time reverse-traversal detection (`Q-COMP-008`).
-- Composite-key shape alternatives (`Q-COMP-009`).
-- `CompositionCoverage` serialization shape (`Q-COMP-010`).
-- `PLAN_E_0505` candidate suggestions (`Q-COMP-014`).
-- `FieldOwnership::Derived` distinctness (`Q-COMP-015`).
-- `ManyToMany` reject-by-default (`Q-COMP-016`).
-- YAML-surface default for `JoinType` (`Q-COMP-017`).
-
-**Closed in Round 2 (2026-04-29):**
-
-- `Q-COMP-004` — implicit composition produces `Joinset`-style surface
-  (under unified model with `Origin::Implicit`, not the retired
-  `CompositionKind::Relationship`).
-- `Q-COMP-005` — repurposed: intent advisories `PLAN_W_0501` /
-  `0502` retired; new use of the slot ratifies the
-  `MAX_IMPLICIT_ENUMERATION_COUNT = 2000` cap.
-- `Q-COMP-006` — chaining prohibition retired; transparent unfolding.
-- `Q-COMP-011` — `Vec<RelationshipPath>` tree-cover ratified.
-- `Q-COMP-012` — `[TD-COMPOSITION-JOINSET-REUSE]` retired; explicit
-  Joinsets must differ in canonical form from any enumerable implicit
-  Joinset (`COMP_E_0414`).
-- `Q-COMP-013` — `Relationship`s between composed kinds permitted;
-  unified-model implicit enumeration walks transparently through
-  composed kinds.
-- `Q-COMP-018` — composed-surface keys are declare-or-derived (always
-  populated post-compile).
-
-Deferred-to-v2 tech debt:
-
-- `[TD-COMPOSITION-SEMI-ANTI]` — `JoinType::Semi` / `Anti` variants (§4.3).
-- `[TD-COMPOSITION-ASOF]` — `JoinType::AsOf` gated on `17` (§4.3).
-- `[TD-COMPOSITION-SELFJOIN]` — self-referencing `Relationship`s (§12.3).
-- `[TD-JOINSET-NARY]` — N-ary `Joinset`s (§13.2; owned by `23 §*`).
-- `[TD-GRAINSET-IMPLICIT]` — `Origin::Implicit` for `Grainset` (catalog-
-  discovered grain hierarchies; §5.6).
-- `[TD-COMPOSITION-STEINER-SOLVER]` — polynomial-time exact Steiner
-  solver for the implicit-composition multi-target enumeration, gated
-  on profiling evidence that brute-force enumeration becomes a hot
-  path on pathological Models (§10.4; Q-COMP-003 closed 2026-04-28).
-- `[TD-COMPOSITION-FANOUT-ADVISORY]` — re-introduce `PLAN_W_0501` /
-  `0502` under a `strict` planner mode if telemetry shows authors
-  consistently mis-using fanout in v1.

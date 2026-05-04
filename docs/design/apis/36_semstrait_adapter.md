@@ -1157,18 +1157,6 @@ Binary literals can never introduce SQL injection because the hex encoding rejec
 
 `Expr::RegexpMatch`, `Expr::RegexpExtract`, `Expr::Like`, `Expr::ILike` carry their pattern as a `PhysicalExpr` — which, when it's a `Literal(String(...))`, routes through `escape_string_literal`. There is no "regex-specific quoting" at the SQL layer; the SQL-level escaping is the only defense. Per-engine regex flavor divergence (RE2 vs ICU vs Java Pattern) is out of scope per `registry/functions_mapping.md §11` — the adapter emits the pattern verbatim (after SQL-layer escape); interpretation is engine-side.
 
-### 14.6 Audit posture
-
-Per `Q-ADAPT-010`, v1 includes an in-crate audit suite (in `semstrait-adapter`'s own test tree, not a separate audit crate) that feeds the v1 adapters pathological inputs:
-
-- `Name` values with every byte in `0x00`–`0xFF` (after first surviving `Name::new` — most are rejected at construction).
-- `LiteralValue::String(...)` values with embedded single-quotes, double-quotes, null bytes, mixed-delimiter, UTF-8 multi-byte sequences.
-- `ResolvedPhysicalSource::table_name` values with embedded delimiters (worst case: a catalog serving a literal `"; DROP TABLE ..." table name).
-
-The audit asserts that `SqlArtifact.text` re-parses cleanly through each engine's SQL grammar (where grammar tests are feasible) and that no fixture produces an emitted SQL string that could be interpreted as a multi-statement injection. The audit runs on every `cargo test` in CI; failure blocks release.
-
-Split-out to a separate `semstrait-adapter-audit` crate is parked as `Q-ADAPT-010` — in-crate is Round-1 default.
-
 ### 14.7 Injection invariants
 
 Upheld across every `impl EngineAdapter`:
@@ -1253,48 +1241,3 @@ pub use semstrait_ir::{
 };
 ```
 
-## 16. Ratified Decisions Index
-
-`36` introduces no new IR vocabulary — every IR type above is ratified upstream in `35`. The ratifications below concern **adapter-surface**, **emission**, and **boundary** decisions unique to `semstrait-adapter` as a crate:
-
-| # | Decision | Rationale | § |
-|---|---|---|---|
-| R1 | `EngineAdapter` is OPEN (not sealed) | Third-party adapter crates outside the workspace MUST be able to impl. Matches `30 §8.2`. | §3.1 |
-| R2 | `adapt(&SemanticPlan, &SemanticManifest) -> Result<(EngineArtifact, Diagnostics<AdaptErrorKind>), (Diagnostic<AdaptErrorKind>, Diagnostics<AdaptErrorKind>)>` — fail-fast tuple per `30 §7` | Workspace-wide diagnostic-shape decision supersedes the prior bare-`Result` Round-1 default. Closes `Q-ADAPT-001`; retires `adapt_with_diagnostics`. | §3.1 |
-| R3 | `emit` is a default method on `EngineAdapter` with `Err(EmissionNotSupported)` fallback for non-SQL adapters | Every SQL adapter's `adapt` delegates to `emit`; non-SQL adapters (`SubstraitAdapter`) inherit the Err default. | §3.1 |
-| R4 | `AdapterId` is a newtype over `&'static str` with `pub const` identities | Matches `CanonicalFn` / `DialectId` posture; third-party adapters register on their own type. | §3.3 |
-| R5 | `DialectEmit: Dialect` (supertrait chain); structural `Dialect` in `35`, operational `DialectEmit` in `36` | Keeps `semstrait-ir` free of emission concerns per `Q-ADAPT-003`. Splits survival against `35 §1.3`'s "pure IR" posture. | §4.1 |
-| R6 | Built-in dialects are stable across v1 with byte-snapshot regression tests | Consumers caching emitted SQL / Substrait by content-hash rely on stability. Refactor-safe per `30 §11.4`. | §12.1 |
-| R7 | `debug_sql` is a free function, not a trait method | Adapter-independent rendering; zero adapters override in v1. Per `Q-ADAPT-004`; migration via `[TD-ADAPTER-DEBUG-SQL-FREE-FN]`. | §3.5 |
-| R8 | `AdapterCapabilities` is NOT consulted inside `adapt` itself | Authoritative feasibility check is the emission path (`AdaptErrorKind::Unsupported*`). Per `Q-ADAPT-002`. | §6.2 |
-| R9 | Function rewrite = four tiers (Name-only, Name-remap, Structural, Unsupported) | Matches `registry/functions_mapping.md §1`. Adapter implements via `DialectEmit::rewrite_function` returning `RewrittenCall`. | §7.2 |
-| R10 | Type rewrite consults `registry/types_mapping.md` via `DialectEmit::type_name`; unsupported canonical variants hard-error | Matches `14a §6.3`'s hard-error policy. | §8.2 |
-| R11 | `AdaptErrorKind::UnsupportedFeature` uses a `UnsupportedFeatureKind` sub-classifier (single top-level variant) | Fewer top-level variants; sub-classifier is `#[non_exhaustive]`. Per `Q-ADAPT-009`. | §10.1 |
-| R12 | `AdaptErrorKind` is identified by **variant identity** per `30 §5`; numeric `ADAPT_E_*` / `ADAPT_W_*` codes are retired alongside the workspace-wide stable-code retirement. Variants are SemVer-stable (renames MAJOR; additions MINOR via `#[non_exhaustive]`). | Aligns with the typed-kind discipline of `31 §3`; legacy `ADAPT_E_*` strings remain in body prose only as transitional anchors. | §10.2 |
-| R13 | `AdapterRegistry` is process-global via `OnceLock`, sealed post-init | Matches `function_registry()` posture. Per `Q-ADAPT-005`. | §11.2 |
-| R14 | Adapter extension via `AdapterContribution` trait impl on a zero-size marker | Mirrors `RegistryExtension` of `14a §7.1`. No runtime mutation, no macro collection. | §11.3 |
-| R15 | Adapters MUST quote every identifier and escape every string literal through `DialectEmit` methods; release audit enforces | SI-1 / SI-2 invariants per §14. Soundness guarantee. | §14.2 |
-| R16 | Per-engine adapter crates version independently under `Provisional` tier | Matches `30 §13`; adapter churn does not force `semstrait-adapter` releases. | §12.3 |
-| R17 | `SubstraitAdapter` is non-SQL (`dialect() = None`); `emit` returns `EmissionNotSupported`; `adapt` emits `EnginePlan::Substrait(Box<substrait::proto::Plan>)` per `35 §9.2` mapping | Clean separation: SQL path vs Substrait path; no dual-output hybrid. | §5.5 |
-| R18 | In-crate audit suite for SQL-injection fixtures (not a separate crate) | Simpler CI posture; adapter authors see fixtures at crate init. Per `Q-ADAPT-010`. | §14.6 |
-
-## 17. Round-1 Open Items
-
-See `/docs/design/questions/open/36_questions.md` for the 10 parked questions surfaced during Round-1 drafting:
-
-- ~~`Q-ADAPT-001` — `adapt` return-shape (bare `Result` vs `Result<(Artifact, Vec<Diagnostic>), _>`).~~ **CLOSED.** Resolved by the workspace-wide diagnostic-shape decision in `30 §7`: `adapt` carries the standard fail-fast tuple shape `Result<(EngineArtifact, Diagnostics<AdaptErrorKind>), (Diagnostic<AdaptErrorKind>, Diagnostics<AdaptErrorKind>)>`. The `adapt_with_diagnostics` extension is retired; warnings flow through the same tuple slot as for every other stage entry-point (compile, plan, optimize).
-- `Q-ADAPT-002` — `AdapterCapabilities` consultation site (planner + API vs adapter-internal).
-- `Q-ADAPT-003` — `DialectEmit` placement (`35` vs `36`).
-- `Q-ADAPT-004` — `debug_sql` trait-method vs free-function.
-- `Q-ADAPT-005` — `AdapterRegistry` `OnceLock` vs caller-supplied.
-- `Q-ADAPT-006` — per-adapter-crate version pin vs float.
-- `Q-ADAPT-007` — `Capability` roster placement.
-- `Q-ADAPT-008` — `SubstraitAdapter` function-reference anchor mechanism.
-- `Q-ADAPT-009` — `UnsupportedFeatureKind` sub-variant vs top-level variants.
-- `Q-ADAPT-010` — audit seam placement (in-crate vs separate crate).
-
-Round-1 defaults above ratify the adapter surface enough for `34` / `38` / per-engine crates to draft against; the open-questions file records the items revisited once downstream drafts push back.
-
----
-
-*Cross-references in this document are by section (e.g. `35 §6.4`, `14a §4`, `30 §6.2`, `registry/functions_mapping.md §1`). No code-path references are used, per `00 §8`.*

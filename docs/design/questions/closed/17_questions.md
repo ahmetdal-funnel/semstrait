@@ -10,6 +10,14 @@ purpose: Resolved questions originally raised against `foundations/17_temporal_s
 
 ---
 
+## Q-TEMPORAL-001 — `30 §6.2` code-range reconciliation for the 17NN block
+
+**CLOSED (structure-optimization pass, 2026-05-03).** Superseded by the typed-kind diagnostic policy ratified in `30` and cascaded through `31`-`39`. Numeric code-range governance is no longer a v1 gating surface for stage diagnostics; variant identity on typed `*ErrorKind` enums is authoritative.
+
+**Resolution.** Keep historical 17NN allocation discussion as archival context only. Active v1 work references typed-kind diagnostics and stage-owned enums rather than numeric-range reconciliation.
+
+---
+
 ## Q-TEMPORAL-002 — `Scd` payload shape: per-subtype vs flat-fields
 
 **CLOSED (Phase-3 cascade, 2026-04-17).** Ratified via `foundations/18_entities.md §3.3`: **Option B (flat fields)** is the v1 shape, combined with the v1 `ScdType` roster trim to **`{Type1, Type2}`**. `ScdBody` carries `{ scd_type: ScdType, valid_from: SemanticsName, valid_to: SemanticsName }`. There is no longer a per-subtype payload divergence to model, because the four subtypes that had distinct payloads (`Type3` / `Type4` / `Type5` / `Type6`) are descoped from v1. Option A (per-subtype) and Option C (hybrid window-struct) are post-v1 concerns — if the roster re-expands to include history-preserving subtypes with divergent shapes, the question reopens.

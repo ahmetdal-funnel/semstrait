@@ -21,7 +21,7 @@ depends-on:
 
 ## Q-API-001 — Dedicated `API_E_*` subsystem prefix — CLOSED
 
-> **Moved to [`../closed/38_questions.md`](../closed/38_questions.md#q-api-001--dedicated-api_e_-subsystem-prefix-for-structural-configuration-errors--closed--superseded-by-typed-kind-transition).** Superseded by the typed-kind discipline.
+> **Moved to [`../closed/38_questions.md`](../closed/38_questions.md).** Superseded by the typed-kind discipline.
 
 ---
 
@@ -54,7 +54,7 @@ depends-on:
 
 ## Q-API-003 — Stage-ownership of escalated warnings under `WarningPolicy` — CLOSED
 
-> **Moved to [`../closed/38_questions.md`](../closed/38_questions.md#q-api-003--stage-ownership-of-escalated-warnings-under-warningpolicy).** Round-1 default ratified — preserve variant identity through escalation.
+> **Moved to [`../closed/38_questions.md`](../closed/38_questions.md).** Round-1 default ratified — preserve variant identity through escalation.
 
 ---
 

@@ -890,10 +890,6 @@ The adapter crate (`36`) owns the bidirectional conversion between `SemanticPlan
 
 The adapter is free to emit Substrait proto plans with extra hints (capacity, parallelism) in `AdvancedExtension.enhancement` slots; those hints are adapter-owned and not round-tripped through `35`.
 
-### 9.3 YAML / JSON alternatives
-
-`SemanticPlan` serialized via `serde_json` is the reference portable form for debugging / testing. There is no semstrait-specific YAML schema for `SemanticPlan` (YAML in semstrait is an authoring-layer concept per `14 §4`, not an IR-layer concept). Adapters producing plan text for logs / dumps SHOULD emit Substrait protobuf or `serde_json`.
-
 ## 10. Error Types
 
 > **Migration note.** Body sections `§4`–`§8` retain references to legacy `IR_E_*` codes (e.g. `IR_E_3502 UnresolvedType`). Those codes are **retired** per `30 §5`; the public-API surface identifies errors by `IrErrorKind` variant identity. The legacy code prefixes remain in body prose during the migration as cross-reference anchors and will be stripped in a follow-up doc pass. Read `IR_E_NNNN VariantName` in the body as shorthand for `IrErrorKind::VariantName`.
@@ -1170,37 +1166,3 @@ pub use crate::error::IrErrorKind;
 pub use semstrait_core::{Cardinality, JoinType};
 ```
 
-## 15. Ratified Decisions Index
-
-`35` introduces no new expression vocabulary and no new type vocabulary — every type above is ratified upstream in `13`, `14`, `14a`, or `16`. The ratifications below concern **plan-tree shape**, **visibility**, and **boundary** decisions unique to `semstrait-ir` as a crate:
-
-| # | Decision | Rationale | § |
-|---|---|---|---|
-| R1 | `SemanticPlan` is the crate-owned top-level type; `LogicalPlan` is the current code name and is renamed as part of `[TD-IR-RENAME]` | Matches `00 §4.1` canonical vocabulary. Rename is a MINOR via type-alias transition (`pub type LogicalPlan = SemanticPlan;` retained one MINOR cycle). | §3.1 |
-| R2 | `PlanNode` has exactly 8 variants in v1: `Scan`, `Filter`, `Project`, `Agg`, `Join`, `Union`, `Sort`, `Fetch` | Matches the engine-IR structural inspiration (`00 §3` / `35 §1.4`). Distinct, Window, Unnest, TopN are deferred as non-breaking additions. | §4.1 |
-| R3 | Every `PlanNode` variant's inner struct is `#[non_exhaustive]` | I10 — field additions inside a variant are MINOR. | §4 |
-| R4 | `ScanNode` carries `SourceRef` (opaque handle) + `Vec<ResolvedColumn>` + `Vec<PhysicalExpr>` for pushdown. No path, URL, or format string | I1 / I3 — engine identity and path resolution live in the adapter. Adapters consult the SemanticManifest via `SourceRef`. | §4.2 |
-| R5 | `Expr::Aggregate` is NOT carried inside `PhysicalExpr` on any plan-level surface; aggregates live on `AggregateExpr` on `AggNode.aggregates` | Matches `14 §2.3` / `31 §3.3` `PhysicalExpr` wrapper invariants. `AggregateExpr` is a plan-level wrapper carrying the same shape. | §5.7 |
-| R6 | `JoinNode.on: Vec<KeyPair>` with type-reconciled columns; non-equi predicates deferred as `[TD-IR-NON-EQUI-JOIN]` | v1 covers the common case of equijoin over reconciled types. Non-equi is a MINOR addition via `JoinNode.residual: Option<PhysicalExpr>`. | §4.6 |
-| R7 | `JoinNode.cardinality` is required (not `Option<Cardinality>`) and reflects the Relationship graph | Cardinality is always known at plan time; absent cardinality on a Join is a planner bug, not a legitimate state. | §4.6 |
-| R8 | `UnionNode.inputs: Vec<PlanNode>` (n-ary), with `distinct: bool` for `UNION ALL` vs `UNION DISTINCT` | N-ary matches SQL / Substrait `SetRel` shape; avoids right-leaning binary trees for multi-union common case. | §4.7 |
-| R9 | `SortDir` bundles direction + null-ordering; `NullOrdering::Unspecified` defers to the adapter | Keeps `SortNode.order[*]` a single `(Name, SortDir)` tuple; matches Substrait's `SortField.direction`. | §5.6 |
-| R10 | `FetchNode.limit: Option<u64>` and `FetchNode.offset: Option<u64>`; `None` means "no limit / no offset" | `Option` cleanly distinguishes unset from zero; `u64` prevents negative. Values exceeding `i64::MAX` raise `IrErrorKind::FetchValueOutOfRange` at adapter-emit time. | §4.9 |
-| R11 | `DialectId` is a newtype over `&'static str` with `pub const` identities; third-party adapters may extend via the `Dialect` trait | Matches `CanonicalFn`'s newtype-over-stable posture in `semstrait-core` (`31 §5.1`). Extensible without sealing. | §6.4 |
-| R12 | `EngineArtifact = Sql(SqlArtifact) \| Plan(EnginePlan)`; `EnginePlan::Substrait(Box<substrait::proto::Plan>)` is the sole plan form in v1 | Matches `00 §4.1` vocabulary. Future structured-IR emissions (e.g. DataFusion-Logical direct) are MINOR `EnginePlan` variants. | §6 |
-| R13 | `NodeMeta.output_schema: Arc<Schema>` for cheap pass-through schema sharing | Filter, Sort, Fetch share their input's schema without deep clone; measured memory + allocation win over owned schemas. | §5.1 |
-| R14 | `IrErrorKind` is a distinct enum from `CompileErrorKind` / `PlanErrorKind`; its production sites are `semstrait-ir`-internal (plan construction + validation + artifact serialization) | Keeps the crate boundary clean; `semstrait-ir` does not re-export upstream error kinds. | §10.1 |
-| R15 | `IrErrorKind` is identified by **variant identity** per `30 §5`; numeric `IR_E_*` codes were retired during the typed-kind migration. Variants are stable in the SemVer sense (renames are MAJOR; additions are MINOR via `#[non_exhaustive]`). | Aligns with the workspace-wide diagnostic-shape decision; legacy `IR_E_*` strings remain in body prose only as transitional anchors. | §10.2 |
-| R16 | `Name` is a validating newtype over `String`; rejects empty and reserved-prefix identifiers | Identifier well-formedness is checked at the plan boundary, not re-checked on every adapter call. | §5.4 |
-| R17 | Serde is a feature-gated opt-in (`serde` feature); `PlanNode` uses serde-tagged `kind` discriminator to survive variant additions | Matches `semstrait-core`'s posture (`31 §11`); enables portable `SemanticPlan` exchange across processes. | §9.1 |
-| R18 | Substrait mapping lives as a **table** in `35 §9.2`; conversion code lives in `36` | Keeps `semstrait-ir` free of `substrait::proto` conversion logic (complexity belongs to the adapter); keeps the mapping in one ratified place. | §9.2 |
-
----
-
-## 16. Round-1 Open Items
-
-See `/docs/design/questions/open/35_questions.md` for the parked questions surfaced during Round-1 drafting. Round-1 defaults above ratify the plan-tree shape enough for `34` / `36` to draft against; the open-questions file records the items that will revisit once downstream drafts push back.
-
----
-
-*Cross-references in this document are by section (e.g. `14 §3.2`, `16 §5.1`, `30 §6.2`). No code-path references are used, per `00 §8`.*

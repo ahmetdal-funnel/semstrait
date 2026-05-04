@@ -35,39 +35,6 @@ Legend:
 
 The matrix is purely about *which child variants are admissible*. **How many** children a composer must have (≥ 2) is R3 (§2.3).
 
-### 1.1 Worked examples
-
-**Legal: `grainset` → `unionset` → `dataset`.**
-
-```yaml
-grainsets:
-  - name: sales
-    unionsets:
-      - name: regions
-        datasets:
-          - name: sales_us
-          - name: sales_eu
-    joinsets: []
-```
-
-**Illegal: `grainset` → `grainset` (R2).**
-
-```yaml
-grainsets:
-  - name: sales
-    grainsets:                           # ← parse.illegal-self-nesting
-      - name: sub_sales
-```
-
-**Illegal: `dataset` → anything (R1).**
-
-```yaml
-datasets:
-  - name: orders
-    unionsets:                           # ← parse.unknown-field (field missing on DatasetBody)
-      - name: regions
-```
-
 ### 1.2 Empty arrays
 
 Absent child arrays and empty child arrays are both legal. A complex variant with zero children is structurally valid; the downstream `compile` stage may raise a warning (`compile.empty-complex-data-kind`) unless the authoring intent is a placeholder.

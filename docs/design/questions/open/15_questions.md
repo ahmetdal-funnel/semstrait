@@ -22,7 +22,7 @@ depends-on:
 
 ## Q-MAP-001 — `BindingId` uniqueness: per-SemanticManifest or cross-SemanticManifest?
 
-> **Cross-link (2026-04-28).** This entry is the **authoritative home** for the `BindingId` scope-and-stability decision (per `15`'s `authoritative-for: BindingId` claim). The 14b consumer-side restatement [`OQ-7`](14b_questions.md#oq-7-stability-of-bindingid--relationshipid-across-compiles) tracks the same surface; both retire together when this entry resolves.
+> **Cross-link (2026-04-28).** This entry is the **authoritative home** for the `BindingId` scope-and-stability decision (per `15`'s `authoritative-for: BindingId` claim). The 14b consumer-side restatement [`OQ-7`](14b_questions.md) tracks the same surface; both retire together when this entry resolves.
 
 **Question.** `15 §2.2` ratifies `BindingId(pub u32)` as unique **within a SemanticManifest** (per-compile counter; identical Models produce identical IDs IF the compile driver's iteration order is deterministic; recompile of a modified Model shifts IDs). Should `BindingId` instead carry a cross-SemanticManifest identity — e.g. by including the SemanticManifest's content hash into the ID? That would let two SemanticManifests be compared on a per-Binding basis without ambiguity.
 

@@ -181,33 +181,6 @@ The SemanticManifest (`33`) binds the byte-level encoding. `14b` ratifies only t
   - Future extension `[TD-14B-EXPR-INTERN]` (tracked in `14b_questions.md`) covers opt-in interning if SemanticManifest sizes grow past comfortable budgets.
 - `PhysicalExpr` serialization itself is `14` / `33`'s concern; `14b` only requires that whatever `14` and `33` choose is byte-stable.
 
-### 2.5 Why `(SemanticsName, BindingId)` (not `SemanticsName` alone)
-
-A Semantics can be defined once in author text and **still** produce multiple resolved PhysicalExpr variants, one per Binding that can source it. This happens structurally in two ways:
-
-1. **ComplexDataKind unionset** (`22`): multiple SimpleDataKinds expose the same Semantics name; each has its own Binding; each Binding can produce a different `PhysicalExpr` (different `SemanticMapping`, different physical source). Planner picks among them at source selection time.
-2. **Per-Binding `expr:` override on Semantics occurrences** (`11 §6`): the same Semantics name appearing on two SimpleDataKinds can carry different author-declared `expr:` trees on each occurrence; each occurrence's Binding contributes its own resolved entry.
-
-A single-key table `SemanticsName → PhysicalExpr` cannot represent either case without losing information. The two-dimensional key is therefore the minimal faithful encoding.
-
-Compact view:
-
-```mermaid
-flowchart LR
-  S["SemanticsName"]:::sem --> K1
-  B1["BindingId #1 (DK_A)"]:::bind --> K1
-  S --> K2
-  B2["BindingId #2 (DK_B)"]:::bind --> K2
-  K1[("<code>ResolvedExprKey</code> → Entry₁")]:::key
-  K2[("<code>ResolvedExprKey</code> → Entry₂")]:::key
-
-  classDef sem  fill:#eef,stroke:#559
-  classDef bind fill:#efe,stroke:#595
-  classDef key  fill:#fee,stroke:#955
-```
-
-Entry₁ and Entry₂ may share `inferred_type` (almost always do) but differ in `physical_expr`, `referenced_columns`, and possibly `path_signature`.
-
 ### 2.6 The `Provenance` record
 
 ```rust
@@ -446,19 +419,6 @@ Contract:
 
 ## 4. Cross-DataKind Path Resolution
 
-### 4.1 Why BFS
-
-When an `EntityRef { name }` inside Semantics `S_owner` on DataKind `DK_owner` resolves to a target Semantics on DataKind `DK_target` (with `DK_target ≠ DK_owner`), the compile stage must determine **which chain of `Relationship`s** joins the two kinds. This chain becomes the `PathSignature` stored on the entry — the planner consumes it at plan time (`16`) to materialize a join subgraph.
-
-Requirements on the pathfinding algorithm:
-
-- **Shortest path** — the canonical "simplest" join is preferred. Two-hop paths that pass through intermediate DataKinds are only chosen when no one-hop Relationship exists.
-- **Ambiguity detection** — if **two or more** distinct shortest-length paths exist, compile must fail rather than silently pick one. Authors correct the Model by either adding a disambiguating join hint (future work) or by writing the reference differently.
-- **No-path detection** — if no chain exists, compile must fail with a clear error naming the two kinds.
-- **Determinism** — the neighbor iteration order during BFS must be stable so that ambiguity detection is stable.
-
-BFS satisfies all of these: shortest-path semantics by construction, duplicate-depth detection for ambiguity, visited-set for termination.
-
 ### 4.2 The `RelationshipGraph`
 
 ```rust
@@ -583,110 +543,7 @@ pub struct RelationshipPath(pub Vec<RelationshipId>);
 
 The open question covers whether to **intersect** paths that share intermediate relationships or to keep them distinct as-is. Default for Round 1: keep them distinct; the planner de-dupes join-node materialization internally (`16 §4.2`). Tracked in `14b_questions.md` — the decision depends on how `16` models join subgraph canonicalization.
 
-### 4.6 Worked example
-
-Model fragment:
-
-```yaml
-data_kinds:
-  - kind: Event
-    name: orders
-    primary_key: [order_id]
-    ...
-  - kind: Event
-    name: order_items
-    primary_key: [order_item_id]
-    ...
-  - kind: Entity
-    name: customers
-    primary_key: [customer_id]
-    ...
-
-relationships:
-  - from: order_items
-    to: orders
-    join_keys: [[order_id, order_id]]
-  - from: orders
-    to: customers
-    join_keys: [[customer_id, customer_id]]
-```
-
-Semantics on `order_items`:
-
-```yaml
-on: order_items
-measures:
-  - name: high_value_item_revenue
-    expr: {case: [{when: {gt: [customer.lifetime_value, {literal: 1000}]}, then: line_total}], else: {literal: 0}}
-```
-
-Resolution walk:
-
-- Start post-order traversal of `case` at the root on the `order_items` binding.
-- First-branch `when`-expression recurses into `gt(customer.lifetime_value, 1000)`.
-- `customer.lifetime_value` parses as `EntityRef { name: "customer.lifetime_value" }` per `11 §5.2`'s dotted-path convention. Resolution:
-  - `customer` is a DataKindName reference (→ look up `customers`).
-  - `lifetime_value` is a Semantics on `customers`.
-  - The target kind is `customers`, not `order_items`; BFS triggers.
-- BFS from `order_items`:
-  - Depth 0: `order_items`.
-  - Depth 1 neighbors: `orders`.
-  - Depth 2 neighbors: `customers`. One hit, path `[R(order_items↔orders), R(orders↔customers)]`.
-- BFS exhausts depth 2 with only one hit — no ambiguity.
-- The target `customers.lifetime_value` is resolved via its own Binding (the SimpleDataKind `customers`'s Binding) producing a `PhysicalExpr` subtree.
-- Splice the subtree at `customer.lifetime_value`'s site; `path_signature.paths` now contains `{[R1, R2]}`.
-- Second branch `then: line_total` — `line_total` is on `order_items` (same kind as the owning Binding); no BFS.
-- Third `else: {literal: 0}` — pure literal.
-
-Final entry has `path_signature: Some(PathSignature { paths: {[R1, R2]} })`.
-
-### 4.7 No-path example
-
-If the author removes the `orders ↔ customers` relationship, BFS from `order_items` exhausts without reaching `customers`:
-
-```
-CompileError::NoRelationshipPath {
-  from: DataKindName("order_items"),
-  to:   DataKindName("customers"),
-}
-```
-
-Error code `EXPR_E_0202` (§11.2).
-
-### 4.8 Ambiguity example
-
-If the author introduces two independent relationships between `orders` and `customers`:
-
-```yaml
-relationships:
-  - from: orders
-    to: customers
-    join_keys: [[customer_id, customer_id]]
-    role: buyer
-  - from: orders
-    to: customers
-    join_keys: [[billing_customer_id, customer_id]]
-    role: billing
-```
-
-BFS from `order_items` finds two depth-2 paths to `customers`:
-
-```
-path A: [R(order_items↔orders), R_buyer(orders↔customers)]
-path B: [R(order_items↔orders), R_billing(orders↔customers)]
-```
-
-Both of depth 2; both are hits. `AmbiguousRelationshipPath` fires with both paths in its payload.
-
-The fix is author-side: either remove the unused relationship, or introduce a disambiguating reference form (future work `[TD-14B-RELATIONSHIP-ROLE-HINTS]`).
-
 ## 5. Cycle Detection
-
-### 5.1 Why it runs before type inference
-
-`14 §6.2`'s computed-Semantics type inference requires every referenced Semantics's type to be known before the referencing Semantics can be typed. A cycle in the reference graph means no inference-fixpoint without extra machinery, and more importantly no **semantic** fixpoint — `A = B + 1` and `B = A + 1` is undefined regardless of the types.
-
-14b therefore detects cycles **before** substitution begins, treating the reference graph as a DAG constraint.
 
 ### 5.2 The reference DAG
 
@@ -722,34 +579,6 @@ Outputs:
 **Q8 decision.** Tarjan SCC + topological sort is the Round-1 approach. Rationale: (a) detects every cycle in a single pass, (b) the topological order is a free side-product reused for resolution ordering, (c) stable order is easy to pin down, (d) well-understood algorithm.
 
 **Proposed (Round 1) — single-cycle reporting.** 14b reports the **first** cycle encountered (lexicographically smallest SCC name). Authors fix one cycle at a time and re-run. Alternative: aggregate all cycles in one pass. Round-1 default is single-cycle per I12 (fail-fast); tracked in `14b_questions.md` for a future batch-diagnostic mode `[TD-14B-BATCH-DIAGS]`.
-
-### 5.4 Worked example
-
-Author writes:
-
-```yaml
-on: orders
-measures:
-  - name: a
-    expr: {plus: [b, {literal: 1}]}
-  - name: b
-    expr: {plus: [a, {literal: 1}]}
-```
-
-Reference graph:
-
-- `a → b`
-- `b → a`
-
-Tarjan finds a 2-member SCC `{a, b}`.
-
-```
-CompileError::CyclicReference { cycle: vec!["a", "b"] }
-```
-
-Error code `EXPR_E_0203` (§11.3).
-
-Fix: the author breaks the cycle by rooting one of the two in a physical column or a literal. E.g. `a: {plus: [line_total, {literal: 1}]}`.
 
 ### 5.5 Self-loop
 
@@ -1124,44 +953,6 @@ One narrowing reconciliation warning:
 | `Diagnostic::Warning { code: "EXPR_W_CAST_NARROW", ... }` | `EXPR_W_0201` | Boundary reconciliation wraps the root in a narrowing `Cast` per §7.2. The compile succeeds; the entry is stored. |
 
 14b emits warnings but does not block compile on them. `10 §5`'s `Diagnostic` transport is the carrier.
-
-## 12. Ratified Decisions Index (Round 1)
-
-| Q | Decision | § |
-|---|---|---|
-| Q1 | `ResolvedExprTable` storage: `BTreeMap<ResolvedExprKey, ResolvedExprEntry>` — deterministic iteration, O(log n) lookup. No separate hash index in v1. | §2.1 |
-| Q2 | `BindingId = u32` newtype — assigned in parsed-Model iteration order; stable within a compile, not stable across edits. Not author-visible. | §2.1 |
-| Q3 | `SemanticsName` is the `11 §4` canonical newtype — unified global namespace, no per-species splits. | §2.1 |
-| Q4 | Binding's `column_mapping[].expr` resolves eagerly in the same pass as Semantics-side `expr:` — uniform algorithm, no separate "bind-later" mode. | §3.4 |
-| Q5 | `Aggregate` → `PhysicalExpr::FunctionCall` rewrite at the compile boundary; no `PhysicalExpr::Aggregate` variant. | §3.10 |
-| Q6 | `RelationshipId = u32` newtype, assigned in parsed-Model iteration order. | §4.2 |
-| Q7 | Cross-kind target Semantics is resolved against every available target Binding; `ResolvedExprTable` stores one entry per `(target_name, target_binding_id)`. Substitution splices the specific entry for the enclosing composition context. | §4.4 |
-| Q8 | Cycle detection is Tarjan SCC + topological sort over the global reference DAG. Topological order doubles as the resolution order. | §5.3 |
-| Q9 | No implicit promotion at BinaryOp / Cast / Coalesce unification. Same-kind-only (with `Unknown` unifying to concrete). Arithmetic `BinaryOp` uses `SameAs(lhs)` for result type per `14 §5.6`. | §6.3, §3.9 |
-| Q10 | Error-variant renaming from 14 §7.3 drafts: `UnresolvedEntityRef → UnknownReference`, `UnreachableSemanticsReference → NoRelationshipPath`, `CircularSemanticsReference → CyclicReference`. Codes `EXPR_E_0201` / `0202` / `0203` preserved. New variants `AmbiguousRelationshipPath` (`EXPR_E_0205`) and `TypeInferenceFailure` (`EXPR_E_0206`, moved into the 02xx sub-range). | §11 |
-| Q11 | `PathSignature.paths: BTreeSet<RelationshipPath>` — deduped paths, deterministic iteration. `Option<PathSignature>`: `None` = local-only resolution; `Some(ps)` = one or more cross-kind walks. | §4.5 |
-| Q12 | Join-key columns from traversed Relationships are recorded inline in `referenced_columns` alongside payload columns. Planner-level split into "join vs. payload" is the planner's concern, driven by `Relationship` metadata. | §10.4 |
-| Q13 | Every `PhysicalExpr` node stored in `ResolvedExprTable` carries a populated `inferred_type`. The entry-level `inferred_type` duplicates the root node's for fast lookup. | §6.4 |
-| Q14 | Semantics-boundary `Cast` emission per `14 §6.4` — widening silent, narrowing emits `Diagnostic::Warning { code: "EXPR_W_CAST_NARROW" }`. The cast wraps the root unconditionally when `declared != inferred` (including cases where the author already cast internally). | §7.1, §7.2, §7.5 |
-| Q15 | Resolution-sub-pass order inside `compile`: catalog fetch → relationship graph → semantics index (Tier-1 merge) → reference-DAG cycle detection → topological order → per-pair resolution → boundary reconciliation → table populate → SemanticManifest seal. | §9.1 |
-| Q16 | SemanticManifest-level serialization: inline `PhysicalExpr` per entry, no interning in v1. `BTreeMap` natural order is the serialization order. | §2.4 |
-| Q17 | Provenance granularity per-entry: source Locations, contributing occurrences, optional `resolved_from_variant` marker. Per-`EntityRef`-site provenance deferred to `[TD-14B-EXPR-PROVENANCE-SITES]`. | §2.6 |
-| Q18 | Fail-fast per-error: first detected resolution error terminates compile with a `Diagnostic::Error`. No multi-error aggregation in v1. | §11.4 |
-
-### 12.1 Tech-debt / deferred extensions referenced above
-
-- **`[TD-14B-EXPR-INTERN]`** — opt-in `PhysicalExpr` interning for large SemanticManifests; requires a separate expression pool and ID-based serialization.
-- **`[TD-14B-RELATIONSHIP-ROLE-HINTS]`** — disambiguating role hints at `EntityRef` call sites when multiple Relationships exist between the same two DataKinds.
-- **`[TD-14B-BATCH-DIAGS]`** — multi-error aggregation mode that collects every resolution-stage error in one pass before terminating.
-- **`[TD-14B-EXPR-PROVENANCE-SITES]`** — per-`EntityRef`-site provenance trails for deep cross-kind resolution diagnostics.
-- **`[TD-14B-PATH-UNIFICATION]`** — planner-side canonicalization policy for multiple `PathSignature.paths` that share intermediate relationships. Tied to `16`'s join-subgraph canonicalization.
-- **`[TD-14B-TYPECLASS-UNIFY]`** — richer unification if `14a`'s `[TD-REGISTRY-TYPECLASS]` lands.
-
-### 12.2 Round 2 scope
-
-- Finalize serialization encoding choices in concert with `33` (SemanticManifest).
-- Finalize multi-`EntityRef` path composition in concert with `16` (composition).
-- Wire the provenance-site extension when the `--explain` tooling lands.
 
 ## 13. Interaction with Other Documents
 

@@ -1,26 +1,37 @@
 ---
+
 prereqs: [00, 10, 11, 12, 13, 14, 14a, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 30, 31, 31b]
 authoritative-for:
-  - the root YAML shape for a `semstrait` model — `semantic_model:` wrapper, per-variant plural arrays, shared Semantics pools, `relationships:`
-  - the in-memory `SemanticModel` root type — per-variant typed maps, shared pools as `BTreeMap`, `relationships` as `Vec`
-  - the DataKind type hierarchy — `DataKindBase<E>` common-fields struct generic over the per-axis extras flavor, per-variant `*Body` structs, `Public*` / `Nested*` concrete types, sealed `DataKind` trait hierarchy on structural + behavioral axes, and view enums for heterogeneous iteration
-  - the per-axis extras shapes — `LeafExtras` (full set) and `ComplexExtras` (`temporal:` only)
-  - structural rules (SR-*) that govern a valid root-level document
-  - the `parse` and `validate` free-function signatures, the `ParseErrorKind` and `ValidateErrorKind` rosters (per `30 §5`), and their `Diagnose` impls
-  - the `semstrait-model::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` wrappers, `DumpMode`, and the load / dump error rosters (composes `31b` transport)
-  - deterministic-ordering guarantees at the root level (I4)
-  - crate boundaries for `semstrait-model`
+
+- the root YAML shape for a `semstrait` model — `semantic_model:` wrapper, per-variant plural arrays, shared Semantics pools, `relationships:`
+- the in-memory `SemanticModel` root type — per-variant typed maps, shared pools as `BTreeMap`, `relationships` as `Vec`
+- the DataKind type hierarchy — `DataKindBase<E>` common-fields struct generic over the per-axis extras flavor, per-variant `*Body` structs, `Public*` / `Nested*` concrete types, sealed `DataKind` trait hierarchy on structural + behavioral axes, and view enums for heterogeneous iteration
+- the per-axis extras shapes — `LeafExtras` (full set) and `ComplexExtras` (`temporal:` only)
+- structural rules (SR-*) that govern a valid root-level document
+- the `parse` and `validate` free-function signatures, the `ParseErrorKind` and `ValidateErrorKind` rosters (per `30 §5`), and their `Diagnose` impls
+- the `semstrait-model::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` wrappers, `DumpMode`, and the load / dump error rosters (composes `31b` transport)
+- deterministic-ordering guarantees at the root level (I4)
+- crate boundaries for `semstrait-model`
 refined-by:
-  - 32b (`apis/32b_catalogs_yaml.md` — catalog YAML grammar and reference syntax)
-  - 33 (`apis/33_semstrait_manifest.md` — how the `SemanticModel` tree lowers to a `SemanticManifest`)
+- 32b (`apis/32b_catalogs_yaml.md` — catalog YAML grammar and reference syntax)
+- 33 (`apis/33_semstrait_manifest.md` — how the `SemanticModel` tree lowers to a `SemanticManifest`)
+
 # Upstream cross-references (see `prereqs:` above and §11 "Pointers to Child Docs"
+
 # for full context): 18 (entity struct shapes), 15 (SemanticMapping compile
+
 # semantics), 16 (composition), 17 (temporal-shape planner semantics), 21-24
+
 # (per-DataKind YAML), 26 (nesting matrix), 31b (I/O transport). Per 00 §8
+
 # directionality rule, those are prerequisites rather than downstream refinements;
+
 # they are deliberately omitted from `refined-by:` to keep the field semantically
+
 # pure. Section 11 of this doc is the authoritative human-facing navigation aid
+
 # for the full cross-reference web.
+
 ---
 
 # 32. `semstrait-model` — Root YAML Contract
@@ -290,16 +301,18 @@ pub enum DataKindForm { Public, Nested }
 
 Every concrete type implements `DataKind`, exactly one trait on the structural axis, and exactly one trait on the behavioral axis.
 
-| Concrete | `DataKind` | Structural axis | Behavioral axis |
-|---|---|---|---|
-| `Dataset` | ✓ | `SimpleDataKind` | `PublicDataKind` |
-| `NestedDataset` | ✓ | `SimpleDataKind` | `NestedDataKind` |
-| `Grainset` | ✓ | `ComplexDataKind` | `PublicDataKind` |
-| `NestedGrainset` | ✓ | `ComplexDataKind` | `NestedDataKind` |
-| `Unionset` | ✓ | `ComplexDataKind` | `PublicDataKind` |
-| `NestedUnionset` | ✓ | `ComplexDataKind` | `NestedDataKind` |
-| `Joinset` | ✓ | `ComplexDataKind` | `PublicDataKind` |
-| `NestedJoinset` | ✓ | `ComplexDataKind` | `NestedDataKind` |
+
+| Concrete         | `DataKind` | Structural axis   | Behavioral axis  |
+| ---------------- | ---------- | ----------------- | ---------------- |
+| `Dataset`        | ✓          | `SimpleDataKind`  | `PublicDataKind` |
+| `NestedDataset`  | ✓          | `SimpleDataKind`  | `NestedDataKind` |
+| `Grainset`       | ✓          | `ComplexDataKind` | `PublicDataKind` |
+| `NestedGrainset` | ✓          | `ComplexDataKind` | `NestedDataKind` |
+| `Unionset`       | ✓          | `ComplexDataKind` | `PublicDataKind` |
+| `NestedUnionset` | ✓          | `ComplexDataKind` | `NestedDataKind` |
+| `Joinset`        | ✓          | `ComplexDataKind` | `PublicDataKind` |
+| `NestedJoinset`  | ✓          | `ComplexDataKind` | `NestedDataKind` |
+
 
 ### 3.6 View enums for heterogeneous iteration
 
@@ -353,13 +366,15 @@ pub enum ComplexDataKindRef<'a> {
 
 Trait implementations for views:
 
-| View enum | Implements |
-|---|---|
-| `AnyDataKindRef` | `DataKind` |
-| `PublicDataKindRef` | `DataKind` + `PublicDataKind` |
-| `NestedDataKindRef` | `DataKind` + `NestedDataKind` |
-| `SimpleDataKindRef` | `DataKind` + `SimpleDataKind` |
+
+| View enum            | Implements                     |
+| -------------------- | ------------------------------ |
+| `AnyDataKindRef`     | `DataKind`                     |
+| `PublicDataKindRef`  | `DataKind` + `PublicDataKind`  |
+| `NestedDataKindRef`  | `DataKind` + `NestedDataKind`  |
+| `SimpleDataKindRef`  | `DataKind` + `SimpleDataKind`  |
 | `ComplexDataKindRef` | `DataKind` + `ComplexDataKind` |
+
 
 Every view method dispatches via `match` to the underlying concrete type. Views own no data and are never persisted; they are constructed on demand by the iterators in §2.2 and by `ComplexDataKind::children_ref` on complex bodies.
 
@@ -484,13 +499,15 @@ extras:
 
 Each extras field is constrained by **two independent type-level rules**: which extras flavor (Leaf / Complex) carries the field, and which structural-axis trait owns it. Cascade-from-ancestor remains in v1 only for `temporal.<variant>:` (the shape kind); no other extras field cascades.
 
-| Field | Carrier | Effective at | Cascadable from ancestor? |
-|---|---|---|---|
-| `catalog` | `LeafExtras` | Leaf (`Dataset` / `NestedDataset`) | **No** — type-level (not in `ComplexExtras`) |
-| `storage` (incl. nested `partition_def`) | `LeafExtras` | Leaf | **No** — type-level |
-| `semantic_mapping` | `LeafExtras` | Leaf (default `auto` when absent) | **No** — type-level |
-| `temporal.<variant>:` (shape kind) | both | Leaf; inherited from any ancestor complex | **Yes** (more-specific-overrides-default merge) |
-| `temporal.grain:` | `LeafExtras` only — **forbidden** on Complex (SR-E-7) | Leaf `Dataset` only | **No** (SR-E-8: Grainset children must author explicitly) |
+
+| Field                                    | Carrier                                               | Effective at                              | Cascadable from ancestor?                                 |
+| ---------------------------------------- | ----------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------- |
+| `catalog`                                | `LeafExtras`                                          | Leaf (`Dataset` / `NestedDataset`)        | **No** — type-level (not in `ComplexExtras`)              |
+| `storage` (incl. nested `partition_def`) | `LeafExtras`                                          | Leaf                                      | **No** — type-level                                       |
+| `semantic_mapping`                       | `LeafExtras`                                          | Leaf (default `auto` when absent)         | **No** — type-level                                       |
+| `temporal.<variant>:` (shape kind)       | both                                                  | Leaf; inherited from any ancestor complex | **Yes** (more-specific-overrides-default merge)           |
+| `temporal.grain:`                        | `LeafExtras` only — **forbidden** on Complex (SR-E-7) | Leaf `Dataset` only                       | **No** (SR-E-8: Grainset children must author explicitly) |
+
 
 The cascade rule applies to the variant-tag layer of `temporal:` only. An author may declare `temporal: { timeseries: {...} }` on a root grainset and have that shape kind cascade to every leaf descendant; the `grain:` value never cascades.
 
@@ -519,7 +536,7 @@ extras:
   semantic_mapping: auto
 ```
 
-**Explicit map.** The author provides a `{ semantic_name: <SemanticMappingValue> }` mapping. Each entry's value is one of **three author-facing variants** (`Column` / `Literal` / `Expr`) — the full `SemanticMappingValue` enum is **4-variant** at the type level (`Column` / `Literal` / `Expr` / `Metadata`), with the 4th `Metadata(MetadataDimensionRecipe)` variant **compile-synthesized only** from the Dimension's own `type: { metadata: ... }` block (per `13 §4.7` / `18 §10.4` / `15 §5.5`). The 4th variant has no `semantic_mapping:` YAML form and is therefore not authored here. The full enum (shape + roster + `LiteralValue` grammar + `MetadataDimensionRecipe`) is ratified in [`18 §10`](../foundations/18_entities.md#10-semanticmapping-value-shape) and consumed by the `Binding` process in [`15 §5`](../foundations/15_mapping_and_binding.md#5-semanticmapping-value-compile-semantics):
+**Explicit map.** The author provides a `{ semantic_name: <SemanticMappingValue> }` mapping. Each entry's value is one of **three author-facing variants** (`Column` / `Literal` / `Expr`) — the full `SemanticMappingValue` enum is **4-variant** at the type level (`Column` / `Literal` / `Expr` / `Metadata`), with the 4th `Metadata(MetadataDimensionRecipe)` variant **compile-synthesized only** from the Dimension's own `type: { metadata: ... }` block (per `13 §4.7` / `18 §10.4` / `15 §5.5`). The 4th variant has no `semantic_mapping:` YAML form and is therefore not authored here. The full enum (shape + roster + `LiteralValue` grammar + `MetadataDimensionRecipe`) is ratified in `[18 §10](../foundations/18_entities.md#10-semanticmapping-value-shape)` and consumed by the `Binding` process in `[15 §5](../foundations/15_mapping_and_binding.md)`:
 
 ```yaml
 extras:
@@ -561,22 +578,24 @@ See `15` for the full binding algorithm; `33` for where the binding output lives
 
 Root-level invariants enforced at `parse` and the `validate` stage. Each rule maps to a typed-kind variant in `ParseErrorKind` (§9.2) or `ValidateErrorKind` (§9.5) per `30 §5`.
 
-| ID | Rule | Kind |
-|---|---|---|
-| **SR-1** | Exactly one `semantic_model:` root key; `deny_unknown_fields` at root. | `ParseErrorKind::UnknownTopLevelBlock` |
-| **SR-2** | Nested data kinds MUST NOT carry `description`, `ai_context`, `dimensions`, `measures`, `metrics`, `keys`, `filters`. Enforced at the type level: `Nested*` structs (§3.3) wrap only a `*Body` — they have no `description`, `ai_context`, or `semantic_interface` fields — and implement `NestedDataKind` (§3.4) as the behavioral marker; `deny_unknown_fields` then rejects the Public-only tags at parse. | `ParseErrorKind::NestedDataKindCarriesInterface` |
-| **SR-3** | Names are globally unique across the four top-level data-kind maps (§2.1). | `ParseErrorKind::DuplicateDataKindName` |
-| **SR-4** | Same-variant self-nesting is forbidden: no grainset inside a grainset, no unionset inside a unionset, no joinset inside a joinset. Dataset leaves do not nest. Enforced at the type level by each `*Body` struct's child-field set (§3.2). | `ParseErrorKind::IllegalSelfNesting` |
-| **SR-5** | `catalog`, `storage`, `semantic_mapping` are leaf-only — they live on `LeafExtras` and have no slot in `ComplexExtras`. Authoring any of them under a Complex variant's `extras:` block is a parse error. Cascade-from-ancestor does not apply to these fields (R-6 / §4.1). | `ParseErrorKind::UnknownField` |
-| **SR-6** | Post-merge effective-level validation: the cascaded `temporal.<variant>:` at each leaf data kind must satisfy variant-specific structural requirements (e.g. every grainset subtree must resolve a `temporal:` shape kind on every leaf descendant). | `ValidateErrorKind::MissingRequiredExtras` |
-| **SR-7** | `deny_unknown_fields` is applied at every struct parse site (model root, data-kind blocks, extras, relationships, semantic elements). | `ParseErrorKind::UnknownField` |
-| **SR-8** | Identifier rules: data-kind names and semantic-element names follow `11 §4`. | `ParseErrorKind::InvalidIdentifier` |
-| **SR-9** | `${VAR}` substitution is applied before YAML decoding; unset variables are fatal parse errors (§8). | `ParseErrorKind::UnsetEnvVar` |
-| **SR-10** | Every `ComplexDataKind` (`Grainset` / `Unionset` / `Joinset`, Public or Nested) MUST have at least **2 children** across its allowed child-variant arrays. A composer with 0 or 1 children is degenerate — 0 collapses to nothing; 1 collapses to the single child's interface and should be authored as that child directly. Enforced at `validate`. | `ValidateErrorKind::ComplexDataKindInsufficientChildren` |
+
+| ID        | Rule                                                                                                                                                                                                                                                                                                                                                                                                          | Kind                                                     |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| **SR-1**  | Exactly one `semantic_model:` root key; `deny_unknown_fields` at root.                                                                                                                                                                                                                                                                                                                                        | `ParseErrorKind::UnknownTopLevelBlock`                   |
+| **SR-2**  | Nested data kinds MUST NOT carry `description`, `ai_context`, `dimensions`, `measures`, `metrics`, `keys`, `filters`. Enforced at the type level: `Nested`* structs (§3.3) wrap only a `*Body` — they have no `description`, `ai_context`, or `semantic_interface` fields — and implement `NestedDataKind` (§3.4) as the behavioral marker; `deny_unknown_fields` then rejects the Public-only tags at parse. | `ParseErrorKind::NestedDataKindCarriesInterface`         |
+| **SR-3**  | Names are globally unique across the four top-level data-kind maps (§2.1).                                                                                                                                                                                                                                                                                                                                    | `ParseErrorKind::DuplicateDataKindName`                  |
+| **SR-4**  | Same-variant self-nesting is forbidden: no grainset inside a grainset, no unionset inside a unionset, no joinset inside a joinset. Dataset leaves do not nest. Enforced at the type level by each `*Body` struct's child-field set (§3.2).                                                                                                                                                                    | `ParseErrorKind::IllegalSelfNesting`                     |
+| **SR-5**  | `catalog`, `storage`, `semantic_mapping` are leaf-only — they live on `LeafExtras` and have no slot in `ComplexExtras`. Authoring any of them under a Complex variant's `extras:` block is a parse error. Cascade-from-ancestor does not apply to these fields (R-6 / §4.1).                                                                                                                                  | `ParseErrorKind::UnknownField`                           |
+| **SR-6**  | Post-merge effective-level validation: the cascaded `temporal.<variant>:` at each leaf data kind must satisfy variant-specific structural requirements (e.g. every grainset subtree must resolve a `temporal:` shape kind on every leaf descendant).                                                                                                                                                          | `ValidateErrorKind::MissingRequiredExtras`               |
+| **SR-7**  | `deny_unknown_fields` is applied at every struct parse site (model root, data-kind blocks, extras, relationships, semantic elements).                                                                                                                                                                                                                                                                         | `ParseErrorKind::UnknownField`                           |
+| **SR-8**  | Identifier rules: data-kind names and semantic-element names follow `11 §4`.                                                                                                                                                                                                                                                                                                                                  | `ParseErrorKind::InvalidIdentifier`                      |
+| **SR-9**  | `${VAR}` substitution is applied before YAML decoding; unset variables are fatal parse errors (§8).                                                                                                                                                                                                                                                                                                           | `ParseErrorKind::UnsetEnvVar`                            |
+| **SR-10** | Every `ComplexDataKind` (`Grainset` / `Unionset` / `Joinset`, Public or Nested) MUST have at least **2 children** across its allowed child-variant arrays. A composer with 0 or 1 children is degenerate — 0 collapses to nothing; 1 collapses to the single child's interface and should be authored as that child directly. Enforced at `validate`.                                                         | `ValidateErrorKind::ComplexDataKindInsufficientChildren` |
+
 
 SR-* numbering is append-only. Adding a rule is a MINOR change per `30 §2`.
 
-Entity-level invariants (`SR-E-*`) — reference-site overrides, Semantics orphan policy, relationship cardinality, TemporalShape grain placement, filter-kind disjointness — live at `18 §11`. SR-E-* is a separate, independently-numbered series that extends the root-level SR-* roster.
+Entity-level invariants (`SR-E-`*) — reference-site overrides, Semantics orphan policy, relationship cardinality, TemporalShape grain placement, filter-kind disjointness — live at `18 §11`. SR-E-* is a separate, independently-numbered series that extends the root-level SR-* roster.
 
 ---
 
@@ -584,22 +603,24 @@ Entity-level invariants (`SR-E-*`) — reference-site overrides, Semantics orpha
 
 Given the same input YAML plus the same environment, `parse` produces a byte-identical `SemanticModel` under any canonical serializer.
 
-| Collection | Type | Ordering rule |
-|---|---|---|
-| `SemanticModel.datasets` | `BTreeMap<String, Dataset>` | Alphabetical by name |
-| `SemanticModel.grainsets` | `BTreeMap<String, Grainset>` | Alphabetical by name |
-| `SemanticModel.unionsets` | `BTreeMap<String, Unionset>` | Alphabetical by name |
-| `SemanticModel.joinsets` | `BTreeMap<String, Joinset>` | Alphabetical by name |
-| `SemanticModel.dimensions` | `BTreeMap<String, Dimension>` | Alphabetical by name |
-| `SemanticModel.measures` | `BTreeMap<String, Measure>` | Alphabetical by name |
-| `SemanticModel.metrics` | `BTreeMap<String, Metric>` | Alphabetical by name |
-| `SemanticModel.labels` | `Vec<String>` | YAML author order |
-| `SemanticModel.relationships` | `Vec<Relationship>` | YAML author order; first-match-wins semantics per `16 §11` |
-| `GrainsetBody.{datasets, unionsets, joinsets}` | `Vec<Nested*>` | YAML author order |
-| `UnionsetBody.{datasets, grainsets, joinsets}` | `Vec<Nested*>` | YAML author order |
-| `JoinsetBody.{datasets, grainsets, unionsets}` | `Vec<Nested*>` | YAML author order |
-| `JoinsetBody.relationships` | `Vec<Relationship>` | YAML author order (unified shape per `18 §2`) |
-| `iter_all` / `iter_public` / `iter_simple` / `iter_complex` | iterators | Alphabetical by `(variant-tag, name)`; variants in fixed order: Dataset, Grainset, Unionset, Joinset |
+
+| Collection                                                  | Type                          | Ordering rule                                                                                        |
+| ----------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `SemanticModel.datasets`                                    | `BTreeMap<String, Dataset>`   | Alphabetical by name                                                                                 |
+| `SemanticModel.grainsets`                                   | `BTreeMap<String, Grainset>`  | Alphabetical by name                                                                                 |
+| `SemanticModel.unionsets`                                   | `BTreeMap<String, Unionset>`  | Alphabetical by name                                                                                 |
+| `SemanticModel.joinsets`                                    | `BTreeMap<String, Joinset>`   | Alphabetical by name                                                                                 |
+| `SemanticModel.dimensions`                                  | `BTreeMap<String, Dimension>` | Alphabetical by name                                                                                 |
+| `SemanticModel.measures`                                    | `BTreeMap<String, Measure>`   | Alphabetical by name                                                                                 |
+| `SemanticModel.metrics`                                     | `BTreeMap<String, Metric>`    | Alphabetical by name                                                                                 |
+| `SemanticModel.labels`                                      | `Vec<String>`                 | YAML author order                                                                                    |
+| `SemanticModel.relationships`                               | `Vec<Relationship>`           | YAML author order; first-match-wins semantics per `16 §11`                                           |
+| `GrainsetBody.{datasets, unionsets, joinsets}`              | `Vec<Nested*>`                | YAML author order                                                                                    |
+| `UnionsetBody.{datasets, grainsets, joinsets}`              | `Vec<Nested*>`                | YAML author order                                                                                    |
+| `JoinsetBody.{datasets, grainsets, unionsets}`              | `Vec<Nested*>`                | YAML author order                                                                                    |
+| `JoinsetBody.relationships`                                 | `Vec<Relationship>`           | YAML author order (unified shape per `18 §2`)                                                        |
+| `iter_all` / `iter_public` / `iter_simple` / `iter_complex` | iterators                     | Alphabetical by `(variant-tag, name)`; variants in fixed order: Dataset, Grainset, Unionset, Joinset |
+
 
 `HashMap` is banned from the entire public surface. A CI check fails on any public `HashMap<_, _>` reachable from `SemanticModel`.
 
@@ -707,7 +728,7 @@ pub fn validate(
 ) -> Result<Diagnostics<ValidateErrorKind>, Diagnostics<ValidateErrorKind>>;
 ```
 
-`validate` runs the SR-* rules whose enforcement column in §6 reads "Enforced at `validate`" (SR-6, SR-10) plus the entity-level `SR-E-*` invariants from `18 §11`. It does not transform the model; it is a pure precondition checker. Call it as a separate step before `compile` (`33`) when per-stage error routing matters; the fluent loader (§9.6) chains `parse` and `validate` for callers that don't need that granularity.
+`validate` runs the SR-* rules whose enforcement column in §6 reads "Enforced at `validate`" (SR-6, SR-10) plus the entity-level `SR-E-`* invariants from `18 §11`. It does not transform the model; it is a pure precondition checker. Call it as a separate step before `compile` (`33`) when per-stage error routing matters; the fluent loader (§9.6) chains `parse` and `validate` for callers that don't need that granularity.
 
 ### 9.5 `ValidateErrorKind` roster
 
@@ -826,39 +847,9 @@ Within a stage, every diagnostic the stage produces is collected into the return
 
 **Composition with `semstrait-api`.** `SemStrait::compile_from_yaml` (`38 §3.3`) is the parallel API at the orchestration layer (it adds compile on top). The two lanes don't compete: in-process callers reach for `SemanticModel::loader()` to obtain a `SemanticModel` they can pass to a separate compile call (e.g. for caching mid-pipeline); end-to-end callers reach for `SemStrait::compile_from_yaml` to skip the intermediate handle. The fused `SemStraitErrorKind` (`30 §5.6`) at `semstrait-api` is parallel to `ModelBuildErrorKind` here — same cross-stage aggregation pattern, broader scope.
 
-#### 9.6.1 Examples
-
-```rust
-// Sync path — caller has the YAML in memory.
-let (model, warnings) = SemanticModel::loader()
-    .with_yaml_str(yaml_text)
-    .load_blocking()?;
-
-// Async path — caller has a `Location` (`31b`).
-let loc: Location = "s3://bucket/model.yaml".parse()?;
-let (model, warnings) = SemanticModel::loader()
-    .with_yaml_source(&loc)
-    .load()
-    .await?;
-
-// Per-stage error routing — caller wants different handling per stage.
-match SemanticModel::loader().with_yaml_str(text).load_blocking() {
-    Ok((model, warnings))     => use_model(model, warnings),
-    Err(diags)                => {
-        for d in diags {
-            match &d.kind {
-                ModelBuildErrorKind::Parse(_)    => report_parse(&d),
-                ModelBuildErrorKind::Validate(_) => report_validate(&d),
-                ModelBuildErrorKind::Io(_)       => report_io(&d),
-            }
-        }
-    }
-}
-```
-
 #### 9.6.2 Stability
 
-- `SemanticModelLoader<State>`, the typestate marker types `NoSource` / `HasSource`, the `SemanticModel::loader()` entry, the `with_yaml_*` setters, and `load` / `load_blocking` are **Stable in v1**.
+- `SemanticModelLoader<State>`, the typestate marker types `NoSource` / `HasSource`, the `SemanticModel::loader()` entry, the `with_yaml_`* setters, and `load` / `load_blocking` are **Stable in v1**.
 - `ModelBuildErrorKind` is `#[non_exhaustive]`; new stage variants land as MINOR per `30 §2.2`. Removing or renaming a variant is MAJOR per `30 §2.1`.
 - The relationship "loader is sugar over `parse + validate`" is a public contract — `load` MUST NOT alter parse / validate semantics; any divergence is a v1 bug.
 - The async-only / sync-only split between `load` and `load_blocking` is intentional and stable. A future `with_yaml_source` consumer that wants a sync wrapper bridges via the caller's executor; `semstrait-model::io` does not provide `block_on`.
@@ -1047,11 +1038,13 @@ Both paths produce the same `SemanticModel`. Neither path performs resolution (�
 
 ### 10.5 Feature flags
 
-| Feature | Gates | Default | Forwards |
-|---|---|---|---|
-| `serde` | `Serialize` + `Deserialize` on every public type | ON | — |
-| `io` | The `::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` / `DumpMode` / error rosters | OFF | `semstrait-core/io` |
-| `io-aws` | Makes `Location::S3` reachable through `load_*` / `dump_*`; no new model-level surface | OFF | `io`, `semstrait-core/io-aws` |
+
+| Feature  | Gates                                                                                                               | Default | Forwards                      |
+| -------- | ------------------------------------------------------------------------------------------------------------------- | ------- | ----------------------------- |
+| `serde`  | `Serialize` + `Deserialize` on every public type                                                                    | ON      | —                             |
+| `io`     | The `::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` / `DumpMode` / error rosters | OFF     | `semstrait-core/io`           |
+| `io-aws` | Makes `Location::S3` reachable through `load_*` / `dump_*`; no new model-level surface                              | OFF     | `io`, `semstrait-core/io-aws` |
+
 
 Per I11. `io` is default-off so the historical pure-type consumer of `semstrait-model` (`parse(&str)` only) pays no async-runtime cost. Callers that want the wrappers enable `io` explicitly; the CLI, `semstrait-api`, and `semstrait-facade` do so by default.
 
@@ -1059,21 +1052,23 @@ Per I11. `io` is default-off so the historical pure-type consumer of `semstrait-
 
 ## 11. Pointers to Child Docs
 
-| Scope | Doc | What lives there |
-|---|---|---|
-| **Canonical entities** | [`../foundations/18_entities.md`](../foundations/18_entities.md) | **`Relationship`, `RelationshipId`, `JoinType`, `Cardinality`, `Directionality`, `TemporalShape`, `ScdType`, `Dimension` / `Measure` / `Metric`, `DimensionType` + body structs, `Additivity`, filter taxonomy, `AiContext`, `Keys`, `SemanticMappingValue` shape, root-pool reference / override grammar, `SR-E-*` entity-level rules. Authoritative for every entity struct shape embedded in 32.** |
-| Dataset interior | [`../data-kinds/21_dataset.md`](../data-kinds/21_dataset.md) | Per-Dataset YAML: `dimensions:`, `measures:`, `metrics:`, `filters:`, `keys:`, leaf-only `extras` semantics |
-| Grainset interior | [`../data-kinds/22_grainset.md`](../data-kinds/22_grainset.md) | Per-Grainset YAML: child composition, grain-axis, `temporal:` in extras |
-| Unionset interior | [`../data-kinds/23_unionset.md`](../data-kinds/23_unionset.md) | Per-Unionset YAML: children, `mode:`, coverage |
-| Joinset interior | [`../data-kinds/24_joinset.md`](../data-kinds/24_joinset.md) | Per-Joinset YAML: members, `relationships:` (join graph), anchor |
-| Nesting matrix | [`../data-kinds/26_nesting_matrix.md`](../data-kinds/26_nesting_matrix.md) | Which parent variant contains which nested variants; `SR-10` + Grainset-child grain rule |
-| Applicability | [`../data-kinds/25_applicability_matrix.md`](../data-kinds/25_applicability_matrix.md) | Per-variant × foundation-rule cross-cuts |
-| Semantic mapping grammar | [`../foundations/15_mapping_and_binding.md`](../foundations/15_mapping_and_binding.md) | `SemanticMapping` values in detail; the `Binding` process |
-| Relationships (planner) | [`../foundations/16_composition.md`](../foundations/16_composition.md) | Composition graph, implicit Joinset synthesis |
-| Temporal shape (planner) | [`../foundations/17_temporal_shape.md`](../foundations/17_temporal_shape.md) | Planner-level variant semantics, rollup matrix |
-| Catalogs file | [`./32b_catalogs_yaml.md`](./32b_catalogs_yaml.md) | `catalogs.yaml` grammar; `CatalogRef` reference syntax |
-| SemanticManifest | [`./33_semstrait_manifest.md`](./33_semstrait_manifest.md) | How the `SemanticModel` tree lowers to a `SemanticManifest` |
-| Core I/O transport | [`./31b_semstrait_core_io.md`](./31b_semstrait_core_io.md) | `Source` / `Sink` / `Location` / `IoErrorKind` that §10.4 composes |
+
+| Scope                    | Doc                                                                                    | What lives there                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------ | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Canonical entities**   | `[../foundations/18_entities.md](../foundations/18_entities.md)`                       | `**Relationship`, `RelationshipId`, `JoinType`, `Cardinality`, `Directionality`, `TemporalShape`, `ScdType`, `Dimension` / `Measure` / `Metric`, `DimensionType` + body structs, `Additivity`, filter taxonomy, `AiContext`, `Keys`, `SemanticMappingValue` shape, root-pool reference / override grammar, `SR-E-`* entity-level rules. Authoritative for every entity struct shape embedded in 32.** |
+| Dataset interior         | `[../data-kinds/21_dataset.md](../data-kinds/21_dataset.md)`                           | Per-Dataset YAML: `dimensions:`, `measures:`, `metrics:`, `filters:`, `keys:`, leaf-only `extras` semantics                                                                                                                                                                                                                                                                                           |
+| Grainset interior        | `[../data-kinds/22_grainset.md](../data-kinds/22_grainset.md)`                         | Per-Grainset YAML: child composition, grain-axis, `temporal:` in extras                                                                                                                                                                                                                                                                                                                               |
+| Unionset interior        | `[../data-kinds/23_unionset.md](../data-kinds/23_unionset.md)`                         | Per-Unionset YAML: children, `mode:`, coverage                                                                                                                                                                                                                                                                                                                                                        |
+| Joinset interior         | `[../data-kinds/24_joinset.md](../data-kinds/24_joinset.md)`                           | Per-Joinset YAML: members, `relationships:` (join graph), anchor                                                                                                                                                                                                                                                                                                                                      |
+| Nesting matrix           | `[../data-kinds/26_nesting_matrix.md](../data-kinds/26_nesting_matrix.md)`             | Which parent variant contains which nested variants; `SR-10` + Grainset-child grain rule                                                                                                                                                                                                                                                                                                              |
+| Applicability            | `[../data-kinds/25_applicability_matrix.md](../data-kinds/25_applicability_matrix.md)` | Per-variant × foundation-rule cross-cuts                                                                                                                                                                                                                                                                                                                                                              |
+| Semantic mapping grammar | `[../foundations/15_mapping_and_binding.md](../foundations/15_mapping_and_binding.md)` | `SemanticMapping` values in detail; the `Binding` process                                                                                                                                                                                                                                                                                                                                             |
+| Relationships (planner)  | `[../foundations/16_composition.md](../foundations/16_composition.md)`                 | Composition graph, implicit Joinset synthesis                                                                                                                                                                                                                                                                                                                                                         |
+| Temporal shape (planner) | `[../foundations/17_temporal_shape.md](../foundations/17_temporal_shape.md)`           | Planner-level variant semantics, rollup matrix                                                                                                                                                                                                                                                                                                                                                        |
+| Catalogs file            | `[./32b_catalogs_yaml.md](./32b_catalogs_yaml.md)`                                     | `catalogs.yaml` grammar; `CatalogRef` reference syntax                                                                                                                                                                                                                                                                                                                                                |
+| SemanticManifest         | `[./33_semstrait_manifest.md](./33_semstrait_manifest.md)`                             | How the `SemanticModel` tree lowers to a `SemanticManifest`                                                                                                                                                                                                                                                                                                                                           |
+| Core I/O transport       | `[./31b_semstrait_core_io.md](./31b_semstrait_core_io.md)`                             | `Source` / `Sink` / `Location` / `IoErrorKind` that §10.4 composes                                                                                                                                                                                                                                                                                                                                    |
+
 
 ---
 

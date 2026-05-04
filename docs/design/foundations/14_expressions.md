@@ -56,26 +56,6 @@ refined-by:
 
 ## 2. Expression Contexts: `SemanticExpr` and `PhysicalExpr`
 
-### 2.1 Rationale — why two first-class types
-
-A single `Expr` AST supports every syntactic shape expressions need, but two *structurally distinct* authoring contexts exist in the Model:
-
-- **Semantic-layer composition** — a Measure / Metric / computed Dimension / Filter `expr:` references *other Semantics by name*. Its leaves are `EntityRef`s and literals; aggregations (`SUM(amount)`) are first-class here. Columns are meaningless at this layer — a Semantics doesn't know which Binding it will be evaluated through.
-- **Binding-layer terminal expressions** — a `column_mapping[].expr` (and, post-compile, the stored eager-resolution form) references *physical columns by name* from its `PhysicalSource`. Its leaves are `Column`s and literals; aggregations are forbidden (column mappings project per-row, not per-group).
-
-These two contexts have **mutually exclusive allowed leaves** (`EntityRef` vs. `Column`) and **different invariants around aggregation**. Using a single shared type and relying on runtime checks would defeat the purpose of a strongly-typed IR (I4): every function that consumed an `Expr` would need to re-check invariants the compiler could otherwise enforce.
-
-The design therefore introduces two **first-class newtype wrappers** around `Expr`. Construction is the only boundary at which invariants are checked; traversal, display, and pattern-matching all delegate to the inner `Expr`. Invariants:
-
-| Invariant | `SemanticExpr` | `PhysicalExpr` |
-|---|---|---|
-| `Expr::Column(..)` | forbidden (`ValidateError::ColumnInSemanticExpr`) | allowed |
-| `Expr::EntityRef(..)` | allowed | forbidden (`ValidateError::EntityRefInPhysicalExpr`) |
-| `Expr::Aggregate(..)` | allowed (at any depth except nested-in-aggregate — `TD-EXPR-NESTED-AGG`) | forbidden (`ValidateError::AggregateInPhysicalExpr`) |
-| `Expr::FunctionCall(..)` | allowed (scalar functions; aggregations go via `Expr::Aggregate`) | allowed (scalar functions only) |
-
-This separation also gives the planner a precise type to key on: `ResolvedExprTable` stores `PhysicalExpr`s exclusively (per `14b`), and plan-time rewrites that substitute into existing physical fragments take and return `PhysicalExpr`.
-
 ### 2.2 `SemanticExpr` — semantic-layer composition
 
 ```rust
@@ -150,14 +130,6 @@ impl PhysicalExpr {
 
 1. Authored `column_mapping[].expr` expressions — `compile` infers types (§5) and collects column refs during `validate`→`compile` traversal.
 2. Resolved expressions stored in `ResolvedExprTable` — always populated; `14b` guarantees these fields are `Some` / non-empty before the SemanticManifest is sealed.
-
-### 2.4 Why no `PhysicalMappingExpr` type
-
-An earlier draft considered a third wrapper type distinguishing "authored-but-not-yet-schema-validated" `column_mapping[].expr` from "resolved-and-schema-validated" physical expressions inside `ResolvedExprTable`. That distinction adds type-system noise without buying invariants: schema validation (does `Column("ts")` refer to a real column in the resolved `PhysicalSource`?) is a **check**, not a structural property of the expression tree. A schema-invalid `PhysicalExpr` is still a well-formed `PhysicalExpr` — it just fails the `validate_against_schema(&self, schema: &Schema) -> Result<(), CompileError>` check.
-
-The design therefore collapses both states into a single `PhysicalExpr` type. The difference is observable only through whether `inferred_type.is_some()` and whether the compile-time schema check has been run — both are context-dependent and cannot be lifted into the type system without excessive phantom-typing.
-
-**Consequence:** `PhysicalExpr` values inside `ResolvedExprTable` are a strict refinement of `PhysicalExpr` values at `column_mapping[].expr` authoring sites. Downstream consumers (planner, optimizer, adapters) consume only the refined form; they rely on the SemanticManifest's sealing contract (`14b`) rather than a distinct type.
 
 ### 2.5 The single conversion point
 
@@ -721,10 +693,6 @@ Per `11 §5.2`, `data_type:` is a **shape field** — it must unify across every
 - Operand widening for BinaryOp arithmetic does **not** produce explicit Casts (§5.6 — engine handles arithmetic widening natively).
 - Cross-type comparison (`Integer = 'abc'`, `Date < 5`) does **not** produce an implicit Cast (§5.6 — engine enforces comparability at execution time).
 - Function-argument coercion does **not** produce implicit Casts (`14a` — registry signatures are non-coercive; either an exact signature matches or `CompileError::NoMatchingSignature` is raised, prompting the author to cast explicitly).
-
-### 6.5 Worked example
-
-Two DataKinds declaring the same Metric `net_amount`, differing in declared type:
 
 ```yaml
 # DataKind: orders

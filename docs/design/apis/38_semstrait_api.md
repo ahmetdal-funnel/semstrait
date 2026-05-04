@@ -378,13 +378,6 @@ impl Default for SemStraitBuilder {
 
 Setters use the Rust idiomatic `with_*` prefix to clearly signal "consume self, return modified self" — the chain-builder convention shared with `reqwest::ClientBuilder` / `tokio::runtime::Builder` / `clap::Command`. `with_optimizer_pass` appends; `with_optimizer_passes` replaces. The field names on `SemStraitBuilder` and `SemStrait` themselves stay un-prefixed (`catalog_provider`, `file_system`, …) — `with_` is a setter convention, not a field convention.
 
-### 4.5 Field rationale
-
-- **`catalog_provider` / `file_system` / `repository`** — `Arc<dyn ...>` because the same provider commonly backs multiple `SemStrait` handles in a service, and I3 forbids branching on concrete type. All three traits are `Send + Sync` (`37 §3.2`, `37 §5.2`, `33 §11.1`). `repository` is optional; its absence gates `save_manifest` / `load_manifest` into `NoRepositoryConfigured` but does not affect compile / plan / adapt.
-- **`function_registry: &'static FunctionRegistry`** — Per `31 §5.2`, the canonical registry is process-global and sealed. The field is `Option` only so `build` can fill it from `semstrait_core::function_registry()` when unset. In v1 the process-global registry is the only option; `Q-API-006` parks the question of per-handle registries.
-- **`optimizer_passes: Vec<Box<dyn OptimizerPass>>`** — Per `34 §11` / `34 §12.5`, optimization runs via `OptimizerBuilder::apply` on the `SemanticPlan` returned by `plan`. `with_optimizer_pass` appends (additive); `with_optimizer_passes` replaces wholesale. `build` prepends the canonical-pass list from `34 §11.2` to the caller-accumulated pipeline unless replace-mode was used. The planner's `plan(manifest, request)` itself takes only those two arguments (`34 §6.1`); pass plumbing happens in the optimizer step that `SemStrait::plan` runs after the canonical planner call.
-- **`warning_policy: WarningPolicy`** — See `§5`.
-
 ### 4.6 Validation at `build`
 
 `build` checks required fields (`catalog_provider`, `file_system`) and fills unset optional fields with their defaults (`§4.3`). No I/O runs at build time: a builder with an unreachable catalog builds successfully and the first `compile_*` call surfaces the connectivity failure.
@@ -662,38 +655,6 @@ Async because step 1 is async (I11a); steps 2 and 3 execute synchronously inside
 
 **Error arm.** Returns `Err((Diagnostic<SemStraitErrorKind>, Diagnostics<SemStraitErrorKind>))`. The fatal is the first stage's failure, with its kind wrapped via `From` into `SemStraitErrorKind` (§6.3); warnings produced up to that point live in the `Diagnostics<SemStraitErrorKind>` slot per `30 §7`. The outer `SemStraitErrorKind` variant identifies which stage failed; destructuring the inner `*ErrorKind` identifies what exactly went wrong.
 
-### 7.2 Why this fused helper exists
-
-Without it, the caller stitches the per-stage methods together by hand.
-Two of those methods (`compile_from_yaml` and `plan`) already return
-`Diagnostic<SemStraitErrorKind>` — they're multi-stage entries
-themselves — so only `adapt` produces a kind that needs lifting into
-`SemStraitErrorKind`. The lift uses the §6.3 `From` impls; the exact
-wrapping primitive that lifts a `Diagnostic<AdaptErrorKind>` /
-`Diagnostics<AdaptErrorKind>` into `Diagnostic<SemStraitErrorKind>` /
-`Diagnostics<SemStraitErrorKind>` is parked in `Q-API-012` (a blanket
-`From<Diagnostic<K1>> for Diagnostic<K2>` on the §31 primitive vs. an
-explicit `cast_kind::<K2>()` adapter on the diagnostic carriers vs.
-caller-side per-element wrapping). Whichever shape lands, the fused
-helper centralizes the lift so the caller's code reduces to a single
-call:
-
-```rust
-let (artifact, diagnostics) = semstrait
-    .compile_and_plan_and_adapt(yaml, request, adapter)
-    .await
-    .map_err(|(fatal, warnings)| /* surface as caller's error */)?;
-```
-
-One call site, one error path. The `?` propagates the
-`(Diagnostic<SemStraitErrorKind>, Diagnostics<SemStraitErrorKind>)`
-tuple verbatim if the caller's outer error type already carries that
-shape; otherwise the `map_err` is a single-line transform.
-`semstrait-facade` (`39`) builds on this pattern to offer a
-zero-configuration equivalent (its
-`compile_and_plan_and_adapt_default` takes only
-`(yaml, request, adapter)` and wires up a default `SemStrait`).
-
 ### 7.3 When NOT to use the fused helper
 
 - **Streaming / incremental.** Callers reusing a `SemanticManifest` across many requests prefer the compile-once pattern (`§8`).
@@ -824,24 +785,6 @@ The accumulated vector may interleave `Severity::Warning` and `Severity::Error` 
 
 When `WarningPolicy ∈ {FailOnWarning, Strict}` escalates a warning into a stage-fatal, the escalated `Diagnostic<K>` (variant identity preserved) lands in the `Err` tuple's fatal slot. Prior warnings in the same stage are preserved in the same tuple's warnings slot. Warnings from prior stages travel forward in the helper's `Diagnostics<SemStraitErrorKind>` slot (re-keyed via the `From` impls of §6.3), keeping the cross-stage history intact. See `§5.3` for the escalation mechanics.
 
-### 10.6 Propagation example
-
-Given per-stage output (in typed-kind form):
-
-- `parse = []`
-- `validate = [Diagnostic::warning(ValidateErrorKind::ComplexDataKindInsufficientChildren { .. })]`
-- `compile = [Diagnostic::warning(CompileErrorKind::SchemaInferenceClamped { .. })]`
-- `plan = [Diagnostic::warning(PlanErrorKind::ConstraintRedundant { .. })]`
-- `adapt = [Diagnostic::warning(AdaptErrorKind::PrecisionClamped { .. })]`
-
-then:
-
-- `Accumulate` → `Ok((artifact, ws))` where `ws: Diagnostics<SemStraitErrorKind>` carries those four warnings re-keyed via `From` (`Validate(...)`, `Compile(...)`, `Plan(...)`, `Adapt(...)`) in source-stage order.
-- `FailOnWarning` → `Err((Diagnostic::warning(SemStraitErrorKind::Validate(ValidateErrorKind::ComplexDataKindInsufficientChildren { .. })), Diagnostics::empty()))` — escalates at the first stage that produced a warning, preserving the kind variant; warnings observed before the escalating stage (none in this example) ride alongside.
-- `Strict` → identical to `FailOnWarning` here (no `Severity::Info` exists; informational signals went to `tracing`).
-
----
-
 ## 11. Stability
 
 ### 11.1 Crate-level stability
@@ -891,27 +834,6 @@ The rightmost "YES" row is narrow: orchestration, warning policy, builder, unifi
 
 ---
 
-## 13. Round-1 open items
-
-The following drafting decisions are **defaulted** in this document but MUST be confirmed before ratification. All are captured in `docs/design/questions/open/38_questions.md`:
-
-- **Q-API-001** — *Closed* by the workspace-wide retirement of stable string codes (`30 §6`); `SemStraitErrorKind::{BuilderInvalid, NoRepositoryConfigured}` are intrinsic typed variants with no numeric prefix. Recorded for migration tracking.
-- **Q-API-002** — `PipelineOutcome`: should the fused helper return a dedicated `PipelineOutcome { artifact, warnings, per_stage_timings }` struct or stay on the current `(EngineArtifact, Diagnostics<SemStraitErrorKind>)` tuple?
-- **Q-API-003** — `WarningPolicy::FailOnWarning` — on escalation, which stage "owns" the escalated warning? Current default: the stage that produced it (the `Diagnostic<SemStraitErrorKind>` carries the originating `Validate(...) | Compile(...) | …` variant). Alternative: the API crate (all escalations are re-keyed to a dedicated `SemStraitErrorKind::ApiEscalated` variant). Variant identity over numeric codes per `30 §6`.
-- **Q-API-004** — Diagnostic de-duplication policy. Current default: no de-duplication. Alternative: (kind variant + `Span`) pair is the identity and duplicates are folded.
-- **Q-API-005** — Incremental-compile surface. Current default: not in v1. Alternative: `SemStrait::recompile_with_changes(&manifest, diff)` in a Round-2 MINOR.
-- **Q-API-006** — Per-`SemStrait`-handle `FunctionRegistry`. Current default: the process-global registry is the only option. Alternative: builder accepts `&'static FunctionRegistry` constructed by a caller-supplied `RegistryBuilder` (interacts with `31 §5.5`).
-- **Q-API-007** — Sync wrappers (`compile_from_yaml_blocking`) for non-async callers. Current default: not provided; callers bridge via `block_on`.
-- **Q-API-008** — `SemStrait::builder` as `const fn`. Current default: non-`const` due to `Vec` / `Arc` in builder. Alternative: lazy field initialization that defers allocation to `build`.
-- **Q-API-009** — `compile_and_plan_and_adapt` batch variant accepting `Vec<Request>`. Current default: not provided; callers loop over `plan` + `adapt`.
-- **Q-API-010** — `validate_manifest` aggregation: max-severity (current) vs per-source `Vec<DriftReport>`. The per-source variant preserves more detail; the max-severity variant matches the caller policy in `37 §9.4`.
-- **Q-API-011** — Whether `SemStrait` should expose `emit` directly (SQL emission convenience) or require callers to go through `EngineAdapter::emit`. Current default: no direct emit; callers use the adapter.
-- **Q-API-012** — Wrapping primitive for lifting `Diagnostic<K1>` / `Diagnostics<K1>` into `Diagnostic<K2>` / `Diagnostics<K2>` when `K2: From<K1>`. The fused helper (§7) and the multi-stage `SemStrait` methods (§3.4) need this lift. Three candidate shapes are available — a blanket `impl<K1, K2> From<Diagnostic<K1>> for Diagnostic<K2> where K2: From<K1>` declared on the §31 primitive (most idiomatic, supports `?` and `.into()` directly); an explicit `cast_kind::<K2>()` adapter method on the diagnostic carriers (more discoverable, less coherence-fragile); per-element rewrap left to callers (no new primitive, verbose). Resolution governs the §31 diagnostic surface and the §38 `compile_and_plan_and_adapt` body.
-
-Each item is parked with arguments-for, arguments-against, and a next-step in `questions/open/38`.
-
----
-
 ## 14. Cross-references
 
 - Overview: `00 §4.2 verbs`, `00 §5 pipeline`.
@@ -928,18 +850,3 @@ Each item is parked with arguments-for, arguments-against, and a next-step in `q
 
 ---
 
-## 15. Round-1 ratifications
-
-- §2.1 public-item roster and stability tier; §2.2 re-export set from `31`–`37`.
-- §3.4 `SemStrait` method signatures (adapting `adapt` to include `&SemanticManifest` per `36 §3.1`); §3.6 I6 / I10 / I11 / I12 invariants at method level.
-- §4.3–§4.4 `SemStraitBuilder` required / optional fields and chain-method roster.
-- §5.2 `WarningPolicy` three-variant set; §5.3–§5.4 escalation and boundary-application rules.
-- §6.2 `SemStraitErrorKind` variant set (eleven variants — nine wrapping upstream `*ErrorKind`s plus two intrinsic API-only variants); §6.3 `From` impls and `Diagnose` delegation (no new numeric prefix); §6.6 `StageOrigin` enum.
-- §7.1 `compile_and_plan_and_adapt` signature and semantics.
-- §8.1–§8.3 compile-once / plan-many and compile-and-persist lifecycles.
-- §9.1–§9.2 per-method async posture matrix; no `.await` in the hot path.
-- §10.1–§10.3 diagnostic ordering (source order within stage; pipeline order across stages; no v1 de-duplication).
-- §11.2 per-item stability tier.
-- §12 crate-boundary negatives (no new domain logic; no I/O beyond injected providers; no SQL; no catalog-type branching).
-
-Numeric code literals in §6.5 for `BuilderInvalid` / `NoRepositoryConfigured` depend on `Q-API-001`. Shape, variant names, severity, and diagnostic discipline are ratified; only code digits may shift.

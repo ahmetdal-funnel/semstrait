@@ -1,6 +1,6 @@
 ---
 
-## prereqs: [00, 11, 13, 14, 14a, 14b, 18]
+prereqs: [00, 11, 13, 14, 14a, 14b, 18]
 authoritative-for:
   - compile-time `Binding` process (one per `Dataset` leaf, `binding_id`, `sources`, compile-resolved `semantic_mapping`, `coverage`) and its identity / uniqueness rules
   - `BindingId` as a `u32` newtype, its allocation discipline, and `(DataKindId, BindingId)` global-uniqueness rule
@@ -25,6 +25,7 @@ refined-by:
   - 25 (Applicability matrix — per-DataKind-variant Binding-consumption cells)
   - 33 (`semstrait-manifest` — persistence of `ResolvedBinding` / `ResolvedColumnMapping` on the `SemanticManifest`)
   - 37 (`semstrait-catalog` — `CatalogRef`, `CatalogProvider`, `FileSystem` traits consumed during compile-time resolution)
+---
 
 # 15. Mapping and Binding
 
@@ -259,17 +260,9 @@ A `PhysicalSource` is an **engine-level LogicalRelation** — one Substrait `Rea
 - **Concrete table FQN** (`"iceberg.sales.transactions"`) → produces **one** `PhysicalSource::Table`, or `Snapshot` if the spec carries `at: { snapshot_id: ... }`.
 - **Table-name glob** (`"iceberg.sales.*_transactions"`) → compile-expanded via `CatalogProvider::list_tables` → produces **one `PhysicalSource::Table` per resolved FQN**.
 
-#### 3.5.3 Asymmetry note — why filesystem and catalog globs differ in mechanics
-
-`paths:` globs and `tables:` globs both expand at compile, but the resolution mechanism differs by necessity: filesystem APIs natively accept globs and directly enumerate variations; catalog APIs do not (they take FQNs), so table-name globs require an explicit list-then-fan-out step. Both paths converge on the same per-variation `PhysicalSource` shape downstream.
-
 #### 3.5.4 `partition_def` carriage — manifest-side, runtime-dormant in v1
 
 `extras.storage.partition_def:` (per `32 §4`) is the canonical catalog-less partition declaration for file sources, in v1 form `Range { column }` / `List { column }`. The compile pass parses, schema-validates, and carries it verbatim onto each `PhysicalSource::File` it produces from a `paths:` entry. **No v1 plan-time logic consumes it** — adapters defer partition pruning to engine-side discovery from filter predicates per `35 §4.2.1`. The declaration is forward-compat for v2+ consumers (per-partition extraction per `Q-MAP-009`; partition-aware grain inference per `17`; planner pruning hints). This is a closure clause of `Q-MAP-002`.
-
-#### 3.5.5 Authoring guidance — "table-root" preferred for file sources
-
-When a path resolves to a Hive-partitioned table or a single-table folder containing many files, the recommended author form is the **table-root prefix only** (`"s3://bucket/orders/"`), not a Hive-partition glob (`"s3://bucket/orders/year=*/month=*/*.parquet"`). The latter is wrong usage of the wildcarding surface — it forces compile to enumerate per file or per partition, when the engine can do the same far more efficiently from the table-root alone (per `35 §4.2.1`'s 4-consumer alignment). Compile resolves whatever the author writes literally; it does not detect or reject this pattern. Authors writing many-wildcard / file-level globs may see slow compile resolution and large `Binding.sources` lists; the fix is to switch to the table-root form.
 
 #### 3.5.6 Expansion algorithm
 
@@ -576,40 +569,6 @@ The two are orthogonal. A Unionset of three Simple branches has:
 - One composition-level `Coverage` on the Unionset itself (from `16`), which records which constituent provides which field of the unified surface.
 
 `15` does not speak about composition-level coverage; `16` uses `15`'s Binding coverage as an input when it builds the composition coverage (for each composed field, look up which constituent Binding has `Native` / `NullFill` for the underlying Semantics; this feeds the planner's per-branch NULL-fill emission in `23`).
-
-### 6.5 Worked example
-
-Consider a `SimpleDataKind` with Semantics `{customer_id, total, channel}` bound to a glob expanding to three files:
-
-```
-s3://b/year=2024/month=01/data.parquet   schema: {customer_id, total}
-s3://b/year=2024/month=02/data.parquet   schema: {customer_id, total, channel}
-s3://b/year=2024/month=03/data.parquet   schema: {customer_id, total, channel}
-```
-
-`SemanticMapping`:
-
-```
-customer_id → Column { name: "customer_id" }
-total       → Column { name: "total" }
-channel     → Column { name: "channel" }
-```
-
-Coverage:
-
-```
-(0, channel) → NullFill    # file 0 does not have `channel`; other entries default to Native
-(1, *)       → Native      # default, not stored
-(2, *)       → Native      # default, not stored
-```
-
-Without a Unionset consumer, this Binding fails compile (§6.1 variant `NullFill` constraint in non-Unionset contexts → `COMP_E_0310`). With a Unionset consumer, `23` reads the Coverage and emits, per branch:
-
-```
-Branch 0 (file 0):  Project[customer_id, total, CAST(NULL AS <channel_type>) AS channel]
-Branch 1 (file 1):  Project[customer_id, total, channel]
-Branch 2 (file 2):  Project[customer_id, total, channel]
-```
 
 ## 7. SemanticManifest-Layer Counterpart: `ResolvedColumnMapping`
 
@@ -1108,63 +1067,6 @@ The v1 design pencils in `serde` derivations on all `15`-ratified types (with th
 ### 12.7 `10 §3.3` — Placement in `compile`
 
 `15 §10` is the per-Binding sub-sequence of `10 §3.3`'s "source resolution → schema resolution → name resolution → expression compile → index build" pipeline. `15 §10.9` locates the sub-sequence precisely.
-
-## 13. Ratified Decisions Index
-
-A Q-numbered roll-up of every choice `15` ratifies in Round 1. Each entry cross-references the owning section; the `status` column marks whether the decision is fully ratified (`✓`) or has a parked companion question (`?` → see `questions/open/15_questions.md`).
-
-
-| #   | Decision                                                                                                                                                                                                                                                                                                                                                         | Ratified in               | Status                                   |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---------------------------------------- |
-| R1  | `Binding` is a struct with `binding_id`, `sources`, `semantic_mapping`, `coverage` fields; `#[non_exhaustive]`.                                                                                                                                                                                                                                                  | §2.1                      | ✓                                        |
-| R2  | `BindingId(pub u32)` is unique within a SemanticManifest (per-compile scope), not across SemanticManifests.                                                                                                                                                                                                                                                      | §2.2                      | ? Q-MAP-001                              |
-| R3  | `PhysicalSource` has three variants: `File`, `Table`, `Snapshot`. Enum is `#[non_exhaustive]`.                                                                                                                                                                                                                                                                   | §3.1                      | ✓                                        |
-| R4  | Every `PhysicalSource` variant carries `schema: Schema` and `partitions: Vec<PartitionColumn>`.                                                                                                                                                                                                                                                                  | §3.1                      | ✓                                        |
-| R5  | `Schema.columns` is an ordered `Vec`; order is source-native.                                                                                                                                                                                                                                                                                                    | §3.2                      | ✓                                        |
-| R6  | `CatalogRef` is opaque; `catalog_id` routes to a provider, `fqn` names the table.                                                                                                                                                                                                                                                                                | §3.3                      | ✓                                        |
-| R7  | `PartitionColumn.position` is 1-indexed.                                                                                                                                                                                                                                                                                                                         | §3.4                      | ✓                                        |
-| R8  | Partition-transform record lives in `37`'s catalog response, not on `PartitionColumn`. Partition info never reaches `35 ScanNode`; manifest-side carriage only.                                                                                                                                                                                                  | §3.4 / §3.5.4 / `35 §4.2.1` | ✓ (Q-MAP-002 closed 2026-04-28)         |
-| R9  | Source resolution is deterministic (lexical sort after provider enumeration).                                                                                                                                                                                                                                                                                    | §3.5.6                    | ✓                                        |
-| R10 | Zero matches for a glob entry is a compile error (`COMP_E_0301`).                                                                                                                                                                                                                                                                                                | §3.5.7                    | ✓                                        |
-| R11 | Cross-source schema hard-agreement is a compile error (`COMP_E_0317`); soft-agreement is `Coverage::NullFill`.                                                                                                                                                                                                                                                   | §3.5.8 / §6.2             | ✓                                        |
-| R12 | `FileFormat` v1 set: `Parquet`, `Csv(CsvOptions)`, `Json(JsonOptions)`, `Orc`, `Avro`.                                                                                                                                                                                                                                                                           | §4.1                      | ✓                                        |
-| R13 | CSV schema resolution: declared-first, then header-derived; columns are `String` unless declared.                                                                                                                                                                                                                                                                | §4.4                      | ✓                                        |
-| R14 | JSON schema resolution: declared-first, then sample-inference (scalar-only).                                                                                                                                                                                                                                                                                     | §4.4                      | ? Q-MAP-004                              |
-| R15 | Format is inferred from file extension when glob spec has no explicit format.                                                                                                                                                                                                                                                                                    | §4.5                      | ✓                                        |
-| R16 | Mixed formats in one glob are a compile error (`COMP_E_0304`).                                                                                                                                                                                                                                                                                                   | §4.5                      | ✓                                        |
-| R17 | `SemanticMapping.entries` is a `BTreeMap<SemanticsName, SemanticMappingValue>`.                                                                                                                                                                                                                                                                                  | §5.1                      | ✓                                        |
-| R18 | `SemanticMappingValue` has four variants: `Column`, `Literal`, `Expr`, `Metadata`. Enum is `#[non_exhaustive]`. The `Metadata` variant is compile-synthesized only (§5.5); it has no author-facing YAML under `semantic_mapping:`.                                                                                                                               | §5.1 / `18 §10`           | ✓                                        |
-| R19 | Every Semantics in `SemanticInterface` appears exactly once in `SemanticMapping`.                                                                                                                                                                                                                                                                                | §5.6                      | ✓                                        |
-| R20 | Derived Measures synthesized from `Constraint::DerivesFrom(Key)` are filled in at compile time.                                                                                                                                                                                                                                                                  | §5.6                      | ? Q-MAP-003                              |
-| R21 | `Coverage` keyed on `(source_index, semantics)`. Default `Native` is not stored.                                                                                                                                                                                                                                                                                 | §6.1                      | ✓                                        |
-| R22 | `CoverageVariant`: `Native`, `NullFill`, `Derived`, `Metadata`; enum `#[non_exhaustive]`.                                                                                                                                                                                                                                                                        | §6.1                      | ✓                                        |
-| R23 | `Derived` is a distinct variant from `Native`.                                                                                                                                                                                                                                                                                                                   | §6.3                      | ? Q-MAP-005                              |
-| R24 | `NullFill` on a non-Unionset-tolerant consumer is a compile error (`COMP_E_0310`).                                                                                                                                                                                                                                                                               | §6.1                      | ✓                                        |
-| R25 | Binding-level Coverage is `15`'s; composition-level Coverage is `16`'s.                                                                                                                                                                                                                                                                                          | §6.4                      | ✓                                        |
-| R26 | `ResolvedColumnMapping` splits variants into four flat HashMaps.                                                                                                                                                                                                                                                                                                 | §7.2                      | ✓                                        |
-| R27 | Per-Binding `computed` HashMap duplicates `ResolvedExprTable` entries (storage choice).                                                                                                                                                                                                                                                                          | §7.5                      | ? Q-MAP-006                              |
-| R28 | `path.token` is 0-indexed post-scheme-strip; segments are slash-delimited; leading-/-collapsed.                                                                                                                                                                                                                                                                  | §8.1                      | ✓ (Q-MAP-007 closed)                     |
-| R29 | `path_token` returns the whole raw segment, not the `=`-suffix value. Authors compose value-after-`=` via a separate Computed Dimension calling `substring_after`.                                                                                                                                                                                               | §8.1.1                    | ✓ (Q-MAP-008 closed)                     |
-| R30 | `partition.level: N` is 1-indexed.                                                                                                                                                                                                                                                                                                                               | §8.2                      | DEFERRED v2 (§8.0; COMP_E_0322 v1 guard) |
-| R31 | Hive-style partition extraction result-type contract.                                                                                                                                                                                                                                                                                                            | §8.2.1                    | DEFERRED v2 (Q-MAP-009 deferred)         |
-| R32 | Partitioning agreement is strict across Binding sources for referenced levels.                                                                                                                                                                                                                                                                                   | §8.2.2                    | DEFERRED v2 (§8.0)                       |
-| R33 | Widening casts emit `COMP_I_0301`; narrowing emit `COMP_W_0302`.                                                                                                                                                                                                                                                                                                 | §9.1                      | ✓                                        |
-| R34 | `Cast` is wrapped into `SemanticMappingValue::Expr`; no separate cast-needed flag.                                                                                                                                                                                                                                                                               | §9.1                      | ✓                                        |
-| R35 | Computed-entry type inference reconciles via `Cast` wrap or `COMP_E_0316`.                                                                                                                                                                                                                                                                                       | §9.2                      | ✓                                        |
-| R36 | Cross-source type agreement is strict (`COMP_E_0317`).                                                                                                                                                                                                                                                                                                           | §9.3                      | ✓                                        |
-| R37 | Nullability mismatch is a warning (`COMP_W_0306`), not an error.                                                                                                                                                                                                                                                                                                 | §9.4                      | ? Q-MAP-010                              |
-| R38 | `compile` flow for Bindings is a 7-step sequence (§10.1–§10.7).                                                                                                                                                                                                                                                                                                  | §10                       | ✓                                        |
-| R39 | Structural checks accumulate; I/O and dependency checks fail-fast.                                                                                                                                                                                                                                                                                               | §10.8                     | ✓                                        |
-| R40 | `15`'s code range is `COMP_E_0300-0399` (schema/binding); catalog-availability errors re-surface in `COMP_E_0200-0299`.                                                                                                                                                                                                                                          | §11                       | ✓                                        |
-| R41 | Every `15`-owned `CompileError` carries a `Diagnostic.location` pointing into the Model YAML.                                                                                                                                                                                                                                                                    | §11.4                     | ✓                                        |
-| R42 | Expression / function / resolution errors from `14` / `14a` / `14b` pass through without re-codification.                                                                                                                                                                                                                                                        | §11.3                     | ✓                                        |
-| R43 | The expression layer model has three strata: `SemanticExpr` (logical, layer 1, `14`/`14b`-owned), `PhysicalExpr` (lowered SQL-equivalent, layer 2, `14`-owned), compile-time mechanics (layer 3, `15`-owned). `path_token` is the v1 inhabitant of layer 3; it is not a `PhysicalExpr` variant and not a `14a` registry function.                                | §1 banner / §8            | ✓                                        |
-| R44 | `SemanticMappingValue::Metadata` is **compile-synthesized only** from a Dimension's `type: { metadata: ... }` block (per `13 §4.7` / `18 §4`). No author-facing `semantic_mapping:` YAML; no peer YAML for the variant. The synthesis runs as compile step 4.0 (§10.4), before the §5.6 completeness check.                                                      | §5.5 / §10.4 / `18 §10.4` | ✓                                        |
-| R45 | `MetadataDimensionRecipe` carries `extraction: MetadataExtraction` + `data_type: DataType`. Per-source resolved `LiteralValue`s live on `ResolvedPhysicalSource.metadata_values: HashMap<SemanticsName, LiteralValue>`, not on the recipe (the recipe is global to the Binding; values vary per source).                                                         | §5.5 / §7.6 / `18 §10.4`  | ✓                                        |
-| R46 | The compile stage casts the layer-3 `String` extraction result to the recipe's declared `data_type:`. Cast failure is fail-fast at compile (`COMP_E_0321 MetadataCastFailed`); there is no plan-time or run-time deferral.                                                                                                                                       | §8.1.2 / §11.1            | ✓                                        |
-| R47 | v1 metadata extraction scope is **path-only**. Partition extraction (`13 §4.7` `partition: PartitionExtraction { level: usize }`) is deferred to v2 — the compile-pass guard `COMP_E_0322 MetadataPartitionDeferredV2` rejects `partition: Some(_)` until v2 ratifies the partition arm. The §8.2 / §8.3 / §8.4 sections are retained as v2 design parking.      | §8.0 / §11.1              | ✓                                        |
-| R48 | `[TD-MAP-METADATA-FOLD]` is **resolved (2026-04-27)**: the fold of `Metadata` into `Expr` is reversed; `Metadata` is restored as a distinct 4th variant of `SemanticMappingValue`. The author surface is the Dimension type's `metadata:` block, not a `semantic_mapping:` YAML sugar. The compile flow eagerly resolves per-source literals at compile (§10.5). | banner / §1               | ✓                                        |
-
 
 ## 14. Non-Goals
 

@@ -1,6 +1,6 @@
 ---
 
-## prereqs: [20, 32, 18, 13, 14, 15, 17, 26]
+prereqs: [20, 32, 18, 13, 14, 15, 17, 26]
 
 authoritative-for:
 
@@ -18,6 +18,7 @@ refined-by:
 - 34 (`semstrait-planner` — concrete `plan` entry point and `SimpleStrategy` algorithm body)
 - 35 (`semstrait-ir` — `PlanNode::{Scan, Project, Filter, Agg, Union}` variants emitted by `SimpleStrategy`)
 - 36 (`semstrait-adapter` — engine rendering of the `SimpleStrategy` output)
+---
 
 # 21. Dataset (`SimpleDataKind`)
 
@@ -94,6 +95,69 @@ A `Dataset`:
 - **MAY** appear at Root scope as a top-level public DataKind (per `32 §2.1`'s `datasets:` plural tag).
 - **MAY** be nested inline as a `NestedDataset` under a `ComplexDataKind` per `26`'s nesting matrix (Unionset branches, Grainset levels, Joinset members). Nested form is structural-only (no `description` / `semantic_interface` / `ai_context`); the nested `name` is the structural anchor.
 - **MUST NOT** contain any `DataKind` child — `Dataset` is a leaf in the nesting matrix per `26 §R1`.
+
+### 2.3 Authoring example — full SemanticInterface surface
+
+A worked YAML showing every authoring slot a `Dataset` exposes (focus is **completeness of the surface**, not plan emission — see §10 for the plan-shape worked example):
+
+```yaml
+datasets:
+  - name: orders
+    description: "Order-line fact dataset."
+    dimensions:
+      - name: ordered_at
+        data_type: Timestamp
+      - name: region
+        data_type: String
+      - name: product_category
+        data_type: String
+    measures:
+      - name: gross_revenue
+        agg: sum
+        expr: amount_cents
+        data_type: Long
+      - name: order_count
+        agg: count
+        data_type: Long
+    metrics:
+      - name: avg_order_value
+        expr: gross_revenue / order_count
+        data_type: Decimal
+    keys:
+      - name: order_id
+        kind: primary
+      - name: customer_id
+        kind: foreign
+    filters:
+      - name: paid_orders
+        expr: status = 'paid'
+    extras:
+      catalog: polaris_prod
+      storage:
+        format: Parquet
+        paths: ["s3://b/orders/*.parquet"]
+      semantic_mapping:
+        ordered_at:        order_date
+        region:            region_code
+        product_category:  prod_cat
+        amount_cents:      amount_cents
+        order_id:          id
+        customer_id:       cust_id
+        status:            order_status
+      temporal:
+        events:
+          occurred_at: ordered_at
+          grain: Day
+```
+
+Notes on this example:
+
+- `dimensions:`, `measures:`, `metrics:`, `keys:`, `filters:` are **flat** at the Dataset level per `#[serde(flatten)]` on the SemanticInterface (per `32 §3.3`). The full canonical roster of these five components is enumerated in `18 §1.1`.
+- `metrics:` are composed expressions over Measures (per `18 §1.1`). `avg_order_value = gross_revenue / order_count` is a derived ratio Metric.
+- `keys:` declare entity-level identifiers (`kind: primary` / `kind: foreign`, per `18 §2.5`); they participate in `Relationship` resolution and are NOT projected at plan time unless a Request explicitly references them in `fields:`.
+- `filters:` declare named saved filters (per `18 §2.4`); a Request may reference them by name (e.g. `filters: [paid_orders]`).
+- The `extras.semantic_mapping:` block covers every Semantics that maps to a physical column. Implicit name-match per `15 §10.4` would cover Semantics whose physical name is identical (e.g. `amount_cents → amount_cents` could be omitted); shown explicitly here for clarity.
+- `extras.temporal.events:` ratifies the historization shape — `occurred_at: ordered_at` names a Dimension on this Dataset; `grain: Day` is the source granularity.
 
 ## 3. Binding Consumer Contract
 
@@ -277,6 +341,8 @@ Two observable invariants involve `grain`:
 
 ### 10.1 YAML
 
+The example below is a **focused excerpt** — only the SemanticInterface elements needed to illustrate the multi-source / `Metadata` / disjointness mechanism (`dimensions:` + `measures:`) are shown. See [§2.3](#23-authoring-example--full-semanticinterface-surface) for a Dataset that exercises every authoring slot (`dimensions / measures / metrics / keys / filters`).
+
 ```yaml
 datasets:
   - name: orders
@@ -347,11 +413,11 @@ Project                              (final shape — rename, ordering)
 
 ### 10.4 Reading key
 
-- The `extras.storage.paths:` glob expands to two `Scan`s combined by `Union`; this is the implicit Unionset (mode `all`) per §4.
+- The `extras.storage.paths:` glob expands to two `Scan`s combined by `Union`; this is the implicit Unionset (mode `all`) per §4. The canonical fan-out mechanism is owned by [`23 §4.7`](./23_unionset.md); `21 §3.2` cross-references it.
 - `Filter` for `region = 'EU'` is pushed below the per-branch aggregation. Exact placement is `34`'s concern; `21` ratifies only that pushdown is a planner guarantee.
 - Per-branch `Agg` produces partial aggregates; the final `Agg` above the `Union` is required because the GROUP BY keys aren't provably disjoint from literals + `Metadata`.
 - `year_dir` is a `Metadata` Dimension extracted from the path token; per-source literals (`"year=2024"` for source 0, `"year=2025"` for source 1) are emitted at the per-branch `Project`. Since `year_dir` is not in the Request's `fields:`, it does not appear in the final projection.
-- Algorithm body — exact `Project` columns, `Cast` placement, `DateTrunc` emission, partial-aggregate column staging — lives in `34 §<SimpleStrategy>` (currently parked in `[../_drafts/34_simple_strategy.md](../_drafts/34_simple_strategy.md)`).
+- Algorithm body — exact `Project` columns, `Cast` placement, `DateTrunc` emission, partial-aggregate column staging — lives in `34 §<SimpleStrategy>` (currently parked in [`../_drafts/34_simple_strategy.md`](../_drafts/34_simple_strategy.md)).
 
 ### 10.5 Simpler case — single-source, Dimensions-only
 

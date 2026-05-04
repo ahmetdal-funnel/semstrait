@@ -1,27 +1,29 @@
 ---
-prereqs: [10, 11, 13, 14, 14b, 15, 16, 17, 20, 21, 22, 23, 24, 25, 30, 31, 33, 35]
+
+## prereqs: [10, 11, 13, 14, 14b, 15, 16, 17, 20, 21, 22, 23, 24, 25, 30, 31, 33, 35]
+
 authoritative-for:
-  - the `semstrait-planner` public-API surface (types, traits, free functions)
-  - the `plan` free-function signature using the fail-fast typed-kind shape per `30 §7.1` (`Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>`) and its seven pipeline sub-steps
-  - the `optimize` free-function signature (parallel fail-fast shape over `OptimizeErrorKind`) and the canonical-pass roster
-  - the `Request` type and its fields (dimensions, measures, metrics, filters, order, limit, offset, from, temporal, session)
-  - the `SessionContext` type and its fields (now, timezone, feature_toggles, correlation_id)
-  - the `ResolvedQueryRequest` type — SemanticManifest-contextualized Request with looked-up Semantics and resolved target DataKind
-  - the `Strategy` trait surface (`id`, `supports`, `plan`) and its companion types (`StrategyId`, `StrategyContext`)
-  - the `OptimizerPass` trait surface and its canonical v1 passes (constant folding, metadata-Dimension substitution, predicate simplification, identity-Project elimination)
-  - the `PlanErrorKind` and `OptimizeErrorKind` typed-kind enums and their `Diagnose` impls per `30 §5`
-  - fail-fast diagnostics accumulation for `plan` and `optimize` (warnings carried through both arms per `30 §7.2` / `§7.3`)
-  - crate boundary posture — no I/O, no SQL emission, no YAML parsing, no catalog access on the `plan` / `optimize` hot path
+
+- the `semstrait-planner` public-API surface (types, traits, free functions)
+- the `plan` free-function signature using the fail-fast typed-kind shape per `30 §7.1` (`Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>`) and its seven pipeline sub-steps
+- the `optimize` free-function signature (parallel fail-fast shape over `OptimizeErrorKind`) and the canonical-pass roster
+- the `Request` type and its fields (dimensions, measures, metrics, filters, order, limit, offset, from, temporal, session)
+- the `SessionContext` type and its fields (now, timezone, feature_toggles, correlation_id)
+- the `ResolvedQueryRequest` type — SemanticManifest-contextualized Request with looked-up Semantics and resolved target DataKind
+- the `Strategy` trait surface (`id`, `supports`, `plan`) and its companion types (`StrategyId`, `StrategyContext`)
+- the `OptimizerPass` trait surface and its canonical v1 passes (constant folding, metadata-Dimension substitution, predicate simplification, identity-Project elimination)
+- the `PlanErrorKind` and `OptimizeErrorKind` typed-kind enums and their `Diagnose` impls per `30 §5`
+- fail-fast diagnostics accumulation for `plan` and `optimize` (warnings carried through both arms per `30 §7.2` / `§7.3`)
+- crate boundary posture — no I/O, no SQL emission, no YAML parsing, no catalog access on the `plan` / `optimize` hot path
 refined-by:
-  - 21 (`data-kinds/21_dataset.md` — `SimpleStrategy` per-variant algorithm)
-  - 22 (`data-kinds/22_grainset.md` — `GrainsetStrategy` per-variant algorithm)
-  - 23 (`data-kinds/23_unionset.md` — `UnionsetStrategy` per-variant algorithm)
-  - 24 (`data-kinds/24_joinset.md` — `JoinsetStrategy` per-variant algorithm)
-  - 25 (`data-kinds/25_applicability_matrix.md` — per-variant cross-cut consumed at dispatch)
-  - 35 (`apis/35_semstrait_ir.md` — `SemanticPlan` and `PlanNode` tree the planner emits)
-  - 36 (`apis/36_semstrait_adapter.md` — consumes the `SemanticPlan` produced by this crate)
-  - 40 (`implementation/40_refactor_plan.md` — current code-vs-target delta for the planner crate)
----
+- 21 (`data-kinds/21_dataset.md` — `SimpleStrategy` per-variant algorithm)
+- 22 (`data-kinds/22_grainset.md` — `GrainsetStrategy` per-variant algorithm)
+- 23 (`data-kinds/23_unionset.md` — `UnionsetStrategy` per-variant algorithm)
+- 24 (`data-kinds/24_joinset.md` — `JoinsetStrategy` per-variant algorithm)
+- 25 (`data-kinds/25_applicability_matrix.md` — per-variant cross-cut consumed at dispatch)
+- 35 (`apis/35_semstrait_ir.md` — `SemanticPlan` and `PlanNode` tree the planner emits)
+- 36 (`apis/36_semstrait_adapter.md` — consumes the `SemanticPlan` produced by this crate)
+- 40 (`implementation/40_refactor_plan.md` — current code-vs-target delta for the planner crate)
 
 # 34. semstrait-planner
 
@@ -71,14 +73,16 @@ The planner is the workspace's widest dispatch site — the `plan` entry point f
 
 ### 1.4 Invariants upheld by the crate
 
-| Invariant | `semstrait-planner` guarantee |
-|---|---|
-| **I5** — name resolution is compile-time | The planner performs **lookup only** (`14b §2.3`, `33 §3.4`). No `resolve_*` method walks names to Semantics or columns; every such walk was performed at `compile`. A CI lint forbids `EntityRef` leaves in any `PhysicalExpr` a plan node carries. |
-| **I6** — plan hot path is synchronous | **No `pub async fn` exists on `semstrait-planner`.** The `Strategy` trait's `plan` method is sync; so is every `OptimizerPass::apply`. A CI audit (`cargo clippy -- -D clippy::async_fn_in_trait`) enforces. |
-| **I8** — planner-complete SemanticManifest | Every `(SemanticsName, BindingId)` the planner might ask for is already in `manifest.expr_table` (`14b §2.3`). Every `Relationship` the planner walks is in `manifest.resolved_relationships`. A SemanticManifest whose indices fail this completeness guarantee triggers `PlanErrorKind::SemanticManifestIndexInconsistent` at dispatch (`20 §8.2`). |
-| **I10** — non-exhaustive public sum types | `Request`, `SessionContext`, `ResolvedQueryRequest`, `PlanErrorKind`, `OptimizeErrorKind`, `StrategyId` are all `#[non_exhaustive]`. An integration test over `cargo public-api` enforces. |
-| **I11** — no I/O in hot path | No `std::fs`, no `std::net`, no `tokio`, no `reqwest` in the crate's dependency graph. The `Cargo.toml` audit (§16.2) is CI-enforced. |
-| **I12** — first-class diagnostics | `PlanErrorKind` and `OptimizeErrorKind` implement `Diagnose` per `30 §5.4`; identification is by variant identity per `30 §5.4` (no string-code surface). Warnings accumulate through both success and failure arms per `30 §7.2` / `§7.3`. The `tracing` channel (`30 §6`) carries library-internal observability events orthogonally to returned diagnostics. |
+
+| Invariant                                  | `semstrait-planner` guarantee                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **I5** — name resolution is compile-time   | The planner performs **lookup only** (`14b §2.3`, `33 §3.4`). No `resolve`_* method walks names to Semantics or columns; every such walk was performed at `compile`. A CI lint forbids `EntityRef` leaves in any `PhysicalExpr` a plan node carries.                                                                                                            |
+| **I6** — plan hot path is synchronous      | **No `pub async fn` exists on `semstrait-planner`.** The `Strategy` trait's `plan` method is sync; so is every `OptimizerPass::apply`. A CI audit (`cargo clippy -- -D clippy::async_fn_in_trait`) enforces.                                                                                                                                                    |
+| **I8** — planner-complete SemanticManifest | Every `(SemanticsName, BindingId)` the planner might ask for is already in `manifest.expr_table` (`14b §2.3`). Every `Relationship` the planner walks is in `manifest.resolved_relationships`. A SemanticManifest whose indices fail this completeness guarantee triggers `PlanErrorKind::SemanticManifestIndexInconsistent` at dispatch (`20 §8.2`).           |
+| **I10** — non-exhaustive public sum types  | `Request`, `SessionContext`, `ResolvedQueryRequest`, `PlanErrorKind`, `OptimizeErrorKind`, `StrategyId` are all `#[non_exhaustive]`. An integration test over `cargo public-api` enforces.                                                                                                                                                                      |
+| **I11** — no I/O in hot path               | No `std::fs`, no `std::net`, no `tokio`, no `reqwest` in the crate's dependency graph. The `Cargo.toml` audit (§16.2) is CI-enforced.                                                                                                                                                                                                                           |
+| **I12** — first-class diagnostics          | `PlanErrorKind` and `OptimizeErrorKind` implement `Diagnose` per `30 §5.4`; identification is by variant identity per `30 §5.4` (no string-code surface). Warnings accumulate through both success and failure arms per `30 §7.2` / `§7.3`. The `tracing` channel (`30 §6`) carries library-internal observability events orthogonally to returned diagnostics. |
+
 
 ### 1.5 Constraint validation precedes Strategy dispatch
 
@@ -88,12 +92,6 @@ Per `11 §8.6`, realized-carrier Constraint validation runs as the **planner's f
 2. The v1 `ConstraintValidator::check()` (`11 §8.6`) reads only the Request and the SemanticManifest's name indices — work the planner must do anyway in step 1. Reordering would duplicate lookups.
 
 §7.1 ratifies step 0 as the planner's entry action. The seven-step pipeline is fixed: violating the order is a crate-internal bug, not a surface the caller can influence.
-
-### 1.6 The `optimize` stage — when and why
-
-`optimize` is **stage 5** of the canonical pipeline (`10 §3.5`), immediately after `plan`. Like `plan` it is sync / pure / fail-fast; unlike `plan` it is **optional** per `10 §3.5`'s contract — a caller that does not need canonical-form guarantees MAY skip it and pass the raw `SemanticPlan` straight to an adapter. Concrete consumers (e.g. the `semstrait-api` request pipeline) invoke it unconditionally.
-
-The v1 optimizer is deliberately minimal (§11.2): four canonical rewrite passes with simple, well-specified semantics. The pass roster grows under I10 as downstream performance evidence accumulates; new passes register via the `OptimizerPass` trait (§12).
 
 ## 2. Public crate surface
 
@@ -118,33 +116,35 @@ Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root r
 
 **Surface roster (one line per item; full shapes in later sections):**
 
-| Module | Item | Kind | Section |
-|---|---|---|---|
-| (crate root) | `pub fn plan(...) -> Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>` | free fn | §6 |
-| (crate root) | `pub fn optimize(...) -> Result<(SemanticPlan, Diagnostics<OptimizeErrorKind>), (Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>)>` | free fn | §11 |
-| `request` | `pub struct Request` | value type | §3 |
-| `request` | `pub struct SessionContext` | value type | §4 |
-| `request` | `pub struct ResolvedQueryRequest` | value type | §5 |
-| `request` | `pub struct Filter` | value type | §3.5 |
-| `request` | `pub enum FilterOperator` | sum type | §3.5 |
-| `request` | `pub enum FilterValue` | sum type | §3.5 |
-| `request` | `pub enum SortDir` | sum type | §3.6 |
-| `request` | `pub struct DataKindRef` | newtype | §3.8 |
-| `request` | `pub struct TemporalRequest` | value type (reserved) | §3.9 |
-| `plan` | `pub enum PlanErrorKind` | typed-kind enum (impls `Diagnose`) | §13 |
-| `optimize` | `pub enum OptimizeErrorKind` | typed-kind enum (impls `Diagnose`) | §13.3 |
-| `optimize` | `pub trait OptimizerPass` | pluggable pass | §12 |
-| `optimize` | `pub struct Optimizer` | pass chain | §12.4 |
-| `optimize` | `pub struct OptimizerBuilder` | builder | §12.5 |
-| `strategy` | `pub trait Strategy` | dispatch surface | §8 |
-| `strategy` | `pub struct StrategyId` | newtype | §8.2 |
-| `strategy` | `pub struct StrategyContext<'a>` | per-invocation context | §8.4 |
-| `strategy` | `pub struct StrategyRegistry` | dispatch table | §8.3 |
-| `strategy` | `pub fn dispatch_strategy(...) -> &dyn Strategy` | free fn | §8.5 |
-| `strategies` | `pub struct SimpleStrategy` | v1 strategy | §9.1 |
-| `strategies` | `pub struct GrainsetStrategy` | v1 strategy | §9.2 |
-| `strategies` | `pub struct UnionsetStrategy` | v1 strategy | §9.3 |
-| `strategies` | `pub struct JoinsetStrategy` | v1 strategy | §9.4 |
+
+| Module       | Item                                                                                                                                              | Kind                               | Section |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------- |
+| (crate root) | `pub fn plan(...) -> Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>`                 | free fn                            | §6      |
+| (crate root) | `pub fn optimize(...) -> Result<(SemanticPlan, Diagnostics<OptimizeErrorKind>), (Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>)>` | free fn                            | §11     |
+| `request`    | `pub struct Request`                                                                                                                              | value type                         | §3      |
+| `request`    | `pub struct SessionContext`                                                                                                                       | value type                         | §4      |
+| `request`    | `pub struct ResolvedQueryRequest`                                                                                                                 | value type                         | §5      |
+| `request`    | `pub struct Filter`                                                                                                                               | value type                         | §3.5    |
+| `request`    | `pub enum FilterOperator`                                                                                                                         | sum type                           | §3.5    |
+| `request`    | `pub enum FilterValue`                                                                                                                            | sum type                           | §3.5    |
+| `request`    | `pub enum SortDir`                                                                                                                                | sum type                           | §3.6    |
+| `request`    | `pub struct DataKindRef`                                                                                                                          | newtype                            | §3.8    |
+| `request`    | `pub struct TemporalRequest`                                                                                                                      | value type (reserved)              | §3.9    |
+| `plan`       | `pub enum PlanErrorKind`                                                                                                                          | typed-kind enum (impls `Diagnose`) | §13     |
+| `optimize`   | `pub enum OptimizeErrorKind`                                                                                                                      | typed-kind enum (impls `Diagnose`) | §13.3   |
+| `optimize`   | `pub trait OptimizerPass`                                                                                                                         | pluggable pass                     | §12     |
+| `optimize`   | `pub struct Optimizer`                                                                                                                            | pass chain                         | §12.4   |
+| `optimize`   | `pub struct OptimizerBuilder`                                                                                                                     | builder                            | §12.5   |
+| `strategy`   | `pub trait Strategy`                                                                                                                              | dispatch surface                   | §8      |
+| `strategy`   | `pub struct StrategyId`                                                                                                                           | newtype                            | §8.2    |
+| `strategy`   | `pub struct StrategyContext<'a>`                                                                                                                  | per-invocation context             | §8.4    |
+| `strategy`   | `pub struct StrategyRegistry`                                                                                                                     | dispatch table                     | §8.3    |
+| `strategy`   | `pub fn dispatch_strategy(...) -> &dyn Strategy`                                                                                                  | free fn                            | §8.5    |
+| `strategies` | `pub struct SimpleStrategy`                                                                                                                       | v1 strategy                        | §9.1    |
+| `strategies` | `pub struct GrainsetStrategy`                                                                                                                     | v1 strategy                        | §9.2    |
+| `strategies` | `pub struct UnionsetStrategy`                                                                                                                     | v1 strategy                        | §9.3    |
+| `strategies` | `pub struct JoinsetStrategy`                                                                                                                      | v1 strategy                        | §9.4    |
+
 
 ## 3. The `Request` type
 
@@ -246,12 +246,14 @@ pub enum FilterValue {
 
 **Arity rules** (enforced at step 1):
 
-| Operator | Arity | Error |
-|---|---|---|
-| `Eq` / `NotEq` / `Lt` / `LtEq` / `Gt` / `GtEq` | 1 | `PLAN_E_0520 FilterArityMismatch` |
-| `In` / `NotIn` | ≥ 1 | same |
-| `Between` | 2 (lower, upper) | same |
-| `IsNull` / `IsNotNull` | 0 | same |
+
+| Operator                                       | Arity            | Error                             |
+| ---------------------------------------------- | ---------------- | --------------------------------- |
+| `Eq` / `NotEq` / `Lt` / `LtEq` / `Gt` / `GtEq` | 1                | `PLAN_E_0520 FilterArityMismatch` |
+| `In` / `NotIn`                                 | ≥ 1              | same                              |
+| `Between`                                      | 2 (lower, upper) | same                              |
+| `IsNull` / `IsNotNull`                         | 0                | same                              |
+
 
 **Type admissibility.** A `FilterValue` whose native Rust type cannot be cast to `field`'s resolved `DataType` raises `PLAN_E_0521 FilterValueTypeMismatch`. Conversions follow `13 §4`'s compatibility relation; no engine-specific coercion is performed (I2).
 
@@ -336,10 +338,10 @@ The planner reads `SessionContext` at exactly two sites: `Expr::Literal` folding
 
 ### 4.2 Field-by-field
 
-- **`now: Timestamp`** — the single fact every session-aware expression resolves against. The planner never calls `SystemTime::now()` itself (I11); a caller replaying a historical query sets `now` to that instant and every strategy observes it uniformly.
-- **`timezone: Timezone`** — `#[non_exhaustive]` newtype over an IANA identifier; `Timezone::utc()` is `Default`. Feeds into `PhysicalExpr::DateTrunc` nodes declaring `zone: ZoneScope::Session` per `13 §3`; v1's `Grain` variants are session-zone-oblivious so the field is carried but not consumed.
-- **`feature_toggles: FeatureToggles`** — a `BTreeMap<String, FeatureToggleValue>` shim, `#[non_exhaustive]`. Per I4, the planner's output is a pure function of `(manifest, request, feature_toggles)`. The planner reads toggles only at ratified sites (§11.4, `OptimizerPass::apply`).
-- **`correlation_id: Option<CorrelationId>`** — opaque caller-supplied identifier embedded into every emitted `Diagnostic.location.source` so downstream log-aggregation can correlate a request across stage boundaries.
+- `**now: Timestamp**` — the single fact every session-aware expression resolves against. The planner never calls `SystemTime::now()` itself (I11); a caller replaying a historical query sets `now` to that instant and every strategy observes it uniformly.
+- `**timezone: Timezone**` — `#[non_exhaustive]` newtype over an IANA identifier; `Timezone::utc()` is `Default`. Feeds into `PhysicalExpr::DateTrunc` nodes declaring `zone: ZoneScope::Session` per `13 §3`; v1's `Grain` variants are session-zone-oblivious so the field is carried but not consumed.
+- `**feature_toggles: FeatureToggles**` — a `BTreeMap<String, FeatureToggleValue>` shim, `#[non_exhaustive]`. Per I4, the planner's output is a pure function of `(manifest, request, feature_toggles)`. The planner reads toggles only at ratified sites (§11.4, `OptimizerPass::apply`).
+- `**correlation_id: Option<CorrelationId>**` — opaque caller-supplied identifier embedded into every emitted `Diagnostic.location.source` so downstream log-aggregation can correlate a request across stage boundaries.
 
 ### 4.3 Constructors
 
@@ -412,10 +414,6 @@ For `ResolvedTarget::Composition(name)`, the planner consumes the resolved kind 
 ### 5.2 Invariants
 
 A well-formed `ResolvedQueryRequest` satisfies: every `owner` names a `ResolvedDataKind` in `manifest.resolved_datakinds`; every `binding_id` is present in `manifest.expr_table` (I8 / `14b §2.3`); `target` is consistent with all `owner` fields; `dimensions` / `measures` / `metrics` entries have `element` matching the field they appear in; `filters` preserve caller order. Violation is a planner-internal bug; step 1 constructs only well-formed instances and consumers MAY `debug_assert!` in test builds.
-
-### 5.3 Why this type is explicit
-
-Exposing the resolved form lets strategies consume a single pre-resolved value: (a) re-running name resolution per dispatch would violate I5, (b) composition targets resolve to a pre-materialized `ResolvedJoinset` / `ResolvedUnionset` whose `composed_interface` carries `constituents` / `traversed_paths`, (c) filter placement (`21 §4.6`) needs element typing resolved once, not per strategy.
 
 ## 6. The `plan` function signature
 
@@ -540,6 +538,8 @@ flowchart TD
     S6 --> OUT[SemanticPlan]
 ```
 
+
+
 Every arrow is fail-fast — a failure short-circuits to `Err(PlanErrors)` with accumulated warnings (§14).
 
 ## 8. The `Strategy` trait
@@ -561,15 +561,15 @@ pub trait Strategy: Send + Sync {
 }
 ```
 
-**`id`.** Stable identifier for diagnostic / debug / registry use — one of `StrategyId::{Simple, Grainset, Unionset, Joinset}`. Third-party strategies (if Q-PLAN-002 opens the trait) add variants via `#[non_exhaustive]`.
+`**id`.** Stable identifier for diagnostic / debug / registry use — one of `StrategyId::{Simple, Grainset, Unionset, Joinset}`. Third-party strategies (if Q-PLAN-002 opens the trait) add variants via `#[non_exhaustive]`.
 
-**`supports`.** Called by `dispatch_strategy` as a defense-in-depth check AFTER the variant-tag match has chosen the candidate strategy. Mismatch raises `PLAN_E_2051 StrategyMissingForVariant`. Built-in strategies return `true` for exactly one variant tag.
+`**supports`.** Called by `dispatch_strategy` as a defense-in-depth check AFTER the variant-tag match has chosen the candidate strategy. Mismatch raises `PLAN_E_2051 StrategyMissingForVariant`. Built-in strategies return `true` for exactly one variant tag.
 
-**`plan`.** Plans the Request against the given DataKind, returning the root `PlanNode` of the subtree (not a full `SemanticPlan` — Request-level wrapping is applied by step 5, §7.6, after the strategy returns). `ctx` carries session, registry for recursive dispatch, and the diagnostic sink; `request` is the resolved form from step 1; `datakind` is the variant this call is planning against (consistent with `request.target`).
+`**plan`.** Plans the Request against the given DataKind, returning the root `PlanNode` of the subtree (not a full `SemanticPlan` — Request-level wrapping is applied by step 5, §7.6, after the strategy returns). `ctx` carries session, registry for recursive dispatch, and the diagnostic sink; `request` is the resolved form from step 1; `datakind` is the variant this call is planning against (consistent with `request.target`).
 
 **Borrow shapes.** `&StrategyContext` (not `&mut`) — mutation flows through interior-mutable fields so `&dyn Strategy` is shareable across threads. `&ResolvedQueryRequest` — constructed once per `plan` call and consumed read-only. Passing `&ResolvedDataKind` separately from `request.target` lets strategies access variant-specific fields (`ResolvedJoinset.path`, `ResolvedGrainset.levels`) without re-matching.
 
-Per I6, no `async` anywhere in the surface; per I12, every failure returns a typed `PlanError` with a stable `PLAN_E_*` code.
+Per I6, no `async` anywhere in the surface; per I12, every failure returns a typed `PlanError` with a stable `PLAN_E_`* code.
 
 ### 8.2 `StrategyId`
 
@@ -714,10 +714,6 @@ impl JoinsetStrategy { pub fn new() -> Self; }
 
 **Errors.** `PLAN_E_24xx` per `24 §10`.
 
-### 9.5 Why no `AdHocStrategy`
-
-The legacy planner (`crates/semstrait-planner/src/ad_hoc_join.rs`) carries a fifth "ad-hoc" dispatch path for Requests whose `entity_name` is empty. `34` subsumes this via field-first resolution (§10) — a `Request` with `from: None` and a multi-target field set resolves through constituent-set lookup (§10.2 step 4) to a pre-built `ResolvedJoinset` or `ResolvedUnionset` (per `16 §10.4` / `§10.5`) and dispatches through `JoinsetStrategy` / `UnionsetStrategy` per the resolved variant. The pre-built composition's `origin` (`Origin::Explicit` or `Origin::Implicit { id }`) is transparent to the strategy. There is no distinct "ad-hoc strategy" in the v1 taxonomy; the legacy code path is a migration item tracked as `[TD-ADHOC-INTO-FIELD-FIRST]` in the refactor plan.
-
 ## 10. Field-first resolution
 
 ### 10.1 When it runs
@@ -729,22 +725,18 @@ Step 2 of the pipeline (§7.3) invokes field-first resolution when `request.from
 The algorithm's canonical ratification is `16 §11`; §10 here records the planner-side realization. Per `16 §10`, every Joinset and Unionset (explicit and implicit) is **eagerly materialized at compile** with stable `Origin` carriage; plan-time is a pure lookup over `33`'s `CompositionIndex`. There is no plan-time BFS / Steiner walk and no on-demand synthesis.
 
 1. **Name-to-kind map (`16 §11.2`).** For each `SemanticsName` in `request.dimensions ∪ request.measures ∪ request.metrics ∪ request.filters.field`, consult `manifest.name_index(name)`:
-   - `None` → `PLAN_E_0508 UnknownSemantics { name }` (re-raised from step 1 if the lookup missed there) per `16 §14.3`.
-   - `Some(owning)` → record the `Vec<DataKindRef>`.
-
+  - `None` → `PLAN_E_0508 UnknownSemantics { name }` (re-raised from step 1 if the lookup missed there) per `16 §14.3`.
+  - `Some(owning)` → record the `Vec<DataKindRef>`.
 2. **Candidate kind set `T`.** Deduplicate `⋃ owning` across selected names. If `|T| == 0`, emit `PLAN_E_0508` (unreachable here because step 1 already enforced non-empty owners).
-
 3. **Single-kind fast path (`16 §11.3`).** If `|T| == 1`, return `ResolvedTarget::Implicit(T[0])`. The planner treats the Request as if `from: Some(T[0])` had been declared.
-
 4. **Multi-target lookup over `CompositionIndex` (`16 §11.4`).** If `|T| >= 2`:
-   - Form the canonical `ConstituentSet` (lex-sorted `Vec<DataKindName>`) per `33 §7.2` from `T`.
-   - Query `manifest.composition_index.by_constituent_set(&set)` (`33 §7.2`) → `&[DataKindName]`.
-   - **Single match** → fast-path: pick the unique pre-built `ResolvedJoinset` or `ResolvedUnionset` (whose `origin` is either `Origin::Explicit` or `Origin::Implicit { id }`), package as `ResolvedTarget::Composition(name)`. Strategy dispatch (§9.2's table) routes by the resolved variant; explicit and implicit are uniform downstream.
-   - **Multi match** → ambiguity. The constituent set was reachable via more than one canonical form (e.g. directional Joinsets that differ in path ordering, or both an implicit Joinset and an implicit Unionset for the same set). Emit `PLAN_E_0500 AmbiguousImplicitComposition { constituent_set, candidates }` (per `16 §14.3` shape) — the author must explicitly name a Joinset or refine the Request.
-   - **No match** → no composition was materialized at compile for this set. Two sub-cases:
-     - Inspect `MAX_IMPLICIT_COMPOSITION_DEPTH` policy: if the constituent set is reachable in the relationship graph but exceeded the depth bound at compile, emit `PLAN_E_0502 CompositionDepthExceeded { from_kinds, max_depth }` (per `16 §14.3` shape) with a hint suggesting an explicit Joinset.
-     - Otherwise emit `PLAN_E_0501 NoCompositionPath { from, to }` (per `16 §14.3` shape) with a hint listing the kinds and the missing relationship.
-
+  - Form the canonical `ConstituentSet` (lex-sorted `Vec<DataKindName>`) per `33 §7.2` from `T`.
+  - Query `manifest.composition_index.by_constituent_set(&set)` (`33 §7.2`) → `&[DataKindName]`.
+  - **Single match** → fast-path: pick the unique pre-built `ResolvedJoinset` or `ResolvedUnionset` (whose `origin` is either `Origin::Explicit` or `Origin::Implicit { id }`), package as `ResolvedTarget::Composition(name)`. Strategy dispatch (§9.2's table) routes by the resolved variant; explicit and implicit are uniform downstream.
+  - **Multi match** → ambiguity. The constituent set was reachable via more than one canonical form (e.g. directional Joinsets that differ in path ordering, or both an implicit Joinset and an implicit Unionset for the same set). Emit `PLAN_E_0500 AmbiguousImplicitComposition { constituent_set, candidates }` (per `16 §14.3` shape) — the author must explicitly name a Joinset or refine the Request.
+  - **No match** → no composition was materialized at compile for this set. Two sub-cases:
+    - Inspect `MAX_IMPLICIT_COMPOSITION_DEPTH` policy: if the constituent set is reachable in the relationship graph but exceeded the depth bound at compile, emit `PLAN_E_0502 CompositionDepthExceeded { from_kinds, max_depth }` (per `16 §14.3` shape) with a hint suggesting an explicit Joinset.
+    - Otherwise emit `PLAN_E_0501 NoCompositionPath { from, to }` (per `16 §14.3` shape) with a hint listing the kinds and the missing relationship.
 5. **Return.** `ResolvedTarget::{Implicit | Composition(name)}`. The planner consumes the resolved composition through `manifest.datakind(&name)` (`33 §3.4`); strategies see a uniform `ResolvedDataKind::Complex(...)` payload regardless of `origin`.
 
 ### 10.3 Integration with SemanticManifest indices
@@ -790,12 +782,14 @@ The free function applies `Optimizer::with_v1_passes()`, bundling the four canon
 
 ### 11.2 Canonical v1 passes
 
-| Pass | Name | Purpose | Failure variant | Section |
-|---|---|---|---|---|
-| 1 | `ConstantFolding` | Fold constant `PhysicalExpr` subtrees into `Expr::Literal` leaves. Operates on predicates, Project expressions, and Agg expressions. | `OptimizeErrorKind::PassFailed { pass: "constant_folding", … }` | §11.3 |
-| 2 | `MetadataDimensionSubstitution` | Substitute metadata-source Dimensions (per `13 §4.7` / SR-10) with their declared metadata expression. | `OptimizeErrorKind::PassFailed { pass: "metadata_dimension_substitution", … }` | §11.4 |
-| 3 | `PredicateSimplification` | Simplify predicates: `true AND x` → `x`, `false OR x` → `x`, `NOT NOT x` → `x`, range fusion (`x >= a AND x <= b` → `x BETWEEN a AND b`). | `OptimizeErrorKind::PassFailed { pass: "predicate_simplification", … }` | §11.5 |
-| 4 | `IdentityProjectElimination` | Remove `PlanNode::Project` nodes whose projection list is a 1:1 identity on the input schema. | `OptimizeErrorKind::PassFailed { pass: "identity_project_elimination", … }` | §11.6 |
+
+| Pass | Name                            | Purpose                                                                                                                                   | Failure variant                                                                | Section |
+| ---- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------- |
+| 1    | `ConstantFolding`               | Fold constant `PhysicalExpr` subtrees into `Expr::Literal` leaves. Operates on predicates, Project expressions, and Agg expressions.      | `OptimizeErrorKind::PassFailed { pass: "constant_folding", … }`                | §11.3   |
+| 2    | `MetadataDimensionSubstitution` | Substitute metadata-source Dimensions (per `13 §4.7` / SR-10) with their declared metadata expression.                                    | `OptimizeErrorKind::PassFailed { pass: "metadata_dimension_substitution", … }` | §11.4   |
+| 3    | `PredicateSimplification`       | Simplify predicates: `true AND x` → `x`, `false OR x` → `x`, `NOT NOT x` → `x`, range fusion (`x >= a AND x <= b` → `x BETWEEN a AND b`). | `OptimizeErrorKind::PassFailed { pass: "predicate_simplification", … }`        | §11.5   |
+| 4    | `IdentityProjectElimination`    | Remove `PlanNode::Project` nodes whose projection list is a 1:1 identity on the input schema.                                             | `OptimizeErrorKind::PassFailed { pass: "identity_project_elimination", … }`    | §11.6   |
+
 
 Every pass is deterministic, shape-preserving, and pure over the plan tree. No pass introduces or removes a `PlanNode` variant — the tree's variant distribution is stable under the v1 pass chain. (Pass 4 removes a `Project` node, which is variant-count change but not variant-introduction.)
 
@@ -903,7 +897,7 @@ The free function `optimize(plan)` is equivalent to `OptimizerBuilder::new().wit
 
 ## 13. `PlanErrorKind` / `OptimizeErrorKind`
 
-> **Migration note.** Body sections `§6`–`§10` and the cross-doc-fix table in `§17` retain references to legacy `PLAN_E_*` / `OPT_E_*` codes (e.g. `PLAN_E_0500 ConstraintViolation`). Those codes are **retired** per `30 §5`; the public-API surface identifies errors by `PlanErrorKind` / `OptimizeErrorKind` variant identity. The legacy code prefixes remain in body prose during the migration as cross-reference anchors and will be stripped in a follow-up doc pass. Read `PLAN_E_NNNN VariantName` in the body as shorthand for `PlanErrorKind::VariantName`.
+> **Migration note.** Body sections `§6`–`§10` and the cross-doc-fix table in `§17` retain references to legacy `PLAN_E_`* / `OPT_E_`* codes (e.g. `PLAN_E_0500 ConstraintViolation`). Those codes are **retired** per `30 §5`; the public-API surface identifies errors by `PlanErrorKind` / `OptimizeErrorKind` variant identity. The legacy code prefixes remain in body prose during the migration as cross-reference anchors and will be stripped in a follow-up doc pass. Read `PLAN_E_NNNN VariantName` in the body as shorthand for `PlanErrorKind::VariantName`.
 
 ### 13.1 `PlanErrorKind`
 
@@ -1044,7 +1038,7 @@ The `Strategy` trait is **non-sealed** (`30 §4.6`). Third-party crates MAY impl
 
 **Caveat.** The built-in variant dispatch (`dispatch_strategy`, §8.5) matches on the ratified `ResolvedDataKind` variant set — a third-party strategy is useful only when paired with a third-party `ResolvedDataKind` variant (also under I10 per `20 §5.1`). The v1 built-in registry holds exactly the four built-in strategies; a custom strategy requires building a custom registry.
 
-Whether the trait should be **sealed** (restricting impls to the workspace) is tracked as `Q-PLAN-002` in open questions. The Round-1 default is non-sealed per `Q-KIND-001` (in [`questions/open/20_questions.md`](../questions/open/20_questions.md)) pending resolution.
+Whether the trait should be **sealed** (restricting impls to the workspace) is tracked as `Q-PLAN-002` in open questions. The Round-1 default is non-sealed per `Q-KIND-001` (in `[questions/open/20_questions.md](../questions/open/20_questions.md)`) pending resolution.
 
 ### 15.2 Built-in strategies — stable
 
@@ -1078,7 +1072,7 @@ The `PLAN_E_0500` aliasing referenced in `§13.1`'s legacy code allocation table
 
 ### 16.1 NO I/O
 
-No `std::fs`, no `std::net`, no `tokio`, no `reqwest`, no `aws-sdk-*`, no `object_store` in the crate's dependency graph. A `plan` or `optimize` invocation performs zero syscalls on the hot path; every datum consulted is already in the `SemanticManifest` (I8 / I11). `tracing::debug!` is permissible as instrumentation — `tracing` is a no-op when no subscriber is installed.
+No `std::fs`, no `std::net`, no `tokio`, no `reqwest`, no `aws-sdk-`*, no `object_store` in the crate's dependency graph. A `plan` or `optimize` invocation performs zero syscalls on the hot path; every datum consulted is already in the `SemanticManifest` (I8 / I11). `tracing::debug!` is permissible as instrumentation — `tracing` is a no-op when no subscriber is installed.
 
 ### 16.2 NO SQL emission
 
@@ -1117,7 +1111,7 @@ serde = ["dep:serde", "semstrait-core/serde", "semstrait-ir/serde", "semstrait-m
 
 **No runtime async dependencies.** No `tokio`, `async-trait`, `futures`, `reqwest`.
 
-**No engine-identity dependencies.** No `datafusion`, `arrow`, `spark-*`, `duckdb`, `substrait` — these live in `semstrait-adapter`.
+**No engine-identity dependencies.** No `datafusion`, `arrow`, `spark-`*, `duckdb`, `substrait` — these live in `semstrait-adapter`.
 
 **Zero `semstrait-adapter` / `semstrait-catalog` / `semstrait-model` dependencies.** The planner sits strictly above the first four workspace crates and strictly below the adapter / API crates per I7's DAG.
 
@@ -1131,41 +1125,3 @@ Per `31 §13`, concrete CI checks guard each boundary:
 - An integration test asserts that every exported `pub enum` / `pub struct` (minus the stable-newtype exception set) carries `#[non_exhaustive]`.
 - A grep-based CI lint rejects `String`-typed SQL literals inside planner source (the `EXPRESSION_INCLUDES_SQL` regex).
 
-## 17. Round-1 open items
-
-Open items surfaced during the drafting of `34` that cannot be resolved from `10`–`17`, `20`–`25`, `30`–`33`, or `35` alone. Full write-ups and proposed next steps live in `questions/open/34_questions.md`.
-
-| ID | Title | Section | Blocking? |
-|---|---|---|---|
-| Q-PLAN-001 | `Request.from` shape — `DataKindRef` scalar vs `DataKindPath` for nested Complex targeting | §3.8 | no |
-| Q-PLAN-002 | `Strategy` trait openness — sealed vs open for third-party implementers | §8.1 / §15.1 | no |
-| Q-PLAN-003 | `PLAN_E_0500` aliasing — **CLOSED** (2026-04-28). Retired with the migration to typed-kind enums per `30 §5`. `ConstraintViolation` and `AmbiguousImplicitComposition` are distinct `PlanErrorKind` variants; identification is by variant identity, not by code. Body-prose code references in §6–§10 are legacy anchors only (see §13's migration note). | §13.1 / §15.5 | no |
-| Q-PLAN-004 | `TemporalRequest` vocabulary in `Request` — expose now vs. defer to the `17` milestone | §3.9 | no (follows `17`) |
-| Q-PLAN-005 | `SessionContext.feature_toggles` typing — free-form vs. typed catalog | §4.2 | no |
-| Q-PLAN-006 | `OptimizerPass` idempotence — enforce via a proof obligation vs. convention | §14.5 | no |
-| Q-PLAN-007 | `ResolvedQueryRequest` visibility — `pub` vs. `pub(crate)` given strategies are the only consumers | §5 | no |
-| Q-PLAN-008 | Field-first depth bound (`MAX_IMPLICIT_COMPOSITION_DEPTH`) — **CLOSED (2026-04-28)** mirrored from Q-COMP-001; `34 §10.4` constant updated to `4`. | §10.4 / `16` Q-COMP-001 | no |
-| Q-PLAN-009 | Field-first algorithm — synthesis vs lookup — **CLOSED (2026-04-29)** mirrored from Q-COMP-016 (unified Joinset model). The plan-time algorithm is now pure lookup over `33 §7.2`'s `composition_index.by_constituent_set`; no plan-time BFS / Steiner walk; no on-demand synthesis. `ResolvedTarget::SynthesizedComposition` is replaced by `ResolvedTarget::Composition(DataKindRef)`. | §10 / `16` Q16 | no |
-
-Cross-doc fixes flagged while drafting `34`:
-
-| ID | Location | Fix |
-|---|---|---|
-| CDF-30-02 | `30 §6` (former code-format section) | **Resolved** by the typed-kind migration; the `PLAN_E` numeric range is retired. `30 §6` now hosts the observability policy (tracing). No further sub-band re-allocation needed. |
-| CDF-21-01 | `21 §7` | Per-DataKind `SimpleErrorKind` roster should cross-reference `34 §13.1` as the aggregation surface (`PlanErrorKind::Simple(SimpleErrorKind)` wraps them via `From` impl per `30 §5.6`). |
-| CDF-22-01 | `22 §8` | Same as CDF-21-01 for `GrainsetErrorKind` and `PlanErrorKind::Grainset(_)`. |
-| CDF-23-01 | `23 §10` | Same as CDF-21-01 for `UnionsetErrorKind` and `PlanErrorKind::Unionset(_)`. |
-| CDF-24-01 | `24 §10` | Same as CDF-21-01 for `JoinsetErrorKind` and `PlanErrorKind::Joinset(_)`. |
-| CDF-16-01 | `16 §14.3` (composition error roster) | `34 §13.1` `PlanErrorKind` now mirrors the canonical payload shapes from `16 §14.3`: `AmbiguousImplicitComposition { constituent_set, candidates }`, `NoCompositionPath { from, to }`, `CompositionDepthExceeded { from_kinds, max_depth }`, `CrossCompositionForbidden { relationship_id, attempted_direction }`, `SemanticsNotOnSurface { name, surface }`, `UnknownSemantics { name }` (now `PLAN_E_0508`). Variant `CompositionAggregationConflict` added (`PLAN_E_0506`). Variant `CompositionChainingForbidden` is **retired** per `16 §14.3` (transparent unfolding under unified Joinset model). |
-
-Deferred / known-gap items (tracked in the implementation plan, not in open-questions):
-
-- **Code-vocabulary rename — `SemanticPlanner` → free `plan` / `optimize` functions.** The legacy crate (`crates/semstrait-planner/src/planner.rs`) carries a `SemanticPlanner` struct with a `.plan()` method. `34` ratifies free functions at the crate root as the canonical surface. The rename is tracked as `[TD-PLANNER-SHAPE]` in `implementation/40_refactor_plan.md`.
-- **`SessionVariables` → `SessionContext`.** See `[TD-SESSION-CONTEXT]` in §4.4.
-- **`ResolvedQueryRequest` → (see §3.7)** — legacy shape folds `Request` + `SessionContext` + partial resolution; v1 splits into `Request` (caller surface) + `ResolvedQueryRequest` (internal post-lookup form).
-- **Legacy `AdHocJoin` strategy → field-first resolution.** See `[TD-ADHOC-INTO-FIELD-FIRST]` in §9.5.
-- **Optional catalog field on `SemanticPlanner` → dropped per §16.4.** See `[TD-PLANNER-NO-CATALOG]`.
-
----
-
-*Cross-references in this document are by section (e.g. `20 §5.3`, `16 §11.5`, `14b §2.3`). No code-path references are used, per `00 §8`.*

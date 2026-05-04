@@ -1,5 +1,6 @@
 ---
-prereqs: [00, 10, 15, 30, 31, 31b, 32]
+
+## prereqs: [00, 10, 15, 30, 31, 31b, 32]
 authoritative-for:
   - the `catalogs.yaml` file shape: root key (`catalogs:`), per-entry alias, `type`, `name`, `url`, `realm`, `default_namespace`, `auth`
   - the `CatalogEntry` / `CatalogAuthMethod` typed roster (Oauth2 / Bearer / AwsSecrets variants)
@@ -12,7 +13,6 @@ refined-by:
   - 31b (`apis/31b_semstrait_core_io.md` — transport vocabulary used by the §5.4 wrappers)
   - 33 (`apis/33_semstrait_manifest.md` — catalog resolution at compile time)
   - 37 (`apis/37_semstrait_catalog.md` — the `CatalogProvider` trait that consumes a resolved catalog connection)
----
 
 # 32b. `catalogs.yaml` — Catalog Grammar
 
@@ -250,15 +250,6 @@ At `compile` time, every `CatalogRef` is matched against `CatalogsConfig.catalog
 1. `CatalogEntry.default_namespace` — authored at the catalog entry in `catalogs.yaml` (§2).
 2. Provider default — whatever the provider implementation returns when both of the above are absent.
 
-### 4.2 Why no reference-site namespace override
-
-Considered and dropped. Reasons:
-- **Single source of truth.** The catalog knows which namespace is canonical for it; the model's reference site should only select *which* catalog, not override its namespace.
-- **Simpler mental model.** One alias, one catalog, one namespace — predictable at a glance. No hunting through `extras` trees to find the "effective" namespace.
-- **Future extension.** If a legitimate use case emerges (e.g. per-DataKind tenant routing), it can be added as a new extras field at that layer, keeping `CatalogRef` shape stable.
-
----
-
 ## 5. Loader Contract
 
 ### 5.1 Signature
@@ -359,14 +350,16 @@ Bare `$VAR` is treated as literal text.
 
 Each rule maps to a typed-kind variant in `CatalogsParseErrorKind` (§5.2) per `30 §5`.
 
-| ID | Rule | Kind |
-|---|---|---|
-| **SR-C1** | Exactly one `catalogs:` root key; no other top-level keys. | `CatalogsParseErrorKind::UnknownTopLevelKey` |
-| **SR-C2** | Every `CatalogEntry` carries required fields: `type`, `name`, `url`, `auth`. | `CatalogsParseErrorKind::CatalogMissingField` |
+
+| ID        | Rule                                                                                                                                                    | Kind                                          |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| **SR-C1** | Exactly one `catalogs:` root key; no other top-level keys.                                                                                              | `CatalogsParseErrorKind::UnknownTopLevelKey`  |
+| **SR-C2** | Every `CatalogEntry` carries required fields: `type`, `name`, `url`, `auth`.                                                                            | `CatalogsParseErrorKind::CatalogMissingField` |
 | **SR-C3** | Every `CatalogAuthMethod` variant carries its variant-specific required fields (e.g. `bearer` must have `token`; `aws_secrets` must have `secret_arn`). | `CatalogsParseErrorKind::MalformedAuthMethod` |
-| **SR-C4** | Aliases (keys in `catalogs:`) are unique — `BTreeMap` enforces. | (duplicate-key raised by YAML decoder) |
-| **SR-C5** | `deny_unknown_fields` applied to `CatalogsConfig`, `CatalogEntry`, every `CatalogAuthMethod` variant, and `SecretKeyMapping`. | `CatalogsParseErrorKind::UnknownField` |
-| **SR-C6** | `${VAR}` substitution applied before decoding; unset vars fatal. | `CatalogsParseErrorKind::UnsetEnvVar` |
+| **SR-C4** | Aliases (keys in `catalogs:`) are unique — `BTreeMap` enforces.                                                                                         | (duplicate-key raised by YAML decoder)        |
+| **SR-C5** | `deny_unknown_fields` applied to `CatalogsConfig`, `CatalogEntry`, every `CatalogAuthMethod` variant, and `SecretKeyMapping`.                           | `CatalogsParseErrorKind::UnknownField`        |
+| **SR-C6** | `${VAR}` substitution applied before decoding; unset vars fatal.                                                                                        | `CatalogsParseErrorKind::UnsetEnvVar`         |
+
 
 ---
 

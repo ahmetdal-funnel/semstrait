@@ -435,19 +435,6 @@ optional = true
 - **MINOR.** Same rhythm; new variants / new fields / new prelude additions land in one coordinated MINOR.
 - **MAJOR.** The facade's MAJOR matches the workspace MAJOR (`30 §2.1`); `prelude::*` evolution across a MAJOR is documented in `implementation/42_migration_notes.md`.
 
-### 6.3 Consumer guidance
-
-A consumer who writes
-
-```toml
-[dependencies]
-semstrait = "1.0"
-```
-
-gets the facade plus pinned sub-crate versions consistent with it; **never** a mixed-version workspace. Mixing sub-crate versions by hand — e.g. bumping `semstrait-manifest = "1.1"` while `semstrait = "1.0"` is still on `=1.0.0` — fails to compile because the facade's pin conflicts. This is intentional: `30 §11.3`'s cross-crate-break guarantee rests on it.
-
----
-
 ## 7. Stability
 
 ### 7.1 The most stable surface
@@ -470,18 +457,6 @@ Breaking changes to any sub-crate propagate through the facade identically (per 
 
 Prelude-specific breaks (a name removed from `prelude::*`, a name retyped incompatibly) follow `30 §12`: deprecated for at least one MINOR before removal.
 
-### 7.4 Migration policy for `prelude::*` growth
-
-A name enters `prelude::*` by appearing in `crates/semstrait/src/prelude.rs` in a MINOR release — additive, no migration note needed beyond a one-line changelog entry.
-
-A name leaves `prelude::*` by:
-
-1. Landing with `#[deprecated(since = "…", note = "use `semstrait::<module>::<name>` instead")]` in MINOR N.
-2. Removal in MAJOR N+1.
-3. `implementation/42_migration_notes.md` entry covering the removal.
-
----
-
 ## 8. Crate Boundaries
 
 | Boundary | Status |
@@ -502,23 +477,6 @@ The entirety of `crates/semstrait/src/` in v1 is expected to be well under 200 s
 
 ---
 
-## 9. Round-1 Open Items
-
-The following drafting decisions are **defaulted** in this document but MUST be confirmed before v1 ratification. All are captured in `docs/design/questions/open/39_questions.md`:
-
-- **Q-FAC-001** — Default-feature composition: `default = ["ansi-sql"]` vs `default = []`. Current default: `ansi-sql` on, to give `cargo add semstrait` a working adapter out of the box.
-- **Q-FAC-002** — Prelude membership of `Name` (`semstrait-ir §5.4`): promoted to the prelude (current default) vs reachable only through `semstrait::ir::Name`. The IR `Name` newtype is not a common first-touch type; concern is resolved one way or the other at `38` ratification.
-- **Q-FAC-003** — *Closed by typed-kind transition.* `semstrait::run` returns the workspace-wide fail-fast tuple over `SemStraitErrorKind` (`§4.1`), matching `38 §7.1`'s `compile_and_plan_and_adapt` surface and aligning with `30 §5` / `30 §7`. Recorded for migration tracking.
-- **Q-FAC-004** — `semstrait::run` catalog-wiring: hard-coded `NoopCatalogProvider` (current default, zero-I/O one-shot) vs caller-supplied `&dyn CatalogProvider` parameter. The latter breaks the "one-shot" ergonomic; the former rules out catalog-bound one-shots.
-- **Q-FAC-005** — Exact-version pinning of sub-crates: `=1.0.0` (current default, upholds `30 §2.1`) vs `~1.0` (patch-compatible) vs `^1.0` (minor-compatible). Type-identity argument in `§6.1` favors exact; check against `cargo-semver-checks` before ratification.
-- **Q-FAC-006** — Reserved feature names (`§5.6`): worth enumerating pre-emptively, or open-namespace (first-come-first-served)? Current default: reserve.
-- **Q-FAC-007** — Prelude growth budget: should the prelude cap at ~25 names to remain scannable, or grow organically with sub-crate additions? Current default: no hard cap; membership principles in `§3.3` apply.
-- **Q-FAC-008** — `semstrait::VERSION` constant usefulness: ship it (current default) vs rely on `env!("CARGO_PKG_VERSION")` inline at consumer site.
-
-Each item is parked with arguments-for, arguments-against, and a next-step in `questions/open/39`.
-
----
-
 ## 10. Cross-References
 
 - Overview: `00 §4.1` (canonical vocabulary — every re-exported type defined there), `00 §9` (design invariants I7, I10 uphold through the re-export boundary).
@@ -528,22 +486,3 @@ Each item is parked with arguments-for, arguments-against, and a next-step in `q
 
 ---
 
-## 11. Round-1 Ratifications
-
-- §2.1 — Roster of module-level re-exports (one module per sub-crate, plus `prelude` and `run`).
-- §2.2 — Every sub-crate re-exported wholesale at `semstrait::<module>`; no filtering at the module level.
-- §3.2 — Prelude member list (core / model / manifest / planner / ir / adapter / catalog / api subsets).
-- §3.3 — Membership principles: first-call relevance, unambiguous short name, v1-stable.
-- §4.1 — `semstrait::run` signature: `async fn run(yaml: &str, request: Request, adapter: &dyn EngineAdapter) -> Result<(EngineArtifact, Diagnostics<SemStraitErrorKind>), (Diagnostic<SemStraitErrorKind>, Diagnostics<SemStraitErrorKind>)>` (workspace-wide fail-fast tuple per `30 §7.1`).
-- §4.4 — No other one-shot free functions in v1.
-- §5.1 — `default = ["ansi-sql"]`.
-- §5.2 / §5.3 — Per-adapter features (`datafusion`, `duckdb`, `spark`, `substrait`) and per-catalog features (`iceberg-rest`, `unity`).
-- §6.1 — Exact-version (`=1.0.0`) pinning for every sub-crate dependency.
-- §7.1 — v1 promise: `use semstrait::prelude::*;` compiled against v1.0 compiles against every v1.x.
-- §8 — Crate boundaries: zero new types, zero new logic (except `run`), no upward workspace dependency.
-
-Exact feature-name literals in §5 are ratified; default-feature contents (`§5.1`) and prelude membership at the edges (`§3.2`) may be amended under the open items in §9 without touching the structural ratifications above.
-
----
-
-*Cross-references in this document are by section (e.g. `30 §2.1`, `33 §9`, `37 §4.1`). No code-path references are used, per `00 §8`.*

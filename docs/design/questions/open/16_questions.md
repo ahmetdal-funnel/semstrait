@@ -17,7 +17,54 @@ depends-on:
 
 # Open Questions — `foundations/16_composition.md`
 
-> **Status (2026-04-29).** Eight framework-level questions remain open: Q-COMP-007 (Directionality granularity), Q-COMP-008 (compile-time reverse-traversal detection), Q-COMP-009 (composite-key shape alternatives), Q-COMP-010 (CompositionCoverage serialization shape), Q-COMP-014 (PLAN_E_0505 candidate suggestions), Q-COMP-015 (FieldOwnership::Derived distinctness), Q-COMP-016 (ManyToMany reject-by-default), Q-COMP-017 (YAML default for JoinType). Closed items moved to [`../closed/16_questions.md`](../closed/16_questions.md). None of the items below block the headline ratifications in `16 §16`.
+> **Status (post-thirteenth-pass cascade rebase, 2026-05-03).** Nine framework-level questions remain open. New: Q-COMP-006 (post-rebase Unionset-retirement structural cleanup of §9.3 / §10.5 / §13 + downstream cross-refs). Carried-over: Q-COMP-007 (Directionality granularity), Q-COMP-008 (compile-time reverse-traversal detection), Q-COMP-009 (composite-key shape alternatives), Q-COMP-010 (CompositionCoverage serialization shape), Q-COMP-014 (PLAN_E_0505 candidate suggestions), Q-COMP-015 (FieldOwnership::Derived distinctness), Q-COMP-016 (ManyToMany reject-by-default), Q-COMP-017 (YAML default for JoinType). Closed items moved to [`../closed/16_questions.md`](../closed/16_questions.md). None of the items below block the headline ratifications in `16 §16` (note: §16 itself may need re-numbering when Q-COMP-006 lands).
+
+---
+
+## Q-COMP-006 — Post-rebase Unionset-retirement structural cleanup
+
+**Question.** The post-thirteenth-pass cascade rebase (2026-05-03) shrunk `CompositionKind` from `{Joinset, Unionset, Grainset}` to `{Joinset, Grainset}` — Unionset uses its own bare `SemanticInterface` (per `23 §3.2`) and no longer participates in `ComposedSemanticInterface`. The `16 §5` ratification block at the top of `§5` documents this; `§5.3`'s `CompositionKind` enum was tightened. But three deeper sections still carry pre-rebase Unionset material that became inert:
+
+- **§9.3 Implicit-Unionset enumeration sketch** — describes a coverage-overlap enumeration that no longer feeds `ComposedSemanticInterface`. In V1, implicit Unionsets surface inside Dataset (multi-source per `21 §3.2`) and Grainset (same-grain pre-merge per `22 §3.3`); both bake their own enumeration logic without `16`'s involvement.
+- **§10.5 Implicit-`Unionset` enumeration** — full algorithm sketch. Same retirement rationale.
+- **§13 Joinset section** + scattered cross-refs to `CompositionKind::Unionset` throughout §10 / §11 / §14.
+
+Should these sections be:
+
+- **A** — deleted outright (clean slate; no V1 Unionset enumeration via `16` at all);
+- **B** — preserved with a "RETIRED" banner pointing readers at the variant-internal mechanisms;
+- **C** — restructured as a generic "implicit-composition enumeration framework" with two V1 instances (Joinset; Grainset cross-grain JOIN-tree) and zero Unionset instances?
+
+**Refs.**
+
+- `16 §5` ratification block (top of §5) — current scope adjustment.
+- `16 §5.3` — `CompositionKind { Joinset, Grainset }` (V1).
+- `16 §9.3` — implicit-Unionset enumeration sketch (now inert).
+- `16 §10.5` — implicit-Unionset enumeration (now inert).
+- `21 §3.2` — Dataset multi-source implicit Unionset (strict NullFill discipline).
+- `22 §3.3` — Grainset same-grain pre-merge implicit Unionset (non-strict NullFill discipline).
+- `23 §3.2` — Unionset bare `SemanticInterface` ratification (post-cascade rebase).
+
+**Proposed (preliminary).** Option B for the next pass (preserve with banner; minimum-disruption); promote to Option C in a Round-4 framework cleanup if the structural symmetry between Joinset enumeration and Grainset cross-grain JOIN-tree construction makes the framework worth extracting.
+
+**Arguments for A (delete).**
+
+- Cleanest. No vestigial inert text.
+- Unionset enumeration logic now lives where it belongs (variant-internal: `21` / `22` / `23`).
+
+**Arguments for B (banner).**
+
+- Minimum disruption. Preserves doc cohesion and historical decision context.
+- Readers who land in §9.3 / §10.5 from external references see the banner immediately.
+
+**Arguments for C (restructure as generic framework).**
+
+- Forward-compatible: Grainset cross-grain JOIN-tree construction is structurally similar to Joinset Steiner enumeration; both could share a "implicit-composition enumeration" abstraction.
+- Heaviest lift; risks over-abstraction.
+
+**Current position in `16`.** Pre-rebase text retained with the §5 ratification block flagging V1 scope (option B-equivalent, lightweight). Deeper structural cleanup deferred to this question.
+
+**Next step.** Resolve before Round-4 (`16` framework cleanup pass). Decision should align with whether `34`'s Strategy chapter prefers per-variant or framework-level enumeration logic.
 
 ---
 

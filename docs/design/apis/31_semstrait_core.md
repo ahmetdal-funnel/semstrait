@@ -726,17 +726,6 @@ Per `30 §5`, each crate owns its own per-stage typed-kind enum implementing `Di
 
 The model-level / manifest-level / planner-level / adapter-level kinds (`ParseErrorKind`, `model::ValidateErrorKind`, `manifest::CompileErrorKind`, `PlanErrorKind`, `AdaptErrorKind`, …) live in their owning crates and MAY embed the core kinds via D.ii cross-stage nesting (`30 §7.4`).
 
-### 8.1 Why these two enums live in core
-
-Core needs to throw a typed kind from constructors on its own types:
-
-- **`ValidateErrorKind`** — `SemanticExpr::new` and the `PhysicalExpr` constructors validate wrapper invariants (no `Column` in `SemanticExpr`, no `EntityRef` / `Aggregate` in `PhysicalExpr`, no nested aggregates). The core wrapper types live in `semstrait-core::expr`; placing the kind here avoids an upward dep from core into `semstrait-model`.
-- **`CompileErrorKind`** — `ReturnTypeRule::Custom(fn(&[DataType]) -> Result<DataType, …>)` is a function pointer stored on `FunctionSpec`. The callback can fail for type-inference reasons; placing its kind in core keeps the `FunctionSpec` shape free of upward deps.
-
-Stages downstream of core MAY:
-- Embed `Core(core::ValidateErrorKind)` / `Core(core::CompileErrorKind)` as a variant of their own kind enum (D.ii pattern), preserving the typed origin.
-- Or surface the core kind directly on their own diagnostics by re-using the same `K` (where the core kind is sufficient).
-
 ### 8.2 `ValidateErrorKind`
 
 ```rust
@@ -1118,26 +1107,3 @@ pub mod io::backends::s3 {
 
 Internally every back-end thin-wraps `object_store` (Apache Arrow project); `object_store` types never appear on a public signature except the one documented escape hatch (`S3SourceBuilder::with_object_store_builder`). See `31b §1.4` for the adoption rationale and SR-IO-8 for the encapsulation rule.
 
-## 15. Ratified Decisions Index
-
-`31` introduces no new vocabulary and no new types — every type above is ratified upstream in `13`, `14`, `14a`, or `11 §8`. The ratifications below concern **placement**, **visibility**, and **boundary** decisions unique to `semstrait-core` as a crate:
-
-| # | Decision | Rationale | §  |
-|---|---|---|---|
-| R1 | `Diagnostic<K>`, `Diagnostics<K>`, `Severity`, `Location`, `Span`, `SourceId`, `Diagnose` trait live in `semstrait-core` | Ratifies `30 §5`'s typed-kind discipline. Placing the diagnostic primitives here avoids upward deps from every stage into a diagnostic-owning leaf. The `IntoDiagnostic` trait of earlier drafts is **retired** — construction is direct via `Diagnose` impls. | §7 |
-| R2 | Two **narrow** core-emitted kind enums live in `semstrait-core`: `ValidateErrorKind` (wrapper-construction failures) and `CompileErrorKind` (`ReturnTypeRule::Custom` callback failures). Stages downstream declare their own kind enums; D.ii cross-stage kind nesting (per `30 §7.4`) lets them embed the core kinds where useful. | The wrapper invariants and Custom-callback signatures live in core; their typed kinds must too, to avoid a circular dep. The model-level / manifest-level kind variants previously bundled here move down to their owning crates per `32` and `33`'s ratifications. | §8.1 |
-| R3 | `CanonicalFn` construction is crate-private; only `pub const` identities are available outside `semstrait-core` | Preserves the `FunctionRegistry` as the single source of truth per `14a §2.2` / Q3. External code that needs a new canonical name must add a `FunctionRegistry` entry, not a `CanonicalFn` constant. | §5.1 |
-| R4 | `FunctionSpec.signatures: &'static [FnSignature]` (slice + seal-time non-empty check) instead of `NonEmpty<FnSignature>` | Const-friendliness for adapter `const FUNCTIONS: &[FunctionSpec]` registration (§5.8). Non-empty invariant enforced via a registry-seal panic. | §5.3 |
-| R5 | `ParamType::TypeClass(TypeClass)` variant exposed but NOT authoring-legal in v1 | Ratifies `14a §3.3` Q6's overload-set-only decision while keeping the enum stable under I10 for the `[TD-REGISTRY-TYPECLASS]` future. | §5.5 |
-| R6 | `Nullability` type is NOT exposed | `13 §2` / `14a §3.4` Q7 treat the canonical `DataType` as nullable-by-default; a separate `Nullability` enum would duplicate information the engine already tracks. | §4.4 |
-| R7 | `ContextLine` type is **retired**, not introduced | The earlier "supplementary line with annotated pointer" role is covered by either (a) `notes: Vec<String>` on `Diagnostic<K>` for short remarks, or (b) typed location embedded in the kind variant itself (e.g. `ShapeFieldConflict { occurrences: Vec<Location> }`). | `30 §5.3` |
-| R8 | Feature flags `serde` and `schemars` are OFF by default | Minimizes transitive compile cost for consumers that only need the types. Existing always-on derives in `semstrait-core` code are a migration item (`[TD-CORE-SERDE-GATING]`). | §11 |
-| R9 | No `pub async fn` anywhere in `semstrait-core`; CI-enforced | Concrete I6 / I11 guarantee. Lint + dependency audit. | §13 |
-| R10 | Zero internal workspace dependencies; CI-enforced manifest audit | Concrete I7 guarantee. `semstrait-core` is the root of the workspace DAG. | §12.2 |
-| R11 | `MeasureConstraints` retains its legacy name for v1 | Renames are scheduled with the broader SemanticManifest-schema revision pass per `11 §8.4.3` / `[TD-CONSTRAINT-RENAME]`. `31` ratifies keeping the current name stable; rename is a v2 concern. | §6.1 |
-| R12 | `Aggregation` enum has **5 variants** (`Sum`, `Avg`, `Count`, `Min`, `Max`); `CountDistinct` is encoded via `Expr::Aggregate.distinct: bool` | Ratifies `14 §3.2` over the prompt's "6 canonical aggregates" framing. Adding a `CountDistinct` variant would duplicate the `distinct: bool` field already on `Expr::Aggregate`. Parked as Q1 in open questions for any second look. | §3.5 |
-| R13 | `io` module added to `semstrait-core` — byte-blob transport via `Source` / `Sink` + `FromIoBytes` / `IntoIoBytes` conversion traits + `Location` + `IoError` + `backends::{memory, local, s3}` | Ratified in `31b`. Domain-specific load / dump wrappers live in the owning crate (`32 §10.4`, `33 §16.5`). Back-ends thin-wrap `object_store` (Apache Arrow) — not re-exported publicly except the one documented `S3SourceBuilder::with_object_store_builder` escape hatch. Under default features, core pulls `tokio`, `bytes`, `dashmap`, and `object_store` (Local + InMemory features); under `--no-default-features`, the crate retains its zero-runtime-dep posture. Supersedes R9's "no `pub async fn` anywhere" — async is permitted inside `io`. | §11 / §12 / `31b` |
-
----
-
-*Cross-references in this document are by section (e.g. `14 §3.2`, `11 §8.4.1`). No code-path references are used, per `00 §8`.*
