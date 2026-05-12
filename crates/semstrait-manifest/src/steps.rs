@@ -2011,17 +2011,24 @@ fn compile_measures(
                     .unwrap_or_else(|| mea.name.clone());
 
                 if let Some(ref expr_src) = mea.expr {
-                    // Parse/convert expr, validate no aggregation.
-                    let parsed = resolve_expr_source(expr_src, &mea.name)?;
-                    if contains_aggregation(&parsed) {
-                        errors.push(format!(
-                            "measure '{}': expr must not contain aggregation functions \
-                             when 'agg' is specified; use horizontal expressions only",
-                            mea.name
-                        ));
-                        continue;
+                    let expr_str = expr_src.display_string();
+                    // Self-reference pass-through: expr == measure name.
+                    // Hyphenated names can't be parsed as identifiers, so short-circuit here.
+                    if expr_str == mea.name {
+                        (core_agg, Expr::entity_ref(&mea.name), expr_source)
+                    } else {
+                        // Parse/convert expr, validate no aggregation.
+                        let parsed = resolve_expr_source(expr_src, &mea.name)?;
+                        if contains_aggregation(&parsed) {
+                            errors.push(format!(
+                                "measure '{}': expr must not contain aggregation functions \
+                                 when 'agg' is specified; use horizontal expressions only",
+                                mea.name
+                            ));
+                            continue;
+                        }
+                        (core_agg, parsed, expr_source)
                     }
-                    (core_agg, parsed, expr_source)
                 } else {
                     // No expr — the column is resolved from mapping by name.
                     (core_agg, Expr::entity_ref(&mea.name), expr_source)
