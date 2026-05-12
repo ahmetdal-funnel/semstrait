@@ -1250,6 +1250,10 @@ pub(crate) fn build_metric_graph(
         if let Some(&src_idx) = name_to_idx.get(met.name.as_str()) {
             let deps = extract_identifiers_from_expr_source(&met.expr);
             for dep in deps {
+                // Pass-through metrics (expr == own name) are valid: they wrap a physical
+                // column under the same identifier. Underscore-only names (e.g. custom fields
+                // without a source-prefix component) parse as a single token that matches the
+                // metric name — skip to avoid a false self-loop in the graph.
                 if dep.as_str() == met.name.as_str() {
                     continue;
                 }
@@ -1282,6 +1286,8 @@ pub(crate) fn build_metric_graph(
             let deps = extract_identifiers_from_expr_source(&met.expr);
             let max_dep_depth = deps
                 .iter()
+                // Same as the graph-edge filter: skip self-referencing tokens so the
+                // iterative depth loop doesn't read and increment its own entry forever.
                 .filter(|d| d.as_str() != met.name.as_str())
                 .filter_map(|d| depths.get(d.as_str()))
                 .max()
@@ -3785,6 +3791,25 @@ mod tests {
         assert!(matches!(result, Err(CompileError::MetricCycle { .. })));
     }
 
+    // Underscore-only pass-through metrics (no source-prefix component separated by
+    // hyphen or dot) parse as a single token that equals the metric name itself.
+    // Without the self-ref filter, the depth loop reads its own depth entry and
+    // increments it on every iteration — infinite loop. Verify these terminate.
+    #[test]
+    fn test_build_metric_graph_underscore_pass_through_terminates() {
+        let model = empty_model_with_metrics(vec![
+            make_metric("custom_field_total_sales", "custom_field_total_sales"),
+            make_metric("custom_field_net_revenue", "custom_field_net_revenue"),
+            // Hyphenated metric unaffected: token split produces "source" and "impressions",
+            // neither matches the full name, so no self-ref filter needed for it.
+            make_metric("source-impressions", "source-impressions"),
+        ]);
+        let result = build_metric_graph(&model);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let depths = result.unwrap();
+        assert!(depths.get("custom_field_total_sales").copied().unwrap_or(0) <= 1);
+        assert!(depths.get("custom_field_net_revenue").copied().unwrap_or(0) <= 1);
+    }
 
     #[test]
     fn test_collect_leaf_additivity_no_infinite_recursion_on_self_ref() {
