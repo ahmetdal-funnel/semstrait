@@ -66,6 +66,7 @@ Historical long-form narrative is archived in:
 | I    | Typed diagnostics + `tracing` observability                                                 | Ratified; cleanup still pending in older prose | `30`-`39`, selected `10`/`13`/`14`*/`15`/registry docs |
 | J    | `14 §2` type-shape rebase to align with `19 §3` (enum + shared trait, not newtype wrapper)  | **Open** (scoped extension declared in `19`)   | `14_expressions.md §2`                                 |
 | K    | Relationship-block shape rebase (semantic-first; drop `directionality` + per-hop overrides; add `integrity` / `optional` / `cross_filter`; derive `JoinType` from `optional`; Joinset-local divergence via scope-local Relationship shadow) | Ratified 2026-05-12                            | `18 §2`, `16 §2`/`§4`/`§13`, `24 §2`/`§5`/`§7`/`§10`, `32 §1`, `33 §8` |
+| L    | `semstrait-model` spec implementation (W1-W5) — diagnostic primitives + `ExprSource` lift in `semstrait-core`; spec-aligned types, `parse` + `validate`, `SemanticModelLoader<F: SourceFs>`, per-struct `bon` builders, reference YAML, JSON Schemas, README. Downstream crates (`semstrait-manifest`, `semstrait-api`, `semstrait-planner`, `semstrait`) tagged with migration TODOs and follow-up. | **In-flight** on `feature/spec-driven-dev` (2026-05-12) | `31 §6`, `32`, `32b`, `crates/semstrait-core/`, `crates/semstrait-model/` |
 
 
 ---
@@ -130,21 +131,25 @@ Non-blocking ergonomics and deep adapter empirics should be deferred unless they
 
 ## 5) Last checkpoint (concise)
 
-**Checkpoint type:** Expression-flow design closed and promoted (`foundations/19_expression_flow.md` landed, 2026-05-12).
+**Checkpoint type:** `semstrait-model` spec implementation — Phases 0-3 complete on `feature/spec-driven-dev` (item L, 2026-05-12).
 
 Delivered outcomes:
 
-- **`foundations/19_expression_flow.md`** ratified in clean spec form (10 sections, ~640 lines). Owns the two-phase pipeline, type architecture (enum + shared `Expr` trait — refines `14 §2`), sugar contract (Family A fold / Family B `Access`), `Accessor` enums + v1 entries, `Parameter` placeholder mechanism, per-site `expr:` shape gates, Phase B placement (filter / group_by / computed-Dim / Metric / `Additivity` / advisory), typed `Diagnostics<PlanErrorKind>` channel with unified `PLAN_W_2101`, Rust encoding convention. Code samples flagged as illustrative-not-frozen per implementation discipline.
-- **`questions/closed/19_questions.md`** populated with 32 closed clauses across Rounds 1–5 (concise tabular form; no rationale narrative — that lives in git history).
-- **Post-promotion follow-up closures (2026-05-12, same-day).** Q-EXPR-19-001 reframed and closed: keys-as-special-dimension-type — added `KeyAccessor` enum mirroring `DimensionAccessor` 1:1 + `Accessor::Key(_)` variant + symmetric §5.2 worked snapshot. `[TD-19-KEY-SUGAR]` retired (architecturally moot as originally framed; replaced by spec content). Q-EXPR-19-002 closed: two-path adapter architecture (capability-driven dispatch); Path A reserved for canonical-consumer engines (no v1 deliverable), Path B is v1 concrete; substantive design content lives in `30` / `36` under `[TD-30-ADAPTER-CAPABILITY]`. `questions/open/19_questions.md` retired (now empty).
-- **`INDEX.md`** updated: foundation `19` row added; topic-routing row added; concept-map rows added for `SemanticExpr` / `PhysicalExpr`, `Accessor` / `Parameter`, `DimensionRef`, `Additivity`; question-snapshot counts bumped.
-- **`00_overview.md §4.1`** updated: concept rows added for `SemanticExpr` / `PhysicalExpr`, `Accessor` / `Parameter`, `DimensionRef`, `Additivity`; `Expr` row updated to multi-home (`14` + `19`).
-- **`_drafts/19_expression_flow.md`** retired per single source-of-truth discipline.
-- **Reconciliation item J opened**: `14 §2` rebase needed to align newtype-wrapper shape with `19 §3` enum+trait shape (scoped extension declared in `19` per `00 §8`).
-- Tech-debt markers carried forward: `[TD-19-PHYSICAL-FOLD]`, `[TD-19-ADDITIVITY-COMPOSITION]`, `[TD-19-ADVISORY-FIELDS]`, `[TD-19-ADVISORY-SPECIALISATION]`, `[TD-19-MIXED-FILTER-OR]`, `[TD-30-ADAPTER-CAPABILITY]`.
-- `[TD-19-KEY-SUGAR]` retired (superseded by `KeyAccessor` spec content in `19 §3.3` / §5.2).
+- **W1 — `semstrait-core` extension.** `Diagnostic<K>` / `Diagnose` / `Severity` / `Location` / `Span` / `SourceId` primitives landed in `crates/semstrait-core/src/diagnostic.rs`; `ExprSource` carrier lifted from `semstrait-model` per `31 §6`.
+- **W2 — `semstrait-model` types.** Wholesale rewrite per `32_semstrait_model.md`: `SemanticModel` root, `DataKindBase<E>` envelope, Public + Nested forms for all four data kinds, sealed `DataKind` trait family (5 traits), 5 view enums, full entity surface (`Dimension` / `Measure` / `Metric` / `Relationship` / `TemporalShape` / `SemanticMapping` / `Keys` / filters / `AiContext`).
+- **W3 — `parse` + `validate`.** Accumulating stage shape `Result<(T, Diagnostics<K>), Diagnostics<K>>`; per-stage `ParseErrorKind` / `ValidateErrorKind` / `CatalogsParseErrorKind`; SR-* / SR-E-* rules wired with messages tied to spec sections; `${VAR}` substitution per `32 §8` / `32b §6`. Five custom `Deserialize` impls work around a `serde_yaml` 0.9 externally-tagged-enum quirk via a shared `single_key_map` helper in `src/yaml/tagged.rs`.
+- **W4 — Loader + builder API.** `SemanticModelLoader<F: SourceFs>` with `LocalFs` (default) / `InMemoryFs` (testing) strategies — typestate phase-marker design replaced by FS-strategy parametrization per user direction. Per-struct `bon` builders + hand-rolled root / data-kind builders. Structural-fidelity rule (`32 §9.7.1`) enforced: builder method names equal Rust field names; variant-body constructors are 1:1 with spec bodies. SR-E-13 / SR-E-14 fire from `Relationship::builder().build()`; SR-* / SR-E-* fire from `SemanticModel::builder().build()` via the embedded validate pass.
+- **W5 — Schemas + reference YAML + README.** `crates/semstrait-model/schemas/reference.yaml` + `catalogs_reference.yaml` exemplify every public concept; `semantic_model.schema.json` + `catalogs.schema.json` (draft 2020-12) cover the YAML projection; `tests/schema_roundtrip.rs` validates reference YAML against the JSON schema, then parses + validates clean. README rewritten to spec shape (scope, surface, structural-rule taxonomy, link map).
+- **Phase 2 — Integration.** `cargo clippy --no-deps -p semstrait-core -p semstrait-model -- -D warnings` clean; `cargo test -p semstrait-core -p semstrait-model` 124 tests pass (111 lib + 4 builder_basic + 4 schema_roundtrip + 1 doc-test). Workspace build expectedly breaks downstream — `semstrait-manifest` / `semstrait-api` / `semstrait-planner` / `semstrait` still consume the pre-spec surface (`ChildEntry`, `ColumnMapping`, `DatasetExtras`, …) and now carry banner `TODO(refactor)` comments pointing to `40_refactor_plan.md`.
+- **Spec doc updates land in W4.** `32 §9.6` (Loader) rewritten to FS-strategy form; new `§9.7 Builder API` covers structural-fidelity rule, per-struct builders, and 1:1 variant-body constructors. Code follows ratified spec.
 
-Prior checkpoint (variant chapter rebases — Dataset / Unionset / Grainset) archived in `_archive/STATUS_HISTORY.md` per single-checkpoint convention.
+Known follow-ups (not blocking the merge):
+
+- Per-rule SR-* / SR-E-* unit tests beyond the integration round-trip and the targeted SR-E-13 builder test (current coverage is correct-by-construction at integration level; per-rule tests are a coverage-uplift task).
+- `semstrait-manifest` migration to the new model surface; tracked in `40_refactor_plan.md`.
+- Downstream cascade through `semstrait-api`, `semstrait-planner`, `semstrait` when the manifest crate lands.
+
+Prior checkpoint (Expression-flow design closed and promoted — `foundations/19_expression_flow.md` landed 2026-05-12; relationship-block rebase, item K) archived in `_archive/STATUS_HISTORY.md` per single-checkpoint convention.
 
 For pass-by-pass chronology and prior long-form diffs, use:
 

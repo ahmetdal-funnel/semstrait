@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semstrait.dev/schemas/catalogs.schema.json",
+  "title": "semstrait catalogs.yaml",
+  "description": "Sibling configuration file consumed by semstrait-model. Maps catalog aliases (referenced from a model's `extras.catalog:`) to provider-specific connection configs and auth methods. See `docs/design/apis/32b_catalogs_yaml.md`.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "catalogs": {
+      "type": "object",
+      "description": "Named map of catalog alias -> CatalogEntry (32b §1).",
+      "additionalProperties": { "$ref": "#/$defs/CatalogEntry" }
+    }
+  },
+  "$defs": {
+    "CatalogEntry": {
+      "type": "object",
+      "description": "One catalog provider config (32b §2).",
+      "required": ["type", "name", "url", "auth"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Provider discriminator (e.g. `polaris`, `iceberg_rest`, `unity`). Free-form; provider modules live in `semstrait-catalog`."
+        },
+        "name": {
+          "type": "string",
+          "description": "Catalog / warehouse name as the provider expects it."
+        },
+        "url": {
+          "type": "string",
+          "description": "Catalog base URL."
+        },
+        "realm": {
+          "type": "string",
+          "description": "Provider-specific realm (Polaris uses this; most others ignore)."
+        },
+        "default_namespace": {
+          "type": "string",
+          "description": "Default namespace used when a model's `CatalogRef` does not override it."
+        },
+        "auth": { "$ref": "#/$defs/CatalogAuthMethod" }
+      }
+    },
+    "CatalogAuthMethod": {
+      "description": "Internally-tagged auth method (32b §3). Discriminator key: `method`.",
+      "type": "object",
+      "required": ["method"],
+      "oneOf": [
+        { "$ref": "#/$defs/AuthOauth2" },
+        { "$ref": "#/$defs/AuthBearer" },
+        { "$ref": "#/$defs/AuthAwsSecrets" }
+      ]
+    },
+    "AuthOauth2": {
+      "type": "object",
+      "title": "OAuth2 — direct credentials (32b §3.1)",
+      "required": ["method", "client_id", "client_secret"],
+      "additionalProperties": false,
+      "properties": {
+        "method": { "const": "oauth2" },
+        "token_url": { "type": "string", "description": "Token endpoint URL. If omitted, derived from catalog URL." },
+        "client_id": { "type": "string" },
+        "client_secret": { "type": "string", "description": "Sensitive — typically authored via `${VAR}` substitution." },
+        "scope": { "type": "string" }
+      }
+    },
+    "AuthBearer": {
+      "type": "object",
+      "title": "Bearer token (32b §3.2)",
+      "required": ["method", "token"],
+      "additionalProperties": false,
+      "properties": {
+        "method": { "const": "bearer" },
+        "token": { "type": "string", "description": "Sensitive — typically authored via `${VAR}` substitution." }
+      }
+    },
+    "AuthAwsSecrets": {
+      "type": "object",
+      "title": "AWS Secrets Manager → OAuth2 (32b §3.3)",
+      "required": ["method", "secret_arn"],
+      "additionalProperties": false,
+      "properties": {
+        "method": { "const": "aws_secrets" },
+        "token_url": { "type": "string" },
+        "secret_arn": { "type": "string" },
+        "region": { "type": "string" },
+        "scope": { "type": "string" },
+        "aws_access_key_id": { "type": "string" },
+        "aws_secret_access_key": { "type": "string" },
+        "aws_session_token": { "type": "string" },
+        "aws_profile": { "type": "string" },
+        "secret_keys": {
+          "type": "object",
+          "description": "Custom JSON-key mapping for the secret payload. Defaults (`client_id`, `client_secret`) apply when absent.",
+          "additionalProperties": false,
+          "properties": {
+            "client_id_key": { "type": "string" },
+            "client_secret_key": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

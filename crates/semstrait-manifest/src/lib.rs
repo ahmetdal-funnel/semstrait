@@ -2,6 +2,13 @@
 //!
 //! Compiles `SemanticModel` -> `CompiledManifest` via a 9-step pipeline.
 //! Ships `InMemoryRepository` in v1; `FileSystemRepository` is v2.
+//!
+//! TODO(refactor): re-align to new semstrait-model surface
+//! (`32_semstrait_model.md` / `18_entities.md`). The current sources
+//! depend on the pre-spec types (`ChildEntry`, `ColumnMapping`,
+//! `DatasetExtras`, …) and do not compile against the post-W2/W3/W4
+//! `semstrait-model`. Migration is tracked in
+//! `docs/design/implementation/40_refactor_plan.md`.
 
 pub mod acceleration;
 pub mod catalog_snapshot;

@@ -764,96 +764,323 @@ The full `SR-E-*` variant roster is enumerated alongside the entity-level invari
 
 ### 9.6 Fluent loader: `SemanticModel::loader()`
 
-`parse` and `validate` are the primitives — pure inputs, pure outputs, no config. Most callers want **parse + validate** together, returning a `SemanticModel` ready for `compile` consumption. The fluent loader is the ergonomic entry that fuses the two:
+`parse` and `validate` are the primitives — pure inputs, pure outputs, no config. Most callers want **parse + validate** together, returning a `SemanticModel` ready for `compile` consumption. The fluent loader is the ergonomic entry that fuses the two **plus** filesystem reads.
+
+The loader is parametrized by a **filesystem strategy** (not a phase marker). The type parameter `F: SourceFs` selects how the loader reads source bytes — `LocalFs` for production, `InMemoryFs` for tests. This matches Rust idiom for I/O-strategy parametrization (see `figment`, `config-rs`, `tower`). Compile-time enforcement of "did the caller attach a source?" is dropped in favour of a runtime `ModelBuildErrorKind::NoSource` diagnostic; the cost (one extra runtime check) buys real testability via `InMemoryFs`.
 
 ```rust
+/// Filesystem-strategy trait. Implementors decide how a logical path
+/// resolves to bytes. Sync only — async I/O is not in v1 scope per §10.4.
+pub trait SourceFs {
+    fn read(&self, path: &str) -> Result<Vec<u8>, std::io::Error>;
+}
+
+/// Production strategy — delegates to `std::fs::read`.
+pub struct LocalFs;
+impl SourceFs for LocalFs { /* std::fs::read */ }
+
+/// Test strategy — `HashMap<path, bytes>` lookup, miss => `ErrorKind::NotFound`.
+pub struct InMemoryFs { /* ... */ }
+impl InMemoryFs {
+    pub fn new() -> Self;
+    pub fn insert(&mut self, path: impl Into<String>, contents: impl Into<Vec<u8>>);
+}
+impl SourceFs for InMemoryFs { /* HashMap lookup */ }
+
+/// Loader for `SemanticModel`. Configured via fluent setters, terminated by `build`.
+pub struct SemanticModelLoader<F: SourceFs = LocalFs> { /* fields pub(crate) */ }
+
+impl SemanticModelLoader<LocalFs> {
+    /// Default-strategy entry. Equivalent to `SemanticModel::loader()`.
+    pub fn new() -> Self;
+}
+
+impl<F: SourceFs> SemanticModelLoader<F> {
+    /// Swap the filesystem strategy. Returns a loader with the new `F2`.
+    pub fn with_fs<F2: SourceFs>(self, fs: F2) -> SemanticModelLoader<F2>;
+
+    /// Attach an in-memory YAML payload tagged with a logical `SourceId`.
+    /// Multiple calls accumulate; sources are merged in append order.
+    pub fn from_yaml_str(self, yaml: impl Into<String>, source: SourceId) -> Self;
+
+    /// Resolve `path` via `self.fs.read(path)` at `build()` time.
+    /// `SourceId` defaults to `path` (string form).
+    pub fn from_yaml_file(self, path: impl Into<String>) -> Self;
+
+    /// Attach a pre-parsed catalogs config. Mutually exclusive with
+    /// `from_catalogs_yaml_*` (calls overwrite, last-write-wins).
+    pub fn with_catalogs(self, c: CatalogsConfig) -> Self;
+    pub fn from_catalogs_yaml_str(self, yaml: impl Into<String>, source: SourceId) -> Self;
+    pub fn from_catalogs_yaml_file(self, path: impl Into<String>) -> Self;
+
+    /// Skip the validate pass (default: validate runs). The returned
+    /// model is parsed-only; SR-* / SR-E-* are not enforced. Intended
+    /// for inspector / round-trip tooling.
+    pub fn skip_validate(self) -> Self;
+
+    /// Run the configured pipeline.
+    pub fn build(self) -> Result<
+        (SemanticModel, Diagnostics<ModelBuildErrorKind>),
+        Diagnostics<ModelBuildErrorKind>,
+    >;
+}
+
 impl SemanticModel {
-    /// Entry point for the fluent loader. Returns a typestate builder
-    /// awaiting a source.
-    pub fn loader() -> SemanticModelLoader<NoSource>;
-}
-
-/// Typestate marker — `NoSource` (no input attached yet) vs `HasSource`
-/// (input attached, ready to load). Sealed at the `state` module.
-pub struct NoSource(());
-pub struct HasSource(()); // payload field is `pub(crate)`; not user-constructible
-
-pub struct SemanticModelLoader<State> { /* state field is pub(crate) */ }
-
-impl SemanticModelLoader<NoSource> {
-    /// In-memory YAML payload. Synchronous path — no `io` feature needed.
-    pub fn with_yaml_str(self, yaml: impl Into<String>) -> SemanticModelLoader<HasSource>;
-
-    /// Filesystem / object-store payload via `semstrait-core::io::Source`.
-    /// `io` feature required.
-    #[cfg(feature = "io")]
-    pub fn with_yaml_source<S: Source + ?Sized>(self, src: &S) -> SemanticModelLoader<HasSource>;
-}
-
-impl SemanticModelLoader<HasSource> {
-    /// Async load: read (if a `Source`) → `parse` → `validate`. Async only when the
-    /// loader was configured with `with_yaml_source`; otherwise synchronous path
-    /// is selected via `load_blocking`.
-    #[cfg(feature = "io")]
-    pub async fn load(
-        self,
-    ) -> Result<
-        (SemanticModel, Diagnostics<ModelBuildErrorKind>),
-        Diagnostics<ModelBuildErrorKind>,
-    >;
-
-    /// Synchronous load. Available for `with_yaml_str`-configured loaders only;
-    /// `with_yaml_source` requires `load` (async). Compile error if called on the
-    /// async-path loader.
-    pub fn load_blocking(
-        self,
-    ) -> Result<
-        (SemanticModel, Diagnostics<ModelBuildErrorKind>),
-        Diagnostics<ModelBuildErrorKind>,
-    >;
+    /// Convenience: `SemanticModelLoader::<LocalFs>::new()`.
+    pub fn loader() -> SemanticModelLoader<LocalFs> { SemanticModelLoader::new() }
 }
 
 /// Fused per-stage kind for the loader pipeline. Implements `Diagnose`
 /// by delegating to the wrapped stage kind. Per `30 §5.6` the model crate
 /// owns this fused sum because the loader composes stages whose kinds
-/// live in this same crate (`ParseErrorKind`, `ValidateErrorKind`) plus
-/// `IoErrorKind` from `semstrait-core::io`.
+/// live in this same crate (`ParseErrorKind`, `ValidateErrorKind`,
+/// `CatalogsParseErrorKind`) plus loader-internal kinds.
 #[non_exhaustive]
 pub enum ModelBuildErrorKind {
+    /// No source attached — `build()` was called on an empty loader.
+    NoSource,
+    /// `self.fs.read(path)` failed.
+    SourceIo { path: String, error: std::io::ErrorKind },
     Parse(ParseErrorKind),
+    CatalogsParse(CatalogsParseErrorKind),
     Validate(ValidateErrorKind),
-    #[cfg(feature = "io")]
-    Io(semstrait_core::io::IoErrorKind),
+    /// Per-field builder-internal error (e.g. invalid newtype payload).
+    BuilderField { struct_name: &'static str, field: &'static str, message: String },
 }
 
-impl From<ParseErrorKind>    for ModelBuildErrorKind { /* … */ }
-impl From<ValidateErrorKind> for ModelBuildErrorKind { /* … */ }
-#[cfg(feature = "io")]
-impl From<semstrait_core::io::IoErrorKind> for ModelBuildErrorKind { /* … */ }
+impl From<ParseErrorKind>             for ModelBuildErrorKind { /* … */ }
+impl From<ValidateErrorKind>          for ModelBuildErrorKind { /* … */ }
+impl From<CatalogsParseErrorKind>     for ModelBuildErrorKind { /* … */ }
 
 impl Diagnose for ModelBuildErrorKind { /* delegates to wrapped variant */ }
 ```
 
-**Stages composed by `load` / `load_blocking`** (in order, fail-fast across stages, accumulating within each stage):
+**Stages composed by `build`** (in order, fail-fast across stages, accumulating within each stage):
 
-1. **Read** — only when the source is a `Source`-trait input; reads the payload as `String` via `src.read::<String>().await` (`31b §5`). Errors surface as `Diagnostic<ModelBuildErrorKind>` whose kind is `Io(_)`.
-2. **Parse** — `parse(&yaml)` (§9.1). Errors surface as `Diagnostic<ModelBuildErrorKind>` whose kind is `Parse(_)`.
-3. **Validate** — runs the structural-precondition pass (§9.4–§9.5). Errors surface as `Diagnostic<ModelBuildErrorKind>` whose kind is `Validate(_)`.
+1. **Read** — for each `from_yaml_file`/`from_catalogs_yaml_file` source, call `self.fs.read(path)`. `Err` ⇒ `ModelBuildErrorKind::SourceIo`.
+2. **Parse model** — `parse(&yaml, source)` per attached model source(s). `Err` ⇒ `ModelBuildErrorKind::Parse(_)`.
+3. **Parse catalogs** — when present, `parse_catalogs(&yaml, source)`. `Err` ⇒ `ModelBuildErrorKind::CatalogsParse(_)`.
+4. **Validate** — when `skip_validate()` was NOT called, run the structural-precondition pass (§9.4–§9.5). `Err` ⇒ `ModelBuildErrorKind::Validate(_)`.
 
-Within a stage, every diagnostic the stage produces is collected into the returned `Diagnostics<ModelBuildErrorKind>` vector (parse / validate are accumulating per `30 §7.1`); across stages, the loader halts at the first stage whose Err arm fires and lifts that stage's accumulated set into `ModelBuildErrorKind`. Warnings from earlier stages that completed successfully ride through on the failing stage's Err vector — never silently dropped per `30 §7.3`.
+Within a stage, every diagnostic the stage produces is collected (parse / validate are accumulating per `30 §7.1`); across stages, the loader halts at the first stage whose Err arm fires and lifts that stage's accumulated set into `ModelBuildErrorKind`. Warnings from earlier stages that completed successfully ride through on the failing stage's Err vector — never silently dropped per `30 §7.3`.
 
-**Why typestate?** A loader without a source attached is a programming error — the typestate machinery makes "call `load()` before attaching a source" a compile-time failure rather than a runtime panic / `Result`. The two states (`NoSource`, `HasSource`) are sealed: only this crate constructs the second-state values.
+**Usage.**
 
-**Why retain `parse` and `validate` as primary?** The fluent loader is ergonomic sugar. Callers needing per-stage control (custom error routing per stage, cached parse tree reuse, programmatic post-parse mutations before validate) continue to call `parse(&str)` and `validate(&model)` directly. The two surfaces coexist as primitives (`parse`, `validate`) + ergonomic-fused (`loader().with_yaml_*().load[_blocking]()`).
+```rust
+// Production
+let (model, diags) = SemanticModel::loader()
+    .from_yaml_file("model.yaml")
+    .from_catalogs_yaml_file("catalogs.yaml")
+    .build()?;
+
+// Testing
+let mut fs = InMemoryFs::new();
+fs.insert("model.yaml", REFERENCE_YAML);
+let (model, _) = SemanticModelLoader::<InMemoryFs>::new()
+    .with_fs(fs)
+    .from_yaml_file("model.yaml")
+    .build()?;
+```
+
+**Why FS-strategy parametrization (not typestate)?** A loader without a source attached is still a programming error, but it surfaces as `ModelBuildErrorKind::NoSource` at `build()` time rather than as a compile-time error. The trade-off buys: (a) `with_fs(InMemoryFs)` testability with no `#[cfg(test)]` plumbing, (b) a single `SemanticModelLoader<F>` type instead of a state-machine of marker structs, (c) idiomatic alignment with the broader Rust ecosystem (`figment`, `config-rs`, `tower`). The loss (compile-time "did you attach a source?") is small — every loader call site is a public API entry, and missing a source is a user-evident error at first run.
+
+**Why retain `parse` and `validate` as primary?** The fluent loader is ergonomic sugar. Callers needing per-stage control (custom error routing per stage, cached parse tree reuse, programmatic post-parse mutations before validate) continue to call `parse(&str, source)` and `validate(&model)` directly. The two surfaces coexist as primitives (`parse`, `validate`) + ergonomic-fused (`loader().from_yaml_*().build()`).
 
 **Composition with `semstrait-api`.** `SemStrait::compile_from_yaml` (`38 §3.3`) is the parallel API at the orchestration layer (it adds compile on top). The two lanes don't compete: in-process callers reach for `SemanticModel::loader()` to obtain a `SemanticModel` they can pass to a separate compile call (e.g. for caching mid-pipeline); end-to-end callers reach for `SemStrait::compile_from_yaml` to skip the intermediate handle. The fused `SemStraitErrorKind` (`30 §5.6`) at `semstrait-api` is parallel to `ModelBuildErrorKind` here — same cross-stage aggregation pattern, broader scope.
 
 #### 9.6.2 Stability
 
-- `SemanticModelLoader<State>`, the typestate marker types `NoSource` / `HasSource`, the `SemanticModel::loader()` entry, the `with_yaml_`* setters, and `load` / `load_blocking` are **Stable in v1**.
+- `SemanticModelLoader<F>`, the `SourceFs` trait, `LocalFs`, `InMemoryFs`, the `SemanticModel::loader()` entry, the `from_yaml_*` / `from_catalogs_yaml_*` / `with_fs` / `with_catalogs` / `skip_validate` setters, and `build` are **Stable in v1**.
 - `ModelBuildErrorKind` is `#[non_exhaustive]`; new stage variants land as MINOR per `30 §2.2`. Removing or renaming a variant is MAJOR per `30 §2.1`.
-- The relationship "loader is sugar over `parse + validate`" is a public contract — `load` MUST NOT alter parse / validate semantics; any divergence is a v1 bug.
-- The async-only / sync-only split between `load` and `load_blocking` is intentional and stable. A future `with_yaml_source` consumer that wants a sync wrapper bridges via the caller's executor; `semstrait-model::io` does not provide `block_on`.
+- The relationship "loader is sugar over `parse + parse_catalogs + validate`" is a public contract — `build` MUST NOT alter parse / validate semantics; any divergence is a v1 bug.
+- `LocalFs` is the documented default and is intended to remain so. Adding new built-in `SourceFs` implementations (e.g. an `S3Fs` behind a feature flag) is MINOR.
+
+### 9.7 Builder API
+
+`semstrait-model` exposes a per-struct fluent builder for every public type so callers can construct a `SemanticModel` entirely from code (no YAML in the loop). The builder API is a faithful structural projection of the spec — every method maps 1:1 to a Rust field; every adapter helper maps 1:1 to a structurally-defined variant body. Builders are generated via the `bon` derive macro (`m11-ecosystem` ratified).
+
+#### 9.7.1 Structural-fidelity rule (LOAD-BEARING)
+
+The builder API exists to construct the spec-defined structures faithfully, NOT to invent alternate vocabulary on top of them. Three rules govern method naming and helper inclusion:
+
+- **R1 — field-name parity.** Every builder method name equals the Rust field name on the underlying struct. Examples: `.dim_type(...)`, `.data_type(...)`, `.agg(...)`, `.semantic_mapping(...)`. No abbreviations, no synonyms. If a struct field renames in the spec, the builder method renames with it (MAJOR per `30 §2.1`).
+- **R2 — adapter helpers are 1:1 with variant bodies.** A helper that constructs an enum variant is allowed iff the variant body is structurally defined and the helper takes exactly that body's fields, in declaration order, with no inferred or synthesized values. Example: `DimensionType::temporal(grains: impl Into<Vec<Grain>>)` is permitted because `Temporal(TemporalDimensionBody { grains })` has a single field. Helpers that take a *subset* or *superset* of a variant body's fields are forbidden.
+- **R3 — no conflation, no invention.** Helpers that conflate multiple spec fields into one method (e.g. a hypothetical `.sum_of(col)` that would set both `agg` and `expr`) are FORBIDDEN — authors must set each field explicitly. Helpers that introduce non-spec vocabulary (e.g. a hypothetical `SemanticMapping::schema_table(...)`) are FORBIDDEN — `SemanticMapping` is a per-Semantic→physical map per `[18 §10](../foundations/18_entities.md)`; table-source linkage lives in `LeafExtras.storage: StorageConfig` per §4.
+
+Violations are spec bugs, not implementation bugs. The structural-fidelity audit runs in CI as part of Phase 2 (`tests/builder_structural_fidelity.rs`).
+
+#### 9.7.2 Public-vs-Nested envelope split
+
+Per `[26 §3](../data-kinds/26_nesting_matrix.md)`, the Public form carries `description`, `ai_context`, `semantic_interface`; the Nested form does NOT. The builder API enforces this at the **type level** by structural absence — `NestedDataset`/`NestedGrainset`/`NestedUnionset`/`NestedJoinset` simply do not have those fields, so their `bon`-generated builders do not have those methods. No bespoke typestate machinery is involved.
+
+```rust
+use bon::Builder;
+
+#[derive(Debug, Clone, Builder)]
+pub struct Dataset {
+    #[builder(start_fn)] pub name: String,                // body.base.name
+    pub extras: LeafExtras,                                // body.base.extras
+    pub description: Option<String>,
+    pub ai_context: Option<AiContext>,
+    pub semantic_interface: SemanticInterface,
+}
+
+#[derive(Debug, Clone, Builder)]
+pub struct NestedDataset {
+    #[builder(start_fn)] pub name: String,
+    pub extras: LeafExtras,
+    // No description / ai_context / semantic_interface — type-level absence.
+}
+```
+
+#### 9.7.3 Variant-body 1:1 constructors
+
+Authors can either name a variant + body pair fully, or use a 1:1 constructor on the parent type. Constructors map directly to spec-defined variant bodies — they take exactly the body's fields, in declaration order, no inventions.
+
+```rust
+impl DimensionType {
+    /// 1:1 with `Temporal(TemporalDimensionBody { grains })` per `18 §4.1`.
+    pub fn temporal(grains: impl Into<Vec<Grain>>) -> Self;
+    /// 1:1 with `Categorical` (no body).
+    pub fn categorical() -> Self;
+    /// 1:1 with `Binary` (no body).
+    pub fn binary() -> Self;
+    /// 1:1 with `Geo` (no body).
+    pub fn geo() -> Self;
+    /// 1:1 with `Bucketed(BucketedDimensionBody { buckets })`.
+    pub fn bucketed(buckets: impl Into<Vec<BucketSpec>>) -> Self;
+    /// 1:1 with `Metadata(MetadataDimensionBody { source })`.
+    pub fn metadata(source: MetadataSource) -> Self;
+}
+
+impl TemporalShape {
+    /// 1:1 with `TemporalShape { kind: Timeseries(TimeseriesBody { occurred_at }), grain }` per `18 §3.1`.
+    pub fn timeseries(occurred_at: impl Into<SemanticsName>, grain: impl Into<Option<Grain>>) -> Self;
+    pub fn events(event_time: impl Into<SemanticsName>, grain: impl Into<Option<Grain>>) -> Self;
+    pub fn snapshot(snapshotted_at: impl Into<SemanticsName>, grain: impl Into<Option<Grain>>) -> Self;
+    pub fn scd(
+        scd_type: ScdType,
+        valid_from: impl Into<SemanticsName>,
+        valid_to: impl Into<SemanticsName>,
+        grain: impl Into<Option<Grain>>,
+    ) -> Self;
+}
+
+impl JoinKeyExprPair {
+    /// 1:1 with the bare-column case where both sides are `ExprSource::Inline(name)`.
+    /// For non-bare cases, construct the struct with explicit `from`/`to` `ExprSource`s.
+    pub fn columns(from: impl Into<String>, to: impl Into<String>) -> Self;
+}
+
+impl DimensionEntry {
+    /// 1:1 with `Inline(Dimension)` per `18 §1.2`.
+    pub fn inline(d: Dimension) -> Self;
+    /// 1:1 with `Ref(DimensionRef { name, expr: None })`.
+    pub fn r#ref(name: impl Into<SemanticsName>) -> Self;
+    /// 1:1 with `Ref(DimensionRef { name, expr: Some(expr) })`.
+    pub fn ref_with_expr(name: impl Into<SemanticsName>, expr: impl Into<ExprSource>) -> Self;
+}
+// MeasureEntry, MetricEntry: analogous.
+```
+
+#### 9.7.4 SemanticMapping authoring
+
+`SemanticMapping` is `BTreeMap<SemanticsName, SemanticMappingValue>` per `[18 §10](../foundations/18_entities.md)`. Its builder offers per-variant inserters keyed by semantic name, each 1:1 with a `SemanticMappingValue` variant:
+
+```rust
+impl SemanticMapping {
+    pub fn builder() -> SemanticMappingBuilder;
+}
+
+impl SemanticMappingBuilder {
+    /// 1:1 with `Column(String)`.
+    pub fn column(self, semantic: impl Into<SemanticsName>, column: impl Into<String>) -> Self;
+    /// 1:1 with `Literal(LiteralValue)`.
+    pub fn literal(self, semantic: impl Into<SemanticsName>, value: LiteralValue) -> Self;
+    /// 1:1 with `Expr(PhysicalExpr)`.
+    pub fn expr(self, semantic: impl Into<SemanticsName>, expr: PhysicalExpr) -> Self;
+    // No `metadata(...)` method — `Metadata(MetadataDimensionRecipe)` is
+    // compile-synthesized only per SR-10 / `32 §10`.
+
+    pub fn build(self) -> SemanticMapping;
+}
+```
+
+#### 9.7.5 Bespoke validation in `.build()`
+
+Most field-level required-vs-optional is enforced by `bon` at compile time (missing required fields ⇒ compile error). A small set of *cross-field* invariants are enforced inside `.build()` because they are derived rather than raw-required:
+
+- `Relationship::builder().build()` — when `cardinality ∈ {OneToOne, ManyToMany}`, both `optional` and `cross_filter` MUST be authored (SR-E-13). When `cardinality == ManyToMany`, `cross_filter` MUST NOT be `Left | Right` (SR-E-14). Violations ⇒ `ModelBuildErrorKind::Validate(...)`.
+- `SemanticMappingValue::Metadata` rejection — the variant exists in the enum (compile-synthesized) but the builder has no `.metadata(...)` method (R3 above).
+- `SemanticModel::builder().build()` — runs the full `validate` pipeline on the constructed model, so all SR-* / SR-E-* rules apply uniformly to YAML-loaded and code-built models.
+
+#### 9.7.6 Resulting usage — spec-faithful end-to-end
+
+```rust
+use semstrait_core::{DataType, Grain, ExprSource};
+use semstrait_model::*;
+
+let order_ts = Dimension::builder("order_ts")
+    .data_type(DataType::Timestamp)
+    .dim_type(DimensionType::temporal([Grain::Minute, Grain::Hour, Grain::Day]))
+    .build();
+
+let revenue = Measure::builder("revenue")
+    .data_type(DataType::Decimal { precision: 18, scale: 2 })
+    .agg(AggregationType::Sum)
+    .expr(ExprSource::Inline("amount_cents * 0.01".into()))
+    .additivity(AdditivityType::Full)
+    .build();
+
+let extras = LeafExtras::builder()
+    .catalog(CatalogRef::new("polaris_prod"))
+    .storage(StorageConfig::builder()
+        .format(StorageFormat::Parquet)
+        .paths(["s3://bucket/orders/"])
+        .build())
+    .semantic_mapping(SemanticMapping::builder()
+        .column("revenue", "net_revenue_cents")
+        .literal("currency", LiteralValue::String("USD".into()))
+        .build())
+    .temporal(TemporalShape::events("order_ts", Some(Grain::Minute)))
+    .build();
+
+let interface = SemanticInterface::builder()
+    .dimension(DimensionEntry::inline(order_ts))
+    .measure(MeasureEntry::r#ref("revenue"))
+    .keys(Keys::builder()
+        .primary(KeyDecl::builder().columns(["order_id"]).build())
+        .build())
+    .build();
+
+let orders = Dataset::builder("orders")
+    .extras(extras)
+    .description("Order-line fact dataset.")
+    .semantic_interface(interface)
+    .build();
+
+let orders_to_customers = Relationship::builder()
+    .name("orders_to_customers")
+    .from("orders").to("customers")
+    .keys([JoinKeyExprPair::columns("customer_id", "id")])
+    .cardinality(Cardinality::ManyToOne)
+    .build()?;
+
+let model = SemanticModel::builder()
+    .name("analytics-v1")
+    .description("Primary analytics model for the order pipeline.")
+    .dataset(orders)
+    .measure(revenue)
+    .relationship(orders_to_customers)
+    .build()?;
+```
+
+#### 9.7.7 Stability
+
+- The set of public builder types (one per public struct in §2 / §3 / §4 / §5 / `18 §*`) is **Stable in v1**.
+- The structural-fidelity rules R1 / R2 / R3 (§9.7.1) are **Stable in v1**. Adding a builder method that violates them is a spec bug.
+- Variant-body 1:1 constructors (§9.7.3) are **Stable in v1**. Adding a new constructor is MINOR; removing or renaming one is MAJOR.
+- `bon` is an implementation detail. Switching to a different builder generator (or hand-rolled builders) is internal — the public method-name and method-signature surface stays per R1 / R2 / R3.
 
 ---
 

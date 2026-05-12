@@ -1,36 +1,9 @@
-//! Type definitions for semantic models.
+//! Shared author-surface newtypes for `semstrait-model`.
 //!
-//! This module contains all the types that map to the YAML semantic model schema.
-//! All types support serde serialization/deserialization.
-//!
-//! Organized into submodules by domain:
-//! - `common` — shared types (DataType, AiContext, ColumnMapping, SemanticModel, SemanticInterface)
-//! - `keys` — key and constraint types
-//! - `temporal` — temporal configuration and grain types
-//! - `dimension` — dimension types and variants
-//! - `measure` — measure types, aggregation, additivity
-//! - `metric` — metric types
-//! - `storage` — storage, catalog, and partition types
-//! - `relationship` — relationship and join types
-//! - `data_kind` — DataKind enum, variant structs, extras, YAML kind types
+//! Each newtype reserves a slot for future identifier-grammar tightening
+//! (per `00 §4.1` / `11 §4`) without breaking callers — today they
+//! deserialize transparently from / to bare `String` values.
 
-pub mod common;
-pub mod data_kind;
-pub mod dimension;
-pub mod keys;
-pub mod measure;
-pub mod metric;
-pub mod relationship;
-pub mod storage;
-pub mod temporal;
+pub mod names;
 
-// Re-export all public types at the module level for backward compatibility.
-pub use common::*;
-pub use data_kind::*;
-pub use dimension::*;
-pub use keys::*;
-pub use measure::*;
-pub use metric::*;
-pub use relationship::*;
-pub use storage::*;
-pub use temporal::*;
+pub use names::{DataKindName, FilterName, SemanticsName};

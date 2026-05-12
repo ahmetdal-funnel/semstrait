@@ -42,6 +42,8 @@ thiserror = "2"
 tracing = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
+bon = "3"
+jsonschema = { version = "0.30", default-features = false }
 
 # API (optional)
 axum = { version = "0.8" }

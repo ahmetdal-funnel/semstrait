@@ -14,7 +14,7 @@ use serde_yaml::Value;
 ///
 /// - `String` value routes to inline DSL parser (existing `parse_expr`)
 /// - `Map` value deserializes directly as a declarative `ExprBlock`
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ExprSource {
     /// Simple string DSL: "cost / clicks", "{{ revenue }}", "amount"
@@ -68,7 +68,7 @@ impl ExprSource {
 /// Bare strings are column references, bare numbers/bools/null are literals.
 /// Tagged forms use single-key maps: `{lit: "value"}`, `{upper: col}`, `{in: [col, v1, v2]}`.
 /// Struct blocks support both array-positional and named-map forms.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExprBlock {
     // ── Leaf nodes ──────────────────────────────────────────────
     /// Explicit column reference.
@@ -175,7 +175,7 @@ pub enum ExprBlock {
 //   - Named map: `in: {col: x, list: [...]}` (backward compat; `expr:` accepted as alias for `col:`)
 
 /// Two-argument expression (used for binary ops and two-arg functions).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TwoArgs {
     /// Array form: `add: [left, right]`
@@ -185,17 +185,17 @@ pub enum TwoArgs {
 }
 
 /// Three-argument expression (used for IF).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThreeArgs(pub [Box<ExprBlock>; 3]);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaseBlock {
     pub when: Vec<WhenBlock>,
     #[serde(default, rename = "else")]
     pub else_expr: Option<Box<ExprBlock>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WhenBlock {
     pub condition: ExprBlock,
     pub then: ExprBlock,
@@ -269,7 +269,7 @@ macro_rules! dual_deser {
 // ── InListBlock ──────────────────────────────────────────────────────────────
 // Array: `in: [col, val1, val2, ...]`    Map: `in: {col: x, list: [...]}`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct InListBlock {
     pub col: Box<ExprBlock>,
     pub list: Vec<ExprBlock>,
@@ -288,7 +288,7 @@ dual_deser!(InListBlock, |v: &Value| -> Result<InListBlock, String> {
 // ── BetweenBlock ─────────────────────────────────────────────────────────────
 // Array: `between: [col, low, high]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BetweenBlock {
     pub col: Box<ExprBlock>,
     pub low: Box<ExprBlock>,
@@ -311,7 +311,7 @@ dual_deser!(BetweenBlock, |v: &Value| -> Result<BetweenBlock, String> {
 // ── PatternBlock ─────────────────────────────────────────────────────────────
 // Array: `like: [col, pattern]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PatternBlock {
     pub col: Box<ExprBlock>,
     pub pattern: Box<ExprBlock>,
@@ -331,7 +331,7 @@ dual_deser!(PatternBlock, |v: &Value| -> Result<PatternBlock, String> {
 // ── NullIfBlock ──────────────────────────────────────────────────────────────
 // Array: `nullif: [col, value]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NullIfBlock {
     pub col: Box<ExprBlock>,
     pub null_expr: Box<ExprBlock>,
@@ -351,7 +351,7 @@ dual_deser!(NullIfBlock, |v: &Value| -> Result<NullIfBlock, String> {
 // ── RegexpMatchBlock ─────────────────────────────────────────────────────────
 // Array: `regexp_match: [col, pattern]`   Map: `regexp_match: {col:, pattern:, full_match:}`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RegexpMatchBlock {
     pub col: Box<ExprBlock>,
     pub pattern: Box<ExprBlock>,
@@ -374,7 +374,7 @@ dual_deser!(RegexpMatchBlock, |v: &Value| -> Result<RegexpMatchBlock, String> {
 // ── RegexpExtractBlock ───────────────────────────────────────────────────────
 // Array: `regexp_extract: [col, pattern, group?]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RegexpExtractBlock {
     pub col: Box<ExprBlock>,
     pub pattern: Box<ExprBlock>,
@@ -398,7 +398,7 @@ dual_deser!(RegexpExtractBlock, |v: &Value| -> Result<RegexpExtractBlock, String
 // ── RegexpReplaceBlock ──────────────────────────────────────────────────────
 // Array: `regexp_replace: [col, pattern, replacement]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RegexpReplaceBlock {
     pub col: Box<ExprBlock>,
     pub pattern: Box<ExprBlock>,
@@ -421,7 +421,7 @@ dual_deser!(RegexpReplaceBlock, |v: &Value| -> Result<RegexpReplaceBlock, String
 // ── ReplaceBlock ─────────────────────────────────────────────────────────────
 // Array: `replace: [col, old, new]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReplaceBlock {
     pub col: Box<ExprBlock>,
     pub old: Box<ExprBlock>,
@@ -444,7 +444,7 @@ dual_deser!(ReplaceBlock, |v: &Value| -> Result<ReplaceBlock, String> {
 // ── SplitPartBlock ──────────────────────────────────────────────────────────
 // Array: `split_part: [col, delimiter, part]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SplitPartBlock {
     pub col: Box<ExprBlock>,
     pub delimiter: Box<ExprBlock>,
@@ -468,7 +468,7 @@ dual_deser!(SplitPartBlock, |v: &Value| -> Result<SplitPartBlock, String> {
 // Array: `concat_ws: [separator, expr1, expr2, ...]`
 // Map: `concat_ws: {separator: ..., exprs: [...]}`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ConcatWsBlock {
     pub separator: Box<ExprBlock>,
     pub exprs: Vec<ExprBlock>,
@@ -487,7 +487,7 @@ dual_deser!(ConcatWsBlock, |v: &Value| -> Result<ConcatWsBlock, String> {
 // ── SubstringBlock ───────────────────────────────────────────────────────────
 // Array: `substr: [col, start, length?]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SubstringBlock {
     pub col: Box<ExprBlock>,
     pub start: i64,
@@ -511,7 +511,7 @@ dual_deser!(SubstringBlock, |v: &Value| -> Result<SubstringBlock, String> {
 // ── LeftRightBlock ───────────────────────────────────────────────────────────
 // Array: `left: [col, length]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LeftRightBlock {
     pub col: Box<ExprBlock>,
     pub length: i64,
@@ -531,7 +531,7 @@ dual_deser!(LeftRightBlock, |v: &Value| -> Result<LeftRightBlock, String> {
 // ── PadBlock ─────────────────────────────────────────────────────────────────
 // Array: `lpad: [col, length, fill?]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PadBlock {
     pub col: Box<ExprBlock>,
     pub length: i64,
@@ -559,7 +559,7 @@ dual_deser!(PadBlock, |v: &Value| -> Result<PadBlock, String> {
 // ── RoundBlock ───────────────────────────────────────────────────────────────
 // Array: `round: [col, scale?]`   Single: `round: col`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RoundBlock {
     pub col: Box<ExprBlock>,
     pub scale: i64,
@@ -580,7 +580,7 @@ dual_deser!(RoundBlock, |v: &Value| -> Result<RoundBlock, String> {
 // ── PowerBlock ───────────────────────────────────────────────────────────────
 // Array: `power: [base, exponent]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PowerBlock {
     pub base: Box<ExprBlock>,
     pub exponent: Box<ExprBlock>,
@@ -600,7 +600,7 @@ dual_deser!(PowerBlock, |v: &Value| -> Result<PowerBlock, String> {
 // ── DateTruncBlock ───────────────────────────────────────────────────────────
 // Array: `date_trunc: [grain, col]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DateTruncBlock {
     pub grain: String,
     pub col: Box<ExprBlock>,
@@ -617,13 +617,13 @@ dual_deser!(DateTruncBlock, |v: &Value| -> Result<DateTruncBlock, String> {
     col: Box<ExprBlock>,
 });
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmptyBlock {}
 
 // ── DateAddBlock ─────────────────────────────────────────────────────────────
 // Array: `date_add: [col, days]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DateAddBlock {
     pub col: Box<ExprBlock>,
     pub days: i64,
@@ -643,7 +643,7 @@ dual_deser!(DateAddBlock, |v: &Value| -> Result<DateAddBlock, String> {
 // ── DateDiffBlock ────────────────────────────────────────────────────────────
 // Array: `date_diff: [start, end]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DateDiffBlock {
     pub start: Box<ExprBlock>,
     pub end: Box<ExprBlock>,
@@ -664,7 +664,7 @@ dual_deser!(DateDiffBlock, |v: &Value| -> Result<DateDiffBlock, String> {
 // Array: `to_date: [col]` or `to_date: [col, format]`
 // Also reused for `to_timestamp`.
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ToDateBlock {
     pub col: Box<ExprBlock>,
     pub format: Option<Box<ExprBlock>>,
@@ -685,7 +685,7 @@ dual_deser!(ToDateBlock, |v: &Value| -> Result<ToDateBlock, String> {
 // ── ExtractBlock ─────────────────────────────────────────────────────────────
 // Array: `extract: [part, col]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExtractBlock {
     pub part: String,
     pub col: Box<ExprBlock>,
@@ -705,7 +705,7 @@ dual_deser!(ExtractBlock, |v: &Value| -> Result<ExtractBlock, String> {
 // ── CastBlock ────────────────────────────────────────────────────────────────
 // Array: `cast: [col, type]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CastBlock {
     pub col: Box<ExprBlock>,
     pub to: String,
@@ -725,7 +725,7 @@ dual_deser!(CastBlock, |v: &Value| -> Result<CastBlock, String> {
 // ── GuardBlock ───────────────────────────────────────────────────────────────
 // Array: `guard: [condition, col]`
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GuardBlock {
     pub condition: Box<ExprBlock>,
     pub col: Box<ExprBlock>,
@@ -909,7 +909,7 @@ expr_block_serde! {
 }
 
 /// Literal value for explicit `literal:` key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LiteralValue {
     Integer(i64),
@@ -1284,8 +1284,8 @@ mod tests {
 
     #[test]
     fn test_bare_float_is_literal() {
-        let block: ExprBlock = serde_yaml::from_str("3.14").unwrap();
-        assert_eq!(block.to_expr().unwrap(), Expr::float(3.14));
+        let block: ExprBlock = serde_yaml::from_str("2.5").unwrap();
+        assert_eq!(block.to_expr().unwrap(), Expr::float(2.5));
     }
 
     #[test]
@@ -1314,8 +1314,8 @@ mod tests {
 
     #[test]
     fn test_lit_float() {
-        let expr = parse_block("lit: 3.14");
-        assert_eq!(expr, Expr::float(3.14));
+        let expr = parse_block("lit: 2.5");
+        assert_eq!(expr, Expr::float(2.5));
     }
 
     #[test]

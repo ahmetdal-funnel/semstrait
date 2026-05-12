@@ -1,0 +1,618 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semstrait.dev/schemas/semantic_model.schema.json",
+  "title": "semstrait semantic_model.yaml",
+  "description": "Author surface for a semstrait `SemanticModel`. The Rust types in `semstrait-model` are the structural source of truth (see `docs/design/apis/32_semstrait_model.md` and `docs/design/foundations/18_entities.md`); this schema mirrors the YAML projection so authoring tools can validate before parse + validate runs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["semantic_model"],
+  "properties": {
+    "semantic_model": { "$ref": "#/$defs/SemanticModel" }
+  },
+  "$defs": {
+    "SemanticModel": {
+      "type": "object",
+      "description": "Root model block (`32 §2`). Catalogs are kept as a sibling `catalogs.yaml`, never embedded.",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "ai_context": { "$ref": "#/$defs/AiContext" },
+        "labels": { "type": "array", "items": { "type": "string" } },
+        "datasets": { "type": "array", "items": { "$ref": "#/$defs/Dataset" } },
+        "grainsets": { "type": "array", "items": { "$ref": "#/$defs/Grainset" } },
+        "unionsets": { "type": "array", "items": { "$ref": "#/$defs/Unionset" } },
+        "joinsets": { "type": "array", "items": { "$ref": "#/$defs/Joinset" } },
+        "dimensions": { "type": "array", "items": { "$ref": "#/$defs/Dimension" } },
+        "measures": { "type": "array", "items": { "$ref": "#/$defs/Measure" } },
+        "metrics": { "type": "array", "items": { "$ref": "#/$defs/Metric" } },
+        "relationships": { "type": "array", "items": { "$ref": "#/$defs/Relationship" } }
+      }
+    },
+
+    "AiContext": {
+      "type": "object",
+      "description": "LLM/agent-facing hint surface (`18 §8`). Never authored on Nested forms / Extras / Relationship.",
+      "additionalProperties": false,
+      "properties": {
+        "synonyms": {
+          "type": "object",
+          "additionalProperties": { "type": "array", "items": { "type": "string" } }
+        },
+        "description": { "type": "string" },
+        "examples": { "type": "array", "items": { "type": "string" } },
+        "unit": { "type": "string" }
+      }
+    },
+
+    "DataType": {
+      "description": "Logical SQL type (`13 §1`). YAML scalar form: `integer`, `number`, `decimal(p,s)`, `string`, `boolean`, `date`, `timestamp`, `timestamp(p)`, `binary`. Aliases per `13 §2` (e.g. `bigint`, `double`, `varchar`).",
+      "type": "string",
+      "pattern": "^(integer|int|bigint|long|i8|i16|i32|i64|int8|int16|int32|int64|tinyint|smallint|number|float|double|f32|f64|float32|float64|decimal(\\([0-9]+,\\s*[0-9]+\\))?|string|text|varchar|utf8|large_utf8|largeutf8|bool|boolean|date|date32|date64|timestamp(\\([0-9]+\\))?|timestamp_s|timestamp_second|timestamp_ms|timestamp_millisecond|timestamp_us|timestamp_microsecond|binary)$"
+    },
+
+    "Grain": {
+      "type": "string",
+      "enum": ["minute", "hour", "day", "week", "month", "quarter", "year"]
+    },
+
+    "ExprSource": {
+      "description": "Inline DSL string OR declarative `ExprBlock` map. The full ExprBlock grammar (`14 §3` / `expr_block.rs`) is complex; this schema treats the declarative form as a generic object.",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "object" }
+      ]
+    },
+
+    "Dataset": {
+      "type": "object",
+      "description": "Public-form Dataset (`32 §3.3`). Body fields (`name`, `extras`) and SemanticInterface (`dimensions`, …) are flattened to the top level.",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "ai_context": { "$ref": "#/$defs/AiContext" },
+        "extras": { "$ref": "#/$defs/LeafExtras" },
+        "dimensions": { "type": "array", "items": { "$ref": "#/$defs/DimensionEntry" } },
+        "measures": { "type": "array", "items": { "$ref": "#/$defs/MeasureEntry" } },
+        "metrics": { "type": "array", "items": { "$ref": "#/$defs/MetricEntry" } },
+        "filters": { "type": "array", "items": { "$ref": "#/$defs/DataKindFilter" } },
+        "keys": { "$ref": "#/$defs/Keys" }
+      }
+    },
+
+    "NestedDataset": {
+      "type": "object",
+      "description": "Nested-form Dataset — body-only per `32 §3.3` and `26 §3`.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "extras": { "$ref": "#/$defs/LeafExtras" }
+      }
+    },
+
+    "Grainset": {
+      "type": "object",
+      "description": "Public-form Grainset. R3 in `26 §1` requires ≥ 2 nested children at validate.",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "ai_context": { "$ref": "#/$defs/AiContext" },
+        "extras": { "$ref": "#/$defs/ComplexExtras" },
+        "datasets": { "type": "array", "items": { "$ref": "#/$defs/NestedDataset" } },
+        "unionsets": { "type": "array", "items": { "$ref": "#/$defs/NestedUnionset" } },
+        "joinsets": { "type": "array", "items": { "$ref": "#/$defs/NestedJoinset" } },
+        "dimensions": { "type": "array", "items": { "$ref": "#/$defs/DimensionEntry" } },
+        "measures": { "type": "array", "items": { "$ref": "#/$defs/MeasureEntry" } },
+        "metrics": { "type": "array", "items": { "$ref": "#/$defs/MetricEntry" } },
+        "filters": { "type": "array", "items": { "$ref": "#/$defs/DataKindFilter" } },
+        "keys": { "$ref": "#/$defs/Keys" }
+      }
+    },
+
+    "NestedGrainset": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "extras": { "$ref": "#/$defs/ComplexExtras" },
+        "datasets": { "type": "array", "items": { "$ref": "#/$defs/NestedDataset" } },
+        "unionsets": { "type": "array", "items": { "$ref": "#/$defs/NestedUnionset" } },
+        "joinsets": { "type": "array", "items": { "$ref": "#/$defs/NestedJoinset" } }
+      }
+    },
+
+    "Unionset": {
+      "type": "object",
+      "description": "Public-form Unionset. `mode:` defaults to `all`.",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "ai_context": { "$ref": "#/$defs/AiContext" },
+        "extras": { "$ref": "#/$defs/ComplexExtras" },
+        "mode": { "type": "string", "enum": ["all", "unique"] },
+        "datasets": { "type": "array", "items": { "$ref": "#/$defs/NestedDataset" } },
+        "grainsets": { "type": "array", "items": { "$ref": "#/$defs/NestedGrainset" } },
+        "joinsets": { "type": "array", "items": { "$ref": "#/$defs/NestedJoinset" } },
+        "dimensions": { "type": "array", "items": { "$ref": "#/$defs/DimensionEntry" } },
+        "measures": { "type": "array", "items": { "$ref": "#/$defs/MeasureEntry" } },
+        "metrics": { "type": "array", "items": { "$ref": "#/$defs/MetricEntry" } },
+        "filters": { "type": "array", "items": { "$ref": "#/$defs/DataKindFilter" } },
+        "keys": { "$ref": "#/$defs/Keys" }
+      }
+    },
+
+    "NestedUnionset": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "extras": { "$ref": "#/$defs/ComplexExtras" },
+        "mode": { "type": "string", "enum": ["all", "unique"] },
+        "datasets": { "type": "array", "items": { "$ref": "#/$defs/NestedDataset" } },
+        "grainsets": { "type": "array", "items": { "$ref": "#/$defs/NestedGrainset" } },
+        "joinsets": { "type": "array", "items": { "$ref": "#/$defs/NestedJoinset" } }
+      }
+    },
+
+    "Joinset": {
+      "type": "object",
+      "description": "Public-form Joinset. Carries `relationships:` describing the per-Joinset join structure.",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "ai_context": { "$ref": "#/$defs/AiContext" },
+        "extras": { "$ref": "#/$defs/ComplexExtras" },
+        "relationships": { "type": "array", "items": { "$ref": "#/$defs/Relationship" } },
+        "datasets": { "type": "array", "items": { "$ref": "#/$defs/NestedDataset" } },
+        "grainsets": { "type": "array", "items": { "$ref": "#/$defs/NestedGrainset" } },
+        "unionsets": { "type": "array", "items": { "$ref": "#/$defs/NestedUnionset" } },
+        "dimensions": { "type": "array", "items": { "$ref": "#/$defs/DimensionEntry" } },
+        "measures": { "type": "array", "items": { "$ref": "#/$defs/MeasureEntry" } },
+        "metrics": { "type": "array", "items": { "$ref": "#/$defs/MetricEntry" } },
+        "filters": { "type": "array", "items": { "$ref": "#/$defs/DataKindFilter" } },
+        "keys": { "$ref": "#/$defs/Keys" }
+      }
+    },
+
+    "NestedJoinset": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "extras": { "$ref": "#/$defs/ComplexExtras" },
+        "relationships": { "type": "array", "items": { "$ref": "#/$defs/Relationship" } },
+        "datasets": { "type": "array", "items": { "$ref": "#/$defs/NestedDataset" } },
+        "grainsets": { "type": "array", "items": { "$ref": "#/$defs/NestedGrainset" } },
+        "unionsets": { "type": "array", "items": { "$ref": "#/$defs/NestedUnionset" } }
+      }
+    },
+
+    "LeafExtras": {
+      "type": "object",
+      "description": "Leaf-axis extras (`32 §4`). `catalog` / `storage` / `semantic_mapping` are leaf-only per R-6.",
+      "additionalProperties": false,
+      "properties": {
+        "catalog": { "type": "string" },
+        "storage": { "$ref": "#/$defs/StorageConfig" },
+        "semantic_mapping": { "$ref": "#/$defs/SemanticMapping" },
+        "temporal": { "$ref": "#/$defs/TemporalShape" }
+      }
+    },
+
+    "ComplexExtras": {
+      "type": "object",
+      "description": "Complex-axis extras — only `temporal:` per `32 §4` / R-6.",
+      "additionalProperties": false,
+      "properties": {
+        "temporal": { "$ref": "#/$defs/TemporalShape" }
+      }
+    },
+
+    "StorageConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format": { "type": "string", "enum": ["parquet", "csv", "json", "orc", "avro"] },
+        "paths": { "type": "array", "items": { "type": "string" } },
+        "tables": { "type": "array", "items": { "type": "string" } },
+        "partition_def": {
+          "oneOf": [
+            { "type": "object", "required": ["type", "column"], "additionalProperties": false,
+              "properties": {
+                "type": { "const": "range" },
+                "column": { "type": "string" }
+              }
+            },
+            { "type": "object", "required": ["type", "column"], "additionalProperties": false,
+              "properties": {
+                "type": { "const": "list" },
+                "column": { "type": "string" },
+                "values": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          ]
+        }
+      }
+    },
+
+    "TemporalShape": {
+      "type": "object",
+      "description": "Temporal shape + leaf-effective `grain:` (`18 §3`). The shape kind is one of `timeseries` / `events` / `snapshot` / `scd`, flattened sibling-to-`grain`.",
+      "additionalProperties": false,
+      "properties": {
+        "grain": { "$ref": "#/$defs/Grain" },
+        "timeseries": { "type": "object", "required": ["occurred_at"], "additionalProperties": false,
+          "properties": { "occurred_at": { "type": "string" } }
+        },
+        "events": { "type": "object", "required": ["event_time"], "additionalProperties": false,
+          "properties": { "event_time": { "type": "string" } }
+        },
+        "snapshot": { "type": "object", "required": ["snapshotted_at"], "additionalProperties": false,
+          "properties": { "snapshotted_at": { "type": "string" } }
+        },
+        "scd": { "type": "object", "required": ["scd_type", "valid_from", "valid_to"], "additionalProperties": false,
+          "properties": {
+            "scd_type": { "type": "string", "enum": ["type1", "type2"] },
+            "valid_from": { "type": "string" },
+            "valid_to": { "type": "string" }
+          }
+        }
+      },
+      "oneOf": [
+        { "required": ["timeseries"] },
+        { "required": ["events"] },
+        { "required": ["snapshot"] },
+        { "required": ["scd"] }
+      ]
+    },
+
+    "SemanticMapping": {
+      "description": "Either the bare-string default (`auto`) or an explicit per-Semantic map (`18 §10`).",
+      "oneOf": [
+        { "type": "string", "const": "auto" },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/SemanticMappingValue" }
+        }
+      ]
+    },
+
+    "SemanticMappingValue": {
+      "description": "Per-Semantic mapping payload — bare physical column string OR `{literal: ...}` OR `{expr: ...}`. The compile-synthesized `Metadata` variant has no author surface (R3, SR-10).",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "object", "required": ["literal"], "additionalProperties": false,
+          "properties": { "literal": { "$ref": "#/$defs/LiteralValue" } }
+        },
+        { "type": "object", "required": ["expr"], "additionalProperties": false,
+          "properties": { "expr": { "type": "object", "description": "PhysicalExpr — same shape as ExprBlock." } }
+        }
+      ]
+    },
+
+    "LiteralValue": {
+      "description": "Single-key tagged literal (`18 §10.2`). `null` is the only body-less form.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "const": "null" },
+        { "type": "object", "additionalProperties": false,
+          "properties": {
+            "bool": { "type": "boolean" },
+            "int": { "type": "integer" },
+            "float": { "type": "number" },
+            "decimal": { "type": "string" },
+            "string": { "type": "string" },
+            "date": { "type": "string" },
+            "timestamp": { "type": "string" }
+          },
+          "minProperties": 1,
+          "maxProperties": 1
+        }
+      ]
+    },
+
+    "Dimension": {
+      "type": "object",
+      "description": "Dimension declaration (`18 §4`).",
+      "required": ["name", "data_type", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "data_type": { "$ref": "#/$defs/DataType" },
+        "description": { "type": "string" },
+        "ai_context": { "$ref": "#/$defs/AiContext" },
+        "type": { "$ref": "#/$defs/DimensionType" },
+        "expr": { "$ref": "#/$defs/ExprSource" }
+      }
+    },
+
+    "DimensionEntry": {
+      "description": "Either an inline `Dimension` declaration or a `ref:` against the root pool.",
+      "oneOf": [
+        { "$ref": "#/$defs/DimensionRef" },
+        { "$ref": "#/$defs/Dimension" }
+      ]
+    },
+
+    "DimensionRef": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string" },
+        "expr": { "$ref": "#/$defs/ExprSource" }
+      }
+    },
+
+    "DimensionType": {
+      "description": "DimensionType variant (`18 §4.1`). Body-less variants use bare-string form; body variants use single-key tagged map.",
+      "oneOf": [
+        { "type": "string", "enum": ["categorical", "binary", "geo"] },
+        { "type": "object", "additionalProperties": false,
+          "properties": {
+            "temporal": { "type": "object", "additionalProperties": false,
+              "properties": { "grains": { "type": "array", "items": { "$ref": "#/$defs/Grain" } } }
+            }
+          },
+          "required": ["temporal"]
+        },
+        { "type": "object", "additionalProperties": false,
+          "properties": {
+            "bucketed": {
+              "type": "object", "required": ["buckets"], "additionalProperties": false,
+              "properties": {
+                "buckets": { "type": "array", "items": { "$ref": "#/$defs/BucketSpec" } }
+              }
+            }
+          },
+          "required": ["bucketed"]
+        },
+        { "type": "object", "additionalProperties": false,
+          "properties": {
+            "metadata": {
+              "type": "object", "required": ["source"], "additionalProperties": false,
+              "properties": { "source": { "$ref": "#/$defs/MetadataSource" } }
+            }
+          },
+          "required": ["metadata"]
+        }
+      ]
+    },
+
+    "BucketSpec": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "lower": { "$ref": "#/$defs/BucketBound" },
+        "upper": { "$ref": "#/$defs/BucketBound" }
+      }
+    },
+
+    "BucketBound": {
+      "type": "object",
+      "description": "Single-key tagged bucket boundary.",
+      "additionalProperties": false,
+      "properties": {
+        "int": { "type": "integer" },
+        "float": { "type": "number" },
+        "decimal": { "type": "string" },
+        "date": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "minProperties": 1,
+      "maxProperties": 1
+    },
+
+    "MetadataSource": {
+      "description": "Single-key tagged metadata extraction site (`18 §4.1` / `15 §8`).",
+      "oneOf": [
+        { "type": "object", "required": ["path"], "additionalProperties": false,
+          "properties": {
+            "path": { "type": "object", "required": ["token"], "additionalProperties": false,
+              "properties": { "token": { "type": "integer", "minimum": 0 } }
+            }
+          }
+        },
+        { "type": "object", "required": ["partition"], "additionalProperties": false,
+          "properties": {
+            "partition": { "type": "object", "required": ["column"], "additionalProperties": false,
+              "properties": { "column": { "type": "string" } }
+            }
+          }
+        }
+      ]
+    },
+
+    "Measure": {
+      "type": "object",
+      "description": "Measure declaration (`18 §5`). `agg:` is required; `expr:` is the optional horizontal-only transform applied before aggregation.",
+      "required": ["name", "data_type", "agg"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "data_type": { "$ref": "#/$defs/DataType" },
+        "description": { "type": "string" },
+        "ai_context": { "$ref": "#/$defs/AiContext" },
+        "agg": { "$ref": "#/$defs/AggregationType" },
+        "expr": { "$ref": "#/$defs/ExprSource" },
+        "additivity": { "$ref": "#/$defs/AdditivityType" },
+        "filters": { "type": "array", "items": { "$ref": "#/$defs/AggregationFilter" } }
+      }
+    },
+
+    "MeasureEntry": {
+      "oneOf": [
+        { "$ref": "#/$defs/MeasureRef" },
+        { "$ref": "#/$defs/Measure" }
+      ]
+    },
+
+    "MeasureRef": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string" },
+        "expr": { "$ref": "#/$defs/ExprSource" },
+        "filters": { "type": "array", "items": { "$ref": "#/$defs/AggregationFilter" } }
+      }
+    },
+
+    "AggregationType": {
+      "type": "string",
+      "enum": ["sum", "avg", "count", "count_distinct", "min", "max", "median", "std_dev", "variance"]
+    },
+
+    "AdditivityType": {
+      "description": "Additivity classification (`18 §5`). `full` / `non` are bare strings; `semi` carries axes + strategy.",
+      "oneOf": [
+        { "type": "string", "enum": ["full", "non"] },
+        { "type": "object", "required": ["semi"], "additionalProperties": false,
+          "properties": {
+            "semi": {
+              "type": "object", "required": ["axes", "strategy"], "additionalProperties": false,
+              "properties": {
+                "axes": { "type": "array", "items": { "type": "string" } },
+                "strategy": { "type": "string", "enum": ["latest", "earliest", "average", "first", "last"] }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Metric": {
+      "type": "object",
+      "description": "Metric declaration (`18 §6`). `expr:` is REQUIRED at the declaration site (or at every ref site — SR-E-2 catches all-missing).",
+      "required": ["name", "data_type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "data_type": { "$ref": "#/$defs/DataType" },
+        "description": { "type": "string" },
+        "ai_context": { "$ref": "#/$defs/AiContext" },
+        "agg": { "$ref": "#/$defs/AggregationType" },
+        "expr": { "$ref": "#/$defs/ExprSource" },
+        "additivity": { "$ref": "#/$defs/AdditivityType" },
+        "filters": { "type": "array", "items": { "$ref": "#/$defs/AggregationFilter" } }
+      }
+    },
+
+    "MetricEntry": {
+      "oneOf": [
+        { "$ref": "#/$defs/MetricRef" },
+        { "$ref": "#/$defs/Metric" }
+      ]
+    },
+
+    "MetricRef": {
+      "type": "object",
+      "required": ["ref"],
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string" },
+        "expr": { "$ref": "#/$defs/ExprSource" },
+        "filters": { "type": "array", "items": { "$ref": "#/$defs/AggregationFilter" } }
+      }
+    },
+
+    "Relationship": {
+      "type": "object",
+      "description": "Relationship between two DataKinds (`18 §2`). `cardinality:` is REQUIRED (SR-E-4); `optional:` and `cross_filter:` are required when `cardinality ∈ {one_to_one, many_to_many}` (SR-E-13).",
+      "required": ["name", "from", "to", "cardinality"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "keys": { "type": "array", "items": { "$ref": "#/$defs/JoinKeyExprPair" } },
+        "filter": { "$ref": "#/$defs/ExprSource" },
+        "cardinality": { "type": "string", "enum": ["one_to_one", "one_to_many", "many_to_one", "many_to_many"] },
+        "integrity": { "type": "string", "enum": ["enforced", "assumed", "none"] },
+        "optional": { "type": "string", "enum": ["none", "left", "right", "both"] },
+        "cross_filter": { "type": "string", "enum": ["none", "left", "right", "both"] },
+        "ai_context": { "$ref": "#/$defs/AiContext" },
+        "description": { "type": "string" }
+      }
+    },
+
+    "JoinKeyExprPair": {
+      "type": "object",
+      "required": ["from", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "from": { "$ref": "#/$defs/ExprSource" },
+        "to": { "$ref": "#/$defs/ExprSource" }
+      }
+    },
+
+    "Keys": {
+      "type": "object",
+      "description": "Per-DataKind key block (`18 §9`).",
+      "additionalProperties": false,
+      "properties": {
+        "primary": { "$ref": "#/$defs/KeyDecl" },
+        "unique": { "type": "array", "items": { "$ref": "#/$defs/KeyDecl" } },
+        "foreign": { "type": "array", "items": { "$ref": "#/$defs/ForeignKeyDecl" } }
+      }
+    },
+
+    "KeyDecl": {
+      "type": "object",
+      "required": ["columns"],
+      "additionalProperties": false,
+      "properties": {
+        "columns": { "type": "array", "items": { "type": "string" } },
+        "name": { "type": "string" }
+      }
+    },
+
+    "ForeignKeyDecl": {
+      "type": "object",
+      "required": ["columns", "references", "target_columns"],
+      "additionalProperties": false,
+      "properties": {
+        "columns": { "type": "array", "items": { "type": "string" } },
+        "references": { "type": "string" },
+        "target_columns": { "type": "array", "items": { "type": "string" } },
+        "name": { "type": "string" }
+      }
+    },
+
+    "DataKindFilter": {
+      "type": "object",
+      "description": "DataKind-level filter (`18 §7`).",
+      "required": ["name", "expr"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "ai_context": { "$ref": "#/$defs/AiContext" },
+        "expr": { "$ref": "#/$defs/ExprSource" }
+      }
+    },
+
+    "AggregationFilter": {
+      "type": "object",
+      "description": "Measure / Metric-level conditional-aggregation filter (`18 §7`).",
+      "required": ["name", "expr"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "expr": { "$ref": "#/$defs/ExprSource" }
+      }
+    }
+  }
+}

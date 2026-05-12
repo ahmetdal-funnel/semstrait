@@ -1,0 +1,43 @@
+# Reference `catalogs.yaml` — every CatalogAuthMethod variant
+# exemplified. Authored as a sibling to `reference.yaml` per
+# `docs/design/apis/32_semstrait_model.md` `§1.3` and the per-file
+# contract in `docs/design/apis/32b_catalogs_yaml.md`.
+
+catalogs:
+  # OAuth2 with explicit credentials — `32b §3.1`.
+  polaris_prod:
+    type: polaris
+    name: prod_warehouse
+    url: https://polaris.example.com
+    realm: prod
+    default_namespace: analytics
+    auth:
+      method: oauth2
+      token_url: https://auth.example.com/token
+      client_id: polaris-client-id
+      client_secret: ${POLARIS_CLIENT_SECRET}
+      scope: catalog:read
+
+  # Static bearer token — `32b §3.2`.
+  iceberg_dev:
+    type: iceberg_rest
+    name: dev_warehouse
+    url: https://iceberg.example.com
+    auth:
+      method: bearer
+      token: ${ICEBERG_DEV_TOKEN}
+
+  # AWS Secrets Manager → OAuth2 — `32b §3.3`.
+  unity_prod:
+    type: unity
+    name: prod_metastore
+    url: https://unity.example.com
+    auth:
+      method: aws_secrets
+      token_url: https://auth.example.com/token
+      secret_arn: arn:aws:secretsmanager:us-east-1:123456789012:secret:unity-prod
+      region: us-east-1
+      scope: catalog:read
+      secret_keys:
+        client_id_key: oauth_client_id
+        client_secret_key: oauth_client_secret
