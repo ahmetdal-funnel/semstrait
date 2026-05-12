@@ -3657,4 +3657,29 @@ mod tests {
             _ => panic!("expected BinaryOp(Eq), got {:?}", expr),
         }
     }
+
+    #[test]
+    fn test_compile_measures_hyphenated_self_ref_pass_through() {
+        // Measures whose expr equals their own name and contain a hyphen could not
+        // previously be parsed as identifiers. The self-reference short-circuit must
+        // handle them without returning a parse error.
+        let name = "klaviyo-unsubscribed_from_list".to_string();
+        let mut entries = BTreeMap::new();
+        entries.insert(name.clone(), MeasureEntry::Inline(Measure {
+            name: name.clone(),
+            description: None,
+            data_type: Some(semstrait_model::DataType::I64),
+            ai_context: None,
+            agg: Some(semstrait_model::AggregationType::Sum),
+            expr: Some(semstrait_model::expr_block::ExprSource::Inline(name.clone())),
+            additivity: None,
+            constraints: None,
+            filters: vec![],
+        }));
+
+        let result = compile_measures(&entries);
+        assert!(result.is_ok(), "hyphenated self-ref measure must compile: {:?}", result);
+        let compiled = result.unwrap();
+        assert!(compiled.contains_key(&name));
+    }
 }
