@@ -1250,6 +1250,9 @@ pub(crate) fn build_metric_graph(
         if let Some(&src_idx) = name_to_idx.get(met.name.as_str()) {
             let deps = extract_identifiers_from_expr_source(&met.expr);
             for dep in deps {
+                if dep.as_str() == met.name.as_str() {
+                    continue;
+                }
                 if let Some(&dst_idx) = name_to_idx.get(dep.as_str()) {
                     if src_idx != dst_idx {
                         graph.add_edge(nodes[src_idx], nodes[dst_idx], ());
@@ -1271,14 +1274,21 @@ pub(crate) fn build_metric_graph(
         depths.insert(name.clone(), 0);
     }
 
+    // Precompute deps once — extract_identifiers_from_expr_source is expensive
+    // (rebuilds HashSet, parses expr) and the result never changes between iterations.
+    let metric_deps: Vec<Vec<String>> = all_metrics
+        .iter()
+        .map(|met| extract_identifiers_from_expr_source(&met.expr))
+        .collect();
+
     // Iterative depth computation for metrics
     let mut changed = true;
     while changed {
         changed = false;
-        for met in &all_metrics {
-            let deps = extract_identifiers_from_expr_source(&met.expr);
+        for (met, deps) in all_metrics.iter().zip(metric_deps.iter()) {
             let max_dep_depth = deps
                 .iter()
+                .filter(|d| d.as_str() != met.name.as_str())
                 .filter_map(|d| depths.get(d.as_str()))
                 .max()
                 .copied()
@@ -1379,9 +1389,11 @@ pub(crate) fn emit(
     resolution: SourceResolutionResult,
     extra_warnings: Vec<crate::acceleration::CompileWarning>,
 ) -> Result<CompiledManifest, CompileError> {
-    let mut entities = IndexMap::new();
     let mut relationships = Vec::new();
 
+    let total = model.entities.len();
+    tracing::info!("semstrait emit: compiling {} entities", total);
+    let mut entities = IndexMap::with_capacity(total);
     for dk in model.entities.values() {
         let compiled = compile_to_compiled_data_kind(dk, metric_depths, &resolution)?;
         entities.insert(dk.name().to_string(), compiled);
@@ -2011,17 +2023,24 @@ fn compile_measures(
                     .unwrap_or_else(|| mea.name.clone());
 
                 if let Some(ref expr_src) = mea.expr {
-                    // Parse/convert expr, validate no aggregation.
-                    let parsed = resolve_expr_source(expr_src, &mea.name)?;
-                    if contains_aggregation(&parsed) {
-                        errors.push(format!(
-                            "measure '{}': expr must not contain aggregation functions \
-                             when 'agg' is specified; use horizontal expressions only",
-                            mea.name
-                        ));
-                        continue;
+                    let expr_str = expr_src.display_string();
+                    // Self-reference pass-through: expr == measure name.
+                    // Hyphenated names can't be parsed as identifiers, so short-circuit here.
+                    if expr_str == mea.name {
+                        (core_agg, Expr::entity_ref(&mea.name), expr_source)
+                    } else {
+                        // Parse/convert expr, validate no aggregation.
+                        let parsed = resolve_expr_source(expr_src, &mea.name)?;
+                        if contains_aggregation(&parsed) {
+                            errors.push(format!(
+                                "measure '{}': expr must not contain aggregation functions \
+                                 when 'agg' is specified; use horizontal expressions only",
+                                mea.name
+                            ));
+                            continue;
+                        }
+                        (core_agg, parsed, expr_source)
                     }
-                    (core_agg, parsed, expr_source)
                 } else {
                     // No expr — the column is resolved from mapping by name.
                     (core_agg, Expr::entity_ref(&mea.name), expr_source)
@@ -2590,18 +2609,18 @@ const SQL_KEYWORDS: &[&str] = &[
 
 fn looks_like_raw_sql(expr: &str) -> bool {
     let upper = expr.to_uppercase();
-    // Use word-boundary matching: keyword must be preceded/followed by a non-alphanumeric
-    // character (or be at the start/end of the string). This avoids false positives like
-    // "deleted" matching "DELETE" or "updated_at" matching "UPDATE".
+    // Word-boundary matching: keyword must be preceded/followed by a character
+    // that is not part of an identifier (alphanumeric or underscore).
+    // Underscore must be included because names like "unsubscribed_from_list"
+    // would otherwise match the FROM keyword.
+    let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     SQL_KEYWORDS.iter().any(|kw| {
         let mut start = 0;
         while let Some(pos) = upper[start..].find(kw) {
             let abs_pos = start + pos;
             let end_pos = abs_pos + kw.len();
-            let before_ok = abs_pos == 0
-                || !upper.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
-            let after_ok = end_pos == upper.len()
-                || !upper.as_bytes()[end_pos].is_ascii_alphanumeric();
+            let before_ok = abs_pos == 0 || !is_ident_char(upper.as_bytes()[abs_pos - 1]);
+            let after_ok = end_pos == upper.len() || !is_ident_char(upper.as_bytes()[end_pos]);
             if before_ok && after_ok {
                 return true;
             }
@@ -2636,7 +2655,8 @@ fn collect_leaf_measure_additivity(
     metrics: &IndexMap<String, CompiledMetric>,
 ) -> Vec<AdditivityType> {
     let mut result = Vec::new();
-    collect_leaf_additivity_inner(expr, measures, metrics, &mut result);
+    let mut visited = HashSet::new();
+    collect_leaf_additivity_inner(expr, measures, metrics, &mut result, &mut visited);
     result
 }
 
@@ -2645,6 +2665,7 @@ fn collect_leaf_additivity_inner(
     measures: &IndexMap<String, CompiledMeasure>,
     metrics: &IndexMap<String, CompiledMetric>,
     result: &mut Vec<AdditivityType>,
+    visited: &mut HashSet<String>,
 ) {
     match expr {
         Expr::Column(col) => {
@@ -2653,10 +2674,13 @@ fn collect_leaf_additivity_inner(
                     result.push(a.clone());
                 }
             } else if let Some(met) = metrics.get(&col.name) {
+                if !visited.insert(col.name.clone()) {
+                    return;
+                }
                 if let Some(ref a) = met.additivity {
                     result.push(a.clone());
                 } else {
-                    collect_leaf_additivity_inner(&met.expr, measures, metrics, result);
+                    collect_leaf_additivity_inner(&met.expr, measures, metrics, result, visited);
                 }
             }
         }
@@ -2666,24 +2690,27 @@ fn collect_leaf_additivity_inner(
                     result.push(a.clone());
                 }
             } else if let Some(met) = metrics.get(&er.name) {
+                if !visited.insert(er.name.clone()) {
+                    return;
+                }
                 if let Some(ref a) = met.additivity {
                     result.push(a.clone());
                 } else {
-                    collect_leaf_additivity_inner(&met.expr, measures, metrics, result);
+                    collect_leaf_additivity_inner(&met.expr, measures, metrics, result, visited);
                 }
             }
         }
         Expr::BinaryOp(bin) => {
-            collect_leaf_additivity_inner(&bin.left, measures, metrics, result);
-            collect_leaf_additivity_inner(&bin.right, measures, metrics, result);
+            collect_leaf_additivity_inner(&bin.left, measures, metrics, result, visited);
+            collect_leaf_additivity_inner(&bin.right, measures, metrics, result, visited);
         }
         Expr::Case(case) => {
             for wt in &case.when_then {
-                collect_leaf_additivity_inner(&wt.condition, measures, metrics, result);
-                collect_leaf_additivity_inner(&wt.result, measures, metrics, result);
+                collect_leaf_additivity_inner(&wt.condition, measures, metrics, result, visited);
+                collect_leaf_additivity_inner(&wt.result, measures, metrics, result, visited);
             }
             if let Some(ref e) = case.else_expr {
-                collect_leaf_additivity_inner(e, measures, metrics, result);
+                collect_leaf_additivity_inner(e, measures, metrics, result, visited);
             }
         }
         _ => {}
@@ -3111,13 +3138,16 @@ fn collect_all_metrics(model: &SemanticModel) -> Vec<&Metric> {
 /// Extract identifiers from an expression string.
 /// Filters out SQL keywords and numeric literals.
 fn extract_identifiers_from_expr(expr: &str) -> Vec<String> {
-    let sql_keywords: HashSet<&str> = [
-        "sum", "avg", "count", "min", "max", "distinct", "case", "when", "then",
-        "else", "end", "and", "or", "not", "null", "true", "false", "is", "in",
-        "between", "like", "as", "if", "coalesce", "count_distinct",
-    ]
-    .into_iter()
-    .collect();
+    static SQL_KEYWORDS: std::sync::OnceLock<HashSet<&'static str>> = std::sync::OnceLock::new();
+    let sql_keywords = SQL_KEYWORDS.get_or_init(|| {
+        [
+            "sum", "avg", "count", "min", "max", "distinct", "case", "when", "then",
+            "else", "end", "and", "or", "not", "null", "true", "false", "is", "in",
+            "between", "like", "as", "if", "coalesce", "count_distinct",
+        ]
+        .into_iter()
+        .collect()
+    });
 
     expr.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|s| !s.is_empty())
@@ -3308,6 +3338,29 @@ mod tests {
     fn test_parse_expr_reject_raw_sql() {
         let result = parse_expr("SELECT sum(amount) FROM orders", "bad_metric");
         assert!(matches!(result, Err(CompileError::RawSqlRejected { .. })));
+    }
+
+    #[test]
+    fn test_parse_expr_underscore_keyword_not_rejected() {
+        // "unsubscribed_from_list" contains FROM but underscore is an ident char — must not reject.
+        let result = parse_expr("klaviyo-unsubscribed_from_list", "klaviyo-unsubscribed_from_list");
+        assert!(result.is_ok(), "underscore-bounded FROM must not be rejected: {:?}", result);
+    }
+
+    #[test]
+    fn test_looks_like_raw_sql_true_cases() {
+        assert!(looks_like_raw_sql("SELECT a FROM b"));
+        assert!(looks_like_raw_sql("DELETE FROM users"));
+        assert!(looks_like_raw_sql("INSERT INTO orders VALUES (1)"));
+    }
+
+    #[test]
+    fn test_looks_like_raw_sql_false_cases() {
+        assert!(!looks_like_raw_sql("unsubscribed_from_list"));
+        assert!(!looks_like_raw_sql("updated_at"));
+        assert!(!looks_like_raw_sql("deleted_by"));
+        assert!(!looks_like_raw_sql("order_count"));
+        assert!(!looks_like_raw_sql("klaviyo-unsubscribed_from_list"));
     }
 
     #[test]
@@ -3649,5 +3702,217 @@ mod tests {
             }
             _ => panic!("expected BinaryOp(Eq), got {:?}", expr),
         }
+    }
+
+    fn make_metric(name: &str, expr: &str) -> Metric {
+        Metric {
+            name: name.to_string(),
+            description: None,
+            data_type: Some(semstrait_model::DataType::F64),
+            ai_context: None,
+            agg: None,
+            expr: semstrait_model::expr_block::ExprSource::Inline(expr.to_string()),
+            additivity: None,
+            constraints: None,
+            filters: vec![],
+        }
+    }
+
+    fn empty_model_with_metrics(metrics: Vec<Metric>) -> SemanticModel {
+        SemanticModel {
+            name: "test".to_string(),
+            description: None,
+            ai_context: None,
+            labels: vec![],
+            namespace: None,
+            entities: BTreeMap::new(),
+            relationships: vec![],
+            dimensions: vec![],
+            measures: vec![],
+            metrics,
+        }
+    }
+
+    // Pass-through metric: expr is own name (references same-named measure).
+    // build_metric_graph must terminate and not loop forever.
+    #[test]
+    fn test_build_metric_graph_self_referencing_pass_through() {
+        let model = empty_model_with_metrics(vec![
+            make_metric("revenue", "revenue"),
+        ]);
+        let result = build_metric_graph(&model);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let depths = result.unwrap();
+        // Self-referencing metric: no real deps → depth 0 or 1 (stable, not infinite)
+        assert!(depths.get("revenue").copied().unwrap_or(0) <= 1);
+    }
+
+    // Multiple pass-through metrics must all terminate.
+    #[test]
+    fn test_build_metric_graph_multiple_self_referencing() {
+        let model = empty_model_with_metrics(vec![
+            make_metric("revenue", "revenue"),
+            make_metric("cost", "cost"),
+            make_metric("orders", "orders"),
+        ]);
+        let result = build_metric_graph(&model);
+        assert!(result.is_ok());
+    }
+
+    // Metric referencing another metric (depth chain) still works correctly.
+    #[test]
+    fn test_build_metric_graph_depth_chain() {
+        let model = empty_model_with_metrics(vec![
+            make_metric("revenue", "revenue"),                        // pass-through, depth ≤ 1
+            make_metric("profit", "{{ revenue }} - {{ cost }}"),      // depends on revenue metric
+        ]);
+        let result = build_metric_graph(&model);
+        assert!(result.is_ok());
+        let depths = result.unwrap();
+        let profit_depth = depths.get("profit").copied().unwrap_or(0);
+        let revenue_depth = depths.get("revenue").copied().unwrap_or(0);
+        assert!(profit_depth > revenue_depth, "profit must be deeper than revenue");
+    }
+
+    // Actual metric cycle (a → b → a) must be detected.
+    #[test]
+    fn test_build_metric_graph_detects_real_cycle() {
+        let model = empty_model_with_metrics(vec![
+            make_metric("a", "{{ b }}"),
+            make_metric("b", "{{ a }}"),
+        ]);
+        let result = build_metric_graph(&model);
+        assert!(matches!(result, Err(CompileError::MetricCycle { .. })));
+    }
+
+
+    #[test]
+    fn test_collect_leaf_additivity_no_infinite_recursion_on_self_ref() {
+        use crate::compiled::{CompiledMeasure, CompiledMetric, MetricType};
+        use semstrait_core::DataType;
+        use semstrait_core::expr::{Aggregation, Expr};
+        use semstrait_model::AdditivityType;
+
+        let mut measures = IndexMap::new();
+        measures.insert("revenue".to_string(), CompiledMeasure {
+            name: "revenue".to_string(),
+            description: None,
+            data_type: DataType::Number,
+            agg: Aggregation::Sum,
+            expr: Expr::column("revenue"),
+            expr_source: "revenue".to_string(),
+            additivity: Some(AdditivityType::Full),
+            constraints: None,
+            filters: vec![],
+        });
+
+        let mut metrics = IndexMap::new();
+        // Self-referencing pass-through metric (compiled with additivity: None)
+        metrics.insert("pass_through_metric".to_string(), CompiledMetric {
+            name: "pass_through_metric".to_string(),
+            description: None,
+            data_type: DataType::Number,
+            metric_type: MetricType::Simple,
+            agg: None,
+            expr: Expr::entity_ref("pass_through_metric"),
+            expr_source: "pass_through_metric".to_string(),
+            additivity: None,
+            constraints: None,
+            filters: vec![],
+            depth: 0,
+        });
+
+        // Metric that references the self-referencing one — would hang without visited guard
+        let expr = Expr::entity_ref("pass_through_metric");
+        let result = collect_leaf_measure_additivity(&expr, &measures, &metrics);
+        // Should terminate and return empty (no resolvable additivity)
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_collect_leaf_additivity_transitive_cycle() {
+        use crate::compiled::{CompiledMeasure, CompiledMetric, MetricType};
+        use semstrait_core::DataType;
+        use semstrait_core::expr::{Aggregation, Expr};
+        use semstrait_model::AdditivityType;
+
+        let measures = IndexMap::new();
+        let mut metrics = IndexMap::new();
+
+        // A -> B -> A (transitive cycle, both with additivity: None)
+        metrics.insert("metric_a".to_string(), CompiledMetric {
+            name: "metric_a".to_string(),
+            description: None,
+            data_type: DataType::Number,
+            metric_type: MetricType::Simple,
+            agg: None,
+            expr: Expr::entity_ref("metric_b"),
+            expr_source: "metric_b".to_string(),
+            additivity: None,
+            constraints: None,
+            filters: vec![],
+            depth: 0,
+        });
+        metrics.insert("metric_b".to_string(), CompiledMetric {
+            name: "metric_b".to_string(),
+            description: None,
+            data_type: DataType::Number,
+            metric_type: MetricType::Simple,
+            agg: None,
+            expr: Expr::entity_ref("metric_a"),
+            expr_source: "metric_a".to_string(),
+            additivity: None,
+            constraints: None,
+            filters: vec![],
+            depth: 0,
+        });
+
+        let expr = Expr::entity_ref("metric_a");
+        let result = collect_leaf_measure_additivity(&expr, &measures, &metrics);
+        // Should terminate without infinite recursion
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_collect_leaf_additivity_resolves_through_metric_chain() {
+        use crate::compiled::{CompiledMeasure, CompiledMetric, MetricType};
+        use semstrait_core::DataType;
+        use semstrait_core::expr::{Aggregation, Expr};
+        use semstrait_model::AdditivityType;
+
+        let mut measures = IndexMap::new();
+        measures.insert("revenue".to_string(), CompiledMeasure {
+            name: "revenue".to_string(),
+            description: None,
+            data_type: DataType::Number,
+            agg: Aggregation::Sum,
+            expr: Expr::column("revenue"),
+            expr_source: "revenue".to_string(),
+            additivity: Some(AdditivityType::Full),
+            constraints: None,
+            filters: vec![],
+        });
+
+        let mut metrics = IndexMap::new();
+        // metric_a references revenue measure (has additivity)
+        metrics.insert("metric_a".to_string(), CompiledMetric {
+            name: "metric_a".to_string(),
+            description: None,
+            data_type: DataType::Number,
+            metric_type: MetricType::Simple,
+            agg: None,
+            expr: Expr::entity_ref("revenue"),
+            expr_source: "revenue".to_string(),
+            additivity: None,
+            constraints: None,
+            filters: vec![],
+            depth: 0,
+        });
+
+        // metric_b references metric_a (should resolve transitively to Full)
+        let expr = Expr::entity_ref("metric_a");
+        let result = collect_leaf_measure_additivity(&expr, &measures, &metrics);
+        assert_eq!(result.len(), 1);
+        assert!(matches!(result[0], AdditivityType::Full));
     }
 }
