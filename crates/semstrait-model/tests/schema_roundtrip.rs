@@ -9,7 +9,7 @@
 //!    `schemas/catalogs.schema.json` and parses clean once the env
 //!    vars it references are set.
 
-use semstrait_model::{parse, parse_catalogs, validate};
+use semstrait_model::{parse, parse_catalogs};
 
 const REFERENCE_YAML: &str = include_str!("../schemas/reference.yaml");
 const CATALOGS_YAML: &str = include_str!("../schemas/catalogs_reference.yaml");
@@ -48,8 +48,10 @@ fn reference_yaml_validates_against_json_schema() {
 
 #[test]
 fn reference_yaml_parses_and_validates_clean() {
-    let (model, parse_warnings) = match parse(REFERENCE_YAML) {
-        Ok(pair) => pair,
+    // Post-P4: parse returns a builder; `.build()` performs uniform
+    // dedup + validate and emits any warnings.
+    let builder = match parse(REFERENCE_YAML) {
+        Ok(b) => b,
         Err(diags) => {
             for d in &diags {
                 eprintln!("parse: {:?}", d);
@@ -57,23 +59,18 @@ fn reference_yaml_parses_and_validates_clean() {
             panic!("reference.yaml must parse clean");
         }
     };
-    assert!(
-        parse_warnings.is_empty(),
-        "no parse warnings expected, got {:?}",
-        parse_warnings
-    );
 
-    match validate(&model) {
-        Ok(warnings) => {
+    match builder.build() {
+        Ok((_model, warnings)) => {
             assert!(
                 warnings.is_empty(),
-                "no validate warnings expected, got {:?}",
+                "no warnings expected, got {:?}",
                 warnings
             );
         }
         Err(diags) => {
             for d in &diags {
-                eprintln!("validate: {:?}", d);
+                eprintln!("build: {:?}", d);
             }
             panic!("reference.yaml must validate clean");
         }

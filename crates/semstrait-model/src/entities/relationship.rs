@@ -3,29 +3,11 @@
 use crate::entities::ai::AiContext;
 use crate::error::build::ModelBuildErrorKind;
 use crate::error::validate::ValidateErrorKind;
-use crate::expr_block::ExprSource;
+use crate::expr_ast::ExprSource;
 use crate::types::DataKindName;
 use bon::Builder;
 use semstrait_core::diagnostic::Diagnostic;
 use serde::{Deserialize, Serialize};
-
-/// Stable u32 handle allocated at compile time over the root-level
-/// `relationships:` list.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Serialize,
-    Deserialize,
-)]
-#[serde(transparent)]
-#[non_exhaustive]
-pub struct RelationshipId(pub u32);
 
 /// Unified `Relationship` struct shared between the root-level
 /// `relationships:` list and `JoinsetBody.relationships`.
@@ -204,8 +186,9 @@ pub struct JoinKeyExprPair {
 }
 
 impl JoinKeyExprPair {
-    /// Convenience constructor for the common bare-column case.
-    pub fn columns(from: impl Into<String>, to: impl Into<String>) -> Self {
+    /// Convenience constructor for the common bare-Semantic-field case.
+    /// Both sides are wrapped in `ExprSource::Inline(name)`.
+    pub fn fields(from: impl Into<String>, to: impl Into<String>) -> Self {
         Self {
             from: ExprSource::Inline(from.into()),
             to: ExprSource::Inline(to.into()),
@@ -228,15 +211,3 @@ pub enum JoinType {
     Full,
 }
 
-impl JoinType {
-    /// Derive the operational join kind from the relationship's
-    /// `optional` field.
-    pub fn from_optional(opt: Optional) -> Self {
-        match opt {
-            Optional::None => Self::Inner,
-            Optional::Left => Self::Left,
-            Optional::Right => Self::Right,
-            Optional::Both => Self::Full,
-        }
-    }
-}

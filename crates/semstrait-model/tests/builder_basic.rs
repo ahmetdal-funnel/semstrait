@@ -8,8 +8,9 @@
 use semstrait_core::{DataType, Grain};
 use semstrait_model::{
     AdditivityType, AggregationType, ComplexExtras, Dataset, Dimension, DimensionEntry,
-    DimensionType, Grainset, JoinKeyExprPair, KeyDecl, Keys, LeafExtras, Measure, MeasureEntry,
-    NestedDataset, Relationship, SemanticInterface, SemanticMapping, SemanticModel, TemporalShape,
+    DimensionType, Grainset, JoinKeyExprPair, KeyDecl, Keys, LeafExtras, LiteralValue, Measure,
+    MeasureEntry, NestedDataset, Relationship, SemanticInterface, SemanticMapping,
+    SemanticMappingValue, SemanticModel, TemporalShape,
 };
 
 #[test]
@@ -44,7 +45,7 @@ fn builds_minimal_model_with_dataset_and_grainset() {
         .measures(vec![MeasureEntry::r#ref("revenue")])
         .keys(
             Keys::builder()
-                .primary(KeyDecl::builder().columns(vec!["order_id".into()]).build())
+                .primary(KeyDecl::builder().fields(vec!["order_id".into()]).build())
                 .build(),
         )
         .build();
@@ -70,7 +71,7 @@ fn builds_minimal_model_with_dataset_and_grainset() {
         .name("orders_to_events")
         .from("orders")
         .to("order_events")
-        .keys(vec![JoinKeyExprPair::columns("order_id", "order_id")])
+        .keys(vec![JoinKeyExprPair::fields("order_id", "order_id")])
         .cardinality(semstrait_model::Cardinality::ManyToOne)
         .build()
         .expect("relationship build");
@@ -101,7 +102,7 @@ fn relationship_symmetric_cardinality_requires_optional_and_cross_filter() {
         .name("one_to_one_missing")
         .from("a")
         .to("b")
-        .keys(vec![JoinKeyExprPair::columns("k", "k")])
+        .keys(vec![JoinKeyExprPair::fields("k", "k")])
         .cardinality(semstrait_model::Cardinality::OneToOne)
         .build();
 
@@ -140,5 +141,44 @@ fn loader_no_source_returns_no_source_diagnostic() {
     assert!(matches!(
         diags[0].kind,
         semstrait_model::ModelBuildErrorKind::NoSource
+    ));
+}
+
+#[test]
+fn semantic_mapping_with_semantic_builds_explicit_map() {
+    // Two `.with_semantic(...)` calls — each carrying a different
+    // `SemanticMappingValue` variant — must produce an `Explicit` map
+    // with both entries, preserving insertion order (`IndexMap` /
+    // `32 §7`).
+    let mapping = SemanticMapping::builder()
+        .with_semantic(
+            "revenue",
+            SemanticMappingValue::Column("amount_cents".into()),
+        )
+        .with_semantic(
+            "currency",
+            SemanticMappingValue::Literal(LiteralValue::String("USD".into())),
+        )
+        .build();
+
+    let SemanticMapping::Explicit(entries) = mapping else {
+        panic!("expected Explicit mapping, got {mapping:?}");
+    };
+
+    assert_eq!(entries.len(), 2);
+
+    let mut iter = entries.iter();
+    let (name_a, value_a) = iter.next().expect("first entry");
+    assert_eq!(name_a.as_str(), "revenue");
+    assert!(matches!(
+        value_a,
+        SemanticMappingValue::Column(col) if col == "amount_cents"
+    ));
+
+    let (name_b, value_b) = iter.next().expect("second entry");
+    assert_eq!(name_b.as_str(), "currency");
+    assert!(matches!(
+        value_b,
+        SemanticMappingValue::Literal(LiteralValue::String(s)) if s == "USD"
     ));
 }

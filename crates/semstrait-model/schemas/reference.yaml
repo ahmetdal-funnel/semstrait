@@ -131,9 +131,17 @@ semantic_model:
         semantic_mapping:
           revenue: amount_cents
           country: ship_country
+          # Tagged-form literal — the v1 baseline.
           currency:
             literal:
               string: USD
+          # Bare-scalar literal — author shortcut per `18 §10.2`. The
+          # YAML scalar type drives the resulting `LiteralValue` variant
+          # (string / integer / float / bool); decimal / date / timestamp
+          # always require the tagged form because YAML cannot
+          # disambiguate them from strings.
+          tenant:
+            literal: acme
         temporal:
           events:
             event_time: order_ts
@@ -166,13 +174,13 @@ semantic_model:
           expr: "is_paid = true"
       keys:
         primary:
-          columns: [order_id]
+          fields: [order_id]
         unique:
-          - columns: [external_order_ref]
+          - fields: [external_order_ref]
         foreign:
-          - columns: [customer_id]
+          - fields: [customer_id]
             references: customers
-            target_columns: [id]
+            target_fields: [id]
 
     # Companion Dataset (referenced by the cross-public relationship).
     # Demonstrates Snapshot temporal shape on a leaf.
@@ -188,7 +196,7 @@ semantic_model:
         - ref: country
       keys:
         primary:
-          columns: [id]
+          fields: [id]
 
     # Demonstrates Timeseries temporal shape.
     - name: web_events
@@ -204,7 +212,7 @@ semantic_model:
         - ref: order_ts
       keys:
         primary:
-          columns: [event_id]
+          fields: [event_id]
 
     # Demonstrates SCD Type 1 temporal shape.
     - name: customer_addresses_t1
@@ -221,7 +229,7 @@ semantic_model:
         - ref: country
       keys:
         primary:
-          columns: [customer_id]
+          fields: [customer_id]
 
     # Demonstrates SCD Type 2 temporal shape.
     - name: customer_addresses_t2
@@ -238,7 +246,7 @@ semantic_model:
         - ref: country
       keys:
         primary:
-          columns: [customer_id]
+          fields: [customer_id]
 
   grainsets:
     # Public Grainset — composes nested Datasets per `26 §1`. R3 in

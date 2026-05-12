@@ -182,6 +182,23 @@ impl<K: Diagnose> Diagnostic<K> {
     pub fn is_warning(&self) -> bool {
         self.severity == Severity::Warning
     }
+
+    /// Map the diagnostic kind to another [`Diagnose`] kind, preserving
+    /// severity, location, and notes. Centralises the per-stage "lift
+    /// my kind into the fused error type" pattern (`30 §5.6`): callers
+    /// pass the destination enum's variant constructor as `f`.
+    pub fn map_kind<K2, F>(self, f: F) -> Diagnostic<K2>
+    where
+        K2: Diagnose,
+        F: FnOnce(K) -> K2,
+    {
+        Diagnostic {
+            kind: f(self.kind),
+            severity: self.severity,
+            location: self.location,
+            notes: self.notes,
+        }
+    }
 }
 
 impl<K: Diagnose + fmt::Debug> fmt::Display for Diagnostic<K> {
@@ -286,5 +303,40 @@ mod tests {
         assert_eq!(loc.source.as_str(), "model.yaml");
         assert_eq!(loc.path.as_deref(), Some("/datasets/orders"));
         assert_eq!(loc.span, Some(Span::new(10, 20)));
+    }
+
+    #[derive(Debug)]
+    enum FusedKind {
+        Wrapped(TestKind),
+    }
+
+    impl Diagnose for FusedKind {
+        fn message(&self) -> String {
+            match self {
+                Self::Wrapped(k) => k.message(),
+            }
+        }
+        fn default_severity(&self) -> Severity {
+            match self {
+                Self::Wrapped(k) => k.default_severity(),
+            }
+        }
+    }
+
+    #[test]
+    fn map_kind_preserves_envelope_metadata() {
+        let d = Diagnostic::new(TestKind::Warn)
+            .at(Location::new("x.yaml").with_path("/a"))
+            .with_note("hint");
+
+        let fused = d.map_kind(FusedKind::Wrapped);
+
+        assert!(matches!(fused.kind, FusedKind::Wrapped(TestKind::Warn)));
+        assert!(fused.is_warning());
+        assert_eq!(
+            fused.location.as_ref().map(|l| l.source.as_str()),
+            Some("x.yaml"),
+        );
+        assert_eq!(fused.notes, vec!["hint".to_string()]);
     }
 }

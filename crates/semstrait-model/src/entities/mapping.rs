@@ -13,7 +13,6 @@
 //!   Dimension's `type: { metadata: ... }` block (`18 §10`) and has no
 //!   YAML representation under `semantic_mapping:`.
 
-use crate::entities::physical_expr::PhysicalExpr;
 use crate::types::SemanticsName;
 use crate::yaml::tagged::single_key_map;
 use indexmap::IndexMap;
@@ -85,9 +84,22 @@ impl SemanticMappingBuilder {
     }
 
     /// 1:1 with [`SemanticMappingValue::Expr`].
-    pub fn expr(mut self, semantic: impl Into<SemanticsName>, expr: PhysicalExpr) -> Self {
+    pub fn expr(mut self, semantic: impl Into<SemanticsName>, expr: Value) -> Self {
         self.entries
             .insert(semantic.into(), SemanticMappingValue::Expr(expr));
+        self
+    }
+
+    /// Adds an explicit semantic→source mapping entry without naming a
+    /// specific `SemanticMappingValue` variant up front. Transitions the
+    /// builder to `Explicit` form on first call. Last write wins for a
+    /// given `name` within one builder.
+    pub fn with_semantic(
+        mut self,
+        name: impl Into<SemanticsName>,
+        value: SemanticMappingValue,
+    ) -> Self {
+        self.entries.insert(name.into(), value);
         self
     }
 
@@ -142,9 +154,9 @@ pub enum SemanticMappingValue {
     Column(String),
     /// A literal broadcast over every row.
     Literal(LiteralValue),
-    /// A `PhysicalExpr` tree — anything from a simple cast to a
-    /// multi-column compute.
-    Expr(PhysicalExpr),
+    /// Opaque YAML pass-through pending the `19 §3` / `14 §2`
+    /// reconciliation landing.
+    Expr(Value),
     /// Compile-synthesized metadata-extraction recipe. Never authored
     /// under `semantic_mapping:` (per `18 §10.4`).
     Metadata(MetadataDimensionRecipe),
@@ -164,9 +176,7 @@ impl<'de> Deserialize<'de> for SemanticMappingValue {
                         serde_yaml::from_value(lit.clone()).map_err(serde::de::Error::custom)?;
                     Ok(SemanticMappingValue::Literal(v))
                 } else if let Some(expr_val) = map.get(Value::String("expr".into())) {
-                    let pe: PhysicalExpr = serde_yaml::from_value(expr_val.clone())
-                        .map_err(serde::de::Error::custom)?;
-                    Ok(SemanticMappingValue::Expr(pe))
+                    Ok(SemanticMappingValue::Expr(expr_val.clone()))
                 } else {
                     Err(serde::de::Error::custom(
                         "semantic_mapping value: expected bare column string or `{literal: ...}` / `{expr: ...}` map"
@@ -211,12 +221,21 @@ impl Serialize for SemanticMappingValue {
 /// carries the wire-typed kind tag the binder validates against the
 /// Semantic's declared `data_type:` (per `18 §10.2`).
 ///
-/// YAML form is the externally-tagged single-key map for the body
-/// variants (`{int: 5}`, `{string: "USD"}`, …) and the bare string
-/// `null` for the body-less variant. Hand-rolled `Deserialize` per
-/// [`crate::yaml::tagged`].
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// Author surface accepts both bare YAML scalars (string / integer /
+/// float / bool — type derived from the YAML scalar shape) and the
+/// externally-tagged single-key map form (`{int: 5}`, `{string: "USD"}`,
+/// …). `Decimal` / `Date` / `Timestamp` must always use the tagged form
+/// because YAML scalars cannot disambiguate them from strings.
+/// Serialisation always emits the single-key map form (e.g.
+/// `{string: USD}`, `{int: 5}`) for round-trip stability — the wire
+/// shape `Serialize` produces is the same shape `Deserialize` accepts
+/// in its tagged path.
+///
+/// `null` accepts both bare YAML `null` and the bare string `"null"`;
+/// `Serialize` emits the bare YAML `null` form.
+///
+/// Hand-rolled `Serialize` / `Deserialize` per [`crate::yaml::tagged`].
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum LiteralValue {
     Null,
@@ -232,6 +251,34 @@ pub enum LiteralValue {
     Timestamp(String),
 }
 
+impl Serialize for LiteralValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeMap;
+        fn emit<S, T>(serializer: S, tag: &str, body: &T) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+            T: ?Sized + Serialize,
+        {
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_entry(tag, body)?;
+            map.end()
+        }
+        match self {
+            Self::Null => serializer.serialize_unit(),
+            Self::Bool(v) => emit(serializer, "bool", v),
+            Self::Int(v) => emit(serializer, "int", v),
+            Self::Float(v) => emit(serializer, "float", v),
+            Self::Decimal(v) => emit(serializer, "decimal", v),
+            Self::String(v) => emit(serializer, "string", v),
+            Self::Date(v) => emit(serializer, "date", v),
+            Self::Timestamp(v) => emit(serializer, "timestamp", v),
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for LiteralValue {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -239,8 +286,31 @@ impl<'de> Deserialize<'de> for LiteralValue {
     {
         let value = Value::deserialize(deserializer)?;
         match value {
-            Value::String(ref s) if s == "null" => Ok(Self::Null),
             Value::Null => Ok(Self::Null),
+            // Bare-scalar shortcuts. The `"null"` sentinel keeps its
+            // body-less Null meaning; every other bare string maps to
+            // `String`. Decimal / Date / Timestamp can never reach these
+            // arms because YAML cannot distinguish them from `String` —
+            // authors must use the tagged form for those.
+            Value::String(s) => {
+                if s == "null" {
+                    Ok(Self::Null)
+                } else {
+                    Ok(Self::String(s))
+                }
+            }
+            Value::Bool(b) => Ok(Self::Bool(b)),
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Ok(Self::Int(i))
+                } else if let Some(f) = n.as_f64() {
+                    Ok(Self::Float(f))
+                } else {
+                    Err(serde::de::Error::custom(format!(
+                        "LiteralValue: numeric scalar {n:?} fits neither i64 nor f64"
+                    )))
+                }
+            }
             Value::Mapping(_) => {
                 let (key, body) = single_key_map::<D::Error>(value, "LiteralValue")?;
                 match key.as_str() {
@@ -288,7 +358,7 @@ impl<'de> Deserialize<'de> for LiteralValue {
                 }
             }
             other => Err(serde::de::Error::custom(format!(
-                "LiteralValue: expected bare `null` or single-key tagged map, got {other:?}"
+                "LiteralValue: expected bare scalar, `null`, or single-key tagged map, got {other:?}"
             ))),
         }
     }

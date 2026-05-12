@@ -8,7 +8,6 @@ pub mod keys;
 pub mod mapping;
 pub mod measure;
 pub mod metric;
-pub mod physical_expr;
 pub mod relationship;
 pub mod semantic_interface;
 pub mod temporal;
@@ -30,10 +29,8 @@ pub use measure::{
     SemiAdditivityStrategy,
 };
 pub use metric::{Metric, MetricEntry, MetricRef};
-pub use physical_expr::PhysicalExpr;
 pub use relationship::{
     Cardinality, CrossFilter, Integrity, JoinKeyExprPair, JoinType, Optional, Relationship,
-    RelationshipId,
 };
 pub use semantic_interface::SemanticInterface;
 pub use temporal::{

@@ -3,7 +3,7 @@
 
 use crate::entities::ai::AiContext;
 use crate::entities::filter::AggregationFilter;
-use crate::expr_block::ExprSource;
+use crate::expr_ast::ExprSource;
 use crate::types::SemanticsName;
 use crate::yaml::tagged::single_key_map;
 use bon::Builder;

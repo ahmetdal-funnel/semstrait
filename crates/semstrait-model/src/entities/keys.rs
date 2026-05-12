@@ -35,7 +35,7 @@ pub struct Keys {
 pub struct KeyDecl {
     /// Bare Semantic names — no physical column references at the model
     /// surface. Resolution through `semantic_mapping` happens at compile.
-    pub columns: Vec<SemanticsName>,
+    pub fields: Vec<SemanticsName>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[builder(into)]
@@ -47,12 +47,12 @@ pub struct KeyDecl {
 #[non_exhaustive]
 #[builder(start_fn = builder, finish_fn = build)]
 pub struct ForeignKeyDecl {
-    pub columns: Vec<SemanticsName>,
+    pub fields: Vec<SemanticsName>,
     /// The target DataKind whose primary / unique key is referenced.
     #[builder(into)]
     pub references: DataKindName,
-    /// The target DataKind's key columns — bare Semantic names.
-    pub target_columns: Vec<SemanticsName>,
+    /// The target DataKind's key Semantic names.
+    pub target_fields: Vec<SemanticsName>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[builder(into)]

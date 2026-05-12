@@ -1,16 +1,10 @@
 //! `ValidateErrorKind` — `32 §9.5` + entity-level SR-E-* per `18 §11`.
 
-use semstrait_core::diagnostic::{Diagnose, Severity};
+use semstrait_core::diagnostic::{Diagnose, Location, Severity};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ValidateErrorKind {
-    // — Required-extras presence (SR-6) —
-    MissingRequiredExtras {
-        data_kind: String,
-        missing: String,
-    },
-
     // — Composition shape (SR-10) —
     ComplexDataKindInsufficientChildren {
         parent: String,
@@ -20,13 +14,18 @@ pub enum ValidateErrorKind {
     // — Empty model —
     EmptyModel,
 
-    // — Entity-level invariants (SR-E-*) —
-    /// SR-E-1
-    InvalidReferenceOverride {
+    // — Cross-source / single-file dup detection (SR-3, D-10) —
+    DuplicateDataKindName {
+        name: String,
+        occurrences: Vec<Location>,
+    },
+    DuplicateSharedSemanticsName {
         carrier: String,
         name: String,
-        offending_field: String,
+        occurrences: Vec<Location>,
     },
+
+    // — Entity-level invariants (SR-E-*) —
     /// SR-E-2
     SemanticsRefMissingExpr {
         carrier: String,
@@ -57,15 +56,10 @@ pub enum ValidateErrorKind {
         child: String,
     },
     /// SR-E-11
-    FilterWrongKind {
+    WrongFilterError {
         name: String,
         expected: String,
         actual: String,
-    },
-    /// SR-E-12
-    SemanticsDataTypeMismatch {
-        carrier: String,
-        name: String,
     },
     /// SR-E-13
     RelationshipSymmetricCardinalityIncomplete {
@@ -88,10 +82,6 @@ impl Diagnose for ValidateErrorKind {
     fn message(&self) -> String {
         use ValidateErrorKind::*;
         match self {
-            MissingRequiredExtras { data_kind, missing } => format!(
-                "data kind `{}` is missing required extras field `{}`",
-                data_kind, missing
-            ),
             ComplexDataKindInsufficientChildren {
                 parent,
                 child_count,
@@ -100,13 +90,20 @@ impl Diagnose for ValidateErrorKind {
                 parent, child_count
             ),
             EmptyModel => "model has no data kinds (empty model)".to_string(),
-            InvalidReferenceOverride {
+            DuplicateDataKindName { name, occurrences } => format!(
+                "duplicate data-kind name `{}` ({} occurrences)",
+                name,
+                occurrences.len()
+            ),
+            DuplicateSharedSemanticsName {
                 carrier,
                 name,
-                offending_field,
+                occurrences,
             } => format!(
-                "ref site for {} `{}` overrides immutable field `{}` (SR-E-1)",
-                carrier, name, offending_field
+                "duplicate `{}` entry `{}` ({} occurrences)",
+                carrier,
+                name,
+                occurrences.len()
             ),
             SemanticsRefMissingExpr { carrier, name } => format!(
                 "ref site for {} `{}` and root-pool entry both lack `expr:` (SR-E-2)",
@@ -136,17 +133,13 @@ impl Diagnose for ValidateErrorKind {
                 "grainset child `{}.{}` must author its own `temporal.grain:` (SR-E-8)",
                 grainset, child
             ),
-            FilterWrongKind {
+            WrongFilterError {
                 name,
                 expected,
                 actual,
             } => format!(
                 "filter `{}`: expected {}, got {} (SR-E-11)",
                 name, expected, actual
-            ),
-            SemanticsDataTypeMismatch { carrier, name } => format!(
-                "{} `{}`: data_type mismatch between root-pool entry and ref site (SR-E-12)",
-                carrier, name
             ),
             RelationshipSymmetricCardinalityIncomplete {
                 relationship,

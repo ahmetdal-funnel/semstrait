@@ -7,6 +7,7 @@
 //! [`crate::SemanticModel`]) carry hand-rolled builders here.
 
 pub mod data_kind;
+mod dedup;
 pub mod model;
 
 pub use data_kind::{

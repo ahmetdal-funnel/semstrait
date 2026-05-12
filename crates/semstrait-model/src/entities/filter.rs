@@ -4,7 +4,7 @@
 //! referencing between the two is rejected at validate (SR-E-11).
 
 use crate::entities::ai::AiContext;
-use crate::expr_block::ExprSource;
+use crate::expr_ast::ExprSource;
 use crate::types::FilterName;
 use bon::Builder;
 use serde::{Deserialize, Serialize};

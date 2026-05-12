@@ -72,9 +72,9 @@ use semstrait_core::{DataType, Grain};
 use semstrait_model::{
     AdditivityType, AggregationType, Cardinality, ComplexExtras,
     Dataset, Dimension, DimensionEntry, DimensionType, Grainset,
-    JoinKeyExprPair, KeyDecl, Keys, LeafExtras, Measure, MeasureEntry,
-    NestedDataset, Relationship, SemanticInterface, SemanticMapping,
-    SemanticModel, TemporalShape,
+    JoinKeyExprPair, KeyDecl, Keys, LeafExtras, LiteralValue, Measure,
+    MeasureEntry, NestedDataset, Relationship, SemanticInterface,
+    SemanticMapping, SemanticMappingValue, SemanticModel, TemporalShape,
 };
 
 // ── Shared root-pool entries ────────────────────────────────────
@@ -94,6 +94,10 @@ let extras = LeafExtras::builder()
     .semantic_mapping(
         SemanticMapping::builder()
             .column("revenue", "amount_cents")
+            .with_semantic(
+                "currency",
+                SemanticMappingValue::Literal(LiteralValue::String("USD".into())),
+            )
             .build(),
     )
     .temporal(TemporalShape::events("order_ts", Some(Grain::Minute)))
@@ -104,7 +108,7 @@ let interface = SemanticInterface::builder()
     .measures(vec![MeasureEntry::r#ref("revenue")])
     .keys(
         Keys::builder()
-            .primary(KeyDecl::builder().columns(vec!["order_id".into()]).build())
+            .primary(KeyDecl::builder().fields(vec!["order_id".into()]).build())
             .build(),
     )
     .build();
@@ -132,7 +136,7 @@ let orders_to_events = Relationship::builder()
     .name("orders_to_events")
     .from("orders")
     .to("order_events")
-    .keys(vec![JoinKeyExprPair::columns("order_id", "order_id")])
+    .keys(vec![JoinKeyExprPair::fields("order_id", "order_id")])
     .cardinality(Cardinality::ManyToOne)
     .build()?;
 
@@ -206,7 +210,11 @@ Per-DataKind physical configuration. Two flavors per `32 §4`:
 
 Storage / mapping helpers: [`StorageConfig`], [`StorageFormat`],
 [`PartitionDef`], [`CatalogRef`], [`SemanticMapping`],
-[`SemanticMappingValue`], [`LiteralValue`], [`PhysicalExpr`].
+[`SemanticMappingValue`], [`LiteralValue`]. Declarative expressions
+inside `SemanticMappingValue::Expr` are carried as opaque
+`serde_yaml::Value` pending the `19 §3` / `14 §2` reconciliation
+(`ExprSource::Declarative`); the typed AST is preserved (hidden) at
+[`expr_ast`](src/expr_ast.rs).
 
 ### Semantic interface
 
@@ -250,20 +258,21 @@ to variants of [`ParseErrorKind`] and [`ValidateErrorKind`]:
 
 ### Root-shape (`SR-*`)
 
-| ID | Stage    | Variant                                         |
-|----|----------|-------------------------------------------------|
-| SR-1, SR-2 | parse    | `MalformedRoot`, `UnknownTopLevelBlock`         |
-| SR-3       | parse    | `DuplicateDataKindName`, `DuplicateSharedSemanticsName` |
-| SR-5 (R2)  | parse    | `IllegalSelfNesting`                            |
-| SR-5 (R3)  | parse    | `NestedDataKindCarriesInterface`                |
-| SR-6       | validate | `MissingRequiredExtras`                         |
-| SR-10      | validate | `ComplexDataKindInsufficientChildren`           |
+| ID | Stage    | Variant                                                  |
+|----|----------|----------------------------------------------------------|
+| SR-1, SR-2, SR-4, SR-5, SR-7 | parse    | `UnknownField` (type-enforced via struct shape + `deny_unknown_fields`) |
+| SR-3       | validate | `DuplicateDataKindName`, `DuplicateSharedSemanticsName` (uniform `.build()` dedup, D-10) |
+| SR-8       | parse    | `InvalidIdentifier`                                      |
+| SR-9       | parse    | `UnsetEnvVar`                                            |
+| SR-10      | validate | `ComplexDataKindInsufficientChildren`                    |
+
+SR-6 retired — per-variant required-extras rules live in `21 §7` / `22` / `23` / `24` (each chapter's own `VALID_E_2[1-4]xx` band).
 
 ### Entity-level (`SR-E-*`)
 
 | ID | Stage    | Variant                                                  |
 |----|----------|----------------------------------------------------------|
-| SR-E-1     | validate | `InvalidReferenceOverride`                       |
+| SR-E-1     | validate | (type-enforced; `Ref` structs lack immutable fields) |
 | SR-E-2     | validate | `SemanticsRefMissingExpr`                        |
 | SR-E-3     | validate | `OrphanSharedSemantics`                          |
 | SR-E-4     | parse    | `RelationshipMissingCardinality`                 |
@@ -273,8 +282,8 @@ to variants of [`ParseErrorKind`] and [`ValidateErrorKind`]:
 | SR-E-8     | validate | `GrainsetChildMissingGrain`                      |
 | SR-E-9     | parse    | `MeasureMissingAgg`                              |
 | SR-E-10    | parse    | `SemanticsMissingDataType`                       |
-| SR-E-11    | validate | `FilterWrongKind`                                |
-| SR-E-12    | validate | `SemanticsDataTypeMismatch`                      |
+| SR-E-11    | validate | `WrongFilterError`                               |
+| SR-E-12    | validate | (type-enforced; `Ref` structs lack `data_type`)  |
 | SR-E-13    | validate | `RelationshipSymmetricCardinalityIncomplete`     |
 | SR-E-14    | validate | `RelationshipManyToManyCrossFilterDirectional`   |
 
@@ -361,9 +370,14 @@ fused kind).
 
 ## Dependencies
 
-- `semstrait-core` — diagnostic primitives, `DataType`, `Grain`,
-  `ExprSource`/`ExprBlock` carrier (`31 §6`).
+- `semstrait-core` — diagnostic primitives, `DataType`, `Grain` (`31 §6`).
 - `serde`, `serde_yaml` — YAML decode.
 - `bon` — typestate builders (`32 §9.7`).
 - `indexmap` — author-order preservation in YAML intermediates.
 - `thiserror` / `tracing` — internal plumbing.
+
+`ExprSource` lives in `semstrait-model` for now. The `Inline(String)`
+form covers the v1 author surface. The `Declarative(serde_yaml::Value)`
+form is opaque pass-through pending `19 §3` / `14 §2` reconciliation;
+the typed AST is preserved (hidden) at
+`crates/semstrait-model/src/expr_ast.rs`.

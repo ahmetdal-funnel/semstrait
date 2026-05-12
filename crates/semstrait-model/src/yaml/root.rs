@@ -2,24 +2,24 @@
 //!
 //! Authors write per-variant data kinds and shared-pool entries as
 //! YAML **arrays** (`32 §1`). The canonical in-memory model uses
-//! `BTreeMap<String, _>` per `32 §2`, so this intermediate form lives
-//! between the YAML decoder and the canonical types: it carries
-//! `Vec<_>` fields and converts to the canonical form via
-//! [`YamlRoot::lower`], emitting duplicate-name diagnostics in the
-//! process.
+//! `BTreeMap<String, _>` per `32 §2`; the conversion happens at
+//! [`crate::builder::SemanticModelBuilder::build`] time so cross-file
+//! merges accumulate before the SR-3 / SR-E-3 dup check fires
+//! (`32 §9.7.5`, D-10). [`YamlRoot::lower`] is therefore a pure
+//! append: each entry is pushed onto the builder's Vec storage with
+//! its YAML-pointer-bearing [`Location`].
 
+use crate::builder::SemanticModelBuilder;
 use crate::data_kind::{Dataset, Grainset, Joinset, Unionset};
 use crate::entities::{AiContext, Dimension, Measure, Metric, Relationship};
-use crate::error::parse::ParseErrorKind;
 use crate::model::SemanticModel;
-use semstrait_core::diagnostic::{Diagnostic, Diagnostics, Location};
+use semstrait_core::diagnostic::Location;
 use serde::Deserialize;
-use std::collections::BTreeMap;
 
 /// Outer wrapper — the YAML must have exactly one `semantic_model:`
 /// root key (SR-1). `deny_unknown_fields` rejects every other top-
-/// level key with [`ParseErrorKind::UnknownTopLevelBlock`] surfaced by
-/// the caller.
+/// level key, which the caller surfaces as
+/// [`crate::error::parse::ParseErrorKind::UnknownField`].
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct YamlRoot {
@@ -66,11 +66,21 @@ pub(crate) struct YamlSemanticModel {
 }
 
 impl YamlRoot {
-    /// Convert to the canonical [`SemanticModel`]. Duplicate names
-    /// across the four data-kind plurals raise SR-3
-    /// (`DuplicateDataKindName`); duplicates inside a shared pool
-    /// raise the pool's specific kind.
-    pub(crate) fn lower(self, source: &str) -> (SemanticModel, Diagnostics<ParseErrorKind>) {
+    /// Append this root into a fresh [`SemanticModelBuilder`].
+    pub(crate) fn lower(self, source: &str) -> SemanticModelBuilder {
+        self.lower_into(source, SemanticModel::builder())
+    }
+
+    /// Append this root's contents into `builder`. Position-significant
+    /// fields (`relationships:`) push to the back. Singleton fields
+    /// (`name:`, `description:`, `ai_context:`) follow first-wins per
+    /// the legacy `merge_models` semantics — the builder's custom
+    /// setters guarantee that.
+    pub(crate) fn lower_into(
+        self,
+        source: &str,
+        mut builder: SemanticModelBuilder,
+    ) -> SemanticModelBuilder {
         let YamlRoot {
             semantic_model:
                 YamlSemanticModel {
@@ -89,143 +99,51 @@ impl YamlRoot {
                 },
         } = self;
 
-        let mut diags: Diagnostics<ParseErrorKind> = Vec::new();
-
-        // ── Cross-variant (SR-3) duplicate detection ──
-        // Tracks every name + the variant it lives under so a
-        // grainset/dataset name collision raises one diagnostic per
-        // collision, not per duplicate-on-the-same-side.
-        let mut data_kind_index: BTreeMap<String, Vec<(&'static str, Location)>> = BTreeMap::new();
-
-        let datasets =
-            collect_data_kinds(datasets, "datasets", source, &mut data_kind_index, &mut diags);
-        let grainsets = collect_data_kinds(
-            grainsets,
-            "grainsets",
-            source,
-            &mut data_kind_index,
-            &mut diags,
-        );
-        let unionsets = collect_data_kinds(
-            unionsets,
-            "unionsets",
-            source,
-            &mut data_kind_index,
-            &mut diags,
-        );
-        let joinsets = collect_data_kinds(
-            joinsets,
-            "joinsets",
-            source,
-            &mut data_kind_index,
-            &mut diags,
-        );
-
-        // Emit one diagnostic per cross-variant collision.
-        for (name, occurrences) in data_kind_index {
-            if occurrences.len() > 1 {
-                let occurrence_locations: Vec<Location> =
-                    occurrences.iter().map(|(_, loc)| loc.clone()).collect();
-                diags.push(Diagnostic::new(ParseErrorKind::DuplicateDataKindName {
-                    name,
-                    occurrences: occurrence_locations,
-                }));
-            }
+        builder = builder.name(name);
+        if let Some(d) = description {
+            builder = builder.description(d);
+        }
+        if let Some(a) = ai_context {
+            builder = builder.ai_context(a);
+        }
+        for label in labels {
+            builder = builder.label(label);
         }
 
-        let dimensions = collect_pool(dimensions, |d| d.name.as_str().to_string(), "dimensions", source, &mut diags);
-        let measures = collect_pool(measures, |m| m.name.as_str().to_string(), "measures", source, &mut diags);
-        let metrics = collect_pool(metrics, |m| m.name.as_str().to_string(), "metrics", source, &mut diags);
-
-        let model = SemanticModel {
-            name,
-            description,
-            ai_context,
-            labels,
-            datasets,
-            grainsets,
-            unionsets,
-            joinsets,
-            dimensions,
-            measures,
-            metrics,
-            relationships,
-        };
-
-        (model, diags)
-    }
-}
-
-trait HasName {
-    fn name(&self) -> &str;
-}
-
-impl HasName for Dataset {
-    fn name(&self) -> &str {
-        &self.body.base.name
-    }
-}
-impl HasName for Grainset {
-    fn name(&self) -> &str {
-        &self.body.base.name
-    }
-}
-impl HasName for Unionset {
-    fn name(&self) -> &str {
-        &self.body.base.name
-    }
-}
-impl HasName for Joinset {
-    fn name(&self) -> &str {
-        &self.body.base.name
-    }
-}
-
-fn collect_data_kinds<T: HasName>(
-    items: Vec<T>,
-    plural_tag: &'static str,
-    source: &str,
-    cross_index: &mut BTreeMap<String, Vec<(&'static str, Location)>>,
-    _diags: &mut Diagnostics<ParseErrorKind>,
-) -> BTreeMap<String, T> {
-    let mut out = BTreeMap::new();
-    for (i, item) in items.into_iter().enumerate() {
-        let name = item.name().to_string();
-        let loc = Location::new(source.to_string()).with_path(format!("/{}/{}", plural_tag, i));
-        cross_index.entry(name.clone()).or_default().push((plural_tag, loc));
-        out.insert(name, item);
-    }
-    out
-}
-
-fn collect_pool<T, F>(
-    items: Vec<T>,
-    name_of: F,
-    carrier: &'static str,
-    source: &str,
-    diags: &mut Diagnostics<ParseErrorKind>,
-) -> BTreeMap<String, T>
-where
-    F: Fn(&T) -> String,
-{
-    let mut out: BTreeMap<String, T> = BTreeMap::new();
-    let mut occurrences: BTreeMap<String, Vec<Location>> = BTreeMap::new();
-    for (i, item) in items.into_iter().enumerate() {
-        let name = name_of(&item);
-        let loc = Location::new(source.to_string()).with_path(format!("/{}/{}", carrier, i));
-        occurrences.entry(name.clone()).or_default().push(loc);
-        out.insert(name, item);
-    }
-    for (name, locs) in occurrences {
-        if locs.len() > 1 {
-            diags.push(Diagnostic::new(
-                ParseErrorKind::DuplicateSharedSemanticsName {
-                    carrier: carrier.to_string(),
-                    name,
-                    occurrences: locs,
-                },
-            ));
+        for (i, d) in datasets.into_iter().enumerate() {
+            let loc = Location::new(source).with_path(format!("/datasets/{}", i));
+            builder = builder.dataset_at(d, loc);
         }
+        for (i, g) in grainsets.into_iter().enumerate() {
+            let loc = Location::new(source).with_path(format!("/grainsets/{}", i));
+            builder = builder.grainset_at(g, loc);
+        }
+        for (i, u) in unionsets.into_iter().enumerate() {
+            let loc = Location::new(source).with_path(format!("/unionsets/{}", i));
+            builder = builder.unionset_at(u, loc);
+        }
+        for (i, j) in joinsets.into_iter().enumerate() {
+            let loc = Location::new(source).with_path(format!("/joinsets/{}", i));
+            builder = builder.joinset_at(j, loc);
+        }
+
+        for (i, d) in dimensions.into_iter().enumerate() {
+            let loc = Location::new(source).with_path(format!("/dimensions/{}", i));
+            builder = builder.dimension_at(d, loc);
+        }
+        for (i, m) in measures.into_iter().enumerate() {
+            let loc = Location::new(source).with_path(format!("/measures/{}", i));
+            builder = builder.measure_at(m, loc);
+        }
+        for (i, m) in metrics.into_iter().enumerate() {
+            let loc = Location::new(source).with_path(format!("/metrics/{}", i));
+            builder = builder.metric_at(m, loc);
+        }
+
+        for r in relationships {
+            builder = builder.relationship(r);
+        }
+
+        builder
     }
-    out
 }

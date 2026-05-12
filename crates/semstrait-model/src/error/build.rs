@@ -22,14 +22,6 @@ pub enum ModelBuildErrorKind {
     Parse(ParseErrorKind),
     CatalogsParse(CatalogsParseErrorKind),
     Validate(ValidateErrorKind),
-
-    /// Per-field builder-internal error (e.g. invalid newtype payload
-    /// rejected at `.build()`).
-    BuilderField {
-        struct_name: &'static str,
-        field: &'static str,
-        message: String,
-    },
 }
 
 impl From<ParseErrorKind> for ModelBuildErrorKind {
@@ -62,13 +54,6 @@ impl Diagnose for ModelBuildErrorKind {
             ModelBuildErrorKind::SourceIo { path, error } => {
                 format!("failed to read `{}`: {:?}", path, error)
             }
-            ModelBuildErrorKind::BuilderField {
-                struct_name,
-                field,
-                message,
-            } => {
-                format!("builder error in `{}::{}`: {}", struct_name, field, message)
-            }
         }
     }
 
@@ -77,9 +62,23 @@ impl Diagnose for ModelBuildErrorKind {
             ModelBuildErrorKind::Parse(k) => k.default_severity(),
             ModelBuildErrorKind::CatalogsParse(k) => k.default_severity(),
             ModelBuildErrorKind::Validate(k) => k.default_severity(),
-            ModelBuildErrorKind::NoSource
-            | ModelBuildErrorKind::SourceIo { .. }
-            | ModelBuildErrorKind::BuilderField { .. } => Severity::Error,
+            ModelBuildErrorKind::NoSource | ModelBuildErrorKind::SourceIo { .. } => {
+                Severity::Error
+            }
+        }
+    }
+
+    /// Delegates to the inner stage kind so an upstream cause attached
+    /// to a `ParseErrorKind` / `CatalogsParseErrorKind` /
+    /// `ValidateErrorKind` propagates through the fused envelope.
+    /// `NoSource` and `SourceIo` carry no `dyn Error` source today
+    /// (`SourceIo` keeps only `IoErrorKind` to stay `Clone`).
+    fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ModelBuildErrorKind::Parse(k) => k.cause(),
+            ModelBuildErrorKind::CatalogsParse(k) => k.cause(),
+            ModelBuildErrorKind::Validate(k) => k.cause(),
+            ModelBuildErrorKind::NoSource | ModelBuildErrorKind::SourceIo { .. } => None,
         }
     }
 }

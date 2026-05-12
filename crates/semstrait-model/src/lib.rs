@@ -36,7 +36,8 @@ pub mod catalogs;
 pub mod data_kind;
 pub mod entities;
 pub mod error;
-pub mod expr_block;
+#[doc(hidden)]
+pub mod expr_ast;
 pub mod loader;
 pub mod model;
 pub mod parse;
@@ -60,7 +61,7 @@ pub use entities::{
     DimensionRef, DimensionType, EventsBody, ForeignKeyDecl, Integrity, JoinKeyExprPair, JoinType,
     KeyDecl, Keys, LiteralValue, Measure, MeasureEntry, MeasureRef, MetadataDimensionBody,
     MetadataDimensionRecipe, MetadataExtraction, MetadataSource, Metric, MetricEntry, MetricRef,
-    Optional, PartitionRef, PathTokenRef, PhysicalExpr, Relationship, RelationshipId, ScdBody,
+    Optional, PartitionRef, PathTokenRef, Relationship, ScdBody,
     ScdType, SemanticInterface, SemanticMapping, SemanticMappingValue, SemiAdditivity,
     SemiAdditivityStrategy, SnapshotBody, TemporalDimensionBody, TemporalShape, TemporalShapeKind,
     TimeseriesBody,

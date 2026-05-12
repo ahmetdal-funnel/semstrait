@@ -1,7 +1,9 @@
-//! Declarative YAML expression blocks -> Expr conversion.
+//! Typed AST for declarative expressions, preserved for the
+//! 19 §3 / 14 §2 reconciliation landing. Not currently wired into
+//! parsing — `ExprSource::Declarative` carries an opaque
+//! `serde_yaml::Value` until that landing.
 //!
-//! Provides `ExprSource` (inline DSL string or declarative YAML block)
-//! and `ExprBlock` (structured YAML that maps 1:1 to `Expr` variants).
+//! See `docs/design/STATUS.md` reconciliation item J.
 
 use semstrait_core::expr::{self, Expr, WhenClause};
 use semstrait_core::Grain;
@@ -19,8 +21,9 @@ use serde_yaml::Value;
 pub enum ExprSource {
     /// Simple string DSL: "cost / clicks", "{{ revenue }}", "amount"
     Inline(String),
-    /// Declarative tree: maps directly to Expr via ExprBlock
-    Declarative(ExprBlock),
+    /// Declarative tree: opaque YAML pass-through pending the
+    /// `19 §3` / `14 §2` reconciliation landing.
+    Declarative(Value),
 }
 
 impl<'de> Deserialize<'de> for ExprSource {
@@ -31,11 +34,7 @@ impl<'de> Deserialize<'de> for ExprSource {
         let value = Value::deserialize(deserializer)?;
         match &value {
             Value::String(s) => Ok(ExprSource::Inline(s.clone())),
-            Value::Mapping(_) => {
-                let block: ExprBlock = serde_yaml::from_value(value)
-                    .map_err(serde::de::Error::custom)?;
-                Ok(ExprSource::Declarative(block))
-            }
+            Value::Mapping(_) => Ok(ExprSource::Declarative(value)),
             _ => Err(serde::de::Error::custom(
                 "ExprSource: expected a string or mapping",
             )),
@@ -754,7 +753,7 @@ fn from_val<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, String> {
 }
 
 /// Maps variant-name strings ↔ ExprBlock variants for serde.
-macro_rules! expr_block_serde {
+macro_rules! expr_ast_serde {
     ( $( $key:literal $( | $alias:literal )* => $variant:ident ( $ty:ty ) ),* $(,)? ) => {
         impl Serialize for ExprBlock {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -823,7 +822,7 @@ macro_rules! expr_block_serde {
     };
 }
 
-expr_block_serde! {
+expr_ast_serde! {
     // Leaf (bare string = column, bare number/bool/null = literal)
     "lit" => Literal(LiteralValue),
     // Arithmetic

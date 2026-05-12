@@ -294,16 +294,19 @@
           "properties": { "literal": { "$ref": "#/$defs/LiteralValue" } }
         },
         { "type": "object", "required": ["expr"], "additionalProperties": false,
-          "properties": { "expr": { "type": "object", "description": "PhysicalExpr — same shape as ExprBlock." } }
+          "properties": { "expr": { "type": "object", "description": "Declarative expression. Opaque YAML pass-through pending 19 §3 / 14 §2 reconciliation; tooling that needs the typed AST consults the hidden semstrait-model::expr_ast module." } }
         }
       ]
     },
 
     "LiteralValue": {
-      "description": "Single-key tagged literal (`18 §10.2`). `null` is the only body-less form.",
+      "description": "Literal value for a `SemanticMappingValue::Literal` (`18 §10.2`). Author surface accepts either a bare YAML scalar (string / integer / number / boolean — type derived from the scalar shape) or the externally-tagged single-key map form. `decimal` / `date` / `timestamp` MUST use the tagged form because YAML scalars cannot disambiguate them from strings. `null` accepts both bare null and the bare string `\"null\"`.",
       "oneOf": [
         { "type": "null" },
-        { "type": "string", "const": "null" },
+        { "type": "string" },
+        { "type": "integer" },
+        { "type": "number" },
+        { "type": "boolean" },
         { "type": "object", "additionalProperties": false,
           "properties": {
             "bool": { "type": "boolean" },
@@ -570,22 +573,22 @@
 
     "KeyDecl": {
       "type": "object",
-      "required": ["columns"],
+      "required": ["fields"],
       "additionalProperties": false,
       "properties": {
-        "columns": { "type": "array", "items": { "type": "string" } },
+        "fields": { "type": "array", "items": { "type": "string" } },
         "name": { "type": "string" }
       }
     },
 
     "ForeignKeyDecl": {
       "type": "object",
-      "required": ["columns", "references", "target_columns"],
+      "required": ["fields", "references", "target_fields"],
       "additionalProperties": false,
       "properties": {
-        "columns": { "type": "array", "items": { "type": "string" } },
+        "fields": { "type": "array", "items": { "type": "string" } },
         "references": { "type": "string" },
-        "target_columns": { "type": "array", "items": { "type": "string" } },
+        "target_fields": { "type": "array", "items": { "type": "string" } },
         "name": { "type": "string" }
       }
     },

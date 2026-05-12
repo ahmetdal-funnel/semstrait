@@ -3,7 +3,7 @@
 use crate::entities::ai::AiContext;
 use crate::entities::filter::AggregationFilter;
 use crate::entities::measure::{AdditivityType, AggregationType};
-use crate::expr_block::ExprSource;
+use crate::expr_ast::ExprSource;
 use crate::types::SemanticsName;
 use bon::Builder;
 use semstrait_core::DataType;
