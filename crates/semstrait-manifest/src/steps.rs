@@ -1274,18 +1274,12 @@ pub(crate) fn build_metric_graph(
         depths.insert(name.clone(), 0);
     }
 
-    // Precompute deps once — extract_identifiers_from_expr_source is expensive
-    // (rebuilds HashSet, parses expr) and the result never changes between iterations.
-    let metric_deps: Vec<Vec<String>> = all_metrics
-        .iter()
-        .map(|met| extract_identifiers_from_expr_source(&met.expr))
-        .collect();
-
     // Iterative depth computation for metrics
     let mut changed = true;
     while changed {
         changed = false;
-        for (met, deps) in all_metrics.iter().zip(metric_deps.iter()) {
+        for met in &all_metrics {
+            let deps = extract_identifiers_from_expr_source(&met.expr);
             let max_dep_depth = deps
                 .iter()
                 .filter(|d| d.as_str() != met.name.as_str())
