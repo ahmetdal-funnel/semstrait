@@ -231,6 +231,51 @@ Both cases were previously thought of as "ambiguity errors"; the 2026-04-29 unif
 
 ---
 
+## Q-COMP-007 — `Directionality` granularity: per-`Relationship` vs per-direction — CLOSED (2026-05-12)
+
+**Status: CLOSED — moot.** The authoring-layer `Directionality` enum is retired with the relationship-block rebase (item K, STATUS §2). Every `Relationship` is bidirectional by construction (`16 §2.4`). Authors who need to restrict traversal direction declare an explicit `Joinset` for the desired direction; there is no per-Relationship directionality field on the canonical struct.
+
+**Rationale.** A per-Relationship directionality flag was an awkward fit alongside the new semantic-first fields (`integrity`, `optional`, `cross_filter`): the `cross_filter` enum already expresses directional filter-flow semantics, and the legitimate use-cases for forbidding reverse traversal (preventing auto-synthesized backwards walks for event-log fanout, slow-changing-dim lookups, etc.) are better served by explicit Joinset declarations — the author already needed to think about the direction of the resulting analytic, and that intent belongs at the Joinset site.
+
+**Refs.**
+
+- `16 §2.4` — traversal always bidirectional (rewritten 2026-05-12).
+- `18 §2` — Relationship struct no longer carries `directionality`.
+- STATUS reconciliation item K (2026-05-12).
+
+**Round-1 / Round-2 framing retained for historical reference.** The original arguments for per-direction flags vs enum are valid only under the per-Relationship-directionality model; the unified bidirectional model makes them moot.
+
+---
+
+## Q-COMP-008 — `Directionality::Forward` reverse-traversal error surface — CLOSED (2026-05-12) — induced by Q-COMP-007
+
+**Status: CLOSED — moot.** Induced retirement following Q-COMP-007: the `Directionality::Forward` variant no longer exists, so there is no reverse-traversal error to time. `PLAN_E_0503 CrossCompositionForbidden` is retired (`16 §14.3`; code reserved for forward-compat). `COMP_E_2409 JoinsetReverseForwardOnlyRelationship` is retired (`24 §10.3`; code reserved).
+
+**Refs.**
+
+- Q-COMP-007 — parent retirement.
+- `16 §14.3` — `PLAN_E_0503` retirement note.
+- `24 §10.3` — `COMP_E_2409` retirement note.
+
+---
+
+## Q-COMP-017 — Should `Relationship.join_type` default differ from `JoinType::Inner`? — CLOSED (2026-05-12)
+
+**Status: CLOSED — moot.** The question of a YAML default for `join_type:` no longer applies: `JoinType` is **not authored** under the relationship-block rebase (item K). It is derived at compile from `Relationship.optional` per `18 §2.9`'s one-to-one derivation table (`None → Inner`, `Left → Left`, `Right → Right`, `Both → Full`). The YAML surface (`32`) carries `optional:` (with a defaults matrix per `18 §2.7`); `join_type:` is removed from the authoring surface entirely.
+
+**Effective resolution.** For `cardinality: many_to_one + integrity: assumed` (the canonical fact-→-dim case), the matrix defaults to `optional: none` which derives `Inner` — matching the original Round-1 preference for `Inner` as the implicit default while keeping the authoring surface semantic-first.
+
+**Refs.**
+
+- `18 §2.7` — defaults matrix.
+- `18 §2.9` — `optional → JoinType` derivation table.
+- `16 §4` — `JoinType` reframed as derived, not authored.
+- STATUS reconciliation item K (2026-05-12).
+
+**Round-1 framing retained for historical reference.**
+
+---
+
 ## Q-COMP-018 — `ComposedSemanticInterface.keys` on implicit compositions: empty vs derived? — CLOSED (2026-04-29) — OVERRIDE
 
 **Status: CLOSED with override.** Round-1's "empty for implicit" answer is **superseded** by the unified Joinset model (2026-04-29). Per `16 §6.5` (revised), composed-surface keys are **declare-or-derived** for every Joinset, regardless of `Origin`:

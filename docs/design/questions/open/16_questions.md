@@ -17,7 +17,7 @@ depends-on:
 
 # Open Questions — `foundations/16_composition.md`
 
-> **Status (post-thirteenth-pass cascade rebase, 2026-05-03).** Nine framework-level questions remain open. New: Q-COMP-006 (post-rebase Unionset-retirement structural cleanup of §9.3 / §10.5 / §13 + downstream cross-refs). Carried-over: Q-COMP-007 (Directionality granularity), Q-COMP-008 (compile-time reverse-traversal detection), Q-COMP-009 (composite-key shape alternatives), Q-COMP-010 (CompositionCoverage serialization shape), Q-COMP-014 (PLAN_E_0505 candidate suggestions), Q-COMP-015 (FieldOwnership::Derived distinctness), Q-COMP-016 (ManyToMany reject-by-default), Q-COMP-017 (YAML default for JoinType). Closed items moved to [`../closed/16_questions.md`](../closed/16_questions.md). None of the items below block the headline ratifications in `16 §16` (note: §16 itself may need re-numbering when Q-COMP-006 lands).
+> **Status (relationship-block rebase, 2026-05-12).** Six framework-level questions remain open after item K's closures. Carried-over: Q-COMP-006 (post-rebase Unionset-retirement structural cleanup of §9.3 / §10.5 / §13 + downstream cross-refs), Q-COMP-009 (composite-key shape alternatives), Q-COMP-010 (CompositionCoverage serialization shape), Q-COMP-014 (PLAN_E_0505 candidate suggestions), Q-COMP-015 (FieldOwnership::Derived distinctness), Q-COMP-016 (ManyToMany reject-by-default — narrowed by SR-E-14 in Round 3). Closed 2026-05-12 with item K: Q-COMP-007 (Directionality granularity), Q-COMP-008 (compile-time reverse-traversal detection — both moot after Directionality retired), Q-COMP-017 (YAML default for JoinType — moot since JoinType is no longer authored). Closed items moved to [`../closed/16_questions.md`](../closed/16_questions.md). None of the items below block the headline ratifications in `16 §16` (note: §16 itself may need re-numbering when Q-COMP-006 lands).
 
 ---
 
@@ -65,61 +65,6 @@ Should these sections be:
 **Current position in `16`.** Pre-rebase text retained with the §5 ratification block flagging V1 scope (option B-equivalent, lightweight). Deeper structural cleanup deferred to this question.
 
 **Next step.** Resolve before Round-4 (`16` framework cleanup pass). Decision should align with whether `34`'s Strategy chapter prefers per-variant or framework-level enumeration logic.
-
----
-
-## Q-COMP-007 — `Directionality` granularity: per-`Relationship` vs per-direction
-
-**Question.** `16 §2.4` ratifies `Directionality` as a per-Relationship field with variants `Bidirectional` / `Forward`. An alternative would be per-direction flags: `{ forward_walkable: bool, reverse_walkable: bool }`. Should v1 adopt the granular form?
-
-**Refs.**
-
-- `16 §2.4` — enum ratification.
-- `16 §11.4` — BFS direction filtering.
-
-**Proposed (Round 1):** Enum form with two variants. `Reverse` (reverse-only) is not in v1; if needed, authors can swap `from` / `to`.
-
-**Arguments for the enum (current).**
-
-- Simpler surface.
-- Covers 99% of real-world needs (bidirectional is overwhelmingly common; forward-only is rare but real; reverse-only is re-expressible as forward-only with sides swapped).
-- Extension to add a `Reverse` variant is MINOR per I10.
-
-**Arguments for per-direction flags.**
-
-- Fully general.
-- Slightly more ergonomic for authors who think "which directions work" rather than "what category of edge is this."
-
-**Current position in `16`.** Enum. `#[non_exhaustive]` per I10; variants may grow.
-
-**Next step.** If authors consistently need `Reverse`-only or `Neither`, extend the enum. Otherwise keep as-is.
-
----
-
-## Q-COMP-008 — `Directionality::Forward` — is reverse-traversal error the right surface?
-
-**Question.** `16 §14.3 PLAN_E_0503 CrossCompositionForbidden` fires when the planner attempts to walk a `Forward` relationship in reverse. Should the error be raised at `validate` / `compile` (pre-planning) if the author's declared `Relationship`s cannot cover a needed direction?
-
-**Refs.**
-
-- `16 §2.4.2` — `Forward` use-cases.
-- `16 §14.3` — error code.
-
-**Proposed (Round 1):** Plan-time error. `validate` / `compile` cannot know which directions a Request will need.
-
-**Arguments for plan-time (current).**
-
-- The need for a reverse traversal depends on the Request (its `select:` shape); it is a request-specific error.
-- Moving to compile-time would require proactively analyzing "what if a Request needs this?" — arbitrary.
-
-**Arguments for compile-time.**
-
-- Would catch some pathologies earlier.
-- Unworkable in general (see above).
-
-**Current position in `16`.** Plan-time. `PLAN_E_0503`.
-
-**Next step.** No change expected. Documented for completeness.
 
 ---
 
@@ -235,6 +180,8 @@ Should these sections be:
 
 **Question.** `16 §3.3.4` permits `ManyToMany`. Should v1 reject `ManyToMany` outright and force junction-table modeling?
 
+**Status (Round 3, 2026-05-12).** Partial resolution under relationship-block rebase (item K, STATUS §2): directional `cross_filter ∈ {Left, Right}` is rejected on `ManyToMany` (SR-E-14, `validate.relationship-many-to-many-cross-filter-directional`); authors MUST declare `Both` or `None`. The `optional` field is also required to be authored (SR-E-13). The broader question of whether `ManyToMany` should be rejected outright remains open; the new rules narrow the surface where authors can declare ambiguous flow semantics without disabling the variant.
+
 **Status (Round 2, 2026-04-29).** Framing simplified: the advisory dimension is moot now that `PLAN_W_0502 ManyToManyFanoutAdvisory` was retired with Q-COMP-005. The remaining axis is **permit vs reject** for `ManyToMany` itself.
 
 **Refs.**
@@ -259,27 +206,3 @@ Should these sections be:
 
 ---
 
-## Q-COMP-017 — Should `Relationship.join_type` default differ from `JoinType::Inner`?
-
-**Question.** `16 §2.2` lists `join_type` as required with no default. Author must pick. Should a YAML-surface default apply (e.g. `Inner`)?
-
-**Refs.**
-
-- `16 §2.2` — struct shape.
-- `32` (pending) — YAML defaults.
-
-**Proposed (Round 1):** Required at the canonical layer; YAML surface (`32`) MAY default to `JoinType::Inner` for ergonomics. The canonical struct always carries an explicit value.
-
-**Arguments for YAML default.**
-
-- Common case is `Inner`.
-- Reduces authoring friction.
-
-**Arguments against.**
-
-- Explicit is better than implicit for semantically charged decisions.
-- `Left` is arguably common for fact → dim patterns.
-
-**Current position in `16`.** Required canonically; defaulted in YAML at `32`'s discretion.
-
-**Next step.** `32` ratifies the YAML default.

@@ -302,7 +302,7 @@ pub enum AsOfAnchor {
 }
 ```
 
-**Vocabulary-ratified, implementation-DEFERRED.** Per §10, the planner's Round-1 implementation does not construct `AsOf` joins; YAML authors MAY NOT (in Round 1) declare an `AsOf` `join_type:` on a `Relationship` — `18 §2.3`'s roster stays `{Inner, Left, Right, Full}` in v1, with `AsOf` admitted in a later MINOR per the post-v1 plan. The gate `16 §4.4.2` / `18 §2.3` parked on `TemporalShape` availability is now in place, but the door is not yet open.
+**Vocabulary-ratified, implementation-DEFERRED.** Per §10, the planner's Round-1 implementation does not construct `AsOf` joins. `JoinType` is derived at compile from `Relationship.optional` (`18 §2.9`) and is no longer authored at the YAML surface (post-2026-05-12 rebase); the derivation table's roster stays `{Inner, Left, Right, Full}` in v1, with `AsOf` admitted as an auto-activation by the temporal-shape pair in a later MINOR (`24 §7.2`). The gate `16 §4.3` / `18 §2.9` parked on `TemporalShape` availability is now in place, but the door is not yet open.
 
 ### 5.2 Per-shape-pair legality matrix
 
@@ -334,7 +334,7 @@ The matrix below enumerates which shape pairs on the `from` / `to` sides of a `R
 | `Snapshot ↔ Snapshot` (Inner, same cadence) | `OneToOne` (per snapshot instant) | The natural pairing when two snapshots share the same cadence. |
 | `Events ↔ Events` (Inner, same entity) | depends on volume — typically `ManyToMany` and shape-warn-worthy | `PLAN_W_0502 ManyToManyFanoutAdvisory` was retired in `16 §14.4` (2026-04-29) per Q-COMP-005's intent-advisory deferral; the volume / cardinality concern remains an authoring consideration but is no longer planner-emitted in v1. |
 
-Reverse-direction traversal of an `AsOf` `Relationship` is **forbidden**. The probe side and the anchor side are semantically asymmetric; "what events were recorded during this SCD window" is not the mirror of "what was the SCD state at this event time" — the former is a range query that returns `0..N` events per window, the latter is a point query that returns exactly one SCD row per event. The planner rejects reverse traversal with `PLAN_E_1722 AsOfReverseTraversalForbidden`. Authors needing the reverse semantics must either declare a distinct `Relationship` with `Directionality::Forward` (per `16 §2.4`) or express the query through an explicit `Joinset` with a different anchor.
+Reverse-direction traversal of an `AsOf` `Relationship` is **forbidden**. The probe side and the anchor side are semantically asymmetric; "what events were recorded during this SCD window" is not the mirror of "what was the SCD state at this event time" — the former is a range query that returns `0..N` events per window, the latter is a point query that returns exactly one SCD row per event. The planner rejects reverse traversal with `PLAN_E_1722 AsOfReverseTraversalForbidden`. Authors needing the reverse semantics declare an explicit `Joinset` with the opposite anchor — the authoring-layer `Directionality` enum is retired (`16 §2.4`, 2026-05-12), so the reverse-direction restriction here is `AsOf`-specific and lives on the temporal shape, not on the Relationship struct.
 
 ### 5.4 `PlanNode::Join` carriage — DEFERRED
 

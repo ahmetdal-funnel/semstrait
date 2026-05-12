@@ -31,7 +31,7 @@ refined-by:
 
 # 16. Composition
 
-> **Struct ownership (2026-04-17 consolidation).** The `Relationship` struct, `RelationshipId` newtype, `JoinType`, `Cardinality`, `Directionality`, and `JoinKeyExprPair` are ratified in [`18_entities.md §2`](./18_entities.md#2-relationship). This doc owns the *composition semantics* on top — placement, scope, traversal, fanout analysis, `ComposedSemanticInterface` construction, field-first resolution. The struct-shape lands in `18`; what the planner does with it lands here. Where body sections below cite `KeyPair`, read `JoinKeyExprPair` (`18 §2.6`); where they cite `ColumnMapping`, read `SemanticMapping` (`18 §10`).
+> **Struct ownership (2026-04-17 consolidation; relationship-block rebase 2026-05-12).** The `Relationship` struct, `RelationshipId` newtype, `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, (derived) `JoinType`, and `JoinKeyExprPair` are ratified in [`18_entities.md §2`](./18_entities.md#2-relationship). This doc owns the *composition semantics* on top — placement, scope, traversal, fanout analysis, `ComposedSemanticInterface` construction, field-first resolution. The struct-shape lands in `18`; what the planner does with it lands here. Where body sections below cite `KeyPair`, read `JoinKeyExprPair` (`18 §2.8`); where they cite `ColumnMapping`, read `SemanticMapping` (`18 §10`). The earlier authored `directionality:` field and `Directionality` enum are retired (2026-05-12) — traversal is always bidirectional per §2.4; authors who need to forbid auto-synthesized reverse walks declare an explicit Joinset for the desired direction.
 >
 > This document ratifies how multiple `DataKind`s appear as a **single queryable
 > surface**: the `Relationship` edge-type that binds top-level `DataKind`s,
@@ -84,9 +84,10 @@ traversal as a `Joinset` or (b) leaves the planner to walk the graph
 implicitly when a `Request`'s selected `Semantics` span multiple kinds.
 
 `16` is the authoritative specification for the horizontal axis's **core
-type machinery** (`Relationship`, `Cardinality`, `JoinType`,
-`Directionality`, `ComposedSemanticInterface`, `Origin`, `ImplicitId`,
-`UnifiedSemantics`, `FieldProvenance`, `CompositionCoverage`), for the
+type machinery** (`Relationship`, `Cardinality`, `Integrity`, `Optional`,
+`CrossFilter`, derived `JoinType`, `ComposedSemanticInterface`, `Origin`,
+`ImplicitId`, `UnifiedSemantics`, `FieldProvenance`, `CompositionCoverage`),
+for the
 **boundary** between `Origin::Explicit` and `Origin::Implicit`
 compositions, the **eager-materialization policy** that enumerates
 implicit compositions at compile, and the **field-first resolution
@@ -98,8 +99,9 @@ refined in the `refined-by` docs.
 
 ### 1.1 What `16` ratifies (index)
 
-`16` ratifies: the `Relationship` struct + `KeyPair` + `Directionality`
-(§2); `Cardinality` (§3); `JoinType` + `PlanNode::Join` carriage (§4);
+`16` ratifies: the `Relationship` struct + `KeyPair` + `Integrity` +
+`Optional` + `CrossFilter` (§2); `Cardinality` (§3); derived `JoinType` +
+`PlanNode::Join` carriage (§4);
 `ComposedSemanticInterface` + `CompositionKind` (2 variants V1 — `Joinset`
 and `Grainset` post-thirteenth-pass cascade rebase 2026-05-03; Unionset
 retired per §5 ratification note) + `Origin`
@@ -121,8 +123,8 @@ forms under the unified model (§13); and new `CompileError` /
 - **Per-`DataKind` planning strategies** — Scan / Join / Aggregate /
   Project lowering lives in `20`–`25` and `34`; `16` ratifies the
   type-of-surface the strategies plan against.
-- **YAML authoring syntax** — `relationships:`, `joinsets:`,
-  `directionality:` block shapes and defaults live in `32`.
+- **YAML authoring syntax** — `relationships:` and `joinsets:` block
+  shapes and defaults live in `32`.
 - **`SemanticManifest` serialization** — on-disk shape of
   `ResolvedRelationship`, `ResolvedComplexDataKind`, and the
   `RelationshipGraph` index lives in `33`.
@@ -173,9 +175,9 @@ Five stances govern:
   is lookup, not resolution.
 - **I8 (SemanticManifest is planner-complete).** The planner reads indices and
   graph from the SemanticManifest; no catalog fetch, no re-parse.
-- **I10 (non-exhaustive public sums).** `Cardinality`, `JoinType`,
-  `Directionality`, `CompositionKind`, and `FieldOwnership` all carry
-  `#[non_exhaustive]`.
+- **I10 (non-exhaustive public sums).** `Cardinality`, `Integrity`,
+  `Optional`, `CrossFilter`, `JoinType`, `CompositionKind`, and
+  `FieldOwnership` all carry `#[non_exhaustive]`.
 - **I12 (fail-fast).** `CompileError::*` composition variants abort
   `compile`; `PlannerError::*` composition variants abort `plan`.
 
@@ -183,12 +185,14 @@ Five stances govern:
 
 A `Relationship` is a **pairwise, named connector** between two top-level
 `DataKind`s declaring a joinable edge: a pair (or tuple) of `SemanticsName`s
-on each side, the cardinality of the join, and the `JoinType` the planner
-should use when traversing it. It is the semstrait type-system analogue of
-a foreign-key association, lifted to the semantic layer so keys are
-`Semantics`, not SQL columns.
+on each side, the relationship's shape (`cardinality`, `integrity`,
+`optional`, `cross_filter`), and an optional residual `filter`. The
+operational `JoinType` is **derived** from `optional` at compile per
+`18 §2.9`, not authored. `Relationship` is the semstrait type-system
+analogue of a foreign-key association, lifted to the semantic layer so
+keys are `Semantics`, not SQL columns.
 
-> **Struct shape**: the `Relationship` struct itself — including its fields (`name`, `from`, `to`, `join_type`, `keys`, `filter`, `cardinality`, `directionality`, `description`), the companion `RelationshipId` newtype, the `JoinKeyExprPair` hybrid equi-key grammar, and the `JoinType` / `Cardinality` / `Directionality` enums — is defined in [`18_entities.md §2`](./18_entities.md#2-relationship). This doc ratifies the *composition semantics* on top (placement, scope, traversal, fanout analysis). Where the body prose below uses `KeyPair`, read `JoinKeyExprPair` per `18 §2.6`.
+> **Struct shape**: the `Relationship` struct itself — including its fields (`name`, `from`, `to`, `keys`, `filter`, `cardinality`, `integrity`, `optional`, `cross_filter`, `ai_context`, `description`), the companion `RelationshipId` newtype, the `JoinKeyExprPair` hybrid equi-key grammar, and the `Cardinality` / `Integrity` / `Optional` / `CrossFilter` / (derived) `JoinType` enums — is defined in [`18_entities.md §2`](./18_entities.md#2-relationship). This doc ratifies the *composition semantics* on top (placement, scope, traversal, fanout analysis). Where the body prose below uses `KeyPair`, read `JoinKeyExprPair` per `18 §2.8`.
 
 ### 2.1 Placement — global, top-level
 
@@ -237,15 +241,28 @@ Fields:
   side matches `keys[0]` on the right side, etc. (§2.3; open
   `Q-COMP-009`).
 - `cardinality: Cardinality` — one of four variants (§3).
-- `join_type: JoinType` — one of four variants (§4). Required at the
-  canonical layer; YAML surface (`32`) MAY default (open `Q-COMP-017`).
-- `directionality: Directionality` — governs traversal (§2.4).
+- `integrity: Integrity` — author-asserted referential-integrity strength
+  (`Enforced` / `Assumed` / `None`; default `Assumed`). See `18 §2.6`.
+- `optional: Option<Optional>` — preserved-side enum
+  (`Left` / `Right` / `Both` / `None`). Default derived from
+  `(cardinality, integrity)` per `18 §2.7`; required on
+  `OneToOne` / `ManyToMany` (SR-E-13). See `18 §2.4`.
+- `cross_filter: Option<CrossFilter>` — filter-flow enum
+  (`Left` / `Right` / `Both` / `None`). Default derived per `18 §2.7`;
+  required on `OneToOne` / `ManyToMany`; directional values forbidden
+  on `ManyToMany` (SR-E-14). See `18 §2.5`.
+- `filter: Option<SemanticExpr>` — optional residual predicate AND-ed
+  on top of the equi-join keys (`18 §2.8`).
+- **Derived** `join_type: JoinType` — produced at compile from `optional`
+  per the `18 §2.9` table; carried on `ResolvedRelationship` (`33 §8.1`).
+  Not an authoring field.
 
 **Conventional orientation.** `from` is the "owning" or "driving" side
 and `to` is the "referenced" side, mirroring foreign-key narrative. For
 a `ManyToOne` relationship (e.g. `orders → customers`), `from = orders`
-and `to = customers`. Semantics do not depend on the orientation — the
-planner walks the edge in either direction subject to `directionality` —
+and `to = customers`. `from` ≡ left, `to` ≡ right for the purposes of
+`optional` / `cross_filter` enum values. Semantics do not depend on the
+orientation — the planner walks the edge in either direction by default —
 but the convention aids readability and drives `Cardinality`'s
 per-variant naming (`ManyToOne` reads naturally as `from → to`).
 
@@ -321,66 +338,28 @@ Authors who need a NOT-NULL contract add a `Constraint::NotNull` in the
 referenced `DataKind`'s interface (per `11 §8.4`); violations surface at
 plan time when the planner emits the join.
 
-### 2.4 `Directionality`
+### 2.4 Traversal — always bidirectional
 
-Enum defined in [`18 §2.5`](./18_entities.md#25-directionality). v1 variants: `Bidirectional` (default — forward and reverse both walkable) and `Forward` (forward only; reverse traversal errors at plan time).
+`Relationship`s are always walkable in both directions for the purposes
+of implicit composition (§10.4) and path-finding. The earlier
+`Directionality` enum (`Bidirectional` / `Forward`) is retired; v1 has
+no authoring-layer mechanism to forbid reverse traversal. Authors who
+need to prevent the planner from auto-synthesizing reverse walks
+(e.g. forbidding `users → page_views` aggregation fanout when only
+`page_views → users` enrichment is intended) lift that intent into an
+**explicit Joinset declaration** for the desired direction.
 
-Governs whether the planner may traverse the `Relationship` in both
-directions (§2.4.3) or only the forward direction (`from` → `to`).
-Bidirectional is the default; `Forward` is a deliberate restriction.
+#### 2.4.1 Symmetric traversal mechanics
 
-#### 2.4.1 Variants
-
-- **`Bidirectional`** (default). The planner may use the `Relationship`
-  as an edge in either direction. A query that requests `orders.revenue`
-  and `customers.name` can walk `orders → customers`; a query that
-  requests `customers.name` and the count of related `orders` can walk
-  `customers → orders`. The `Cardinality` remains declared as-written —
-  a `ManyToOne` walked in reverse is effectively a `OneToMany` for
-  fanout-analysis purposes (`§3.3.2`), and the planner flips its view
-  accordingly.
-- **`Forward`**. The planner may only walk `from` → `to`. A Request that
-  would require the reverse direction triggers
-  `PlannerError::CrossCompositionForbidden` (§14.3 `PLAN_E_0503`).
-
-Additional variants (`Reverse`, `Neither`) are **not** in v1; if a
-genuine reverse-only need arises, the author swaps `from` and `to` in
-the declaration (see open `Q-COMP-007`). The enum is `#[non_exhaustive]`
-per I10.
-
-#### 2.4.2 `Forward` use-cases
-
-`Forward` is useful when the `Relationship`'s semantics are directional
-in a way that does not survive inversion:
-
-- **Event-log → Entity enrichments.** An events table (`page_views`,
-  `Many`) joined to a user dimension (`users`, `One`) via
-  `ManyToOne` / `Inner`. Walking `page_views → users` enriches events
-  with user attributes. Walking `users → page_views` is a very different
-  query (fanout of users by their events) that the author may not want
-  the planner to synthesize without an explicit `Joinset`.
-- **Slow-changing-dimension lookups.** A fact table joined to an SCD-II
-  dim via a temporal-valid-range predicate. Forward direction is the
-  point-in-time enrichment; reverse direction is a historical-churn
-  query that the planner should not synthesize silently.
-- **Degenerate-one-sided joins.** `Relationship` declared only to
-  enable filter pushdown (e.g. a reference table of valid country
-  codes); reverse walk has no analytic meaning.
-
-When in doubt, authors pick `Bidirectional`. `Forward` is an opt-in
-restriction.
-
-#### 2.4.3 Symmetric traversal under `Bidirectional`
-
-Under `Bidirectional`, forward and reverse walks share the same
-`RelationshipId` — they are the same edge, walked in two directions.
-The compile-time enumeration in `§10.4` normalizes direction at walk
-time: given a `current_node` and an unvisited neighbour `target_node`,
-the step is flagged `reverse: true` when `current_node ==
-Relationship.to && target_node == Relationship.from`, and
-`reverse: false` otherwise. The `PathSignature` (`14b §4.5`) records
-the `RelationshipId` alone; the direction is reconstructed at plan
-time by matching `current_node` against the stored `from` / `to`.
+Forward and reverse walks share the same `RelationshipId` — they are
+the same edge, walked in two directions. The compile-time enumeration
+in `§10.4` normalizes direction at walk time: given a `current_node`
+and an unvisited neighbour `target_node`, the step is flagged
+`reverse: true` when `current_node == Relationship.to && target_node
+== Relationship.from`, and `reverse: false` otherwise. The
+`PathSignature` (`14b §4.5`) records the `RelationshipId` alone; the
+direction is reconstructed at plan time by matching `current_node`
+against the stored `from` / `to`.
 
 **`Cardinality` under reversal.** A `Relationship { cardinality: ManyToOne,
 from: A, to: B }` walked in reverse (`B → A`) is read as `OneToMany`
@@ -389,11 +368,13 @@ the planner inverts the interpretation on reverse walks. Analogous for
 `OneToMany` ↔ `ManyToOne`. `OneToOne` and `ManyToMany` are
 inversion-symmetric — no mental flip needed.
 
-**Bidirectionality and `JoinType`.** `JoinType::Left` walked in reverse
-behaves as `JoinType::Right` (fills the reverse side with NULLs).
-`JoinType::Right` reversed becomes `Left`. `Inner` and `Full` are
-symmetric. The planner does not rewrite the declared `JoinType` — it
-substitutes the effective form per-direction at plan emission.
+**Derived `JoinType` under reversal.** With `JoinType` derived from
+`Relationship.optional` per `18 §2.9`, reverse walks substitute the
+mirror form at plan emission: derived `Left` walked in reverse behaves
+as `Right` (the reverse side is preserved with NULL fill on the now-from
+side); derived `Right` reversed becomes `Left`. `Inner` and `Full` are
+inversion-symmetric. The canonical `optional` value on `Relationship`
+does not change; the substitution is per-walk at emission.
 
 ## 3. `Cardinality`
 
@@ -463,8 +444,8 @@ One row in `from` matches zero-or-more rows in `to`.
   match; zero-match `from` rows are preserved with NULL `to`-side
   fields. `Right` from the `One` side is equivalent to `Left` from the
   `Many` side; `Full` preserves unmatched rows on both.
-- **Walked in reverse** (under `Bidirectional`): behaves as `ManyToOne`
-  (see §3.3.3).
+- **Walked in reverse:** behaves as `ManyToOne` (see §3.3.3); traversal
+  is always bidirectional per §2.4.
 
 #### 3.3.3 `ManyToOne`
 
@@ -499,11 +480,13 @@ Multiple rows on each side match multiple rows on the other.
   needs it to preserve cardinality of a primary-key side — is
   `DISTINCT`-based (plan-layer decision; `20`).
 
-## 4. `JoinType`
+## 4. `JoinType` — derived at compile
 
-Enum defined in [`18 §2.3`](./18_entities.md#23-jointype). v1 variants: `Inner`, `Left`, `Right`, `Full`. `Semi` / `Anti` are deferred (see §4.3 below). `AsOf` is deferred and gated on `17 TemporalShape` (see §4.3 and `17 §5`).
+Enum defined in [`18 §2.9`](./18_entities.md#29-jointype--derived-at-compile-manifest-only). v1 variants: `Inner`, `Left`, `Right`, `Full`. `Semi` / `Anti` are deferred (see §4.3 below). `AsOf` is deferred and gated on `17 TemporalShape` (see §4.3 and `17 §5`).
 
-The join-kind carried by a `Relationship`. Lowers directly to
+The join-kind is **not authored**. It is derived at compile from
+`Relationship.optional` per the `18 §2.9` derivation table, recorded on
+`ResolvedRelationship` (`33 §8.1`), and lowers from there to
 `PlanNode::Join`'s `join_type` field in `35`.
 
 ### 4.1 Enum — ratified variants
@@ -512,26 +495,40 @@ Four variants in v1: `Inner`, `Left`, `Right`, `Full`. `#[non_exhaustive]`
 per I10. All four translate 1:1 to standard SQL `INNER JOIN`,
 `LEFT JOIN`, `RIGHT JOIN`, `FULL OUTER JOIN`.
 
-### 4.2 Per-variant semantics
+### 4.2 Per-variant semantics — and the `optional:` source
+
+The derivation `optional → JoinType` is one-to-one per `18 §2.9`:
+
+| Authored `optional` | Derived `JoinType` |
+|---|---|
+| `Optional::None`  | `Inner` |
+| `Optional::Left`  | `Left` |
+| `Optional::Right` | `Right` |
+| `Optional::Both`  | `Full` |
+
+The mechanical semantics of each derived variant:
 
 - **`Inner`** — produces rows with a match on **both** sides of the
   `KeyPair`. Non-matching rows on either side are dropped. Combined
   with `Cardinality::OneToOne` and non-NULL join columns, `Inner` is
-  the canonical "joined table" semantics.
+  the canonical "joined table" semantics. Author intent: "no
+  preservation" (`optional: none`).
 - **`Left`** — preserves all rows from `Relationship.from`; NULL-pads
   the `to` side for unmatched `from` rows. Combined with `ManyToOne`,
   this is the canonical "enrich facts with dim, keep unmatched facts"
-  pattern.
+  pattern. Author intent: "preserve left/from" (`optional: left`).
 - **`Right`** — preserves all rows from `Relationship.to`; NULL-pads
   the `from` side for unmatched `to` rows. Less common in analytic
-  workloads but symmetric.
+  workloads but symmetric. Author intent: "preserve right/to"
+  (`optional: right`).
 - **`Full`** — preserves rows from both sides; NULL-pads whichever side
   lacks a match. Useful for union-like semantics that the shape of a
-  `Unionset` would not express cleanly.
+  `Unionset` would not express cleanly. Author intent: "preserve both"
+  (`optional: both`).
 
-**Under `Bidirectional` reversal.** `Left` walked in reverse becomes
-`Right` at plan emission (see §2.4.3). The canonical-layer `JoinType`
-value does not change; the emission substitutes.
+**Under traversal reversal.** Derived `Left` walked in reverse behaves as
+`Right` at plan emission (see §2.4.1). The canonical `Relationship.optional`
+value does not change; the emission substitutes the mirror form.
 
 ### 4.3 Deferred variants
 
@@ -1346,15 +1343,12 @@ is a pure lookup over both forms.
    enumerates at most 2000 implicit Joinsets + Unionsets per Model
    (§10.4). Cap-exceeded → `CompileError::ImplicitEnumerationExploded`
    (§14.1, `COMP_E_0409`). Authors with pathological models tighten
-   the implicit graph (declare explicit Joinsets for common subsets,
-   remove redundant Relationships, or restructure with `Forward`
-   directionality on edges that should not produce implicit walks).
-6. **No synthesis across `Directionality::Forward`.** A `Forward`
-   relationship is walked only `from → to` during enumeration. An
-   implicit walk requiring reverse direction is dropped from the
-   enumeration; explicit `Joinset` declarations attempting reverse
-   walk fail with `PlannerError::CrossCompositionForbidden` (§14.3,
-   `PLAN_E_0503`).
+   the implicit graph by declaring explicit Joinsets for common
+   subsets or removing redundant Relationships.
+6. **Bidirectional traversal.** Every `Relationship` is walked in
+   both directions during enumeration (per §2.4). There is no
+   authoring-layer mechanism to restrict traversal direction; authors
+   wanting one-way semantics declare an explicit Joinset.
 7. **Transparent unfolding through composed surfaces.** Compile's
    implicit-Joinset enumeration walks the unfolded graph — a
    `Unionset` or `Joinset` constituent is treated as the union of its
@@ -1369,7 +1363,8 @@ is a pure lookup over both forms.
    implicit Joinset is **rejected at compile** with
    `CompileError::ExplicitImplicitCompositionClash` (§14.1,
    `COMP_E_0414`, §10.6). Authors differentiate the explicit form
-   via per-leg `JoinType` overrides, filters, or `keys`; otherwise
+   via scope-local `Relationship` shadowing (`§13.3`), Joinset-level
+   filters, declared `keys`, or non-shortest paths; otherwise
    the planner uses the equivalent implicit Joinset (the explicit
    declaration is redundant).
 9. **`Request.from = Some(DataKindRef)` skips field-first.** The
@@ -1384,9 +1379,9 @@ At compile, after `RelationshipGraph` construction:
 1. **Seed** with every pair `(A, B)` such that `A` and `B` are
    top-level kinds connected by at least one `Relationship`.
 2. **Expand** each seed by walking outward up to
-   `MAX_IMPLICIT_COMPOSITION_DEPTH` hops, respecting `Directionality`.
-   Every reachable subset of size 2..(`depth + 1`) becomes a
-   candidate.
+   `MAX_IMPLICIT_COMPOSITION_DEPTH` hops; both directions of every
+   `Relationship` are walked (per §2.4). Every reachable subset of
+   size 2..(`depth + 1`) becomes a candidate.
 3. **Canonicalize** each candidate by sorting its
    `(RelationshipId, direction)` tuples; duplicates collapse.
 4. **Hash** the canonical form into `ImplicitId` (§5.7).
@@ -1738,15 +1733,6 @@ constituents in the `RelationshipGraph` connected component
 distance > bound. Error: `PlannerError::CompositionDepthExceeded`
 (§14.3, `PLAN_E_0502`). Authors declare an explicit Joinset to escape.
 
-**Sub-step — directionality violation.** A `Forward`-only
-`Relationship` traversed in reverse is dropped at compile from
-implicit enumeration. A Request whose constituent set requires that
-reverse traversal will surface as `PLAN_E_0501 NoCompositionPath` (no
-implicit composition was enumerated) — the underlying diagnostic
-hint cites the `Forward`-only `Relationship` and references
-`PLAN_E_0503 CrossCompositionForbidden` for the explicit-`Joinset`
-escape path.
-
 ### 11.5 Step — Final selection and surface handoff
 
 After lookup yields exactly one composition (Explicit or Implicit),
@@ -1925,8 +1911,9 @@ and are addressable via the same field-first lookup (§11).
   whose canonical form matches an enumerable implicit Joinset is
   **rejected at compile** (`COMP_E_0414`). Authors who declare an
   explicit `Joinset` are committing to at least one differentiator —
-  per-leg `JoinType` override, `filter:`, declared `keys`, or a
-  non-shortest path — that makes the canonical form distinct.
+  scope-local `Relationship` shadow, Joinset-level `filter:`,
+  declared `keys`, or a non-shortest path — that makes the canonical
+  form distinct (per §13.5).
 - **Depth bound applies only to implicit.** Explicit Joinsets can
   declare arbitrarily deep traversals (no `MAX_IMPLICIT_COMPOSITION_DEPTH`
   cap on author-declared paths) and may pick non-shortest paths
@@ -1945,26 +1932,51 @@ one-join structure mirrors the `fact + dim` star-schema pattern but
 `semstrait` does not privilege one constituent structurally. N-ary
 `Joinset`s are deferred as `[TD-JOINSET-NARY]` (v2).
 
-### 13.3 Traversed relationships and `JoinType` override
+### 13.3 Traversed relationships — scope-local declaration
 
 A `Joinset` references one or more `Relationship`s as its traversal
-path. Per-edge, a `Joinset` MAY override:
+path. There is **no per-leg override mechanism**. A `Joinset` that
+needs join semantics different from a root-level `Relationship`
+**declares a scope-local `Relationship`** in its own `relationships:`
+block — the Relationship struct shape, defaults matrix, and validation
+rules in `18 §2` are identical at the Joinset site. The scope-shadow
+rule in `18 §2.10` resolves visibility: a Joinset-local name shadows the
+root-level entry within that Joinset's scope only.
 
-- `join_type` — the `Joinset`'s per-edge `join_type` overrides the
-  `Relationship`'s declared `join_type`. Use-case: `ManyToOne`
-  `Relationship` declared with `Inner`; a `Joinset` wanting
-  NULL-padding for enrichment overrides to `Left`. (Forward-ref:
-  `AsOf` override is admitted as a post-v1 additive MINOR after the
-  implicit-synthesis milestone — Q-TEMPORAL-003 closed Option B
-  2026-04-28; see `17 §5.5`.)
-- `directionality` — only if the `Relationship`'s declared
-  `directionality` permits the requested direction. A `Forward`
-  `Relationship` cannot be walked in reverse even under `Joinset`
-  override. (Same `PLAN_E_0503` semantics as implicit.)
-- `cardinality` — **not overridable**. The `Cardinality` is a property
-  of the data, not of the walk; a `Joinset` asserting a different
-  cardinality than the `Relationship` declares is a misconfiguration.
-  `CompileError::JoinsetCardinalityOverride` (§14.1) fires.
+Concretely, an author wanting NULL-padded enrichment for a relationship
+that the root-level declaration left as `optional: none` (Inner) writes
+the divergent variant into the Joinset's local `relationships:`:
+
+```yaml
+joinsets:
+  - name: orders_with_optional_customer
+    relationships:
+      - name: orders_to_customers           # shadows root-level entry
+        from: orders
+        to:   customers
+        keys:
+          - { from: customer_id, to: id }
+        cardinality: many_to_one
+        integrity: assumed
+        optional: left                       # diverges: preserve facts
+        cross_filter: left
+```
+
+This is the **only** way to vary join semantics inside a Joinset.
+There is no override map and no per-edge override surface.
+
+**Authoring constraints under scope shadow.** The scope-local
+Relationship is a full Relationship — `cardinality`, `optional` (where
+required), and `cross_filter` (where required) MUST be declared per
+SR-E-4 / SR-E-13 / SR-E-14. Authors cannot "partially override"
+individual fields of a root-level Relationship.
+
+**Cardinality** is not overridable in any sense: a scope-local
+Relationship may declare a different cardinality, but doing so asserts
+a different data-shape claim, not an "override" of the root-level
+claim. The two Relationships are independent declarations that happen
+to share a name; the root-level one applies in all other Joinsets and
+in implicit composition.
 
 ### 13.4 Pinned cardinality / fanout
 
@@ -1991,13 +2003,17 @@ adding at least one differentiator.
 **Differentiator menu** (any one suffices to make the canonical form
 distinct):
 
-- **Per-leg `JoinType` override.** The explicit Joinset declares a
-  `join_type` on at least one traversed `Relationship` that differs
-  from the `Relationship`'s declared `join_type` (per §13.3). The
-  canonical form's `JoinType` byte differs.
-- **`filter:` predicate.** The explicit Joinset declares a
-  `filter:` constraint per `12 §5`. The canonical form includes the
-  filter's serialized `PhysicalExpr` byte hash.
+- **Scope-local `Relationship` shadow.** The explicit Joinset declares
+  a `Relationship` in its `relationships:` block that shadows a
+  root-level one with at least one field diverging — typically
+  `optional`, `cross_filter`, or the residual `filter:`. The canonical
+  form's per-hop `optional` / derived `JoinType` byte differs (per
+  §13.3 example). This is the v1 mechanism for "different join
+  semantics inside this Joinset only".
+- **`filter:` predicate on the Joinset body.** The explicit Joinset
+  declares a Joinset-level `filter:` constraint per `12 §5`. The
+  canonical form includes the filter's serialized `PhysicalExpr` byte
+  hash.
 - **Declared `keys`.** The explicit Joinset overrides §6.5's derived
   keys with author-declared ones. The canonical form includes the
   declared `keys` byte hash.
@@ -2041,11 +2057,16 @@ All variants are `#[non_exhaustive]` per I10 on the parent enum.
 | `RelationshipKeyNotJoinable { relationship_id, key_pair_index, side, role }` | `COMP_E_0403` | `§2.3` — `KeyPair` references a `Measure` / `Metric` / `Filter` rather than `Key` / `Dimension`. |
 | `CompositionRoleConflict { composition_name, name, roles }` | `COMP_E_0404` | `§6.2` — constituents declare same name with different roles (Dimension vs Measure). |
 | `CompositionAggregationConflict { composition_name, name, aggregations }` | `COMP_E_0405` | `§6.4` — constituents declare same Measure name with different `agg:`. |
-| `JoinsetCardinalityOverride { joinset_name, relationship_id, attempted, declared }` | `COMP_E_0406` | `§13.3` — `Joinset` tries to override per-edge `Cardinality`. |
 | `JoinsetUnknownRelationship { joinset_name, relationship_name }` | `COMP_E_0407` | `Joinset` references a `Relationship` that does not exist. |
 | `JoinsetUnreachableConstituent { joinset_name, constituent }` | `COMP_E_0408` | `Joinset` declares a constituent not connected to the root via declared `Relationship`s. |
-| `ImplicitEnumerationExploded { count, cap }` | `COMP_E_0409` | `§10.4` / `§10.5` — implicit Joinset + Unionset enumeration exceeded `MAX_IMPLICIT_ENUMERATION_COUNT`. Author tightens the implicit graph (declare explicit Joinsets for common subsets, restructure Relationships, or add `Forward` directionality). |
-| `ExplicitImplicitCompositionClash { explicit_name, canonical_kind, candidate_differentiators }` | `COMP_E_0414` | `§10.6` / `§13.5` — explicit `Joinset` / `Unionset` canonical form matches an enumerable implicit composition. Author either drops the explicit declaration or adds a differentiator (per-leg `JoinType` override, `filter:`, declared `keys`, or non-shortest path). |
+| `ImplicitEnumerationExploded { count, cap }` | `COMP_E_0409` | `§10.4` / `§10.5` — implicit Joinset + Unionset enumeration exceeded `MAX_IMPLICIT_ENUMERATION_COUNT`. Author tightens the implicit graph by declaring explicit Joinsets for common subsets or restructuring Relationships. |
+| `ExplicitImplicitCompositionClash { explicit_name, canonical_kind, candidate_differentiators }` | `COMP_E_0414` | `§10.6` / `§13.5` — explicit `Joinset` / `Unionset` canonical form matches an enumerable implicit composition. Author either drops the explicit declaration or adds a differentiator (scope-local `Relationship` shadow, Joinset-level `filter:`, declared `keys`, or non-shortest path). |
+
+`COMP_E_0406 JoinsetCardinalityOverride` is **retired (2026-05-12)**:
+the per-edge override surface (`JoinTypeOverrides`) is removed; a
+Joinset that needs different join semantics declares a scope-local
+`Relationship` per `§13.3`, which is a full independent declaration,
+not an override. Code reserved for forward-compat (no MINOR re-allocation).
 
 ### 14.2 `ValidateError` additions
 
@@ -2066,9 +2087,8 @@ compile-stage codes when they're scoped to the same conceptual area.
 | Variant | Code | When |
 |---|---|---|
 | `AmbiguousImplicitComposition { constituent_set, candidates }` | `PLAN_E_0500` | `§11.4` / `§9.1` bullet 2 — two or more compositions of equal canonical cost cover the same Request constituent set (path ambiguity, e.g. billing-vs-shipping). `candidates: Vec<DataKindName>` cites every conflicting composition (explicit or implicit, with `ImplicitId` for the latter). |
-| `NoCompositionPath { from, to }` | `PLAN_E_0501` | `§11.4` — no composition (explicit or implicit) covers the Request constituent set. Includes hints when a `Forward`-directionality `Relationship` was the cause. |
+| `NoCompositionPath { from, to }` | `PLAN_E_0501` | `§11.4` — no composition (explicit or implicit) covers the Request constituent set. |
 | `CompositionDepthExceeded { from_kinds, max_depth }` | `PLAN_E_0502` | `§11.4` / `§9.1` bullet 4 — required walk exceeds `MAX_IMPLICIT_COMPOSITION_DEPTH`; no implicit Joinset enumerated for the constituent set. Author declares an explicit Joinset to escape. |
-| `CrossCompositionForbidden { relationship_id, attempted_direction }` | `PLAN_E_0503` | `§11.4` / `§2.4` — explicit `Joinset` declares reverse traversal on a `Forward` `Relationship`. |
 | `AmbiguousCompositionReference { name, candidates }` | `PLAN_E_0505` | `§6.2` — Request uses bare name on a composed surface with multiple qualifications. `candidates: Vec<UnifiedName>` carries the valid qualified forms. |
 | `CompositionAggregationConflict { name, aggregations }` | `PLAN_E_0506` | `§6.4` — left in place for backward-compat; in v1 this fires only when a Request's selected fields cross composition boundaries in a way the eager materialization could not anticipate (rare). Most aggregation conflicts surface at compile per `COMP_E_0405`. |
 | `SemanticsNotOnSurface { name, surface }` | `PLAN_E_0507` | `§11.6` — Request's `from:` is set but selected name is not on the resolved surface. |
@@ -2079,6 +2099,11 @@ the unified Joinset model walks transparently through composed
 surfaces (`§9.1` bullet 7); the chaining prohibition no longer
 applies. The code is reserved for forward-compat (no MINOR
 re-allocation).
+
+`PLAN_E_0503 CrossCompositionForbidden` is **retired (2026-05-12)**:
+the authoring-layer `Directionality` enum is removed; every
+`Relationship` is bidirectional by construction. Code reserved for
+forward-compat (no MINOR re-allocation).
 
 The `candidates` field on `PLAN_E_0505` carries `Vec<UnifiedName>` of
 the valid qualified forms; diagnostic rendering includes one
@@ -2219,7 +2244,9 @@ pre-join aggregation preserves correctness.
 ### 15.5 `32` / `33` / `34` / `35` — surface / artefact / planner / IR
 
 - `32` (YAML surface) ratifies the author-facing syntax for
-  `relationships:`, `joinsets:`, `directionality:`, and defaults.
+  `relationships:` and `joinsets:` (including `cardinality:`,
+  `integrity:`, `optional:`, `cross_filter:`) and the defaults matrix
+  from `18 §2.7`.
 - `33` (SemanticManifest) persists `ResolvedRelationship`,
   `ResolvedComplexDataKind`, and the `RelationshipGraph` adjacency
   index. `16`'s canonical types are the input; `33` commits to an

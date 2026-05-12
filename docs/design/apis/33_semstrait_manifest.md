@@ -681,16 +681,22 @@ pub struct ResolvedRelationship {
     pub from: DataKindName,
     pub to: DataKindName,
     pub keys: Vec<JoinKeyExprPair>,
+    pub filter: Option<crate::expr_block::ExprSource>,
     pub cardinality: Cardinality,
+    pub integrity: Integrity,
+    pub optional: Optional,
+    pub cross_filter: CrossFilter,
+    /// Derived at compile from `optional` per `18 §2.9`.
+    /// Carried on the manifest for downstream consumers (`JoinsetStrategy`,
+    /// `PlanNode::Join` emission) so they do not re-derive.
     pub join_type: JoinType,
-    pub directionality: Directionality,
 }
 
 // RelationshipId: ratified in `18 §2.1` as `pub struct RelationshipId(pub u32)`
 // with `#[non_exhaustive]` + `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]`.
 ```
 
-Every `RelationshipId` is SemanticManifest-unique; IDs are not stable across recompiles (same rationale as `BindingId`, per `14b §4.2` Q6). `JoinKeyExprPair`, `Cardinality`, `JoinType`, and `Directionality` are ratified in `18 §2.3`–`§2.6` and re-exported via `manifest::relationship`. (Historical note: the Model-layer `KeyPair` name is retired in favor of `JoinKeyExprPair` per `18 §2.6`.)
+Every `RelationshipId` is SemanticManifest-unique; IDs are not stable across recompiles (same rationale as `BindingId`, per `14b §4.2` Q6). `JoinKeyExprPair`, `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, and (derived) `JoinType` are ratified in `18 §2` and re-exported via `manifest::relationship`. **Note:** `optional` and `cross_filter` on the manifest layer are non-optional (`Optional`, `CrossFilter`) — the Model-layer `Option<Optional>` / `Option<CrossFilter>` are resolved to concrete values at compile per `18 §2.7`'s defaults matrix (or per author declaration for `OneToOne` / `ManyToMany`). The Model-layer authored `directionality:` field is retired (2026-05-12); every relationship is bidirectional at the manifest layer by construction. (Historical note: the Model-layer `KeyPair` name is retired in favor of `JoinKeyExprPair` per `18 §2.8`.)
 
 ### 8.2 `ResolvedRelationshipGraph`
 

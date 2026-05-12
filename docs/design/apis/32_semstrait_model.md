@@ -67,10 +67,11 @@ semantic_model:
     - name: orders_to_customers
       from: orders
       to:   customers
-      join_type: left
       keys: [{ from: customer_id, to: id }]
-      cardinality: many_to_one
-      directionality: bidirectional
+      cardinality: many_to_one          # required
+      integrity: assumed                # default; alternatives: enforced | none
+      optional: none                    # default per 18 §2.7; required on 1:1 / m:m
+      cross_filter: left                # default per 18 §2.7; required on 1:1 / m:m
 ```
 
 Every child block is optional except `name:`. An empty model — `semantic_model: { name: ... }` — parses successfully. A non-empty model with zero data kinds is a `ValidateErrorKind::EmptyModel` at the validate stage (§9.5).
@@ -1055,7 +1056,7 @@ Per I11. `io` is default-off so the historical pure-type consumer of `semstrait-
 
 | Scope                    | Doc                                                                                    | What lives there                                                                                                                                                                                                                                                                                                                                                                                      |
 | ------------------------ | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Canonical entities**   | `[../foundations/18_entities.md](../foundations/18_entities.md)`                       | `**Relationship`, `RelationshipId`, `JoinType`, `Cardinality`, `Directionality`, `TemporalShape`, `ScdType`, `Dimension` / `Measure` / `Metric`, `DimensionType` + body structs, `Additivity`, filter taxonomy, `AiContext`, `Keys`, `SemanticMappingValue` shape, root-pool reference / override grammar, `SR-E-`* entity-level rules. Authoritative for every entity struct shape embedded in 32.** |
+| **Canonical entities**   | `[../foundations/18_entities.md](../foundations/18_entities.md)`                       | `**Relationship`, `RelationshipId`, `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, derived `JoinType`, `TemporalShape`, `ScdType`, `Dimension` / `Measure` / `Metric`, `DimensionType` + body structs, `Additivity`, filter taxonomy, `AiContext`, `Keys`, `SemanticMappingValue` shape, root-pool reference / override grammar, `SR-E-`* entity-level rules. Authoritative for every entity struct shape embedded in 32.** |
 | Dataset interior         | `[../data-kinds/21_dataset.md](../data-kinds/21_dataset.md)`                           | Per-Dataset YAML: `dimensions:`, `measures:`, `metrics:`, `filters:`, `keys:`, leaf-only `extras` semantics                                                                                                                                                                                                                                                                                           |
 | Grainset interior        | `[../data-kinds/22_grainset.md](../data-kinds/22_grainset.md)`                         | Per-Grainset YAML: child composition, grain-axis, `temporal:` in extras                                                                                                                                                                                                                                                                                                                               |
 | Unionset interior        | `[../data-kinds/23_unionset.md](../data-kinds/23_unionset.md)`                         | Per-Unionset YAML: children, `mode:`, coverage                                                                                                                                                                                                                                                                                                                                                        |

@@ -1,29 +1,31 @@
 ---
 
 ## prereqs: [00, 11, 13, 14, 15, 16, 17, 18, 20, 21, 26, 32]
+
 authoritative-for:
-  - the `Unionset` variant's authoring surface — which fields are explicit (authored) vs. implicit (compile-derived); cross-references the type-level shape in `32 §3.3` (`Unionset` / `NestedUnionset` concrete forms), `32 §3.2` (`UnionsetBody`), and `32 §4` (`ComplexExtras`)
-  - the variant-local `UnionMode` v1 roster (`{All, Unique}`, default `All`, `#[non_exhaustive]`) — cross-referenced from `32 §3.2`
-  - the v1 inference-only per-child Coverage model — no authored per-child override; fold from each child's own interface + Binding-level Coverage; default behavior is non-strict (a Semantics not provided by some child is NullFilled in that child's branch)
-  - the canonical fan-out mechanism shared between explicit Unionsets and implicit Unionsets (multi-source `Dataset` per `21 §3.2`) — per-branch sub-aggregation + UNION/UNION ALL + conditional final-aggregation, with literals + per-source `Metadata` driving disjointness elision
-  - the V1 strict TemporalShape equivalence rule — children's shape (kind including SCD subtype + grain) must be equivalent; cascade-up from children to the Unionset's effective `extras.temporal:`; future smart alignment is post-v1
-  - plan-time observable invariants for Unionset resolution — per-source pre-aggregation always emitted when Measures / Metrics are requested; NULL-fill projection at the seam; column-type reconciliation
-  - the Unionset-specific Precondition surfaces — `VALID_E_2300`–`2399` (structural), `COMP_E_2300`–`2399` (compile), `PLAN_E_2300`–`2399` (plan)
+
+- the `Unionset` variant's authoring surface — which fields are explicit (authored) vs. implicit (compile-derived); cross-references the type-level shape in `32 §3.3` (`Unionset` / `NestedUnionset` concrete forms), `32 §3.2` (`UnionsetBody`), and `32 §4` (`ComplexExtras`)
+- the variant-local `UnionMode` v1 roster (`{All, Unique}`, default `All`, `#[non_exhaustive]`) — cross-referenced from `32 §3.2`
+- the v1 inference-only per-child Coverage model — no authored per-child override; fold from each child's own interface + Binding-level Coverage; default behavior is non-strict (a Semantics not provided by some child is NullFilled in that child's branch)
+- the canonical fan-out mechanism shared between explicit Unionsets and implicit Unionsets (multi-source `Dataset` per `21 §3.2`) — per-branch sub-aggregation + UNION/UNION ALL + conditional final-aggregation, with literals + per-source `Metadata` driving disjointness elision
+- the V1 strict TemporalShape equivalence rule — children's shape (kind including SCD subtype + grain) must be equivalent; cascade-up from children to the Unionset's effective `extras.temporal:`; future smart alignment is post-v1
+- plan-time observable invariants for Unionset resolution — per-source pre-aggregation always emitted when Measures / Metrics are requested; NULL-fill projection at the seam; column-type reconciliation
+- the Unionset-specific Precondition surfaces — `VALID_E_2300`–`2399` (structural), `COMP_E_2300`–`2399` (compile), `PLAN_E_2300`–`2399` (plan)
 refined-by:
-  - 22 (Grainset — composes Dataset / Unionset-level resolution; shares the per-source pre-aggregation discipline at level boundaries)
-  - 24 (Joinset — composes Dataset / Unionset / Grainset-level resolution; Joinset is the authoritative carrier of per-hop composition mechanics that `23` deliberately does not author)
-  - 25 (Applicability matrix — per-variant consumption cells citing `23`'s consumer contract)
-  - 33 (`semstrait-manifest` — `ResolvedDataKind` family persistence; `Unionset`'s resolved shape and implicit-Unionset hash-id assignment live there)
-  - 34 (`semstrait-planner` — concrete `plan` entry point and `UnionsetStrategy` algorithm body)
-  - 35 (`semstrait-ir` — `PlanNode::{Project, Filter, Agg, Union}` variants emitted by `UnionsetStrategy`; `UnionMode` projection to engine semantics)
-  - 36 (`semstrait-adapter` — engine rendering of `UNION` / `UNION ALL` semantics)
+- 22 (Grainset — composes Dataset / Unionset-level resolution; shares the per-source pre-aggregation discipline at level boundaries)
+- 24 (Joinset — composes Dataset / Unionset / Grainset-level resolution; Joinset is the authoritative carrier of per-hop composition mechanics that `23` deliberately does not author)
+- 25 (Applicability matrix — per-variant consumption cells citing `23`'s consumer contract)
+- 33 (`semstrait-manifest` — `ResolvedDataKind` family persistence; `Unionset`'s resolved shape and implicit-Unionset hash-id assignment live there)
+- 34 (`semstrait-planner` — concrete `plan` entry point and `UnionsetStrategy` algorithm body)
+- 35 (`semstrait-ir` — `PlanNode::{Project, Filter, Agg, Union}` variants emitted by `UnionsetStrategy`; `UnionMode` projection to engine semantics)
+- 36 (`semstrait-adapter` — engine rendering of `UNION` / `UNION ALL` semantics)
 
 # 23. Unionset (`ComplexDataKind`)
 
 > **Reconciliation (post-thirteenth-pass cascade, 2026-05-03).** The v1 authoring-layer canonical shape for `Unionset` is ratified across:
 >
 > - `[20_taxonomy.md §2](./20_taxonomy.md)` — sealed trait hierarchy (`DataKind`, `ComplexDataKind`, `PublicDataKind`, `NestedDataKind`); `Unionset` implements `ComplexDataKind + PublicDataKind`, `NestedUnionset` implements `ComplexDataKind + NestedDataKind`.
-> - `[../apis/32_semstrait_model.md §3.2](../apis/32_semstrait_model.md)` — `UnionsetBody { base: DataKindBase<ComplexExtras>, datasets, grainsets, joinsets, mode: UnionMode }`. Children are inlined `Nested*` structs (no `DataKindRef` mechanism for cross-Complex child references in v1).
+> - `[../apis/32_semstrait_model.md §3.2](../apis/32_semstrait_model.md)` — `UnionsetBody { base: DataKindBase<ComplexExtras>, datasets, grainsets, joinsets, mode: UnionMode }`. Children are inlined `Nested`* structs (no `DataKindRef` mechanism for cross-Complex child references in v1).
 > - `[../apis/32_semstrait_model.md §3.3](../apis/32_semstrait_model.md)` — `Unionset` and `NestedUnionset` concrete forms.
 > - `[../apis/32_semstrait_model.md §4](../apis/32_semstrait_model.md)` — `ComplexExtras { temporal: Option<TemporalShape> }`; Unionset authors only `temporal:` in `extras` (no `catalog` / `storage` / `semantic_mapping`, per R-6 / SR-5).
 > - `[../foundations/18_entities.md](../foundations/18_entities.md)` — canonical entity types consumed by `UnionsetBody`'s SemanticInterface: Dimensions / Measures / Metrics / Keys / Filters; inline-vs-`ref` grammar for entity-level reuse.

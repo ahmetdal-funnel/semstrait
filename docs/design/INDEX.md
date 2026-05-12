@@ -26,7 +26,8 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 |---|---|---|
 | Pipeline semantics and stage boundaries | [`foundations/10_resolution_pipeline.md`](foundations/10_resolution_pipeline.md) | [`apis/30_api_contracts.md`](apis/30_api_contracts.md) |
 | Names, scopes, Semantics elements | [`foundations/11_names_and_scopes.md`](foundations/11_names_and_scopes.md) | [`foundations/16_composition.md`](foundations/16_composition.md) |
-| Types, expressions, function semantics | [`foundations/13_types_and_grain.md`](foundations/13_types_and_grain.md) | [`foundations/14_expressions.md`](foundations/14_expressions.md), [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md), [`foundations/14b_expression_resolution.md`](foundations/14b_expression_resolution.md) |
+| Types, expressions, function semantics | [`foundations/13_types_and_grain.md`](foundations/13_types_and_grain.md) | [`foundations/14_expressions.md`](foundations/14_expressions.md), [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md), [`foundations/14b_expression_resolution.md`](foundations/14b_expression_resolution.md), [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
+| Expression pipeline, sugar, placement | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) | [`foundations/14_expressions.md`](foundations/14_expressions.md), [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md), [`apis/34_semstrait_planner.md`](apis/34_semstrait_planner.md) |
 | Mapping/binding and metadata synthesis | [`foundations/15_mapping_and_binding.md`](foundations/15_mapping_and_binding.md) | [`apis/32_semstrait_model.md`](apis/32_semstrait_model.md), [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) |
 | Temporal semantics | [`foundations/17_temporal_shape.md`](foundations/17_temporal_shape.md) | [`data-kinds/22_grainset.md`](data-kinds/22_grainset.md), [`data-kinds/23_unionset.md`](data-kinds/23_unionset.md) |
 | DataKind taxonomy and variant behavior | [`data-kinds/20_taxonomy.md`](data-kinds/20_taxonomy.md) | [`data-kinds/21_dataset.md`](data-kinds/21_dataset.md), [`data-kinds/22_grainset.md`](data-kinds/22_grainset.md), [`data-kinds/23_unionset.md`](data-kinds/23_unionset.md), [`data-kinds/24_joinset.md`](data-kinds/24_joinset.md), [`data-kinds/25_applicability_matrix.md`](data-kinds/25_applicability_matrix.md), [`data-kinds/26_nesting_matrix.md`](data-kinds/26_nesting_matrix.md) |
@@ -50,6 +51,7 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 - `16` [`foundations/16_composition.md`](foundations/16_composition.md) — relationships and composed interfaces.
 - `17` [`foundations/17_temporal_shape.md`](foundations/17_temporal_shape.md) — temporal shape model.
 - `18` [`foundations/18_entities.md`](foundations/18_entities.md) — canonical entity type definitions.
+- `19` [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) — two-phase expression pipeline, sugar contract, Phase B placement.
 
 ### DataKinds (2x)
 - `20` [`data-kinds/20_taxonomy.md`](data-kinds/20_taxonomy.md) — taxonomy and shared invariants.
@@ -95,13 +97,17 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 | Pipeline (`parse -> validate -> compile -> plan -> optimize -> adapt`) | [`foundations/10_resolution_pipeline.md`](foundations/10_resolution_pipeline.md) |
 | Semantics element types and naming constraints | [`foundations/11_names_and_scopes.md`](foundations/11_names_and_scopes.md) |
 | `DataType`, `Grain` | [`foundations/13_types_and_grain.md`](foundations/13_types_and_grain.md) |
-| `Expr`, `SemanticExpr`, `PhysicalExpr` | [`foundations/14_expressions.md`](foundations/14_expressions.md) |
+| `Expr`, `SemanticExpr`, `PhysicalExpr` | [`foundations/14_expressions.md`](foundations/14_expressions.md), [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) (type-architectural form) |
 | `CanonicalFn`, `FunctionRegistry` | [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md) |
 | Expression substitution/resolution | [`foundations/14b_expression_resolution.md`](foundations/14b_expression_resolution.md) |
+| Two-phase expression flow, `resolve`, sugar (Family A/B) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
+| `Accessor`, `MeasureAccessor`, `DimensionAccessor`, `MetricAccessor`, `KeyAccessor`, `Parameter` | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
+| `DimensionRef`, `DimensionVariation` (Request shape) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
+| `Additivity`, `DimensionAxis` (function-tag axis) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md), [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md), [`foundations/18_entities.md`](foundations/18_entities.md) |
 | `SemanticMapping` and binding flow | [`foundations/15_mapping_and_binding.md`](foundations/15_mapping_and_binding.md) |
 | `Relationship`, composed interface semantics | [`foundations/16_composition.md`](foundations/16_composition.md) |
 | `TemporalShape` and shape semantics | [`foundations/17_temporal_shape.md`](foundations/17_temporal_shape.md) |
-| Canonical entities (`JoinType`, `DimensionType`, `AggregationType`, etc.) | [`foundations/18_entities.md`](foundations/18_entities.md) |
+| Canonical entities (`Cardinality`, `Integrity`, `Optional`, `CrossFilter`, derived `JoinType`, `DimensionType`, `AggregationType`, etc.) | [`foundations/18_entities.md`](foundations/18_entities.md) |
 | `DataKind` taxonomy and trait axes | [`data-kinds/20_taxonomy.md`](data-kinds/20_taxonomy.md) |
 | Typed diagnostics contract and observability policy | [`apis/30_api_contracts.md`](apis/30_api_contracts.md) |
 | Unified API error sum (`SemStraitErrorKind`) | [`apis/38_semstrait_api.md`](apis/38_semstrait_api.md) |
@@ -120,8 +126,8 @@ Current snapshot:
 
 | Directory | Files | Lines |
 |---|---:|---:|
-| `open/` | 23 | 2631 |
-| `closed/` | 19 | 1352 |
+| `open/` | 23 | ~2630 |
+| `closed/` | 20 | ~1450 |
 | `deferred/` | 18 | 797 |
 
 For registry-specific questions, use the aggregate navigator:

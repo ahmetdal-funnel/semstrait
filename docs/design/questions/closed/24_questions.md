@@ -30,6 +30,8 @@ purpose: Resolved questions originally raised against `data-kinds/24_joinset.md`
 
 **Status: CLOSED.** v1 ratifies "no `Cardinality` override". The declared `Relationship.cardinality` is authoritative for all consumers; sophisticated authors restructure the Model (junction-table DataKind per `16 §3.3.4`) rather than override. Round-1 framing retained for historical reference.
 
+**Forward note (2026-05-12, item K).** The entire override surface (`JoinTypeOverrides` / `HopPosition`) is retired with the relationship-block rebase (see `Q-24-XX` below). The original "no `Cardinality` override" answer is unchanged in effect — a Joinset that asserts different cardinality declares a scope-local `Relationship` (`18 §2.10`), which is an independent declaration, not an "override" of the root-level claim. The original closure rationale (declared `cardinality` is authoritative; junction-table modeling for tighter constraints) carries through to the scope-local model.
+
 **Question.** `24 §5.3`'s `JoinsetStrategy` override mechanism currently covers `JoinType` only. Should `overrides` also permit pinning a hop's effective `Cardinality` — e.g. declaring "treat this `ManyToMany` hop as `OneToMany` for this Joinset because the author knows the Joinset's slice satisfies the tighter constraint"?
 
 **Refs.**
@@ -114,6 +116,8 @@ purpose: Resolved questions originally raised against `data-kinds/24_joinset.md`
 
 **Status: CLOSED.** v1 ratifies "no per-hop filters". `JoinHop` carries only `relationship`, `direction`, `to` (`24 §4.2`). Filters are declared at the Joinset level (`§2.6`) and the planner pushes them where safe. Authors needing per-hop scoping push the filter into the member's own interface or declare a narrower member DataKind. Round-1 framing retained for historical reference.
 
+**Forward note (2026-05-12, item K).** With the override-surface retirement, the scope-local `Relationship` mechanism (`18 §2.10`, `16 §13.3`) becomes the natural home for per-hop concerns that diverge from the root-level declaration — including residual `filter:` predicates that only apply within this Joinset. The original "no per-hop filters as `JoinHop` field" answer carries through; the scope-local Relationship's `filter:` field provides the equivalent expressive power at the Relationship layer, which is structurally cleaner.
+
 **Question.** Should `ExplicitPath.hops[i]` permit a per-hop filter expression — e.g. "only join with `addresses` where `country = 'US'`" — declared at the Joinset level?
 
 **Refs.**
@@ -140,3 +144,41 @@ purpose: Resolved questions originally raised against `data-kinds/24_joinset.md`
 - `24 §5.5` step 3 — SQL-side NULL-fill handled by JoinType at emission time.
 
 **Current position.** Follow `16 §7.3.3`. Join-side NULL-fill is a JoinType concern, not a FieldProvenance concern.
+
+---
+
+## Q-24-11 — `JoinTypeOverrides` / `HopPosition` per-hop override surface — CLOSED (2026-05-12)
+
+**Status: CLOSED — retired.** The per-hop override surface on `JoinsetDataKind` is retired with the relationship-block rebase (item K, STATUS §2). `overrides: JoinTypeOverrides` and the companion `HopPosition(u16)` newtype are removed from `JoinsetDataKind` (`24 §2.2`). Divergent join semantics inside a Joinset are now declared via **scope-local `Relationship`** entries in the Joinset's own `relationships:` block (`18 §2.10`, `16 §13.3`, `24 §5.3.2`).
+
+**Decision rationale.**
+
+- **Semantic-first alignment.** The new authoring shape (`cardinality` + `integrity` + `optional` + `cross_filter`) is the contract; `JoinType` is derived. A per-hop override that mutated only the operational `JoinType` cut across the new semantic layer awkwardly — authors would have ended up re-asserting `optional` indirectly through `JoinType` mid-Joinset.
+- **Single mechanism.** A scope-local `Relationship` is a full Relationship: it carries `cardinality`, `integrity`, `optional`, `cross_filter`, `keys`, and `filter` together. Authors who need to vary join semantics inside a Joinset already need to think about the full shape, not just the mechanical join kind.
+- **Surface symmetry.** `JoinsetBody.relationships` parallels `SemanticModel.relationships` exactly (per `18 §2.10`); there is no parallel override surface to learn, no per-position keying, and no override-legality matrix.
+
+**Retired surface.**
+
+- `JoinTypeOverrides` struct (`24 §2.2` legacy).
+- `HopPosition(u16)` newtype (`24 §2.2` legacy).
+- `JoinsetDataKind.overrides: JoinTypeOverrides` field (`24 §2.2` legacy).
+- `EFFECTIVE_JOIN_TYPE(hop, overrides, manifest)` pseudocode signature replaced by `EFFECTIVE_JOIN_TYPE(hop, manifest)` (`24 §5.3.1`).
+
+**Retired error codes (numbers reserved for forward-compat).**
+
+- `VALID_E_2407 JoinsetOverridesForNonexistentHop` (`24 §9`).
+- `COMP_E_2409 JoinsetReverseForwardOnlyRelationship` (induced by `Q-COMP-007` retirement; `24 §10`).
+- `COMP_E_2411 JoinsetIllegalJoinTypeOverride` (`24 §10`).
+- `COMP_E_2412 JoinsetAsOfDowngradeForbidden` (`24 §10`).
+- `COMP_E_2413 JoinsetAsOfShapeMismatch` (`24 §10`).
+- `PLAN_W_2401 JoinsetJoinTypeOverrideAdvisory` (`24 §11`).
+
+**Refs.**
+
+- `24 §2.2` — `JoinsetDataKind` post-retirement shape (carries `relationships: Vec<Relationship>` instead of `overrides`).
+- `24 §5.3` — collapsed to `§5.3.1` (default selection — derivation from `optional`) and `§5.3.2` (scope-local Relationship as the v1 mechanism for divergent semantics).
+- `16 §13.3` — composition-side ratification of the scope-local shadow mechanism.
+- `18 §2.10` — Relationship struct's site-and-scope rule.
+- STATUS reconciliation item K (2026-05-12).
+
+**Forward-note touch points.** `Q-24-03` (Cardinality override) and `Q-24-07` (per-hop filter pushdown) updated with cross-references to this closure — the original "no per-hop X" answers carry through to the scope-local model, which provides the equivalent expressive power at the Relationship layer.

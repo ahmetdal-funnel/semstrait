@@ -83,7 +83,11 @@ Detailed semantics live in owning docs. This section is a compact term map; the 
 | `Request`                   | Query-time semantic request                          | `apis/34_semstrait_planner.md`                                        |
 | `SemanticPlan`              | Canonical plan tree                                  | `apis/35_semstrait_ir.md`                                             |
 | `EngineArtifact`            | Adapter output artifact                              | `apis/36_semstrait_adapter.md`                                        |
-| `Expr`                      | Canonical expression AST                             | `foundations/14_expressions.md`                                       |
+| `Expr`                      | Canonical expression AST (shared trait surface)      | `foundations/14_expressions.md`, `foundations/19_expression_flow.md`  |
+| `SemanticExpr` / `PhysicalExpr` | Two-form expression types (Phase A → Phase B)    | `foundations/19_expression_flow.md`                                   |
+| `Accessor` / `Parameter`    | Per-entity sugar accessor / compile-emitted placeholder | `foundations/19_expression_flow.md`                                |
+| `DimensionRef`              | Structured Request Dimension (name + variation)      | `foundations/19_expression_flow.md`, `apis/34_semstrait_planner.md`   |
+| `Additivity`                | Function-tag axis for aggregate composition          | `foundations/19_expression_flow.md`, `foundations/14a_function_catalog.md`, `foundations/18_entities.md` |
 | `CanonicalFn`               | Stable canonical function identity                   | `foundations/14a_function_catalog.md`                                 |
 | `SemanticMapping`           | Semantics-to-physical mapping contract               | `foundations/15_mapping_and_binding.md`, `foundations/18_entities.md` |
 | `Diagnostic<K>`             | Typed diagnostic carrier by stage kind               | `apis/31_semstrait_core.md`, `apis/30_api_contracts.md`               |

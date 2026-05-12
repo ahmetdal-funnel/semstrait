@@ -113,7 +113,7 @@ One subsection per canonical variant. Each subsection carries: (a) the canonical
 **Emission notes.**
 
 - **Canonical adapter emission uses `LEFT JOIN`** (bare form). All five SQL engines treat this identically to `LEFT OUTER JOIN`. Explicit `OUTER` is legal but verbose; Round-1 preference is bare.
-- **`Bidirectional` reversal under `16 §2.4.3`.** When the planner walks a `Left`-declared `Relationship` in reverse under `Directionality::Bidirectional`, the effective emission becomes `Right` (see `§3.3`). The adapter flips the keyword at emission time; the canonical-layer `JoinType` value is unchanged.
+- **Reverse-walk emission** (per `16 §2.4.1`). When the planner walks a Relationship with derived `JoinType::Left` in reverse, the effective emission becomes `Right` (see `§3.3`). The adapter flips the keyword at emission time; the canonical-layer `Relationship.optional` value is unchanged. Traversal is always bidirectional in v1 (`16 §2.4`, post-2026-05-12).
 
 ### 3.3 `Right`
 
@@ -139,13 +139,13 @@ Several engines recommend rewriting `RIGHT` to `LEFT` at the SQL layer for optim
 
 1. The `Relationship.from` / `.to` orientation is canonical (`16 §2.2`); preserving it in emission preserves the author's intent across debugging / plan-introspection tooling.
 2. Engine optimizers normalize internally; the emission form does not change execution cost on any first-class engine 🟡.
-3. Authors who want `LEFT`-style narrative swap `from` and `to` at the `Relationship` level (`16 §2.4`).
+3. Authors who want `LEFT`-style narrative swap `from` and `to` at the `Relationship` level (and use `optional: left` to derive `JoinType::Left`).
 
 Tracked as `TD-JOIN-RIGHT-REWRITE` (see Q-JOIN-MAP-003 for the opposite stance — automatic rewrite).
 
-#### 3.3.2 Reversal-under-`Bidirectional`
+#### 3.3.2 Reverse-walk keyword flip
 
-Per `16 §2.4.3`, a `Left`-declared `Relationship` walked in reverse under `Directionality::Bidirectional` emits as `RIGHT JOIN` (the `to` side becomes the "left" in the FROM clause; the original `from` side becomes the "right" and is preserved). Symmetrically, a `Right`-declared `Relationship` walked in reverse emits as `LEFT JOIN`. `Inner` and `Full` are inversion-symmetric and require no keyword flip. The adapter's per-direction emission logic handles this flip; the canonical-layer `JoinType` value is unchanged.
+Per `16 §2.4.1`, a Relationship with derived `JoinType::Left` walked in reverse emits as `RIGHT JOIN` (the `to` side becomes the "left" in the FROM clause; the original `from` side becomes the "right" and is preserved). Symmetrically, derived `Right` walked in reverse emits as `LEFT JOIN`. `Inner` and `Full` are inversion-symmetric and require no keyword flip. The adapter's per-direction emission logic handles this flip; the canonical `Relationship.optional` value is unchanged. (Traversal is always bidirectional in v1 per `16 §2.4`; the authoring-layer `Directionality` enum was retired 2026-05-12.)
 
 ### 3.4 `Full`
 
@@ -200,7 +200,7 @@ See `temporal_shape_mapping.md §4.2` for the authoritative tier table with full
 
 #### 3.5.2 Round-1 emission status
 
-Per `17 §5.1` and `17 §10`, the planner does not emit `JoinType::AsOf(anchor)` in Round 1 and the `32` YAML surface keeps the `join_type:` enum closed at `Inner | Left | Right | Full`. This registry captures the **emission target** adapters will converge on once planner support lands. The cross-referenced `temporal_shape_mapping.md §3.5` / `§4.2` / `§6` rows are equally Round-1 draft; they carry the 🟡 marker pending adapter test-harness verification.
+Per `17 §5.1` and `17 §10`, the planner does not emit `JoinType::AsOf(anchor)` in Round 1; `JoinType` is derived at compile from `Relationship.optional` per `18 §2.9` with the v1 derivation roster staying `Inner | Left | Right | Full`. The `32` YAML surface carries `optional:`, not `join_type:` (post-2026-05-12 rebase). This registry captures the **emission target** adapters will converge on once planner-side `AsOf` activation lands. The cross-referenced `temporal_shape_mapping.md §3.5` / `§4.2` / `§6` rows are equally Round-1 draft; they carry the 🟡 marker pending adapter test-harness verification.
 
 ### 3.6 Reserved future variants — DEFERRED
 
