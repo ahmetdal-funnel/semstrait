@@ -289,11 +289,11 @@ pub fn resolve_refs(mut model: SemanticModel) -> Result<SemanticModel, ModelErro
         .collect();
 
     // Resolve refs in all entities (datasets + grainsets + unionsets + joinsets)
-    for dk in model.entities.values_mut() {
+    for (entity_name, dk) in &mut model.entities {
         let iface = dk.interface_mut();
-        resolve_dimension_entries(&mut iface.dimensions, &dim_map)?;
-        resolve_measure_entries(&mut iface.measures, &measure_map)?;
-        resolve_metric_entries(&mut iface.metrics, &metric_map)?;
+        resolve_dimension_entries(&mut iface.dimensions, &dim_map, entity_name)?;
+        resolve_measure_entries(&mut iface.measures, &measure_map, entity_name)?;
+        resolve_metric_entries(&mut iface.metrics, &metric_map, entity_name)?;
     }
 
     Ok(model)
@@ -302,12 +302,19 @@ pub fn resolve_refs(mut model: SemanticModel) -> Result<SemanticModel, ModelErro
 fn resolve_dimension_entries(
     entries: &mut BTreeMap<String, DimensionEntry>,
     map: &HashMap<&str, &Dimension>,
+    entity_name: &str,
 ) -> Result<(), ModelError> {
     for entry in entries.values_mut() {
         if let DimensionEntry::Ref(r) = entry {
             let name = &r.ref_name;
             let resolved = map.get(name.as_str()).ok_or_else(|| {
-                ModelError::RefResolution(format!("unknown dimension ref: '{}'", name))
+                let available: Vec<&str> = map.keys().copied().collect();
+                ModelError::RefResolution(format!(
+                    "unknown dimension ref '{}' in entity '{}'. Available dimensions: [{}]",
+                    name,
+                    entity_name,
+                    available.join(", ")
+                ))
             })?;
             *entry = DimensionEntry::Inline((*resolved).clone());
         }
@@ -318,12 +325,19 @@ fn resolve_dimension_entries(
 fn resolve_measure_entries(
     entries: &mut BTreeMap<String, MeasureEntry>,
     map: &HashMap<&str, &Measure>,
+    entity_name: &str,
 ) -> Result<(), ModelError> {
     for entry in entries.values_mut() {
         if let MeasureEntry::Ref(r) = entry {
             let name = &r.ref_name;
             let resolved = map.get(name.as_str()).ok_or_else(|| {
-                ModelError::RefResolution(format!("unknown measure ref: '{}'", name))
+                let available: Vec<&str> = map.keys().copied().collect();
+                ModelError::RefResolution(format!(
+                    "unknown measure ref '{}' in entity '{}'. Available measures: [{}]",
+                    name,
+                    entity_name,
+                    available.join(", ")
+                ))
             })?;
             *entry = MeasureEntry::Inline((*resolved).clone());
         }
@@ -334,12 +348,19 @@ fn resolve_measure_entries(
 fn resolve_metric_entries(
     entries: &mut BTreeMap<String, MetricEntry>,
     map: &HashMap<&str, &Metric>,
+    entity_name: &str,
 ) -> Result<(), ModelError> {
     for entry in entries.values_mut() {
         if let MetricEntry::Ref(r) = entry {
             let name = &r.ref_name;
             let resolved = map.get(name.as_str()).ok_or_else(|| {
-                ModelError::RefResolution(format!("unknown metric ref: '{}'", name))
+                let available: Vec<&str> = map.keys().copied().collect();
+                ModelError::RefResolution(format!(
+                    "unknown metric ref '{}' in entity '{}'. Available metrics: [{}]",
+                    name,
+                    entity_name,
+                    available.join(", ")
+                ))
             })?;
             *entry = MetricEntry::Inline((*resolved).clone());
         }
