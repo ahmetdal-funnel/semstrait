@@ -2602,18 +2602,18 @@ const SQL_KEYWORDS: &[&str] = &[
 
 fn looks_like_raw_sql(expr: &str) -> bool {
     let upper = expr.to_uppercase();
-    // Use word-boundary matching: keyword must be preceded/followed by a non-alphanumeric
-    // character (or be at the start/end of the string). This avoids false positives like
-    // "deleted" matching "DELETE" or "updated_at" matching "UPDATE".
+    // Word-boundary matching: keyword must be preceded/followed by a character
+    // that is not part of an identifier (alphanumeric or underscore).
+    // Underscore must be included because names like "unsubscribed_from_list"
+    // would otherwise match the FROM keyword.
+    let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     SQL_KEYWORDS.iter().any(|kw| {
         let mut start = 0;
         while let Some(pos) = upper[start..].find(kw) {
             let abs_pos = start + pos;
             let end_pos = abs_pos + kw.len();
-            let before_ok = abs_pos == 0
-                || !upper.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
-            let after_ok = end_pos == upper.len()
-                || !upper.as_bytes()[end_pos].is_ascii_alphanumeric();
+            let before_ok = abs_pos == 0 || !is_ident_char(upper.as_bytes()[abs_pos - 1]);
+            let after_ok = end_pos == upper.len() || !is_ident_char(upper.as_bytes()[end_pos]);
             if before_ok && after_ok {
                 return true;
             }
@@ -3369,6 +3369,29 @@ mod tests {
     fn test_parse_expr_reject_raw_sql() {
         let result = parse_expr("SELECT sum(amount) FROM orders", "bad_metric");
         assert!(matches!(result, Err(CompileError::RawSqlRejected { .. })));
+    }
+
+    #[test]
+    fn test_parse_expr_underscore_keyword_not_rejected() {
+        // "unsubscribed_from_list" contains FROM but underscore is an ident char — must not reject.
+        let result = parse_expr("klaviyo-unsubscribed_from_list", "klaviyo-unsubscribed_from_list");
+        assert!(result.is_ok(), "underscore-bounded FROM must not be rejected: {:?}", result);
+    }
+
+    #[test]
+    fn test_looks_like_raw_sql_true_cases() {
+        assert!(looks_like_raw_sql("SELECT a FROM b"));
+        assert!(looks_like_raw_sql("DELETE FROM users"));
+        assert!(looks_like_raw_sql("INSERT INTO orders VALUES (1)"));
+    }
+
+    #[test]
+    fn test_looks_like_raw_sql_false_cases() {
+        assert!(!looks_like_raw_sql("unsubscribed_from_list"));
+        assert!(!looks_like_raw_sql("updated_at"));
+        assert!(!looks_like_raw_sql("deleted_by"));
+        assert!(!looks_like_raw_sql("order_count"));
+        assert!(!looks_like_raw_sql("klaviyo-unsubscribed_from_list"));
     }
 
     #[test]
