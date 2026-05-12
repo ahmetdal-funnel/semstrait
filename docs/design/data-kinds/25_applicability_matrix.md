@@ -21,19 +21,6 @@ refined-by:
 
 ---
 
-## Table of Contents
-
-1. [Purpose and Scope](#1-purpose-and-scope)
-2. [The Matrix — Foundation Rule × DataKind Variant](#2-the-matrix--foundation-rule--datakind-variant)
-3. [Per-Variant Planner-Strategy Summary](#3-per-variant-planner-strategy-summary)
-4. [Per-Variant Rollup-Legality Summary](#4-per-variant-rollup-legality-summary)
-5. [Per-Variant Coverage & NULL-Fill Summary](#5-per-variant-coverage--null-fill-summary)
-6. [Per-Variant Error-Code Bands](#6-per-variant-error-code-bands)
-7. [Out-of-Scope for `25`](#7-out-of-scope-for-25)
-8. [Round-1 Open Items](#8-round-1-open-items)
-
----
-
 ## 1. Purpose and Scope
 
 ### 1.1 What `25` is
@@ -115,7 +102,7 @@ Cells that would otherwise read identical across the four columns are still writ
 
 ### 2.2 Pipeline — `10`
 
-Every variant participates in every pipeline stage. Per-variant specialization lives inside `validate_structure` / `compile_into` / `Strategy::resolve` hooks ratified in `20 §2.2` / `§5`.
+Every variant participates in every pipeline stage. Per-variant specialization lives in stage-owned hooks ratified per `20 §2.2` (lifecycle hooks live outside the sealed trait hierarchy): `validate` rules at `10 §3`, `compile` work at `15 §10` (Simple) / `16 §10.1` (Complex), and `Strategy::resolve` (`20 §5.2`).
 
 | Clause | `Simple` / Dataset | `Grainset` | `Unionset` | `Joinset` |
 |---|---|---|---|---|
@@ -128,13 +115,13 @@ Every variant participates in every pipeline stage. Per-variant specialization l
 
 Every `plan` / `optimize` / `adapt` cell is identical by construction — `20 §4.2`'s shared skeleton and I3 / I6 together forbid variant-specialization past the strategy-dispatch boundary.
 
-Per-variant specialization within each stage is confined to the hooks named in `20 §5.2`'s `DataKindOps` trait:
+Per-variant specialization within each stage is confined to the stage-owned hooks per `20 §2.2` (the sealed trait hierarchy carries only read-only accessors; lifecycle work is stage-owned):
 
 | Stage | Shared skeleton | Per-variant hook |
 |---|---|---|
-| `parse` | `parse_yaml_tree` (`10 §3.1`) | `DataKindOps::deserialize` (`20 §5.2`). |
-| `validate` | `run_structural_checks` accumulates diagnostics (`10 §3.2`). | `DataKindOps::validate_structure` (`20 §5.2`) — per-variant structural preconditions in `21 §7` / `22 §7` / `23 §8` / `24 §9`. |
-| `compile` | `resolve_bindings` + `resolve_interfaces` (`10 §3.3`). | `DataKindOps::compile_into` — emits `ResolvedSimpleDataKind` (`21 §2.3`) / `ResolvedGrainsetDataKind` (`22 §2.2`) / `ResolvedUnionset` (`23 §2.3`) / `ResolvedJoinset` (`24 §2.4`). |
+| `parse` | `parse_yaml_tree` (`10 §3.1`). | Per-variant YAML surface (`32 §3`) + `serde` derive on each `*Body` struct (`32 §3.2`). |
+| `validate` | `run_structural_checks` accumulates diagnostics (`10 §3.2`). | Per-variant structural preconditions dispatched at `10 §3` — rules in `21 §7` / `22 §7` / `23 §8` / `24 §9`. |
+| `compile` | `resolve_bindings` + `resolve_interfaces` (`10 §3.3`). | Per-variant compile work — `15 §10` for Simple (emits `ResolvedSimpleDataKind`, `21 §2.3`); `16 §10.1` for Complex (emits `ResolvedGrainsetDataKind` (`22 §2.2`) / `ResolvedUnionset` (`23 §2.3`) / `ResolvedJoinset` (`24 §2.4`)). |
 | `plan` | `Strategy::resolve` dispatched by variant tag (`20 §5.3`). | Per-variant `Strategy` impl in `21 §4` / `22 §10` / `23 §4` / `24 §5`. |
 | `optimize` | Variant-agnostic rule set (`10 §3.5`). | None. |
 | `adapt` | Variant-agnostic emission (`10 §3.6`). | None. |
@@ -170,7 +157,7 @@ The `11 §5` shape-vs-resolution split (a Semantics shape is locked across occur
 | Clause | `Simple` / Dataset | `Grainset` | `Unionset` | `Joinset` |
 |---|---|---|---|---|
 | `12 §2` nesting matrix — as parent | `n/a` — Simple never nests children (`12 §6`). | `always` — may contain `Simple` / `Unionset` / `Joinset`; same-variant self-nest banned (`12 §2` row `Grainset per level`). | `always` — may contain `Simple` / `Grainset` / `Joinset`; same-variant self-nest banned. | `always` — may contain `Simple` / `Unionset` / `Grainset` as members; same-variant self-nest banned. |
-| `12 §2` nesting matrix — as child | `always` — may nest under any `ComplexDataKind` (`12 §6.2`). | `always` — may be a Unionset branch or Joinset member; **deferred** as a Grainset child per `22 §3.4` `TD-GRAINSET-NESTED`. | `always` — may be a Grainset child or Joinset member; banned as a Unionset child (same-variant). | `always` — may be a Unionset branch or Grainset child; banned as a Joinset member (same-variant, `12 §2`). |
+| `12 §2` nesting matrix — as child | `always` — may nest under any `ComplexDataKind` (`12 §6.2`). | `always` — may be a Unionset branch or Joinset member; **forbidden** as a Grainset child per `26 §R2` (structural ban; `[TD-GRAINSET-NESTED]` retired). | `always` — may be a Grainset child or Joinset member; banned as a Unionset child (same-variant). | `always` — may be a Unionset branch or Grainset child; banned as a Joinset member (same-variant, `12 §2`). |
 | `12 §3` Unionset block shape | `n/a`. | `n/a`. | `always` — `unionsets:` block w/ ≥ 2 children (`12 §3.2`, `23 §2.1`). | `n/a`. |
 | `12 §4` Grainset block shape | `n/a`. | `always` — `grainsets:` block w/ ordered levels (`12 §4.2`, `22 §2.1`). | `n/a`. | `n/a`. |
 | `12 §5` Joinset block shape | `n/a`. | `n/a`. | `n/a`. | `always` — `joinsets:` block; binary arity in v1 per `12 §5.2` / `24 §2.5`. |
@@ -181,7 +168,7 @@ The canonical nesting matrix from `12 §2` is reproduced here in projection form
 | Parent \ Child | `Simple` | `Grainset` | `Unionset` | `Joinset` |
 |---|---|---|---|---|
 | `Simple` | n/a — no children (`12 §6`). | n/a. | n/a. | n/a. |
-| `Grainset` (per-level) | Legal (`12 §4.3`). | **Banned** — same-variant self-nest. Also [TD-GRAINSET-NESTED] (`22 §3.4`). | Legal. | Legal. |
+| `Grainset` (per-level) | Legal (`12 §4.3`). | **Banned** — same-variant self-nest per `26 §R2` (structural; `[TD-GRAINSET-NESTED]` retired). | Legal. | Legal. |
 | `Unionset` (per-branch) | Legal (`12 §3.2`). | Legal. | **Banned** — same-variant self-nest. | Legal. |
 | `Joinset` (per-member, v1 binary) | Legal (`12 §5.3`). | Legal. | Legal. | **Banned** — same-variant self-nest. |
 
@@ -192,7 +179,7 @@ All variants carry logical types. `Grain` participates in every variant but only
 | Clause | `Simple` / Dataset | `Grainset` | `Unionset` | `Joinset` |
 |---|---|---|---|---|
 | `13 §2` `DataType` catalog | `always` — on every Semantics + every `Binding` column (`21 §2.2`). | `always` — on every composed-surface Semantics (`22 §2.1`). | `always` — on every composed-surface Semantics; `23 §4.4` reconciles across children. | `always` — on every composed-surface Semantics + every `Relationship.keys` (`16 §12.2`). |
-| `13 §3` `Grain` enum + total coarseness order | `conditional` — optional `grain:` field on `SimpleDataKind` (`21 §2.2` / `§6`); shape-gated per `17`. | **`always`** — grain-axis binding is mandatory (`22 §2.1`'s `grain_axis`); child selection uses `Grain::coarseness()` (`22 §4.2`). | `conditional` — children should share a common grain or be rollable to a common coarsest per `17`; advisory `COMP_W_2308` (`23 §7`). | `conditional` — per-member grain is each member's concern; Joinset inherits anchor grain as the join's output grain by default (`24 §5.4`). |
+| `13 §3` `Grain` enum + total coarseness order | `conditional` — optional `grain:` field on `SimpleDataKind` (`21 §2.2` / `§6`); shape-gated per `17`. | **`always`** — per-child `extras.temporal.grain:` authoring is mandatory per SR-E-8 (`18 §3.4`; `22 §6.1`); ≥ 2 unique grains per Grainset (`22 §5.2`); routing-unit eligibility uses `Grain::coarseness()` (`22 §4.1`). | `conditional` — children should share a common grain or be rollable to a common coarsest per `17`; advisory `COMP_W_2308` (`23 §7`). | `conditional` — per-member grain is each member's concern; Joinset inherits anchor grain as the join's output grain by default (`24 §5.4`). |
 | `13 §4` `DimensionType` discriminator | `always` — authored on every Dimension (`13 §4`). | `always`. | `always`. | `always`. |
 | `13 §5` Keys vs Dimensions | `always` — Keys are declared separately from Dimensions (`13 §5.1`). | `always`. | `always`. | `always`. |
 | `13 §2.4` shape unification (authoritative cast rules) + `14a` cast policy | `always` — used at the Binding boundary (`15 §9`). | `always` — used during child-shape-conflict checks (`22 §8` `COMP_E_2204` / `COMP_E_2206`). | `always` — used during cross-child type reconciliation (`23 §4.4` / `§9.4`). `[CROSS-DOC-FIX-NEEDED]`: `23` cites `13 §7` as the cast-matrix owner; see `§1.3 CDF-23-01`. | `always` — used during `Relationship.keys` type agreement (`16 §12.2`). |
@@ -233,17 +220,17 @@ Round-1 decision recorded: no `Complex` variant authors `SemanticExpr` / `Physic
 | `15 §2` `Binding` | **`always`** — exactly one per `SimpleDataKind` (`15 §2.1`, `20 §2.3`, `21 §3.1`). | `via Simple children` — no own Binding (`20 §2.3` Invariant D1). | `via Simple children` — same. | `via Simple children` — same. |
 | `15 §3` `PhysicalSource` | `always` — ≥ 1 per Binding (`15 §3.5` glob expansion). | `via Simple children`. | `via Simple children`. | `via Simple children`. |
 | `15 §5` `ColumnMapping` | `always` — Column / Literal / Computed / Metadata per `15 §5.1`. | `via Simple children`. | `via Simple children`. | `via Simple children`. |
-| `15 §6` Coverage — Binding-level | `always` — one `Coverage` entry per `(Semantics, PhysicalSource)` (`15 §6.1`). | `via Simple children` — then lifted to `CompositionCoverage` per `16 §8.4` and `22 §6.1`. | `via Simple children` — then lifted per `23 §5`. | `via Simple children` — then lifted per `24 §8.4`. |
+| `15 §6` Coverage — Binding-level | `always` — one `Coverage` entry per `(Semantics, PhysicalSource)` (`15 §6.1`). | `via Simple children` — folded into per-effective-routing-unit Coverage at compile per `22 §3.2`; lifted to `CompositionCoverage` per `16 §8.4` only when cross-grain JOIN composition activates (`22 §3.4`). | `via children` — folded into bare per-child `Coverage` per `23 §3.2`; no `CompositionCoverage` post-rebase. | `via Simple children` — then lifted per `24 §8.4`. |
 
 Coverage gets re-visited at the composition layer in `§2.8` row `16 §8`; the Binding-level cell above is the leaf-per-`PhysicalSource` rule.
 
-`15`'s `Binding`-per-`Simple` rule is load-bearing enough to warrant an explicit table mapping the canonical Manifest-layer counterpart (`15 §7`) onto each variant:
+`15`'s `Binding`-per-`Simple` rule is load-bearing enough to warrant an explicit table mapping the canonical SemanticManifest-layer counterpart (`15 §7`) onto each variant:
 
-| `15` Manifest counterpart | Owned by | Consumers |
+| `15` SemanticManifest counterpart | Owned by | Consumers |
 |---|---|---|
 | `ResolvedColumnMapping` (`15 §7`) | `ResolvedSimpleDataKind.binding` (`21 §2.3`). | Every variant's plan emission reaches it via its Simple children. |
 | `ResolvedPhysicalSource` (`15 §7`) | Same. | Same. |
-| `ResolvedCoverage` (`15 §6` resolution) | Same. | `CompositionCoverage` fold in `16 §8.4` / `22 §6.1` / `23 §5` / `24 §8.4`. |
+| `ResolvedCoverage` (`15 §6` resolution) | Same. | `CompositionCoverage` fold in `16 §8.4` / `22 §3.2` (cross-grain JOIN only) / `24 §8.4`. Unionset uses bare per-child `Coverage` per `23 §3.2` (no `CompositionCoverage` post-rebase). |
 | `ResolvedSchema` (`15 §3.2`) | Same. | Type-agreement checks in `23 §4.4`, `24 §5.2` step 3. |
 
 ### 2.8 Composition — `16`
@@ -256,11 +243,11 @@ Coverage gets re-visited at the composition layer in `§2.8` row `16 §8`; the B
 | `16 §2` `Relationship` — consuming via implicit composition | `conditional` — when a Request spans multiple top-level DataKinds, any `Simple` may participate as a constituent (`16 §11.4`). | `conditional` — same; a Grainset exposes a composed surface that can participate as a constituent in implicit composition (`22 §1.2`). | `conditional` — same. | `always` — `Joinset.path` references Relationships by id (`24 §6`). |
 | `16 §3` `Cardinality` | `conditional` — consumed only when the `Simple` participates in implicit composition. | `conditional` — same. | `conditional` — same; also consumed in `Additivity × Cardinality` post-Union re-aggregation checks (`23 §7.4`). | `always` — per-hop walked `Cardinality` drives fan-out advisories (`24 §3.4` / `§5.4`). |
 | `16 §4` `JoinType` | `conditional` — used only in implicit composition. | `conditional` — same. | `conditional` — same. | `always` — per-hop `JoinType` + `24 §5.3`'s override-legality matrix. |
-| `16 §5` `ComposedSemanticInterface` | `n/a` — Simple exposes bare `SemanticInterface` (`20 §4.4` Invariant D5). | `always` — `composition_kind == Grainset` (`22 §2.3`). | `always` — `composition_kind == Unionset` (`23 §2.3`). | `always` — `composition_kind == Joinset` (`24 §2.4`). |
-| `16 §6` `UnifiedSemantics` merge rules | `n/a`. | `always` — trivial merge (children share the composed surface) (`22 §2.3`). | `always` — merge over heterogeneous children + cross-child name-collision policy (`23 §4.4` / `§5`). | `always` — merge with namespacing for shape-incompatible collisions (`24 §8.2`). |
-| `16 §7` `FieldProvenance` — `Native` / `Shared` / `Derived` | `n/a` — no provenance on a bare interface. | `always`. | `always`. | `always`. |
-| `16 §7.3.3` `FieldOwnership::NullFill` | `n/a`. | `n/a` — Grainset selection never emits `NullFill` in FieldProvenance (Coverage-layer `NullFill` is distinct; see `§2.7` row `15 §6`). | **`always`** — Unionset is the only `CompositionKind` that emits `FieldOwnership::NullFill` (`16 §7.3.3`, `23 §5.5`). | `n/a` — Joinset NULL-fill is carried by `JoinType` outer-join semantics, not by `FieldOwnership` (`24 §8.3`). |
-| `16 §8` `CompositionCoverage` | `n/a` — `Coverage` lives at the Binding level for Simple. | `always` — per-child projection onto the composed surface (`22 §6.1`). | `always` — per-child fold per `23 §5`. | `always` — per-member fold per `24 §8.4`. |
+| `16 §5` `ComposedSemanticInterface` | `n/a` — Simple exposes bare `SemanticInterface` (`20 §4.4` Invariant D5). | **`conditional`** — built ONLY for cross-grain JOIN composition (per `22 §3.4` / `§4.3`); single-unit-delegation case (`22 §4.2`) does not synthesize one. When built, `composition_kind == Grainset`. | `n/a` — post-thirteenth-pass cascade rebase (2026-05-03): Unionset uses bare `SemanticInterface` per `23 §3.2`; the `CompositionKind::Unionset` variant is retired in `16 §5.3`. | `always` — `composition_kind == Joinset` (`24 §2.4`). |
+| `16 §6` `UnifiedSemantics` merge rules | `n/a`. | **`conditional`** — same predicate as `16 §5` row above (only when cross-grain JOIN composition activates per `22 §4.3`). | `n/a` — Unionset uses its own bare `SemanticInterface` (`23 §3.2`); no `UnifiedSemantics` involvement post-rebase. | `always` — merge with namespacing for shape-incompatible collisions (`24 §8.2`). |
+| `16 §7` `FieldProvenance` — `Native` / `Shared` / `Derived` | `n/a` — no provenance on a bare interface. | **`conditional`** — only for cross-grain JOIN composition (`22 §3.4`); same predicate as `16 §5` row. | `n/a` — bare `SemanticInterface` has no `FieldProvenance`. | `always`. |
+| `16 §7.3.3` `FieldOwnership::NullFill` | `n/a`. | `n/a` — Grainset cross-grain composition uses LEFT OUTER JOIN; outer-join NULL-fill is carried by `JoinType::LeftOuter` semantics at plan time, not by `FieldOwnership`. | `n/a` — bare interface; Unionset's per-child seam emits `Cast(Null, _)` projections per `23 §4.3`, not via `FieldOwnership`. | `n/a` — Joinset NULL-fill is carried by `JoinType` outer-join semantics (`24 §8.3`). |
+| `16 §8` `CompositionCoverage` | `n/a` — `Coverage` lives at the Binding level for Simple. | **`conditional`** — built only for cross-grain JOIN composition (`22 §3.4` / `§3.2`); fold mirrors per-unit Coverage projection. Single-unit delegation reads per-unit Coverage directly (no `CompositionCoverage` synthesis). | `always` — per-child fold per `23 §3.2` / `§4`. | `always` — per-member fold per `24 §8.4`. |
 | `16 §9` explicit vs implicit composition | `n/a` — Simple is a leaf, neither explicit nor implicit. | **explicit** — Grainset is an explicit Complex (`16 §9.2`). | **explicit** — Unionset is an explicit Complex. | **explicit** — Joinset is the canonical explicit-composition DataKind (`16 §13`). |
 | `16 §10` materialization policy | `n/a`. | `always` — materialized at compile (`22 §8.1`). | `always` — materialized at compile (`23 §9`). | `always` — materialized at compile (`24 §2.4`). |
 | `16 §11` field-first resolution (entry point when `Request.from: None`) | `always` — a Simple may be the sole owner of a requested field (`16 §11.3` single-kind fast path). | `always` — a Grainset's composed surface can own requested fields; implicit composition may layer above it (`22 §1.2`). | `always` — a Unionset's composed surface owns its declared fields; implicit composition may layer above. | `always` — a Joinset's composed surface owns its declared fields; author uses `from: Some(joinset)` to target the pre-built surface (`24 §1.3`). |
@@ -268,16 +255,15 @@ Coverage gets re-visited at the composition layer in `§2.8` row `16 §8`; the B
 
 The per-variant interface-exposure invariant (`20 §4.4` D5) is reproduced by the `16 §5` row: `Simple` → `n/a`, every `Complex` → `always`.
 
-The `CompositionKind` enum distribution across the matrix is summarized in `16 §5.3`:
+The `CompositionKind` enum distribution across the matrix is summarized in `16 §5.3` (V1 carries 2 variants — Unionset retired post-thirteenth-pass cascade rebase 2026-05-03):
 
 | `CompositionKind` variant | Emitted by | `25` row pointer |
 |---|---|---|
-| `CompositionKind::Relationship` | `16 §11` implicit composition (any variant mix). | `§2.8` row `16 §11`. |
-| `CompositionKind::Joinset` | `Joinset` explicit composition (`24 §2.4`). | `§2.8` row `16 §5`, Joinset column. |
-| `CompositionKind::Unionset` | `Unionset` explicit composition (`23 §2.3`). | `§2.8` row `16 §5`, Unionset column. |
-| `CompositionKind::Grainset` | `Grainset` explicit composition (`22 §2.3`). | `§2.8` row `16 §5`, Grainset column. |
+| `CompositionKind::Joinset` (`Origin::Implicit`) | `16 §10.4` compile-time enumeration of Joinsets from the relationship graph. | `§2.8` row `16 §10`. |
+| `CompositionKind::Joinset` (`Origin::Explicit`) | Author-declared `Joinset` (`24 §2.4`). | `§2.8` row `16 §5`, Joinset column. |
+| `CompositionKind::Grainset` (`Origin::Explicit`) | `Grainset` cross-grain JOIN composition only (per `22 §3.4`); single-unit delegation does not produce a `CompositionKind`. Built at compile from declared `Key`s (per `18 §2.5`); per-pair JOIN-key index lives on `ResolvedGrainset` per `33`, not on `ComposedSemanticInterface`. | `§2.8` row `16 §5`, Grainset column. |
 
-A `Simple` never produces a `CompositionKind`; it exposes only a bare `SemanticInterface` per `20 §4.4` D5.
+Neither `Simple` nor `Unionset` produces a `CompositionKind` in V1: Simple exposes a bare `SemanticInterface` per `20 §4.4` D5; Unionset uses its own bare `SemanticInterface` per `23 §3.2` (post-rebase). Same-grain implicit Unionsets that arise inside a Grainset (per `22 §3.3`) are Grainset-internal constructs and do not carry a `CompositionKind` discriminator.
 
 ### 2.9 Temporal Shape — `17`
 
@@ -288,12 +274,12 @@ Vocabulary ratified in `17`; planner-side support is DEFERRED in places (see `00
 | `17 §2` `TemporalShape` vocabulary | `always` — as an optional declaration axis on the DataKind. | `always` — same. | `always` — same. | `always` — same. |
 | `17 §3.1` declaration site on `SimpleDataKind` | **`always`** — declared inline via `temporal_shape:` (`21 §5.1`). | `n/a` — Grainset itself does not carry a top-level shape; each child may (`17 §3.2`). | `n/a` — same. | `n/a` — same. |
 | `17 §3.2` Complex does NOT carry its own `TemporalShape` | `n/a`. | `always` — shape derived from children per `17`. | `always` — same; mixed-shape branches emit advisories (`23 §6.1`). | `always` — shape derived from the two members; `AsOf` activation per `17 §5` consults both sides. |
-| `17 §4` shape × `Grain` rollup matrix | `conditional` — legality gated per `17 §4.1`'s matrix; shape-less Simples default-legal (`21 §6.3`). | **`always`** — gates per-child eligibility in `22 §4.3` `ROLLUP_LEGAL` (`SnapshotRollupWithoutPin`, `SCDRollupWithoutAsOf`). | `conditional` — gates post-Union rollup shape per `23 §7` (`PLAN_E_2302`). | `conditional` — per-member rollup is each member's concern. |
-| `17 §5` `AsOf` `JoinType` | `n/a` — Simple has no `JoinType`. | `conditional` — when a Grainset child is itself an SCD, the grainset-level rollup requires as-of anchoring per `22 §5` `SCDRollupWithoutAsOf`. | `conditional` — cross-shape branches may require as-of reconciliation (`23 §6.3`, `[TD-UNIONSET-SHAPE-PLANNING]`). | **`always`** — `JoinType::AsOf` activation matrix gates per-hop overrides (`24 §7`, `COMP_E_2412`–`COMP_E_2414`). Also fires for implicit Relationship composition under `16 §11` — see next row. |
-| `17 §5` `AsOf` across implicit Relationship composition | `n/a`. | `conditional` — `16 §11`-synthesized composition over a Grainset constituent inherits the same as-of gating. | `conditional` — same. | `conditional` — redundant with explicit Joinset `AsOf`. |
+| `17 §4` shape × `Grain` rollup matrix | `conditional` — legality gated per `17 §4.1`'s matrix; shape-less Simples default-legal (`21 §6.3`). | **`always`** — gates per-routing-unit rollup wrapper emission per `22 §4.4` (`PLAN_E_2203 GrainsetSnapshotRollupWithoutPin`, `PLAN_E_2204 GrainsetSCDRollupWithoutAsOf`). | `conditional` — gates post-Union rollup shape per `23 §7` (`PLAN_E_2302`). | `conditional` — per-member rollup is each member's concern. |
+| `17 §5` `AsOf` `JoinType` | `n/a` — Simple has no `JoinType`. | `conditional` — when a Grainset child is itself an SCD, the grainset-level rollup requires as-of anchoring per `22 §5` `SCDRollupWithoutAsOf`. | `conditional` — cross-shape branches may require as-of reconciliation (`23 §6.3`, `[TD-UNIONSET-SHAPE-PLANNING]`). | **`always`** — `JoinType::AsOf` activation matrix gates per-hop overrides (`24 §7`, `COMP_E_2412`–`COMP_E_2414`). Also fires for implicit Joinsets (`Origin::Implicit`) enumerated at compile per `16 §10.4` — see next row. |
+| `17 §5` `AsOf` across implicit Joinsets | `n/a`. | `conditional` — `16 §10.4`-enumerated implicit Joinsets containing a Grainset constituent inherit the same as-of gating. | `conditional` — same. | `conditional` — uniform with `Origin::Explicit` Joinsets per the unified Joinset model. |
 | `17 §6` `Request.temporal` block (`as_of:`, time-range overrides) | DEFERRED per `17 §6.5` — no variant consumes in v1. | DEFERRED. | DEFERRED. | DEFERRED. |
-| `17 §7` `Additivity × TemporalShape` advisories | `conditional` — emits advisory when Simple's Measure `Additivity` and the Simple's `TemporalShape` appear inconsistent (`21 §5.2` / `PLAN_W_2102`). | `conditional` — emits advisory per child at strategy time (`22 §9.2` `PLAN_W_2202` mixed-shape). | `conditional` — emits advisories for cross-child shape mismatch (`23 §6.1` `COMP_W_2302`–`W_2306`). `[CROSS-DOC-FIX-NEEDED]`: `§1.3 CDF-17-01`. | `conditional` — emits advisory when `AsOf` is activated over a hop whose declared `JoinType` was non-`AsOf` (`24 §11.2` `PLAN_W_2404`). |
-| `17 §8` shape-gated composition rules (`17 §8.1` Unionset branches; `§8.2` Grainset levels; `§8.3` Joinset hops) | `n/a`. | `always` — Grainset levels are shape-gated per `17 §8.2` (consumed by `22 §4.3`). | `always` — Unionset branches are shape-gated per `17 §8.1` (consumed by `23 §6`). | `always` — Joinset hops are shape-gated per `17 §8.3` (consumed by `24 §7`). Implicit Relationship composition inherits the same gating via `16 §11` + `17 §5`. |
+| `17 §7` `Additivity × TemporalShape` advisories | `conditional` — emits advisory when Simple's Measure `Additivity` and the Simple's `TemporalShape` appear inconsistent (`21 §5.2` / `PLAN_W_2102`). | `n/a` — V1 strict equivalence (`22 §5.2`) makes shape mismatch a hard compile error (`COMP_E_2201`); the pre-rebase mixed-shape advisory (`PLAN_W_2202`) was retired. Per-child Additivity / Measure advisories are emitted by each child's own Strategy. | `conditional` — emits advisories for cross-child shape mismatch (`23 §6.1` `COMP_W_2302`–`W_2306`). `[CROSS-DOC-FIX-NEEDED]`: `§1.3 CDF-17-01`. | `conditional` — emits advisory when `AsOf` is activated over a hop whose declared `JoinType` was non-`AsOf` (`24 §11.2` `PLAN_W_2404`). |
+| `17 §8` shape-gated composition rules (`17 §8.1` Unionset branches; `§8.2` Grainset levels; `§8.3` Joinset hops) | `n/a`. | `always` — Grainset routing-unit selection / rollup is shape-gated per `17 §8.2` (consumed by `22 §4.4`). | `always` — Unionset branches are shape-gated per `17 §8.1` (consumed by `23 §6`). | `always` — Joinset hops are shape-gated per `17 §8.3` (consumed by `24 §7`). Implicit Joinsets (`Origin::Implicit`) inherit the same gating uniformly under the unified Joinset model (`16 §5.6`, `§10.4`). |
 
 Rows for `17 §5` explicitly spell out the "all variants — wherever a join hop crosses shape pairs requiring as-of semantics" rule from the user's spec by splitting the `AsOf` applicability into (a) the explicit Joinset hop and (b) the implicit-Relationship hop. Both cite `17 §5`; both inherit the matrix.
 
@@ -312,17 +298,17 @@ The cross-doc invariants `I1`–`I12` ratified in `00 §9` apply uniformly to ev
 
 | Invariant | `Simple` / Dataset | `Grainset` | `Unionset` | `Joinset` |
 |---|---|---|---|---|
-| I1 (no raw SQL in Model / Manifest) | `always`. | `always`. | `always`. | `always`. |
+| I1 (no raw SQL in Model / SemanticManifest) | `always`. | `always`. | `always`. | `always`. |
 | I2 (one canonical `Expr` AST) | `always` — per `14 §3`. | `always`. | `always`. | `always`. |
 | I3 (variant-agnostic `PlanNode` IR) | `always`. | `always`. | `always`. | `always`. |
-| I4 (Manifest deterministic) | `always`. | `always` — strategy output deterministic per `22 §10`. | `always`. | `always` — explicit-path hop order is deterministic per `24 §4.2`. |
+| I4 (SemanticManifest deterministic) | `always`. | `always` — strategy output deterministic per `22 §10`. | `always`. | `always` — explicit-path hop order is deterministic per `24 §4.2`. |
 | I5 (all resolution at compile) | `always`. | `always`. | `always`. | `always`. |
 | I6 (plan hot path synchronous) | `always`. | `always`. | `always`. | `always`. |
 | I7 (single adapter surface `lower_plan`) | `always`. | `always`. | `always`. | `always`. |
-| I8 (Manifest is planner-complete) | `always`. | `always`. | `always`. | `always`. |
+| I8 (SemanticManifest is planner-complete) | `always`. | `always`. | `always`. | `always`. |
 | I9 (Session-context-based overrides) | `always`. | `always`. | `always`. | `always`. |
 | I10 (`#[non_exhaustive]` on public sum types) | `always` — e.g. `DataType`, `Grain`, `TemporalShape`, `ColumnMappingValue`. | `always`. | `always`. | `always` — `JoinType`, `Cardinality`. |
-| I11 (separation of Model / Manifest / Planner / IR) | `always`. | `always`. | `always`. | `always`. |
+| I11 (separation of Model / SemanticManifest / Planner / IR) | `always`. | `always`. | `always`. | `always`. |
 | I12 (first-class diagnostics) | `always` — `VALID_E_21xx` / `COMP_E_21xx` / `PLAN_E_21xx` / `PLAN_W_21xx`. | `always`. | `always`. | `always`. |
 
 ---
@@ -334,8 +320,8 @@ One subsection per variant. Each summary is three-to-five bullets naming the str
 Across all four strategies, four discipline points hold uniformly (per `20 §5.2` `Strategy` trait + `10 §3.4` `plan` stage + `10 §8`):
 
 - **Synchronous hot path** per I6. No `.await` in `Strategy::resolve`; no blocking I/O; no `PhysicalSource` probe.
-- **Manifest-complete input** per I8. Every datum the strategy needs (interface, binding, coverage, provenance, relationships, temporal shape) is already in the `Manifest` by the time `plan` runs.
-- **Deterministic output** per I4. Given identical `(Manifest, Request, SessionContext)`, `Strategy::resolve` produces an identical `PlanNode` tree.
+- **SemanticManifest-complete input** per I8. Every datum the strategy needs (interface, binding, coverage, provenance, relationships, temporal shape) is already in the `SemanticManifest` by the time `plan` runs.
+- **Deterministic output** per I4. Given identical `(SemanticManifest, Request, SessionContext)`, `Strategy::resolve` produces an identical `PlanNode` tree.
 - **Emits diagnostics, not panics** per I12. Unreachable / invariant-violation states emit a `PLAN_E_*` diagnostic; panics are reserved for implementer-bug assertions.
 
 Every strategy's ratification doc repeats these points in its own voice; `§3` does not re-state them per-strategy.
@@ -351,13 +337,13 @@ Every strategy's ratification doc repeats these points in its own voice; `§3` d
 
 ### 3.2 `GrainsetStrategy` — `Grainset`
 
-- **Single-child delegation.** Grainset is a **router**, not a composer of rows. The strategy runs `REQUEST_GRAIN_EXTRACT` → `ELIGIBILITY` → `COST` → `CHOOSE`; exactly one child wins (`22 §10.1`).
-- **Coverage-driven eligibility.** A child is eligible iff its `grain ≤ request.grain` AND every requested Semantics has `Coverage ∈ {Native, Derived}` on that child (`22 §4.2`). The `semantics_to_covering_children` index makes this an O(1) probe per Semantics (`22 §2.2`).
-- **Shape-gated rollup legality.** Per `17 §4`'s matrix: `Timeseries`/`Events` roll freely, `Snapshot` pins at source grain (requires pin policy), `SCD` requires as-of anchoring. Errors in `22 §9.1` `PLAN_E_2205` / `PLAN_E_2206`.
-- **Deterministic tie-break.** Source-count cost proxy; ties break by declaration order. Advisory `PLAN_W_2201 TieBrokenByOrder`.
-- **Plan shape is a splice, not a node.** The chosen child's sub-plan is spliced into the position where the Grainset was queried; there is no `PlanNode::Grainset` (`22 §10.5`).
-- **Rollup policy shape.** `RollupPolicy::Auto` (default; pick any eligible child), `PinOnly` (forbid rollup for `Snapshot` children), `AsOfRequired` (require SCD anchoring). Policy consumed at strategy time per `22 §5`.
-- **Authoritative section:** `22 §4` (selection algorithm) + `22 §5` (`TemporalShape` gating) + `22 §10` (plan shape).
+- **Effective routing units.** Grainset is a **router**, not a composer of rows. At compile, children are normalized into one effective routing unit per distinct grain; same-grain children fold into an implicit Unionset (`mode: All`, **non-strict** NullFilling per `23 §3.2`) per `22 §3.3`. Routing decisions operate at the unit granularity, not the raw-child granularity (`22 §4.1`).
+- **Two routing modes.** **Single-unit delegation** (the common case, `22 §4.2`): when one effective routing unit covers the full Request, the planner delegates to that unit's own Strategy and wraps with a rollup transformation if the unit's grain is finer than the Request's. **Cross-grain JOIN composition** (`22 §4.3`, new in this rebase): when no single unit covers the full Request, the planner builds a LEFT OUTER JOIN tree mediated by a `ComposedSemanticInterface` (per `16 §5`) — driver = most-covering grain-eligible unit (declaration-order tie-break per G-2b); attached units added in declaration order (G-2c) and equi-joined on shared `Key`s per `18 §2.5`.
+- **Shape-gated rollup legality.** Per `17 §4`'s matrix: `Timeseries`/`Events` roll freely; `Snapshot` requires pin policy or rejects via `PLAN_E_2203 GrainsetSnapshotRollupWithoutPin`; `SCD` requires as-of anchor or rejects via `PLAN_E_2204 GrainsetSCDRollupWithoutAsOf` (`22 §9`).
+- **Strict V1 shape equivalence.** All children's `TemporalShape.kind` (incl. SCD subtype) must match — mismatch is `COMP_E_2201 GrainsetChildShapeKindMismatch` (hard error, not advisory). The pre-rebase `MixedShapeAdvisoryChildren` (`PLAN_W_2202`) was retired.
+- **Plan shape.** Single-unit case: chosen unit's subplan + optional rollup wrapper (`Project (DATE_TRUNC) + Agg`); there is no `PlanNode::Grainset`. Cross-grain case: `PlanNode::Join { LeftOuter, on: <equi-join on shared Keys> }` over driver + attached subtrees, all wrapped by the standard final pipeline (`Filter → Agg → Project`) per `22 §4.3`.
+- **Internal `RollupPolicy`.** `RollupPolicy { ShapeDefault, PinOnly, PreferFinest }` is implemented internally as a planner knob (per G-4 ratification, 2026-05-03). NOT authored in V1 YAML; default behavior follows shape rules in `17`.
+- **Authoritative sections:** `22 §3.4` (cross-grain `ComposedSemanticInterface` construction) + `22 §4` (plan-time observable behavior) + `22 §5` (`TemporalShape` interaction) + `22 §10` (worked example). Algorithm body in [`../_drafts/34_grainset_strategy.md`](../_drafts/34_grainset_strategy.md) pending lift into `34 §<GrainsetStrategy>`.
 
 ### 3.3 `UnionsetStrategy` — `Unionset`
 
@@ -383,10 +369,10 @@ A Joinset over a Grainset member is the canonical example of cross-variant compo
 
 1. `RESOLVE_JOINSET_PATH` runs per `24 §4` — anchor and target members are resolved to their `ResolvedDataKind` entries.
 2. For each Grainset member, `GrainsetStrategy` runs first to pick a winning child for the requested grain (`22 §4`).
-3. The winning child's sub-plan is spliced in place of the Grainset (`22 §10.5`); the Joinset's `PlanNode::Join` then composes over the spliced subplans.
-4. `AsOf` activation consults the spliced child's `TemporalShape` (not the Grainset's — Grainset has no top-level shape per `§2.9`).
+3. The winning routing unit's sub-plan is spliced in place of the Grainset (`22 §4.2`); the Joinset's `PlanNode::Join` then composes over the spliced subplans.
+4. `AsOf` activation consults the spliced unit's `TemporalShape` (not the Grainset's — Grainset has no top-level shape per `§2.9`).
 
-`24 §12` and `22 §11` each carry worked versions of this composition from their side.
+`24 §12` and `22 §10` each carry worked versions of this composition from their side.
 
 ### 3.6 Strategy interaction table
 
@@ -395,11 +381,11 @@ A compact reading of how the four strategies interact along the axes that matter
 | Axis | `SimpleStrategy` | `GrainsetStrategy` | `UnionsetStrategy` | `JoinsetStrategy` |
 |---|---|---|---|---|
 | Delegates to child strategies? | No. | Yes — one (winner). | Yes — N (all branches). | No (delegates via inline Scan per member, no separate child strategy invocation in v1). |
-| Emits a `PlanNode` of its own kind? | No — only shared nodes (`Scan` / `Project` / `Aggregate`). | No — splices chosen child's subplan (`22 §10.5`). | Yes — `PlanNode::Union` (`35 §*`). | Yes — `PlanNode::Join` (`35 §*`). |
+| Emits a `PlanNode` of its own kind? | No — only shared nodes (`Scan` / `Project` / `Aggregate`). | Single-unit case: No — splices chosen unit's subplan (`22 §4.2`). Cross-grain case: Yes — `PlanNode::Join { LeftOuter }` per `22 §4.3`. | Yes — `PlanNode::Union` (`35 §*`). | Yes — `PlanNode::Join` (`35 §*`). |
 | Requires per-member Coverage at plan? | No — single Binding (`15 §6`). | Yes — `CompositionCoverage` drives eligibility. | Yes — drives NULL-fill projection. | Yes — drives `FieldProvenance` at Project time. |
 | Consumes `Relationship` at plan? | No. | No. | No. | Yes — per hop. |
 | Consumes `TemporalShape` at plan? | Advisory only. | Yes — gates child eligibility. | Advisory (heterogeneity) + error (post-Union grain incompat). | Yes — gates `AsOf` activation. |
-| Emits advisories (`PLAN_W_*`)? | Yes (`21 §9`). | Yes (`22 §9.2`). | Yes (`23 §10.2`). | Yes (`24 §11.2`). |
+| Emits advisories (`PLAN_W_*`)? | Yes (`21 §9`). | Yes (`22 §9` — `PLAN_W_2201` / `PLAN_W_2202`). | Yes (`23 §10.2`). | Yes (`24 §11.2`). |
 
 ---
 
@@ -414,7 +400,7 @@ A compact reading of how the four strategies interact along the axes that matter
 | `Unionset` | **Indirectly** — the terminal `Aggregate` above `PlanNode::Union` performs the rollup. The Union itself has no grain; grain is determined by the common-coarsest of contributing branches per `23 §7`. | Children's grains reconciled at compile; Request grain compared against common-coarsest. | No in v1 (union mode is set-like, not anchor-biased). | `COMP_W_2308 UnionsetGrainDivergent`; `PLAN_E_2302 UnionsetGrainIncompatibleWithRequest`. |
 | `Joinset` | **Inherits anchor grain** — the Joinset's output grain is the anchor's grain; target-side rollup is the target member's own concern (`24 §5.4`). | `Joinset.anchor`'s grain + per-member grain + `17 §5`'s `AsOf` activation. | **Yes** — the `Joinset.anchor` IS the rollup anchor (`24 §3.1` / `§3.4`). | `PLAN_W_2400 JoinsetFanoutAdvisory`; `PLAN_W_2402 ManyToManyHopAdvisory`; `PLAN_W_2403 MultiFanoutAdvisory`; `PLAN_W_2404 AsOfActivation`. |
 
-Cross-refs: `17 §4` (shape × grain matrix), `22 §4.3` (`ROLLUP_LEGAL`), `23 §7` (Unionset post-Union rollup), `24 §7` (`AsOf`-gated Joinset hops).
+Cross-refs: `17 §4` (shape × grain matrix), `22 §4.4` (rollup mechanics; shape-gated per `17`; internal `RollupPolicy`), `23 §7` (Unionset post-Union rollup), `24 §7` (`AsOf`-gated Joinset hops).
 
 ### 4.1 Worked-pointer table
 
@@ -423,7 +409,7 @@ For a reader who prefers an example-first traversal, the authoritative rollup wa
 | Variant | Worked example | Rollup path shape |
 |---|---|---|
 | `Simple` | `21 §10` multi-source Dataset rollup. | `Scan → Aggregate(group_by = Request.dimensions, agg = Measures)`. |
-| `Grainset` | `22 §11` daily-vs-monthly rollup selection. | Delegates to the winning child; parent Grainset contributes no `PlanNode`. |
+| `Grainset` | `22 §10` paid-media rollups (single-unit case in §10.2; cross-grain JOIN case in §10.3). | Single-unit case: delegates to winning routing unit; no `PlanNode::Grainset`. Cross-grain case: emits `PlanNode::Join { LeftOuter }` over driver + attached. |
 | `Unionset` | `23 §11` heterogeneous branches with NULL-fill. | `Union → Aggregate`. |
 | `Joinset` | `24 §12` two-Simple anchor + target. | `Scan(anchor) → Join(target) → (optional Aggregate over anchor's grain)`. |
 
@@ -433,7 +419,7 @@ Per `17 §4.1`'s matrix (referenced by every variant that rolls up):
 
 | Shape | Rollup discipline | Owning variant |
 |---|---|---|
-| `Timeseries` | Roll freely along the Grain axis (`13 §3.2`). | Consumed by `SimpleStrategy` L4 (`21 §4.5`) and `GrainsetStrategy` selection (`22 §4.3`). |
+| `Timeseries` | Roll freely along the Grain axis (`13 §3.2`). | Consumed by `SimpleStrategy` L4 (`21 §4.5`) and `GrainsetStrategy` rollup wrapper (`22 §4.4`). |
 | `Events` | Roll to coarser buckets via `DATE_TRUNC`; additive only. | Same consumers. |
 | `Snapshot` | `PinOnly` — no rollup across snapshots without a pin policy (`22 §5`). | `GrainsetStrategy` rejects (`PLAN_E_2205 SnapshotRollupWithoutPin`). |
 | `SCD` | Rollup requires as-of anchoring (`17 §5`). | `GrainsetStrategy` rejects without as-of pin (`PLAN_E_2206 SCDRollupWithoutAsOf`). |
@@ -455,11 +441,11 @@ NULL-fill appears in two distinct axes:
 | Variant | Coverage surface | NULL-fill in `FieldProvenance`? | NULL-fill in plan? |
 |---|---|---|---|
 | `Simple` / Dataset | **Binding-level** per-`(Semantics, PhysicalSource)` per `15 §6`. Heterogeneous `NullFill` across sources in a bare Simple is a compile error (`COMP_E_0310 UnusableNullFillInNonUnionContext`); author must wrap in a Unionset (`21 §3.2`). | `n/a` — bare `SemanticInterface` has no `FieldProvenance`. | `n/a` under bare Simple; `NullFill` is rejected before plan. |
-| `Grainset` | **Per-child `CompositionCoverage`** — a projection of each child's Binding-level or composition-level Coverage onto the Grainset's composed surface (`22 §6.1`). `NullFill` Coverage is legal (a child may lack a Semantics the Request does not name). | No `FieldOwnership::NullFill` — Grainset chooses exactly one child; coverage drives the eligibility predicate (`22 §4.2`), not runtime NULL emission. | `n/a` — no cross-child row mixing; chosen child's rows flow directly. |
+| `Grainset` | **Per-effective-routing-unit Coverage** — projected from each unit's interface (`22 §3.2`). For cross-grain JOIN composition (`22 §3.4`), folded into a `CompositionCoverage` per `16 §8`. `NullFill` Coverage is legal (a unit may lack a Semantics the Request does not name); a Semantics that NO unit provides is a compile error (`COMP_E_2202`). | No `FieldOwnership::NullFill` — Grainset's two routing modes (single-unit delegation per `22 §4.2`, cross-grain LEFT OUTER JOIN per `22 §4.3`) emit NULLs via JOIN semantics, not via `FieldOwnership`. Same-grain pre-merge inside the Grainset (per `22 §3.3`) produces an implicit Unionset whose `FieldOwnership::NullFill` lives at the Unionset level (per `23 §5.5`), not at the Grainset's. | **Conditional**. Single-unit delegation: chosen unit's rows flow directly with rollup if grain coarsens. Cross-grain LEFT OUTER JOIN: NULL-fill emerges from `JoinType::LeftOuter` semantics on attached units (per `22 §4.3`). |
 | `Unionset` | **Per-child `CompositionCoverage`**, optionally overridden by an author-declared `ChildCoverageOverride.provides` set (`23 §3.2` / `§5`). | **Yes** — `FieldOwnership::NullFill(providers)` records which children DO cover each field; non-providers inferred by set-difference (`23 §5.5`, `16 §7.3.3`). | **Yes** — per-child `Project` emits `Cast(Null, unified_type)` at the seam for every `NullFill` field (`23 §4.3`). The only variant that materializes structural NULL-fill in `PlanNode`s. |
 | `Joinset` | **Per-member `CompositionCoverage`** — fold per `24 §8.4`; every member is either `Native` or `NullFill` on each composed-surface Semantics. Most Joinset coverage rows are `Native` on one side and `NullFill` on the other. | **No** — `16 §7.3.3` reserves `FieldOwnership::NullFill` for Unionset; Joinset-side outer-join NULL-fill is carried by `JoinType` semantics at plan time (`24 §8.3` / `§5.5` step 3). | NULL-fill is emitted by the `PlanNode::Join`'s outer-join semantics (`Left` / `Right` / `Full`), not by a typed `Cast(Null, _)` projection. |
 
-Q-24-08 in `questions/open/24_questions.md` revisits whether Joinset should gain structural `NullFill` records for outer joins; Round-1 position is no.
+Q-24-08 in `questions/closed/24_questions.md` ratified the Round-1 position: Joinset does NOT gain structural `NullFill` records for outer joins (closed).
 
 Cross-refs: `15 §6` (Binding-level Coverage), `16 §7.3.3` (per-variant `FieldOwnership::NullFill` policy), `16 §8.4` (`CompositionCoverage` fold), `21 §3.2` (Simple + multi-source), `22 §6` (Grainset), `23 §5` (Unionset — the canonical NULL-fill case), `24 §8.3` / `§8.4` (Joinset).
 
@@ -469,7 +455,7 @@ The two terms both talk about "where a field comes from" but operate at differen
 
 | Question | Answered by `Coverage` / `CompositionCoverage` | Answered by `FieldProvenance` |
 |---|---|---|
-| Does this source / constituent serve this field? | Yes — `CoverageVariant` enumerates `Native` / `Derived` / `NullFill`. | No — provenance is about composition ownership, not source provision. |
+| Does this source / constituent serve this field? | Yes — `CoverageVariant` enumerates `Native` / `Derived` / `NullFill` / `Metadata`. | No — provenance is about composition ownership, not source provision. |
 | Who owns this field on the composed surface? | No. | Yes — `FieldOwnership::Native(src)` / `Shared(srcs)` / `Derived(expr)` / `NullFill(providers)`. |
 | Does this branch contribute a row? | Indirectly — `NullFill` coverage + strategy semantics imply pruning (`23 §4.6`). | No. |
 | Does this variant emit `NullFill` rows at plan? | Only Unionset (`23 §4.3`). | Only Unionset (`16 §7.3.3`). Joinset outer-join NULL-fill is `PlanNode::Join` semantics (`24 §8.3`). |
@@ -491,7 +477,7 @@ The lift operation that promotes Binding-level Coverage to CompositionCoverage i
 
 | Variant | Lift input | Lift output | Authoritative ref |
 |---|---|---|---|
-| `Grainset` | Per-child `Coverage` (each child is either a Simple with `Binding`-level Coverage or a Complex with its own `CompositionCoverage`). | `CompositionCoverage` keyed by `(child-ref, unified-name)`. | `22 §6.1`. |
+| `Grainset` | Per-effective-routing-unit Coverage projection (each unit derives from its child's `Binding`-level Coverage for Simple children, or from the child's resolution for Complex children — including same-grain pre-merge implicit Unionsets per `22 §3.3`). | Per-unit `BTreeMap<SemanticsName, CoverageVariant>`; lifted to `CompositionCoverage` keyed by `(unit-ref, unified-name)` only when cross-grain JOIN composition activates per `22 §3.4`. | `22 §3.2`. |
 | `Unionset` | Per-branch `Coverage` + optional `ChildCoverageOverride.provides` (`23 §3.2`). | Same keying shape. | `23 §5`. |
 | `Joinset` | Per-member `Coverage`. | Same keying shape; anchor side typically `Native`, target side typically `Native` or `NullFill` per outer-join. | `24 §8.4`. |
 
@@ -515,7 +501,7 @@ No variant re-implements the lift algorithm; all three reuse the `16 §8.4` fold
 | `*_E_2500`–`*_E_2599` | Cross-variant diagnostics | **`25` (this doc)** | See `§6.2`. |
 | `*_E_2600`–`*_E_2699` | Reserved for future Complex variants per I10 | — | — |
 
-The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) continues to match the emission stage per `30 §6.1`; `20 §8.5`'s cross-doc-fix to `30 §6.2` (extending `VALID_E` / `COMP_E` / `PLAN_E` subsystem caps to include the `2000`–`2999` data-kinds block) applies to `25`'s `2500`–`2599` sub-range unchanged.
+The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) continues to match the emission stage per `30 §6.1`; `20 §8.1`'s `CDF-30-01` cross-doc-fix to `30 §6.2` (extending `VALID_E` / `COMP_E` / `PLAN_E` subsystem caps to include the `2000`–`2999` data-kinds block) applies to `25`'s `2500`–`2599` sub-range unchanged.
 
 ### 6.2 `*_E_2500`–`*_E_2599` reservations
 
@@ -526,7 +512,7 @@ The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) continues to match 
 | `VALID_E_2500`–`2519` | Cross-variant authoring errors (e.g. a Relationship endpoint that is a valid DataKind on its own but illegal in combination with a declared Grainset / Unionset / Joinset under `12 §2`). | Reserved; no codes allocated in Round 1. `12 §2` itself handles same-variant self-nesting. |
 | `COMP_E_2500`–`2529` | Cross-variant compile-time errors (e.g. `AsOf` activation across an implicit Relationship composition where the two owning DataKinds are one Simple + one Grainset + one Unionset). | Reserved. |
 | `PLAN_E_2530`–`2559` | Cross-variant plan-time errors (e.g. ambiguous field-first resolution across a heterogeneous variant set — partially overlapping with `16 §14.3 PLAN_E_0507 AmbiguousFieldFirstResolution`). | Reserved; no new codes until cross-variant scenarios surface beyond `16 §14.3`'s coverage. |
-| `PLAN_W_2560`–`2589` | Cross-variant advisories (e.g. a `TemporalShape × Additivity` advisory that applies across all Measure-bearing variants; see `CDF-17-01` in `§1.3`). | Reserved; Round 1 emits per-variant advisories instead (`21 §9 PLAN_W_2102`, `22 §9.2 PLAN_W_2202`, `23 §10.2`, `24 §11.2 PLAN_W_2404`) — Q2 in `questions/open/25_questions.md` asks whether a unified code is preferable. |
+| `PLAN_W_2560`–`2589` | Cross-variant advisories (e.g. a `TemporalShape × Additivity` advisory that applies across all Measure-bearing variants; see `CDF-17-01` in `§1.3`). | Reserved; Round 1 emits per-variant advisories instead (`21 §9 PLAN_W_2102`, `22 §9 PLAN_W_2201` / `PLAN_W_2202`, `23 §10.2`, `24 §11.2 PLAN_W_2404`) — Q2 in `questions/open/25_questions.md` asks whether a unified code is preferable. |
 
 No `*_E_2500`–`*_E_2599` codes are **allocated** in Round 1. The range is reserved against cross-variant diagnostics that surface in `34` / `17` / `30` ratification.
 
@@ -538,19 +524,6 @@ No `*_E_2500`–`*_E_2599` codes are **allocated** in Round 1. The range is rese
 
 Per I10 / `30 §6.2`, every severity enum and every allocated `*_E_25xx` variant carries `#[non_exhaustive]`.
 
-### 6.4 Decision aid — picking a range when adding a new diagnostic
-
-A drafter adding a new diagnostic that could plausibly live in multiple ranges should follow this decision discipline (consistent with `20 §8` / `30 §6`):
-
-1. **Single-variant scope?** The diagnostic fires only for one `DataKind` variant. → Use the variant's band (`*_E_21xx` for Simple, `*_E_22xx` for Grainset, `*_E_23xx` for Unionset, `*_E_24xx` for Joinset). Example: `24 §11.2 PLAN_W_2404 AsOfActivation`.
-2. **Shared across all four variants, owned by no single per-variant doc?** Use `*_E_2000–2099` (per `20 §8.2`). Example: `VALID_E_2002 InterfaceTypeMismatch`.
-3. **Cross-variant, fires for ≥ 2 but < 4 variants, no natural per-variant home?** Use `*_E_2500–2599` (this doc's band). Example: hypothetical `COMP_E_2510 CrossVariantAsOfAmbiguity` for an `AsOf` that crosses a Joinset and an implicit Relationship composition simultaneously.
-4. **Same advisory semantics emitted by multiple variants (e.g. shape × additivity)?** Round-1 default is per-variant emission per Q2 in `questions/open/25_questions.md`; retain the per-variant code unless Q2 resolves differently.
-
-The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) follows the emission stage (`30 §6.1`); per-variant numbering within the band is the drafter's discretion.
-
----
-
 ## 7. Out-of-Scope for `25`
 
 `25` does NOT do any of the following; each is flagged so readers know where to look instead:
@@ -561,7 +534,7 @@ The subsystem prefix (`VALID_E_*` / `COMP_E_*` / `PLAN_E_*`) follows the emissio
 - **Introduce new `CompositionKind` variants.** Per `16 §5.3` and `20 §2.1`'s `#[non_exhaustive]` posture, new variants land in `20` / `16` and propagate to `25`'s cells.
 - **Adjust error-code allocations outside `25 §6.2`.** Other docs' `*_E_21xx` / `*_E_22xx` / etc. sub-ranges are owned by `21`–`24`; `25` only owns the `*_E_2500`–`*_E_2599` band.
 - **Ratify the `PlanNode` roster.** That is `35`'s.
-- **Specify `Manifest` persistence or the `ResolvedDataKind` struct roster.** Those are `33`'s.
+- **Specify `SemanticManifest` persistence or the `ResolvedDataKind` struct roster.** Those are `33`'s.
 - **Specify the `Request` shape or the `SessionContext` payload.** Those are `34`'s (plus `00 §4.1`'s vocabulary entries).
 - **Resolve `[CROSS-DOC-FIX-NEEDED]` items.** Per the hard constraint, `25` flags contradictions but never resolves them. Each is parked in `§1.3` with the owning-doc pointer; resolution happens in the flagged doc's next revision, possibly with supporting items in `questions/open/25_questions.md`.
 - **Define `#[non_exhaustive]` policy.** That is `30 §4`'s. `25` consumes I10 without amending it.
@@ -583,48 +556,6 @@ A contrasting "where does this belong?" table to help drafters identify when a c
 
 ---
 
-## 8. Round-1 Open Items
-
-Round-1 drafting surfaced four questions where `25`'s scope boundary interacts with the owning docs in a way that cannot be closed from `10`–`17` or `20`–`24` alone. Each is parked in `questions/open/25_questions.md`:
-
-| ID | Title | Section | Blocking? |
-|---|---|---|---|
-| Q1 | Matrix as snapshot vs living reference — maintenance discipline | `25 §2` | no |
-| Q2 | `PLAN_W_25xx` unified cross-variant advisory band vs per-variant emission | `25 §6.2` | no |
-| Q3 | `13 §7` cast-matrix ref chase — retarget vs grow a `13 §7` subsection | `25 §1.3 CDF-23-01`; `25 §2.5` | no |
-| Q4 | Auto-generation of `§2`'s matrix from per-doc `authoritative-for:` front-matter | `25 §2` | no |
-
-None block `25 §§1`–`§7`'s ratifications. Blocking status will be revisited as `17` / `30` / `34` land.
-
-### 8.1 Tracking markers and deferrals
-
-Round-1 deferrals recorded at specific cells of `§2` reuse the owning doc's `[TD-*]` tag rather than introducing new `25`-scoped tags. Tags actively referenced by `25`'s cells:
-
-| Tag | Owned by | `25` cell(s) |
-|---|---|---|
-| `[TD-GRAINSET-NESTED]` | `22 §3.4` | `§2.4` `12 §2` row, `Grainset` as-child cell. |
-| `[TD-UNIONSET-SHAPE-PLANNING]` | `23 §6.4` | `§2.9` `17 §5` row, `Unionset` cell. |
-| `[TD-COMPOSITION-ASOF]` | `16 §4.4.2` | `§2.8` `16 §4` row; `§2.9` `17 §5` rows; `§3.4` bullet 3; `§3.5` interaction table. |
-| `[TD-COMPOSITION-JOINSET-REUSE]` | `16 §13.5` | `§2.8` `16 §11` row, Joinset cell (implicit). |
-| `[TD-NESTING-NARY-JOIN]` / `[TD-JOINSET-NARY]` | `12 §5.2` / `24 §13` | `§2.4` `12 §5` row, `Joinset` cell; `§3.4` bullet 1. |
-
-`25` does NOT introduce new `[TD-*]` tags. Future cross-variant deferrals adopted in `§6.2`'s reserved `*_E_2500–2599` sub-ranges will route through the owning-rule doc's tag set per `00 §6.3`.
-
-### 8.2 Ratified at Round 1 — summary
-
-| Q | Section | Decision |
-|---|---|---|
-| Q-RAT-1 | `§1` | `25` is a cross-reference-only doc; no new normative rules. |
-| Q-RAT-2 | `§2` | Matrix organized as `(foundation clause, DataKind variant)` cells with tag `always` / `conditional` / `via Simple children` / `n/a`; eight sub-tables split by foundation doc (`10`, `11`, `12`, `13`, `14`/`14a`/`14b`, `15`, `16`, `17`) plus an invariants index (`§2.10`). |
-| Q-RAT-3 | `§3` | Per-variant planner-strategy summary is a 3–5 bullet roster per variant + cross-ref to the owning strategy section; strategy semantics not re-ratified. |
-| Q-RAT-4 | `§4` | Per-variant rollup-legality summary: `Simple` rolls directly; `Grainset` rolls by selection; `Unionset` rolls via terminal aggregation; `Joinset` inherits anchor grain. |
-| Q-RAT-5 | `§5` | NULL-fill clarification: `FieldOwnership::NullFill` belongs to Unionset alone (`16 §7.3.3`); Joinset NULL-fill is a `JoinType` outer-join concern, not a `FieldOwnership` concern. |
-| Q-RAT-6 | `§6.1` | Error-code band allocation: `*_E_2000–2099` shared, `*_E_2100–2199` Simple, `*_E_2200–2299` Grainset, `*_E_2300–2399` Unionset, `*_E_2400–2499` Joinset, `*_E_2500–2599` cross-variant (`25`), `*_E_2600–2699` reserved. |
-| Q-RAT-7 | `§6.2` | No `*_E_2500–2599` codes allocated in Round 1; reservations only. |
-| Q-RAT-8 | `§7` | Scope boundary: overrides, new Semantics elements, new strategies, new `CompositionKind` variants, and `[CROSS-DOC-FIX-NEEDED]` resolutions all belong to owning docs, not `25`. |
-
----
-
 ## 9. Cross-References
 
 - `00 §4.1, §4.2` — canonical vocabulary for `DataKind`, `SemanticInterface`, `ComposedSemanticInterface`, `Relationship`, `TemporalShape`, `Grain`, `CompositionKind`.
@@ -638,18 +569,18 @@ Round-1 deferrals recorded at specific cells of `§2` reuse the owning doc's `[T
 - `15 §§2, §3, §5, §6, §7` — `Binding`, `PhysicalSource`, `ColumnMapping`, Binding-level `Coverage`; `§2.7` indexes.
 - `16 §§2–14` — `Relationship`, `Cardinality`, `JoinType`, `ComposedSemanticInterface`, `UnifiedSemantics`, `FieldProvenance`, `CompositionCoverage`, field-first resolution, Joinset-as-explicit-subset; `§2.8` indexes. `§2.8`'s `16 §7.3.3` row is the canonical anchor for the "Unionset-only `FieldOwnership::NullFill`" rule reproduced in `§5`.
 - `17 §§2–8` — `TemporalShape`, `AsOf` JoinType, shape-gated composition; `§2.9` indexes. Forward-refs marked where `17 §*` numbering is still landing.
-- `20 §§2–8` — `DataKind` taxonomy, `DataKindOps` trait, `Strategy` trait, strategy-dispatch discipline, error-code roster. `20 §3`'s at-a-glance table is the at-a-glance cross-reference; `25` is the exhaustive one.
+- `20 §§2–8` — `DataKind` taxonomy (sealed trait hierarchy on two orthogonal axes), `Strategy` trait, strategy-dispatch discipline, error-code roster. `20 §3`'s at-a-glance table is the cross-reference; `25` is the exhaustive one.
 - `21 §§2–9` — `Simple` / Dataset; consumed by `§2` Simple columns, `§3.1`, `§4`, `§5`.
 - `22 §§2–10` — `Grainset`; consumed by `§2` Grainset columns, `§3.2`, `§4`, `§5`.
 - `23 §§2–12` — `Unionset`; consumed by `§2` Unionset columns, `§3.3`, `§4`, `§5`.
 - `24 §§2–13` — `Joinset`; consumed by `§2` Joinset columns, `§3.4`, `§4`, `§5`.
-- `30 §2, §4, §6` — SemVer discipline, `#[non_exhaustive]` policy, error-code range governance; `§6.1`'s allocation summary cross-refs `20 §8.5`'s cross-doc-fix to `30 §6.2`.
-- `33` (pending) — `Manifest` layer: `ResolvedDataKind` / `ResolvedSimpleDataKind` / `ResolvedComplexDataKind` struct rosters; `§2.7`'s Manifest counterpart table will tighten when `33` lands.
+- `30 §2, §4, §6` — SemVer discipline, `#[non_exhaustive]` policy, error-code range governance; `§6.1`'s allocation summary cross-refs `20 §8.1`'s `CDF-30-01` cross-doc-fix to `30 §6.2`.
+- `33` (pending) — `SemanticManifest` layer: `ResolvedDataKind` / `ResolvedSimpleDataKind` / `ResolvedComplexDataKind` struct rosters; `§2.7`'s SemanticManifest counterpart table will tighten when `33` lands.
 - `34` (pending) — planner surface: `Strategy` trait, `PlannerCtx`, `RequestSlice`, `StrategyRegistry`; `§3` bullets consume.
 - `35` (pending) — `PlanNode` IR: `PlanNode::Union` / `PlanNode::Join` variants referenced by `§3.3` and `§3.4`.
 - `questions/open/25_questions.md` — Round-1 deferred items Q1–Q4 (`§8`).
 - `questions/open/17_questions.md` — temporal-shape deferrals that ripple into `§2.9`'s qualifier cells.
 - `questions/open/23_questions.md` — Unionset shape-planning deferrals (`[TD-UNIONSET-SHAPE-PLANNING]`).
-- `questions/open/24_questions.md` — Joinset N-ary / `AsOf` / reuse items consumed by `§3.4`'s bullets and `§3.5`'s table.
+- `questions/deferred/24_questions.md` — Joinset N-ary deferral (Q-24-01) consumed by `§3.4`'s bullets; `questions/closed/24_questions.md` — `AsOf` activation matrix (Q-24-04), reuse policy (Q-24-05) consumed by `§3.5`'s table.
 
 No legacy-doc cross-refs: `25` is new in Round 1 and has no pre-ratification predecessor.

@@ -7,16 +7,17 @@ authoritative-for:
   - the `DataType`-family visibility surface (what is `pub`, what is crate-private, feature-gated serde)
   - the `FunctionRegistry` surface: `function_registry()` accessor, `FunctionSpec`, `FnSignature`, `ParamType`, `ReturnTypeRule`, `FunctionCategory`, `CanonicalFn` newtype, `RegistryExtension` trait
   - the constraint-DSL toolkit types (`MeasureConstraints`, `DimensionConstraints`, `AggregationConstraints`) exposed at `semstrait-core`
-  - the cross-cutting `Diagnostic` / `Severity` / `Location` types and the shared `CompileError` / `ValidateError` enums that live in `semstrait-core`
+  - the cross-cutting diagnostic primitives (`Diagnostic<K>`, `Diagnostics<K>`, `Severity`, `Location`, `Span`, `SourceId`, `Diagnose` trait) and the narrow core-emitted kind enums (`ValidateErrorKind`, `CompileErrorKind`) that live in `semstrait-core`
   - reserved-tag helpers (`is_reserved_tag`) and other pure-function utilities
   - feature-flag surface (`serde`, `schemars`, `io`, `io-aws`) and dependency posture — under default features core pulls `tokio`; under `--no-default-features` it retains the original zero-runtime-dep shape
   - mapping of design invariants I1, I2, I5, I6, I7, I10, I11, I12 to concrete crate-level guarantees
 refined-by:
   - 31b (`semstrait-core::io` — text-blob transport module, amends §1.3 / §2 / §11 / §12 of this doc)
-  - 32 (`semstrait-model` consumes `CompileError`/`ValidateError`, adds `ParseError` next to the Model types; adds `io` wrappers over `31b`)
-  - 33 (`semstrait-manifest` consumes `ResolvedExprTable` carrying `PhysicalExpr`; adds `io` wrappers over `31b`)
-  - 34 (`semstrait-planner` consumes the sealed `FunctionRegistry` and resolved `PhysicalExpr`s at plan time)
-  - 36 (`semstrait-adapter` contributes `RegistryExtension` impls; consults canonical specs at `adapt`)
+  - 32 (`semstrait-model` declares `ParseErrorKind` and its own `ValidateErrorKind` embedding `Core(core::ValidateErrorKind)`; adds `io` wrappers over `31b`)
+  - 33 (`semstrait-manifest` declares its own `CompileErrorKind` embedding `Core(core::CompileErrorKind)`; adds `RepositoryErrorKind`; adds `io` wrappers over `31b`)
+  - 34 (`semstrait-planner` consumes the sealed `FunctionRegistry` and resolved `PhysicalExpr`s at plan time; declares `PlanErrorKind` / `OptimizeErrorKind`)
+  - 36 (`semstrait-adapter` contributes `RegistryExtension` impls; declares `AdaptErrorKind`)
+  - 38 (`semstrait-api` declares the sum-typed `SemStraitErrorKind` lifting per-stage kinds)
   - 40 (`implementation/40_refactor_plan.md` — current code vs target layout delta is tracked here)
 ---
 
@@ -36,22 +37,22 @@ refined-by:
 - The canonical `DataType` enum and the `Grain` enum (per `13 §2` / `§3`). `TypeClass` type-grouping vocabulary (per `13 §4`).
 - The `FunctionRegistry` (per `14a §2`), the `FunctionSpec` / `FnSignature` / `ParamType` / `ReturnTypeRule` / `FunctionCategory` types (per `14a §3`), the `CanonicalFn` newtype (per `00 §4.1` / `14a §2`), and the `RegistryExtension` trait (per `14a §7.1`).
 - The constraint-DSL toolkit: `MeasureConstraints`, `DimensionConstraints`, `AggregationConstraints` (per `11 §8.3` / `§8.4`).
-- The shared `Diagnostic` / `Severity` / `Location` / `ByteSpan` / `SourceId` / `IntoDiagnostic` primitives ratified in `10 §5.1` and placed at `semstrait-core` per `10 §5.1`'s note.
-- The shared `CompileError` / `ValidateError` typed enums whose variants are consumed by `semstrait-model`, `semstrait-manifest`, `semstrait-planner`, and `semstrait-adapter`.
+- The cross-cutting diagnostic primitives ratified in `30 §5`: `Diagnostic<K>` generic envelope, `Diagnostics<K>` alias, `Severity`, `Location`, `Span`, `SourceId`, `Diagnose` trait. Placement here avoids upward deps from every stage into a diagnostic-owning leaf.
+- The narrow core-emitted kind enums: `ValidateErrorKind` (raised by `SemanticExpr` / `PhysicalExpr` constructors) and `CompileErrorKind` (raised by `ReturnTypeRule::Custom` callbacks). Each implements `Diagnose`. Stages downstream MAY embed these via D.ii kind-nesting (`30 §7.4`).
 
 ### 1.2 What `semstrait-core` does NOT own
 
 - **Model parse + YAML grammar.** The `ExprSource` → `SemanticExpr` / `PhysicalExpr` **dispatch** (per `14 §4.2`), the reserved-tag parser, the `ExprBlock` rule tables, all live in `semstrait-model`. `semstrait-core` exposes only the structural types those parsers produce.
-- **Manifest structure.** The `Manifest`, `ResolvedDataKind`, `ResolvedExprTable`, `ResolvedSource`, `ResolvedColumnMapping` all live in `semstrait-manifest` (per `33`). `semstrait-core` exposes only the `PhysicalExpr` type that `ResolvedExprTable` stores.
+- **SemanticManifest structure.** The `SemanticManifest`, `ResolvedDataKind`, `ResolvedExprTable`, `ResolvedSource`, `ResolvedColumnMapping` all live in `semstrait-manifest` (per `33`). `semstrait-core` exposes only the `PhysicalExpr` type that `ResolvedExprTable` stores.
 - **Planner + optimizer.** `SemanticPlan`, `PlanNode`, `PlannerError`, plan-time `Request` / `SessionContext` all live in `semstrait-ir` (plan types) and `semstrait-planner` (stages) per `34` / `35`.
 - **Engine identity and dialect.** `EngineArtifact`, `EngineAdapter`, `Dialect`, `DialectId`, `EnginePlan`, `SqlArtifact`, `AdaptError` all live in `semstrait-adapter` (per `36`).
 - **Catalog and filesystem.** `CatalogProvider`, `FileSystem`, `Repository`, `CatalogSnapshot` all live in `semstrait-catalog` (per `37`).
-- **Name resolution, scope chains, shape unification.** The algorithms live in `semstrait-model` (`validate`) and `semstrait-manifest` (`compile`); `semstrait-core` exposes only the `CompileError` / `ValidateError` variants those algorithms raise.
+- **Name resolution, scope chains, shape unification.** The algorithms live in `semstrait-model` (`validate`) and `semstrait-manifest` (`compile`); their kind enums (`model::ValidateErrorKind`, `manifest::CompileErrorKind`) live in those crates and MAY embed `Core(core::ValidateErrorKind)` / `Core(core::CompileErrorKind)` per D.ii.
 - **Domain load / dump wrappers.** `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` live in `semstrait-model::io` (`32 §10.4`). `load_manifest` / `dump_manifest` live in `semstrait-manifest::io` (`33`). `semstrait-core::io` owns only the text-blob transport (`Source`, `Sink`, `Location`, `IoError`, back-ends); the domain crates own the format.
 
 ### 1.3 Design posture — minimum-viable shared crate
 
-`semstrait-core` is deliberately **minimal**. It exists to solve one problem: keep `DataType`, `Expr`, `Diagnostic`, and `FunctionRegistry` definable without pulling in the model / manifest / planner / adapter crates. If a type is not needed by two or more downstream crates, it does not belong here. Engine-identity deps (datafusion, arrow, duckdb, substrait) are rejected outright.
+`semstrait-core` is deliberately **minimal**. It exists to solve one problem: keep `DataType`, `Expr`, `Diagnostic<K>`, the `Diagnose` trait, and `FunctionRegistry` definable without pulling in the model / manifest / planner / adapter crates. If a type is not needed by two or more downstream crates, it does not belong here. Engine-identity deps (datafusion, arrow, duckdb, substrait) are rejected outright.
 
 The crate is the **leaf** of the semstrait workspace DAG (I7): it depends on nothing in the workspace and every other crate depends on it.
 
@@ -72,9 +73,11 @@ semstrait-core
 │                        //   RegistryExtension, function_registry()
 ├── constraints          // MeasureConstraints, DimensionConstraints,
 │                        //   AggregationConstraints
-├── diagnostic           // Diagnostic, Severity, Location, ByteSpan, SourceId,
-│                        //   IntoDiagnostic
-├── error                // CompileError, ValidateError (shared cross-stage enums)
+├── diagnostic           // Diagnostic<K>, Diagnostics<K>, Severity, Location,
+│                        //   Span, SourceId, Diagnose trait
+├── error                // ValidateErrorKind, CompileErrorKind
+│                        //   (narrow, core-emitted only; stages downstream
+│                        //    may embed via D.ii kind-nesting)
 └── io                   // Source, Sink, Location, IoError + backends::{memory, local, s3}
                          //   (feature "io", default ON; s3 under "io-aws")
                          //   Full spec: 31b
@@ -89,7 +92,7 @@ The `io` module is the transport layer that every crate above composes into its 
 - `expr::visit` — visitor traits are a separate concern from `Expr` itself (I10 non-exhaustive interaction with trait method counts); isolating them limits the blast radius when a new `Expr` variant lands.
 - `functions` — alphabetically separate from `expr` because the registry is accessed directly by parse-site code, plan-site code, and adapters without going through an `Expr` value. The registry is the **single source of truth** for function identity (`14a §2.2` / `§2.3`).
 - `constraints` — called out as its own module because `MeasureConstraints` binds to Measure and Metric carriers, is referenced by model and planner alike, and carries its own `serde` derivations. Placement in `semstrait-core` matches current code (`11 §8.4.3`).
-- `diagnostic` vs `error` — `Diagnostic` is the **render**; `CompileError` / `ValidateError` are the **typed internals** (`10 §5`). Keeping them split reinforces I12's "typed-error-first, diagnostic-at-boundary" rule and makes the `IntoDiagnostic` trait the single conversion seam.
+- `diagnostic` vs `error` — `diagnostic` exposes the generic envelope (`Diagnostic<K>`, `Diagnose` trait) and shared primitives (`Severity`, `Location`); `error` exposes the two narrow core-emitted kind enums (`ValidateErrorKind`, `CompileErrorKind`). Keeping them split reinforces `30 §5`'s typed-kind-per-stage discipline: the envelope is generic, the kind is per-stage. Per `30 §5` the `IntoDiagnostic` trait of earlier drafts is retired; construction is direct via `Diagnose` impls plus a per-crate helper.
 
 **Re-exports.** The crate root (`lib.rs`) re-exports a curated surface. Non-root re-exports are forbidden — consumers either import `semstrait_core::Expr` or `semstrait_core::expr::Expr`, never both. The full re-export list is in §14.
 
@@ -134,11 +137,13 @@ pub enum Expr {
 ```rust
 impl Expr {
     pub fn walk<V: ExprVisitor>(&self, visitor: &mut V) -> V::Output;
-    pub fn transform<F>(self, f: F) -> Result<Expr, ValidateError>
-    where F: FnMut(Expr) -> Result<Expr, ValidateError>;
+    pub fn transform<F>(self, f: F) -> Result<Expr, ValidateErrorKind>
+    where F: FnMut(Expr) -> Result<Expr, ValidateErrorKind>;
     pub fn children(&self) -> impl Iterator<Item = &Expr>;
 }
 ```
+
+**Construction-site error shape.** Core constructors that fail in-place return the bare kind (`ValidateErrorKind` or `CompileErrorKind`), not the full `Diagnostic<K>` envelope. The constructor knows what went wrong (the kind) but not where the call was made (the location). Callers in `semstrait-model` / `semstrait-manifest` wrap the kind into a `Diagnostic<…>` at the call site, attaching the source location they have. Per `30 §5`'s typed-kind discipline, this is direct construction — there is no `IntoDiagnostic` trait in the new design.
 
 ### 3.2 `SemanticExpr` — semantic-layer wrapper
 
@@ -155,16 +160,16 @@ pub struct SemanticExpr(Expr);
 
 impl SemanticExpr {
     /// Construction boundary: validates invariants, then wraps.
-    pub fn new(expr: Expr) -> Result<Self, ValidateError>;
+    pub fn new(expr: Expr) -> Result<Self, ValidateErrorKind>;
     pub fn as_expr(&self) -> &Expr;
     pub fn into_expr(self) -> Expr;
     pub fn walk<V: ExprVisitor>(&self, v: &mut V) -> V::Output;
-    pub fn transform<F>(self, f: F) -> Result<Self, ValidateError>
-    where F: FnMut(Expr) -> Result<Expr, ValidateError>;
+    pub fn transform<F>(self, f: F) -> Result<Self, ValidateErrorKind>
+    where F: FnMut(Expr) -> Result<Expr, ValidateErrorKind>;
 }
 ```
 
-Invariants checked at `new()` / `transform()` boundary, never implicitly. Any rewrite that would introduce an `Expr::Column` leaf raises `ValidateError::ColumnInSemanticExpr` per `14 §7.2`.
+Invariants checked at `new()` / `transform()` boundary, never implicitly. Any rewrite that would introduce an `Expr::Column` leaf raises `ValidateErrorKind::ColumnInSemanticExpr` per `14 §7.2`.
 
 ### 3.3 `PhysicalExpr` — binding-layer wrapper
 
@@ -184,20 +189,20 @@ pub struct PhysicalExpr {
 
 impl PhysicalExpr {
     /// Parse-site construction (pre-compile).
-    pub fn new_authored(expr: Expr) -> Result<Self, ValidateError>;
+    pub fn new_authored(expr: Expr) -> Result<Self, ValidateErrorKind>;
 
     /// Compile-time construction from a fully-resolved form.
     pub fn new_resolved(
         expr: Expr,
         inferred_type: DataType,
         referenced_columns: Vec<String>,
-    ) -> Result<Self, ValidateError>;
+    ) -> Result<Self, ValidateErrorKind>;
 
     pub fn as_expr(&self) -> &Expr;
     pub fn into_expr(self) -> Expr;
     pub fn walk<V: ExprVisitor>(&self, v: &mut V) -> V::Output;
-    pub fn transform<F>(self, f: F) -> Result<Self, ValidateError>
-    where F: FnMut(Expr) -> Result<Expr, ValidateError>;
+    pub fn transform<F>(self, f: F) -> Result<Self, ValidateErrorKind>
+    where F: FnMut(Expr) -> Result<Expr, ValidateErrorKind>;
 }
 ```
 
@@ -493,7 +498,9 @@ pub enum ReturnTypeRule {
     /// Common-supertype promotion of the listed arg indices per `14 §5.4`.
     Promoted(&'static [usize]),
     /// Arbitrary rule — `cast(x, T) -> T`, width-dependent decimal rules.
-    Custom(fn(&[DataType]) -> Result<DataType, CompileError>),
+    /// Returns the bare `CompileErrorKind`; callers wrap into a
+    /// `Diagnostic<CompileErrorKind>` with the call-site location.
+    Custom(fn(&[DataType]) -> Result<DataType, CompileErrorKind>),
 }
 ```
 
@@ -527,7 +534,7 @@ Sealed-trait pattern deliberately NOT applied — adapter crates outside the wor
 
 ## 6. Public Types — Constraint Family
 
-Per `11 §8.3`–`§8.4`. Current type name `MeasureConstraints` is a legacy artifact for the Measure + Metric carriers (`11 §8.4.3`, `[TD-CONSTRAINT-RENAME]`); the three sub-blocks below retain their current names to avoid a breaking rename before the Manifest-schema revision pass.
+Per `11 §8.3`–`§8.4`. Current type name `MeasureConstraints` is a legacy artifact for the Measure + Metric carriers (`11 §8.4.3`, `[TD-CONSTRAINT-RENAME]`); the three sub-blocks below retain their current names to avoid a breaking rename before the SemanticManifest-schema revision pass.
 
 ### 6.1 `MeasureConstraints`
 
@@ -585,70 +592,44 @@ impl AggregationConstraints {
 
 **Why `Vec<String>` rather than `Vec<Aggregation>` for `allowed` / `prohibited`.** Per `11 §8.4.1`'s DSL shape: the field accepts UPPERCASE tokens including `COUNT_DISTINCT` (which is not a `Aggregation` enum variant but an `Aggregation::Count { distinct: true }` encoding). Matching is token-based against a planner-owned normalization; `semstrait-core` exposes the shape, not the matching logic (which lives in `semstrait-planner` per `11 §8.6`).
 
-## 7. Public Types — Diagnostic Family
+## 7. Public Types — Diagnostic Primitives
 
-Ratified in `10 §5.1` and placed in `semstrait-core` per `10 §5.1`'s "canonical home is almost certainly `semstrait-core`" note. `31` ratifies that placement.
+`semstrait-core` provides the **diagnostic envelope** every consumer crate composes around its own per-stage typed-kind enum, plus the `Diagnose` trait those kinds implement. Authoritative sub-shape per `30 §5`.
 
-### 7.1 `Diagnostic`
-
-```rust
-/// User-facing render of a typed stage error. Per `10 §5.1`.
-#[non_exhaustive]
-pub struct Diagnostic {
-    /// Stable kebab-case identifier. Prefix is stage name
-    /// (`parse` / `validate` / `compile` / `plan` / `optimize` / `adapt`);
-    /// suffix is the enum variant's kebab-case name. Examples:
-    /// "validate.column-in-semantic-expr", "compile.unresolved-entity-ref",
-    /// "adapt.unsupported-function".
-    pub code: String,
-
-    pub severity: Severity,
-
-    /// `None` for context-free errors.
-    pub location: Option<Location>,
-
-    /// Human-readable; produced by the typed error's `Display` impl.
-    pub message: String,
-
-    /// Nested causes, most-specific first.
-    pub source_chain: Vec<Diagnostic>,
-}
-```
-
-### 7.2 `Severity`
+### 7.1 `Severity`
 
 ```rust
-/// Severity per `10 §5.1`. Non-exhaustive per I10.
+/// Per `30 §5.2`. Two variants only — `Info` retired into the `tracing`
+/// channel (`30 §6`).
 #[non_exhaustive]
 pub enum Severity {
     Error,
     Warning,
-    Note,
 }
 ```
 
-### 7.3 `Location` / `ByteSpan` / `SourceId`
+Severity carries message intent only; control flow (accumulating vs fail-fast) lives in the function signature, not the diagnostic. Per `30 §5.2`.
+
+### 7.2 `Location`, `Span`, `SourceId`
 
 ```rust
-/// Minimal source location. Per `10 §5.1`.
+/// Source-level location. Per `30 §5.3`.
 #[non_exhaustive]
 pub struct Location {
     pub source: SourceId,
-    pub span: ByteSpan,
+    pub span: Span,
 }
 
-/// Byte-offset span into the source buffer. Exact shape ratified in `32`.
-/// `31` fixes the struct shape because it must be constructible without
-/// loading `semstrait-model`.
-pub struct ByteSpan {
+/// Half-open byte-offset span into the source buffer.
+pub struct Span {
     pub start: usize,
     pub end: usize,
 }
 
-/// Opaque identifier for the originating source document. Per `10 §5.1` /
-/// `32 §TBD`. Crate-private constructors on `semstrait-model` / other
-/// producers; `semstrait-core` exposes only `SourceId::unknown()` and the
-/// `Eq` / `Hash` / `Display` surface consumers need.
+/// Opaque identifier for the originating source document. Constructors
+/// live on the producing crate (`semstrait-model` for YAML files,
+/// inline-string for tests, etc.); `semstrait-core` exposes only the
+/// shape consumers need.
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct SourceId(/* crate-private */);
 
@@ -658,127 +639,191 @@ impl SourceId {
 }
 ```
 
-### 7.4 `IntoDiagnostic`
+`Span` retains its `30 §5.3` byte-range shape (renamed from `ByteSpan` in earlier drafts to align with `30 §5.3`'s vocabulary). `SourceId` is opaque — it is NOT `#[non_exhaustive]` because its variant set is private; the crate's public surface exposes only `SourceId::unknown()` and the `Eq` / `Hash` / `Display` traits consumers need.
+
+### 7.3 `Diagnostic<K>` — generic envelope
 
 ```rust
-/// Canonical conversion trait used at API boundaries. Per `10 §5.1`.
-pub trait IntoDiagnostic {
-    fn into_diagnostic(self) -> Diagnostic;
-}
-```
-
-Blanket impl for `Vec<T: IntoDiagnostic>` returning `Vec<Diagnostic>` lives on this trait (it is sealed-by-coherence against the orphan rule across non-core crates; `semstrait-core` is the only place that impl can live).
-
-**Note on `ContextLine`.** The prompt mentioned a `ContextLine` type; `10 §5.1` does not ratify one. Rich context rendering (source lines with caret markers) is a presentation concern that belongs above `Diagnostic`, not inside it. `31` does NOT expose `ContextLine`; the question is parked in `/docs/design/questions/open/31_questions.md#q2-contextline-placement`.
-
-## 8. Public Types — Error Enums
-
-### 8.1 Stage ownership vs shared placement
-
-Per `10 §5`, each stage owns a typed error enum. `ParseError` and `AdaptError` live next to their owning stages (`semstrait-model` and `semstrait-adapter` respectively). `CompileError` and `ValidateError` are **shared** because:
-
-- `ValidateError` variants are raised during `validate` (owner: `semstrait-model`) AND at wrapper-construction boundaries on `SemanticExpr` / `PhysicalExpr` (owner: `semstrait-core`). Placing the enum in `semstrait-core` avoids an upward dep from the wrapper types into `semstrait-model`.
-- `CompileError` variants are raised during `compile` (owner: `semstrait-manifest`) AND by `ReturnTypeRule::Custom` callbacks wired into `FunctionSpec` (owner: `semstrait-core`). Placing the enum in `semstrait-core` avoids routing `Custom` through an upward dep.
-
-Planner / adapter stages own their own enums in their own crates; they are NOT re-exported from `semstrait-core`.
-
-### 8.2 `ValidateError`
-
-Variants below aggregate `10 §3.2`, `14 §7.2`, and `13 §6` ratifications. Each variant maps to a Diagnostic `code` per the §7.4 kebab-case derivation rule. Selected error codes from `14 §7.1`–`§7.3` (`EXPR_E_####`) are documented on variants where they apply; the code on the `Diagnostic` is derived via kebab-case per `10 §5.1`.
-
-```rust
+/// Generic envelope wrapping a per-stage typed kind. Per `30 §5.1`.
+/// Each consumer crate plugs in its own `K: Diagnose`.
 #[non_exhaustive]
-pub enum ValidateError {
-    // -- expression wrapper invariants (`14 §7.2`) --
-    ColumnInSemanticExpr       { column: String,  location: Option<Location> },
-    EntityRefInPhysicalExpr    { name: String,    location: Option<Location> },
-    AggregateInPhysicalExpr    { location: Option<Location> },
-    NestedAggregate            { outer: String, inner: String, location: Option<Location> },
-    ReservedIdentifier         { name: String,    kind: String, location: Option<Location> },
-    CaseConditionNotBoolean    { location: Option<Location> },
-
-    // -- dimension / type / bucket shape (`13 §6`) --
-    DimensionTypeMalformed     { dimension: String, reason: String },
-    InvalidGrainValue          { context: String, value: String },
-    MetadataDimensionMalformed { dimension: String, reason: String },
-    BucketsOverlap             { dimension: String, bucket_a: String, bucket_b: String },
-
-    // -- constraint DSL (`11 §8`) --
-    ShapeMalformed             { carrier: String, reason: String, location: Option<Location> },
-    ShapeFieldConflict         { name: String, field: String, occurrences: Vec<String> },
+pub struct Diagnostic<K: Diagnose> {
+    pub kind: K,
+    pub severity: Severity,
+    pub location: Option<Location>,
+    pub notes: Vec<String>,
 }
 
-impl ValidateError {
-    pub fn code(&self) -> &'static str;          // kebab-case per §7.4
-    pub fn severity(&self) -> Severity;           // Severity::Error for all v1 variants
-    pub fn location(&self) -> Option<&Location>;
-}
-
-impl IntoDiagnostic for ValidateError { fn into_diagnostic(self) -> Diagnostic; }
-impl std::fmt::Display for ValidateError { /* per-variant messages per `14 §7` */ }
-impl std::error::Error for ValidateError {}
+/// Type alias for an accumulating-stage diagnostic vector.
+pub type Diagnostics<K> = Vec<Diagnostic<K>>;
 ```
 
-### 8.3 `CompileError`
+Construction is via per-crate helpers; `semstrait-core` does not expose a `Diagnostic::new` or builder. Each consumer crate's helper sets `severity` from `K::severity_default()` (overridable) and attaches `location` / `notes` as appropriate.
+
+### 7.4 `Diagnose` trait
 
 ```rust
+/// The trait every per-stage kind implements. Per `30 §5.4`.
+pub trait Diagnose {
+    /// Human-readable rendering. Powers the `Display` impl on
+    /// `Diagnostic<K>`. Must not include line breaks (callers add
+    /// their own framing).
+    fn message(&self) -> String;
+
+    /// Default severity for this variant. Construction sites may
+    /// override; most callers accept the default.
+    fn severity_default(&self) -> Severity;
+
+    /// Foreign-error chain for `std::error::Error` interop. Default
+    /// `None`. Variants wrapping foreign errors override to return
+    /// `Some(&inner)`.
+    fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+```
+
+`Diagnose` is **open** — third-party kind enums (e.g. a downstream plugin's typed error) implement it and slot into the `Diagnostic<K>` envelope.
+
+### 7.5 Blanket impls on `Diagnostic<K>`
+
+```rust
+impl<K: Diagnose> std::fmt::Display for Diagnostic<K> { /* delegates to K::message() */ }
+impl<K: Diagnose + std::fmt::Debug> std::error::Error for Diagnostic<K> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.kind.cause()
+    }
+}
+```
+
+Both blanket impls live in `semstrait-core::diagnostic` because of the orphan rule — no other crate could provide them. `Diagnose::cause()` is the source of truth for the `std::error::Error` chain; the kind variant decides what to chain (typed foreign-error wrapping per `30 §5.4`).
+
+### 7.6 `Diagnostics<K>` ergonomics
+
+`Diagnostics<K>` is a transparent `Vec<Diagnostic<K>>` alias, so all `Vec` methods apply directly. Common patterns at the consumer level:
+
+```rust
+// Partition into errors and warnings:
+let (errors, warnings): (Vec<_>, Vec<_>) = diagnostics
+    .into_iter()
+    .partition(|d| d.severity == Severity::Error);
+
+// Convert kind via From for cross-stage lifting:
+let api_diags: Diagnostics<SemStraitErrorKind> = parse_diags
+    .into_iter()
+    .map(|d| Diagnostic { kind: d.kind.into(), ..d })
+    .collect();
+```
+
+Per `30 §5.6`, fused helpers in `semstrait-api` use a sum-typed kind (`SemStraitErrorKind`) and lift per-stage results via `From<ParseErrorKind>`, `From<ValidateErrorKind>`, etc. — `From` impls live on the fused-kind enum, not on `Diagnostic<K>`.
+
+## 8. Public Types — Core-Emitted Kind Enums
+
+Per `30 §5`, each crate owns its own per-stage typed-kind enum implementing `Diagnose`. `semstrait-core` provides two **narrow** kind enums, scoped strictly to failures core code itself raises:
+
+- `ValidateErrorKind` — emitted at `SemanticExpr::new`, `PhysicalExpr::new_authored`, and `PhysicalExpr::new_resolved` constructors.
+- `CompileErrorKind` — emitted by `ReturnTypeRule::Custom` callbacks wired into `FunctionSpec`.
+
+The model-level / manifest-level / planner-level / adapter-level kinds (`ParseErrorKind`, `model::ValidateErrorKind`, `manifest::CompileErrorKind`, `PlanErrorKind`, `AdaptErrorKind`, …) live in their owning crates and MAY embed the core kinds via D.ii cross-stage nesting (`30 §7.4`).
+
+### 8.2 `ValidateErrorKind`
+
+```rust
+/// Wrapper-construction failures raised by `SemanticExpr::new`,
+/// `PhysicalExpr::new_authored`, `PhysicalExpr::new_resolved`. Per
+/// `14 §7.2`. Implements `Diagnose` (`§7.4`).
 #[non_exhaustive]
-pub enum CompileError {
-    // -- name resolution (`14 §7.3`) --
-    UnresolvedEntityRef            { name: String, location: Option<Location> },
-    UnreachableSemanticsReference  { name: String, from_kind: String, location: Option<Location> },
-    CircularSemanticsReference     { cycle: Vec<String>, location: Option<Location> },
-    UnresolvedColumn               { name: String, binding: String, location: Option<Location> },
-    UnresolvedCrossKindReference   { name: String, from_kind: String, location: Option<Location> },
+pub enum ValidateErrorKind {
+    /// `SemanticExpr` rejected a tree containing `Expr::Column`.
+    ColumnInSemanticExpr   { column: String },
 
-    // -- function resolution (`14a §8`) --
-    UnknownFunction                { name: String, location: Option<Location> },
-    FunctionArityMismatch          { name: String, expected: String, got: usize, location: Option<Location> },
-    NoMatchingSignature            { name: String, arg_types: Vec<DataType>, tried_signatures: Vec<String>, location: Option<Location> },
-    ReservedTagCollision           { tag: String, source: String, location: Option<Location> },
-    AdapterFunctionShadowsCore     { name: String, adapter: String, location: Option<Location> },
-    AdapterFunctionCollision       { name: String, adapters: Vec<String>, location: Option<Location> },
+    /// `PhysicalExpr` rejected a tree containing `Expr::EntityRef`.
+    EntityRefInPhysicalExpr { name: String },
 
-    // -- type resolution (`14 §7.3` / `13 §6`) --
-    TypeInferenceFailure           { reason: String, location: Option<Location> },
-    ComputedTypeUnifyConflict      { name: String, declared: DataType, inferred: DataType, location: Option<Location> },
-    ShapeInferenceConflict         { name: String, variants: Vec<(String, DataType)>, location: Option<Location> },
-    UnrepresentablePhysicalType    { engine_type: String, location: Option<Location> },
-    LiteralOverflow                { value: String, target: DataType, location: Option<Location> },
-    LiteralPrecisionLoss           { value: String, target: DataType, location: Option<Location> },
+    /// `PhysicalExpr` rejected a tree containing `Expr::Aggregate`.
+    AggregateInPhysicalExpr,
 
-    // -- shape unification (`11 §5.1` / `13 §6`) --
-    SemanticShapeConflict          { name: String, field: String, occurrences: Vec<String> },
-    GrainAxisMismatch              { dataset: String, level_grain: String, available_grains: Vec<String> },
+    /// `Expr::Aggregate` was nested inside another `Expr::Aggregate`.
+    NestedAggregate { outer: String, inner: String },
+
+    /// A reserved identifier appeared in author position
+    /// (e.g. a `Column` named `column`, an `EntityRef` named `entity_ref`).
+    ReservedIdentifier { name: String, kind: ReservedKind },
+
+    /// `Expr::Case` `WhenClause::condition` failed the boolean check
+    /// (the condition's inferred type is not `Boolean`).
+    CaseConditionNotBoolean,
 }
 
-impl CompileError {
-    pub fn code(&self) -> &'static str;
-    pub fn severity(&self) -> Severity;
-    pub fn location(&self) -> Option<&Location>;
+#[non_exhaustive]
+pub enum ReservedKind {
+    Column,
+    EntityRef,
+    FunctionCall,
+    BlockTag,
 }
 
-impl IntoDiagnostic for CompileError { fn into_diagnostic(self) -> Diagnostic; }
-impl std::fmt::Display for CompileError { /* per-variant messages per `14 §7.3` */ }
-impl std::error::Error for CompileError {}
+impl Diagnose for ValidateErrorKind {
+    fn message(&self) -> String { /* per-variant rendering */ }
+    fn severity_default(&self) -> Severity { Severity::Error }
+    // No cause() override — these variants do not wrap foreign errors.
+}
 ```
 
-**Code stability.** `code()` returns the kebab-case derivation ratified in `10 §5.1` — e.g. `"compile.unresolved-entity-ref"`, `"validate.column-in-semantic-expr"`. The legacy `EXPR_E_####` code mapping from `14 §7` is preserved as a `const LEGACY_CODE: &str` associated value per variant for tooling that grew against the numeric codes; migration policy is in `/docs/design/questions/open/31_questions.md#q3-legacy-numeric-codes`.
+Variants that previously lived in this enum but are NOT core-emitted (`DimensionTypeMalformed`, `InvalidGrainValue`, `MetadataDimensionMalformed`, `BucketsOverlap`, `ShapeMalformed`, `ShapeFieldConflict`) move to `semstrait-model`'s own `ValidateErrorKind` per Pass 2.
 
-### 8.4 Shared helper methods
-
-All error enums expose the same three helpers for API-boundary conversion:
+### 8.3 `CompileErrorKind`
 
 ```rust
-trait ErrorCode {
-    fn code(&self) -> &'static str;
-    fn severity(&self) -> Severity;
-    fn location(&self) -> Option<&Location>;
-    fn to_diagnostic(&self) -> Diagnostic;
+/// Failures from `ReturnTypeRule::Custom(fn(&[DataType]) -> ...)`
+/// callbacks wired into `FunctionSpec`. Per `14a §3.4` and `14 §7.3`.
+/// Implements `Diagnose` (§7.4).
+#[non_exhaustive]
+pub enum CompileErrorKind {
+    /// The custom callback could not infer a return type for the
+    /// argument types it was given. `reason` is callback-supplied.
+    TypeInferenceFailure { reason: String },
+
+    /// Computed-column type-inference produced a type that does not
+    /// match the user-declared type.
+    ComputedTypeUnifyConflict { declared: DataType, inferred: DataType },
+
+    /// A literal value cannot fit into its target type without overflow.
+    LiteralOverflow { value: String, target: DataType },
+
+    /// A literal value would lose precision when coerced into its
+    /// target type (e.g., narrowing decimal cast).
+    LiteralPrecisionLoss { value: String, target: DataType },
+
+    /// The engine-side physical type cannot be represented in the
+    /// canonical `DataType` lattice.
+    UnrepresentablePhysicalType { engine_type: String },
+}
+
+impl Diagnose for CompileErrorKind {
+    fn message(&self) -> String { /* per-variant rendering */ }
+    fn severity_default(&self) -> Severity { Severity::Error }
 }
 ```
 
-`ErrorCode` is **private** to `semstrait-core` (each enum implements the methods directly; the trait exists as an internal shape-guard). External consumers call `into_diagnostic()` via `IntoDiagnostic`.
+Variants that previously lived under the broader `CompileError` enum but are NOT core-emitted (name resolution: `UnresolvedEntityRef`, `UnreachableSemanticsReference`, `CircularSemanticsReference`, `UnresolvedColumn`, `UnresolvedCrossKindReference`; function resolution: `UnknownFunction`, `FunctionArityMismatch`, `NoMatchingSignature`, `ReservedTagCollision`, `AdapterFunctionShadowsCore`, `AdapterFunctionCollision`; shape unification: `SemanticShapeConflict`, `GrainAxisMismatch`) move to `semstrait-manifest`'s own `CompileErrorKind` per Pass 2 and `33`'s ratification.
+
+### 8.4 No code() methods, no IntoDiagnostic
+
+Both enums implement the `Diagnose` trait only. There is no `code() -> &'static str`, no kebab-case identifier, no legacy numeric-code constant. Stable identification is variant identity (renaming a variant is MAJOR per `30 §2`; adding one inside `#[non_exhaustive]` is MINOR).
+
+The `IntoDiagnostic` trait of earlier drafts is **retired**. Constructing a `Diagnostic<K>` from a kind is direct: callers (or per-crate helper functions) build `Diagnostic { kind, severity: kind.severity_default(), location: …, notes: vec![] }` at the point of failure.
+
+### 8.5 Display / Error blanket impls
+
+```rust
+impl std::fmt::Display for ValidateErrorKind { /* delegates to Diagnose::message */ }
+impl std::error::Error for ValidateErrorKind {}
+impl std::fmt::Display for CompileErrorKind { /* delegates to Diagnose::message */ }
+impl std::error::Error for CompileErrorKind {}
+```
+
+These complement the blanket impls on `Diagnostic<K>` (§7.5): callers may use the bare kind directly in `?` chains (without the `Diagnostic<K>` envelope) when they have no location to attach.
 
 ## 9. Public Free Functions
 
@@ -792,10 +837,11 @@ The crate's free-function surface is deliberately tiny. If a piece of logic does
 /// `&'static`. Per `14a §2.1` Q1.
 ///
 /// Extensions contributed via `RegistryExtension` impls are folded in at
-/// initialization; collisions panic with `CompileError::{ReservedTagCollision,
-/// AdapterFunctionShadowsCore, AdapterFunctionCollision}` messages per
-/// `14a §7.2`. Post-init the registry is immutable; there is no `rebuild`
-/// or `with_extensions` surface in v1 (`[TD-REGISTRY-MULTI-CONFIG]`).
+/// initialization; collisions panic at registry-seal time (registry-build
+/// failures are bugs, not recoverable conditions, per `14a §7.2`). The
+/// panic messages reference the colliding `CanonicalFn::name()` and
+/// adapter `ADAPTER_ID`s. Post-init the registry is immutable; there is
+/// no `rebuild` or `with_extensions` surface in v1 (`[TD-REGISTRY-MULTI-CONFIG]`).
 pub fn function_registry() -> &'static FunctionRegistry;
 ```
 
@@ -824,14 +870,13 @@ Per `30`'s trait-surface rules: every public trait that can be externally implem
 |---|---|---|---|---|
 | `ExprVisitor` | `fn visit(&mut self, expr: &Expr) -> Self::Output` | yes — analysis / audit visitors | no | §3.6 |
 | `RegistryExtension` | `const ADAPTER_ID`, `const FUNCTIONS` | yes — adapter crates MUST impl | no | §5.8 |
-| `IntoDiagnostic` | `fn into_diagnostic(self) -> Diagnostic` | yes — any error-like type may impl | no | §7.4 |
-| `ErrorCode` (private) | internal shape guard for `CompileError` / `ValidateError` | no | n/a | §8.4 |
+| `Diagnose` | `fn message`, `fn severity_default`, `fn cause` | yes — third-party kind enums slot into `Diagnostic<K>` | no | §7.4 |
 
 **Sealed-trait justification, positive cases.** None. All external-facing traits are non-sealed because:
 
 - `ExprVisitor` — third-party analysis passes (e.g. a test-harness visitor counting `Aggregate` nodes) MUST be able to impl without a sealed escape hatch.
 - `RegistryExtension` — third-party adapter crates MUST be able to impl without a workspace-private escape hatch (this is the primary extensibility point).
-- `IntoDiagnostic` — a third-party error type from e.g. a user-defined plugin MAY want to convert into `Diagnostic`.
+- `Diagnose` — a third-party error type from e.g. a user-defined plugin MAY define its own kind and slot into `Diagnostic<K>`.
 
 ## 11. Feature Flags
 
@@ -839,7 +884,7 @@ v1 has a small, axis-orthogonal flag set. The `io`-family flags were added in th
 
 | Feature | Default | Gates | Reason |
 |---|---|---|---|
-| `serde` | OFF | `Serialize` / `Deserialize` on every public type (`Expr`, `SemanticExpr`, `PhysicalExpr`, `ExprSource`, `ExprBlock`, all support enums, `DataType`, `Grain`, `TypeClass`, `*Constraints`, `Diagnostic`, `Severity`, `Location`, `ByteSpan`, `SourceId`, `CanonicalFn`, `FunctionSpec`, `FnSignature`, `ParamType`, `ReturnTypeRule`, `FunctionCategory`, `CompileError`, `ValidateError`) | keeps the crate's dependency footprint minimal for consumers that only need the types (e.g. test harnesses that manipulate `Expr` in memory); `semstrait-model` / `semstrait-manifest` enable it transitively |
+| `serde` | OFF | `Serialize` / `Deserialize` on every public type (`Expr`, `SemanticExpr`, `PhysicalExpr`, `ExprSource`, `ExprBlock`, all support enums, `DataType`, `Grain`, `TypeClass`, `*Constraints`, `Diagnostic<K>` (where `K: Serialize`), `Severity`, `Location`, `Span`, `SourceId`, `CanonicalFn`, `FunctionSpec`, `FnSignature`, `ParamType`, `ReturnTypeRule`, `FunctionCategory`, `ValidateErrorKind`, `CompileErrorKind`) | keeps the crate's dependency footprint minimal for consumers that only need the types (e.g. test harnesses that manipulate `Expr` in memory); `semstrait-model` / `semstrait-manifest` enable it transitively |
 | `schemars` | OFF | JSON schema derivations on the same types | consumers needing JSON-Schema emission pay a second compile cost; off by default per `30` |
 | `io` | **ON** | The `io` module — `Source` / `Sink` / `FromIoBytes` / `IntoIoBytes` / `Location` / `IoError` + `backends::memory` + `backends::local`; pulls `tokio`, `bytes`, `object_store` (Local + InMemory features), `dashmap` | ergonomic common case for every downstream crate that wants transport; disable with `default-features = false` for pure-type consumers (see `31b §9.1`) |
 | `io-aws` | OFF | `Location::S3` variant + `backends::s3::{S3Source, S3SourceBuilder}`; enables `object_store/aws` which transitively pulls the AWS config / credential crates | cloud SDK footprint stays opt-in; enabled explicitly by CLI / `semstrait-api` / `semstrait-facade` |
@@ -859,7 +904,7 @@ A canonical `Cargo.toml` target after the `31b` ratification:
 ```toml
 [dependencies]
 thiserror = "^"                         # error enum derivations
-nonzero_ext = "^"                       # NonZero usize for ByteSpan tightening (optional)
+nonzero_ext = "^"                       # NonZero usize for Span tightening (optional)
 
 [dependencies.serde]
 version = "^"
@@ -914,14 +959,14 @@ Concrete crate-level guarantees mapping to `00 §9` invariants:
 
 | Invariant | `semstrait-core` guarantee |
 |---|---|
-| **I1** — no raw SQL in canonical layer | `Expr` is a typed AST; no `String`-as-SQL fields. Every `Column.name`, `EntityRef.name`, `FunctionCall.name` is an identifier, not SQL text. `ExprSource::Inline(String)` is the sole string-form input and it is deliberately a YAML-surface type, not a Manifest-layer type — consumers convert it into `Expr` before it crosses any stage boundary. |
+| **I1** — no raw SQL in canonical layer | `Expr` is a typed AST; no `String`-as-SQL fields. Every `Column.name`, `EntityRef.name`, `FunctionCall.name` is an identifier, not SQL text. `ExprSource::Inline(String)` is the sole string-form input and it is deliberately a YAML-surface type, not a SemanticManifest-layer type — consumers convert it into `Expr` before it crosses any stage boundary. |
 | **I2** — physical types belong to adapters | `DataType` variants are engine-neutral per `13 §2`. No `arrow::*` / `spark::*` / `datafusion::*` types are visible on any public surface. |
-| **I5** — name resolution is compile-time | `SemanticExpr` and `PhysicalExpr` are wrapper-only; they expose no `resolve` method. `EntityRef.name` remains a `String` at the `semstrait-core` layer — resolution is performed by `semstrait-manifest::compile` and stored in the Manifest's `ResolvedExprTable`. No runtime resolver trait is exported here. |
-| **I6** — plan hot path is synchronous | No `pub async fn` exists on the plan hot path: `SemanticExpr`, `PhysicalExpr`, `FunctionRegistry`, `IntoDiagnostic`, validate / resolve / plan surfaces. The only `async fn`s at `semstrait-core` live in `io` (`Source::read`, `Sink::write`, `Location`'s impls) — I/O is explicitly outside the plan hot path. A CI lint enforces: no `async fn` outside `semstrait_core::io::*`. |
+| **I5** — name resolution is compile-time | `SemanticExpr` and `PhysicalExpr` are wrapper-only; they expose no `resolve` method. `EntityRef.name` remains a `String` at the `semstrait-core` layer — resolution is performed by `semstrait-manifest::compile` and stored in the SemanticManifest's `ResolvedExprTable`. No runtime resolver trait is exported here. |
+| **I6** — plan hot path is synchronous | No `pub async fn` exists on the plan hot path: `SemanticExpr`, `PhysicalExpr`, `FunctionRegistry`, `Diagnose` impls, validate / resolve / plan surfaces. The only `async fn`s at `semstrait-core` live in `io` (`Source::read`, `Sink::write`, `Location`'s impls) — I/O is explicitly outside the plan hot path. A CI lint enforces: no `async fn` outside `semstrait_core::io::*`. |
 | **I7** — strict DAG | `Cargo.toml` contains zero `semstrait-*` entries in `[dependencies]`. A CI check greps the manifest and fails on any workspace-internal entry. |
-| **I10** — extensibility | Every `pub enum` and `pub struct` (with the `30`-documented newtype-over-stable exception) carries `#[non_exhaustive]`. The exception set: `CanonicalFn`, `SemanticExpr`, `PhysicalExpr`, `ByteSpan`, `WhenClause`. An `integration-test` over `cargo public-api` enforces the `#[non_exhaustive]` rule. |
+| **I10** — extensibility | Every `pub enum` and `pub struct` (with the `30`-documented newtype-over-stable exception) carries `#[non_exhaustive]`. The exception set: `CanonicalFn`, `SemanticExpr`, `PhysicalExpr`, `Span`, `WhenClause`, `SourceId` (opaque per `30 §5.3`). An `integration-test` over `cargo public-api` enforces the `#[non_exhaustive]` rule. |
 | **I11** — no downward I/O surprises | Transport primitives (`io::Source`, `io::Sink`, `io::Location`, `io::backends::{memory, local, s3}`) live on `semstrait-core` under the `io` feature flag (ratified in `31b`). Domain-specific load / dump (`load_model`, `load_manifest`) do not — they live in the crate that owns the typed artifact. `reqwest`, `hyper`, raw `std::net` sockets remain rejected; cloud SDKs (`aws-sdk-s3`) sit behind opt-in `io-aws`. The dependency audit (§12.1) is enforced in CI via `cargo deny`. |
-| **I12** — first-class diagnostics | `IntoDiagnostic` is the sole error-rendering trait at API boundaries; every public error enum implements it and every variant maps to a stable `code()` string. `IoError` per `31b §6` participates uniformly. No `Display` output reaches API consumers without first passing through `IntoDiagnostic`. |
+| **I12** — first-class diagnostics | `Diagnostic<K>` and `Diagnose` are the workspace's diagnostic primitives. `Diagnostic<K>` carries `kind: K, severity, location, notes`; the kind decides per-variant rendering and severity defaults via `Diagnose`. No central error-code allocation; stable identification is variant identity. The parallel observability channel (`tracing`) is described in `30 §6`; library code never writes to stdout / stderr. `IoError` per `31b §6` is its own kind enum implementing `Diagnose`. |
 
 ## 14. Public API Surface Sketch
 
@@ -989,21 +1034,23 @@ pub struct AggregationConstraints                       // { allowed, prohibited
 ### 14.7 `diagnostic`
 
 ```
-pub struct Diagnostic                                   // { code, severity, location, message, source_chain }
-pub enum   Severity                                     // Error | Warning | Note
-pub struct Location                                     // { source: SourceId, span: ByteSpan }
-pub struct ByteSpan                                     // { start: usize, end: usize }
+pub struct Diagnostic<K: Diagnose>                      // { kind, severity, location, notes }
+pub type   Diagnostics<K> = Vec<Diagnostic<K>>
+pub enum   Severity                                     // Error | Warning
+pub struct Location                                     // { source: SourceId, span: Span }
+pub struct Span                                         // { start: usize, end: usize }
 pub struct SourceId                                     // opaque; SourceId::unknown() + as_str()
-pub trait  IntoDiagnostic                               // fn into_diagnostic(self) -> Diagnostic
+pub trait  Diagnose                                     // fn message + severity_default + cause
+// Blanket: Display / std::error::Error on Diagnostic<K> via Diagnose.
 ```
 
 ### 14.8 `error`
 
 ```
-pub enum CompileError                                   // variants per §8.3
-pub enum ValidateError                                  // variants per §8.2
-// Each exposes fn code(&self) -> &'static str, fn severity(&self) -> Severity,
-// fn location(&self) -> Option<&Location>, impl IntoDiagnostic.
+pub enum ValidateErrorKind                              // wrapper-construction failures (§8.2)
+pub enum CompileErrorKind                               // ReturnTypeRule::Custom failures (§8.3)
+pub enum ReservedKind                                   // Column | EntityRef | FunctionCall | BlockTag (§8.2)
+// Each kind enum: impl Diagnose, impl Display, impl std::error::Error.
 ```
 
 ### 14.9 Free functions at crate root
@@ -1031,9 +1078,9 @@ pub use crate::constraints::{
     MeasureConstraints, DimensionConstraints, AggregationConstraints,
 };
 pub use crate::diagnostic::{
-    Diagnostic, Severity, Location, ByteSpan, SourceId, IntoDiagnostic,
+    Diagnostic, Diagnostics, Severity, Location, Span, SourceId, Diagnose,
 };
-pub use crate::error::{CompileError, ValidateError};
+pub use crate::error::{ValidateErrorKind, CompileErrorKind, ReservedKind};
 pub use crate::is_reserved_tag;
 ```
 
@@ -1060,26 +1107,3 @@ pub mod io::backends::s3 {
 
 Internally every back-end thin-wraps `object_store` (Apache Arrow project); `object_store` types never appear on a public signature except the one documented escape hatch (`S3SourceBuilder::with_object_store_builder`). See `31b §1.4` for the adoption rationale and SR-IO-8 for the encapsulation rule.
 
-## 15. Ratified Decisions Index
-
-`31` introduces no new vocabulary and no new types — every type above is ratified upstream in `13`, `14`, `14a`, or `11 §8`. The ratifications below concern **placement**, **visibility**, and **boundary** decisions unique to `semstrait-core` as a crate:
-
-| # | Decision | Rationale | §  |
-|---|---|---|---|
-| R1 | `Diagnostic` / `Severity` / `Location` / `ByteSpan` / `SourceId` / `IntoDiagnostic` live in `semstrait-core` | Ratifies `10 §5.1`'s "canonical home is almost certainly `semstrait-core` (pending ratification in `31`)" note. Placing them here avoids upward deps from every stage into a diagnostic-owning leaf. | §7 |
-| R2 | `CompileError` and `ValidateError` are **shared** in `semstrait-core`; `ParseError` / `AdaptError` / `PlanError` live in their owning stage crates | `ValidateError` is raised at wrapper-construction boundaries (on `SemanticExpr` / `PhysicalExpr`) which live in `semstrait-core`; placing the enum here avoids a circular dep. Same argument for `CompileError` vs `ReturnTypeRule::Custom`. | §8.1 |
-| R3 | `CanonicalFn` construction is crate-private; only `pub const` identities are available outside `semstrait-core` | Preserves the `FunctionRegistry` as the single source of truth per `14a §2.2` / Q3. External code that needs a new canonical name must add a `FunctionRegistry` entry, not a `CanonicalFn` constant. | §5.1 |
-| R4 | `FunctionSpec.signatures: &'static [FnSignature]` (slice + seal-time non-empty check) instead of `NonEmpty<FnSignature>` | Const-friendliness for adapter `const FUNCTIONS: &[FunctionSpec]` registration (§5.8). Non-empty invariant enforced via a registry-seal panic. | §5.3 |
-| R5 | `ParamType::TypeClass(TypeClass)` variant exposed but NOT authoring-legal in v1 | Ratifies `14a §3.3` Q6's overload-set-only decision while keeping the enum stable under I10 for the `[TD-REGISTRY-TYPECLASS]` future. | §5.5 |
-| R6 | `Nullability` type is NOT exposed | `13 §2` / `14a §3.4` Q7 treat the canonical `DataType` as nullable-by-default; a separate `Nullability` enum would duplicate information the engine already tracks. | §4.4 |
-| R7 | `ContextLine` type is NOT exposed on `Diagnostic` | `10 §5.1` does not ratify one; rich source-line rendering is a presentation concern above `Diagnostic`. Parked as Q2 in open questions. | §7.1 |
-| R8 | Feature flags `serde` and `schemars` are OFF by default | Minimizes transitive compile cost for consumers that only need the types. Existing always-on derives in `semstrait-core` code are a migration item (`[TD-CORE-SERDE-GATING]`). | §11 |
-| R9 | No `pub async fn` anywhere in `semstrait-core`; CI-enforced | Concrete I6 / I11 guarantee. Lint + dependency audit. | §13 |
-| R10 | Zero internal workspace dependencies; CI-enforced manifest audit | Concrete I7 guarantee. `semstrait-core` is the root of the workspace DAG. | §12.2 |
-| R11 | `MeasureConstraints` retains its legacy name for v1 | Renames are scheduled with the broader Manifest-schema revision pass per `11 §8.4.3` / `[TD-CONSTRAINT-RENAME]`. `31` ratifies keeping the current name stable; rename is a v2 concern. | §6.1 |
-| R12 | `Aggregation` enum has **5 variants** (`Sum`, `Avg`, `Count`, `Min`, `Max`); `CountDistinct` is encoded via `Expr::Aggregate.distinct: bool` | Ratifies `14 §3.2` over the prompt's "6 canonical aggregates" framing. Adding a `CountDistinct` variant would duplicate the `distinct: bool` field already on `Expr::Aggregate`. Parked as Q1 in open questions for any second look. | §3.5 |
-| R13 | `io` module added to `semstrait-core` — byte-blob transport via `Source` / `Sink` + `FromIoBytes` / `IntoIoBytes` conversion traits + `Location` + `IoError` + `backends::{memory, local, s3}` | Ratified in `31b`. Domain-specific load / dump wrappers live in the owning crate (`32 §10.4`, `33 §16.5`). Back-ends thin-wrap `object_store` (Apache Arrow) — not re-exported publicly except the one documented `S3SourceBuilder::with_object_store_builder` escape hatch. Under default features, core pulls `tokio`, `bytes`, `dashmap`, and `object_store` (Local + InMemory features); under `--no-default-features`, the crate retains its zero-runtime-dep posture. Supersedes R9's "no `pub async fn` anywhere" — async is permitted inside `io`. | §11 / §12 / `31b` |
-
----
-
-*Cross-references in this document are by section (e.g. `14 §3.2`, `11 §8.4.1`). No code-path references are used, per `00 §8`.*

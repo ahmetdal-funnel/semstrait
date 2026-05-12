@@ -25,7 +25,7 @@ refined-by:
 >
 > This document ratifies the compile-time expression-resolution pass that turns
 > every author-declared `SemanticExpr` into a fully substituted, type-annotated
-> `PhysicalExpr` stored in the Manifest's `ResolvedExprTable`. It finalizes
+> `PhysicalExpr` stored in the SemanticManifest's `ResolvedExprTable`. It finalizes
 > every forward reference from `14` that points at "compile-time resolution",
 > "the `ResolvedExprTable`", "substitution algorithm", "cross-DataKind path
 > pre-resolution", or "cycle detection" (`14 §3.2`, `§3.3`, `§4.1`, `§5.4`,
@@ -41,13 +41,13 @@ refined-by:
 
 ## 1. Purpose and Scope
 
-`14b` ratifies **how and when semstrait resolves expressions**. Every `expr:` an author writes — on a Measure, on a Metric, on a Dimension, on a Filter, on a Key member, on a Binding's `column_mapping[].expr` — is authored as a `SemanticExpr` (or, at binding sites, a `PhysicalExpr`) and enters the compile stage as a tree whose leaves may reference **other Semantics** (`EntityRef`) or physical columns (`Column`). The compile stage walks every such tree, substitutes away every `EntityRef`, validates every `Column` against the resolved `PhysicalSource` schema, looks up every `FunctionCall` in the sealed `FunctionRegistry`, and annotates every node with its inferred `DataType`. The output is a `PhysicalExpr` stored verbatim in the Manifest's `ResolvedExprTable`, keyed by `(SemanticsName, BindingId)`.
+`14b` ratifies **how and when semstrait resolves expressions**. Every `expr:` an author writes — on a Measure, on a Metric, on a Dimension, on a Filter, on a Key member, on a Binding's `column_mapping[].expr` — is authored as a `SemanticExpr` (or, at binding sites, a `PhysicalExpr`) and enters the compile stage as a tree whose leaves may reference **other Semantics** (`EntityRef`) or physical columns (`Column`). The compile stage walks every such tree, substitutes away every `EntityRef`, validates every `Column` against the resolved `PhysicalSource` schema, looks up every `FunctionCall` in the sealed `FunctionRegistry`, and annotates every node with its inferred `DataType`. The output is a `PhysicalExpr` stored verbatim in the SemanticManifest's `ResolvedExprTable`, keyed by `(SemanticsName, BindingId)`.
 
 Per `10 §3.3`'s pipeline, this work lives inside `compile`. Per `00 §6`'s hot-path rule, the entire substitution and lookup work is completed **before** any plan is built, so that `plan` (and every stage downstream) can consume a single `ResolvedExprTable::lookup(name, binding_id)` in O(1) per reference. `14b` is the document that says exactly **what that lookup returns** and **how the compile stage populated it**.
 
 **What `14b` ratifies:**
 
-- The `ResolvedExprTable` — its Rust-level shape, keying discipline, entry structure, ordering invariants, Manifest-level serialization posture (§2).
+- The `ResolvedExprTable` — its Rust-level shape, keying discipline, entry structure, ordering invariants, SemanticManifest-level serialization posture (§2).
 - The **substitution algorithm** — the post-order `SemanticExpr` walk, per-variant rules, the same-kind vs cross-kind branch point, and the terminal conditions (§3).
 - **Cross-DataKind path resolution** — BFS over the `Relationship` graph, the shortest-path rule, ambiguity detection, no-path handling, `PathSignature` construction (§4).
 - **Cycle detection** — the Tarjan-SCC pass over the reference DAG, the reportable cycle path, the worked example, and the relationship between cycle detection and the substitution order (§5).
@@ -64,17 +64,17 @@ Per `10 §3.3`'s pipeline, this work lives inside `compile`. Per `00 §6`'s hot-
 - The `Expr` AST itself (variants, invariants on `SemanticExpr` / `PhysicalExpr`) — `14 §3`.
 - The `FunctionRegistry` API or the canonical function catalog — `14a`.
 - Plan-time use of the `ResolvedExprTable` entries and `PathSignature`s — `16` and `20–25`.
-- The on-disk serialization format of the Manifest (concrete encoding choices, versioning) — `33`. §2.4 below ratifies the shape-level contract only; `33` binds the byte-level encoding.
+- The on-disk serialization format of the SemanticManifest (concrete encoding choices, versioning) — `33`. §2.4 below ratifies the shape-level contract only; `33` binds the byte-level encoding.
 - Adapter-time rendering of the resolved `PhysicalExpr` to engine-native forms — `34` / `36`.
 
 **Key invariants from `00` / `10` / `14` that `14b` upholds:**
 
-- **I4** (deterministic Manifest) — `ResolvedExprTable` uses an ordered map keyed by `(SemanticsName, BindingId)`; substitution is pure; path ambiguity resolves by hard error rather than by arbitrary tie-break (§4.3). The same input `SemanticModel` therefore produces the byte-identical `ResolvedExprTable`.
+- **I4** (deterministic SemanticManifest) — `ResolvedExprTable` uses an ordered map keyed by `(SemanticsName, BindingId)`; substitution is pure; path ambiguity resolves by hard error rather than by arbitrary tie-break (§4.3). The same input `SemanticModel` therefore produces the byte-identical `ResolvedExprTable`.
 - **I5** (compile-time resolution only) — every `EntityRef` is substituted away at compile time; `PhysicalExpr` values stored in `ResolvedExprTable` are `EntityRef`-free by `14 §3.6`'s structural invariant; plan-time lookups are O(1) map accesses (§2.3).
 - **I6** (sync hot path) — resolution is a **pure, sync** transformation over already-loaded inputs (parsed Model, fetched catalog, sealed `FunctionRegistry`). `compile` is async-permitted at its outer boundary (`10 §3.3`) solely because of catalog I/O; the resolution sub-pass itself performs no I/O and is synchronous per `10 §3.3`'s table.
-- **I8** (planner-complete Manifest) — after `compile` seals, every `(name, binding_id)` combination that plan / optimize / adapt might demand is already in the `ResolvedExprTable`; the planner never triggers a re-resolution (§2.3).
+- **I8** (planner-complete SemanticManifest) — after `compile` seals, every `(name, binding_id)` combination that plan / optimize / adapt might demand is already in the `ResolvedExprTable`; the planner never triggers a re-resolution (§2.3).
 - **I10** (non-exhaustive public sum types) — `CompileError` (§11), `PathSignature` (if it becomes an enum in a later round), and any other public sum type this document introduces are `#[non_exhaustive]`.
-- **I12** (fail-fast compile) — every compile-stage error in §11 is fail-fast per `10 §3.3` — the first `CompileError` terminates the compile call with a `Diagnostic::Error`; 14b never buffers multiple resolution errors for the same Manifest.
+- **I12** (fail-fast compile) — every compile-stage error in §11 is fail-fast per `10 §3.3` — the first `CompileError` terminates the compile call with a `Diagnostic::Error`; 14b never buffers multiple resolution errors for the same SemanticManifest.
 
 Concretely:
 
@@ -107,18 +107,18 @@ pub struct ResolvedExprEntry {
 }
 ```
 
-**Q1 decision (ordering).** Storage is `BTreeMap`, not `HashMap`. This guarantees deterministic iteration order for Manifest serialization and for any derived artifacts (e.g. adapter-side column-projection lists). Lookups cost `O(log n)` in the number of entries — acceptable because (a) the hot path per `10 §3.3` is plan-time and the table is immutable there, (b) typical Manifests have `n` on the order of hundreds to low thousands, (c) plan-time lookup amortized cost is dominated by expression tree traversal anyway, not table access.
+**Q1 decision (ordering).** Storage is `BTreeMap`, not `HashMap`. This guarantees deterministic iteration order for SemanticManifest serialization and for any derived artifacts (e.g. adapter-side column-projection lists). Lookups cost `O(log n)` in the number of entries — acceptable because (a) the hot path per `10 §3.3` is plan-time and the table is immutable there, (b) typical SemanticManifests have `n` on the order of hundreds to low thousands, (c) plan-time lookup amortized cost is dominated by expression tree traversal anyway, not table access.
 
 Alternative considered: a `HashMap` with a separate sorted key-index for serialization. Rejected — single storage is simpler and cheaper in memory; `log n` lookups are not measurable compared to plan-time expression handling.
 
-**Q2 decision (`BindingId`).** `BindingId` is a newtype over `u32`, assigned by the compile stage when it registers each Binding in the Manifest:
+**Q2 decision (`BindingId`).** `BindingId` is a newtype over `u32`, assigned by the compile stage when it registers each Binding in the SemanticManifest:
 
 ```rust
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct BindingId(pub u32);
 ```
 
-Assignment policy: IDs are assigned in the Manifest-level iteration order of top-level DataKinds and their constituent Bindings (per `11 §11.3`'s name-resolution order — root-declared order, stable across compiles because the parsed Model preserves insertion order). IDs are **not stable across Model edits** — if a new DataKind is inserted upstream of an existing one, the ID of every downstream Binding shifts. This is acceptable because: (a) IDs are internal to the Manifest and never surface in user-facing diagnostics (which quote `DataKind.name / Binding.name` paths, per `10 §5`), (b) Manifests are always re-compiled on source change, (c) no downstream component caches BindingIds across compile runs.
+Assignment policy: IDs are assigned in the SemanticManifest-level iteration order of top-level DataKinds and their constituent Bindings (per `11 §11.3`'s name-resolution order — root-declared order, stable across compiles because the parsed Model preserves insertion order). IDs are **not stable across Model edits** — if a new DataKind is inserted upstream of an existing one, the ID of every downstream Binding shifts. This is acceptable because: (a) IDs are internal to the SemanticManifest and never surface in user-facing diagnostics (which quote `DataKind.name / Binding.name` paths, per `10 §5`), (b) SemanticManifests are always re-compiled on source change, (c) no downstream component caches BindingIds across compile runs.
 
 `BindingName` (the author-visible identifier) is **not** used as the map key because: (a) `Binding.name` is unique only within its owning SimpleDataKind, not globally, so a composite key is already unavoidable; (b) `u32` ID is cheaper to hash / compare than the author-visible `(DataKindName, BindingName)` pair; (c) it shields downstream consumers from author renames inside the compile call.
 
@@ -169,44 +169,17 @@ impl ResolvedExprTable {
 - `lookup_all(name)` — iterates every `(BindingId, Entry)` for a given Semantics, useful for planner source selection over `ComplexDataKind`s where multiple Bindings can satisfy the same Semantics. Implementation: `BTreeMap::range` on the half-open range `[(name, BindingId(0)), (name_next, BindingId(0)))`.
 - `iter()` — full iteration in `(name, binding)` lex order, used by serialization (`33`), adapter column planning (`34` / `36`), and debug tooling.
 
-**Immutability after seal.** Once `compile` returns a `Manifest`, the contained `ResolvedExprTable` is `Arc`-wrapped and never mutated. All public methods take `&self`; there is no `insert` / `remove` / `update` at the public API. `14b` does not expose constructors for `ResolvedExprTable` — only the compile internals build it, and they consume the table as owned before wrapping.
+**Immutability after seal.** Once `compile` returns a `SemanticManifest`, the contained `ResolvedExprTable` is `Arc`-wrapped and never mutated. All public methods take `&self`; there is no `insert` / `remove` / `update` at the public API. `14b` does not expose constructors for `ResolvedExprTable` — only the compile internals build it, and they consume the table as owned before wrapping.
 
 ### 2.4 Serialization posture
 
-The Manifest (`33`) binds the byte-level encoding. `14b` ratifies only the shape-level contract that `33` must respect:
+The SemanticManifest (`33`) binds the byte-level encoding. `14b` ratifies only the shape-level contract that `33` must respect:
 
 - `entries` is encoded in the `BTreeMap`'s natural iteration order — no per-serializer re-sort needed.
 - Each `ResolvedExprEntry` is encoded inline — `physical_expr` is not interned into a separate expression pool in v1.
-  - **Proposed (Round 1):** no interning. An entry's `physical_expr` is a standalone `PhysicalExpr` tree. Rationale: (a) ~all resolved expressions are small (1–20 nodes) and duplication across entries is moderate; (b) interning introduces a second layer of ID-based indirection that every planner pass must chase; (c) Manifests are produced once and consumed many times, so decode-time simplicity beats encode-time size reduction.
-  - Future extension `[TD-14B-EXPR-INTERN]` (tracked in `14b_questions.md`) covers opt-in interning if Manifest sizes grow past comfortable budgets.
+  - **Proposed (Round 1):** no interning. An entry's `physical_expr` is a standalone `PhysicalExpr` tree. Rationale: (a) ~all resolved expressions are small (1–20 nodes) and duplication across entries is moderate; (b) interning introduces a second layer of ID-based indirection that every planner pass must chase; (c) SemanticManifests are produced once and consumed many times, so decode-time simplicity beats encode-time size reduction.
+  - Future extension `[TD-14B-EXPR-INTERN]` (tracked in `14b_questions.md`) covers opt-in interning if SemanticManifest sizes grow past comfortable budgets.
 - `PhysicalExpr` serialization itself is `14` / `33`'s concern; `14b` only requires that whatever `14` and `33` choose is byte-stable.
-
-### 2.5 Why `(SemanticsName, BindingId)` (not `SemanticsName` alone)
-
-A Semantics can be defined once in author text and **still** produce multiple resolved PhysicalExpr variants, one per Binding that can source it. This happens structurally in two ways:
-
-1. **ComplexDataKind unionset** (`22`): multiple SimpleDataKinds expose the same Semantics name; each has its own Binding; each Binding can produce a different `PhysicalExpr` (different `SemanticMapping`, different physical source). Planner picks among them at source selection time.
-2. **Per-Binding `expr:` override on Semantics occurrences** (`11 §6`): the same Semantics name appearing on two SimpleDataKinds can carry different author-declared `expr:` trees on each occurrence; each occurrence's Binding contributes its own resolved entry.
-
-A single-key table `SemanticsName → PhysicalExpr` cannot represent either case without losing information. The two-dimensional key is therefore the minimal faithful encoding.
-
-Compact view:
-
-```mermaid
-flowchart LR
-  S["SemanticsName"]:::sem --> K1
-  B1["BindingId #1 (DK_A)"]:::bind --> K1
-  S --> K2
-  B2["BindingId #2 (DK_B)"]:::bind --> K2
-  K1[("<code>ResolvedExprKey</code> → Entry₁")]:::key
-  K2[("<code>ResolvedExprKey</code> → Entry₂")]:::key
-
-  classDef sem  fill:#eef,stroke:#559
-  classDef bind fill:#efe,stroke:#595
-  classDef key  fill:#fee,stroke:#955
-```
-
-Entry₁ and Entry₂ may share `inferred_type` (almost always do) but differ in `physical_expr`, `referenced_columns`, and possibly `path_signature`.
 
 ### 2.6 The `Provenance` record
 
@@ -236,7 +209,7 @@ pub enum OccurrenceRole {
 - `contributing_occurrences` — the parsed Semantics occurrences whose `expr:` / `data_type:` the resolver actually merged (per `11 §6.3`'s Tier-1 / Tier-2 contract).
 - `resolved_from_variant` — when a local variant overrode the Tier-1 default for this Binding, this is the variant's occurrence; otherwise `None` (Tier-1 default was used).
 
-**Purpose.** `Provenance` never leaves the Manifest — no plan-time or adapt-time consumer reads it. It exists purely for diagnostics: when an error fires against an entry, the reporter can quote every Location that contributed, giving authors precise finger-pointing without re-walking the parse tree. It is also used by the `--explain` tooling `[TD-EXPLAIN-COMPILED]`.
+**Purpose.** `Provenance` never leaves the SemanticManifest — no plan-time or adapt-time consumer reads it. It exists purely for diagnostics: when an error fires against an entry, the reporter can quote every Location that contributed, giving authors precise finger-pointing without re-walking the parse tree. It is also used by the `--explain` tooling `[TD-EXPLAIN-COMPILED]`.
 
 **Proposed (Round 1):** granularity per above. The open question asks whether we also record per-`EntityRef`-site location trails (useful for diagnosing cross-kind path errors inside a deep expression). Default for Round 1: no — we rely on the expression tree's own `Location` nodes (from `14`) for that. Tracked in `14b_questions.md`.
 
@@ -266,7 +239,7 @@ pub(crate) struct ResolveContext<'a> {
 
 Inputs are all read-only except `recursion`, which carries the DFS visited-set used by §5's cycle detection. The function is **pure** in the input-model sense (no I/O, no time dependence, no RNG); the only mutation is bookkeeping for cycle detection, which is scoped to a single `resolve_to_physical` invocation tree.
 
-`resolve_to_physical` is a `pub(crate)` internal — authors never call it and adapters never call it. The public Manifest surface is `ResolvedExprTable::lookup`. `14b`'s contract is the input-output behavior of this function; §3 describes the algorithm.
+`resolve_to_physical` is a `pub(crate)` internal — authors never call it and adapters never call it. The public SemanticManifest surface is `ResolvedExprTable::lookup`. `14b`'s contract is the input-output behavior of this function; §3 describes the algorithm.
 
 ### 3.2 Algorithm overview
 
@@ -400,7 +373,7 @@ Rationale:
 
 - The author-facing `Aggregate` shape (`{sum: [expr]}` in DSL, `{aggregate: {fn: sum, arg: ...}}` in declarative form) is ergonomic for Semantic-side composition.
 - The physical-side representation uniforms aggregate and scalar into one variant — simpler for adapters to pattern-match and for plan-time rewrites to traverse.
-- Aggregate-specific metadata (grain, additivity) is preserved on the Semantics itself (per `13 §3` on grain, `11 §6.2` on additivity), not inside the `PhysicalExpr`. The physical tree is engine-agnostic; context-ful metadata lives in the Manifest's Semantics records.
+- Aggregate-specific metadata (grain, additivity) is preserved on the Semantics itself (per `13 §3` on grain, `11 §6.2` on additivity), not inside the `PhysicalExpr`. The physical tree is engine-agnostic; context-ful metadata lives in the SemanticManifest's Semantics records.
 
 **Q5 decision.** `Aggregate` → `FunctionCall` rewrite at the 14b boundary, with a canonical name chosen from `14a §4.4`'s aggregate catalog. No `PhysicalExpr::Aggregate` variant. `14 §3.6`'s structural invariant is therefore tight — `PhysicalExpr` has exactly the ratified variants (`Literal`, `Column`, `FunctionCall`, `BinaryOp`, `Cast`, `If`, `Case`, `Coalesce`, `Null`).
 
@@ -445,19 +418,6 @@ Contract:
 | `Null` | `PhysicalExpr::Null` | `DataType::Unknown` at node; root-level reconciliation | — |
 
 ## 4. Cross-DataKind Path Resolution
-
-### 4.1 Why BFS
-
-When an `EntityRef { name }` inside Semantics `S_owner` on DataKind `DK_owner` resolves to a target Semantics on DataKind `DK_target` (with `DK_target ≠ DK_owner`), the compile stage must determine **which chain of `Relationship`s** joins the two kinds. This chain becomes the `PathSignature` stored on the entry — the planner consumes it at plan time (`16`) to materialize a join subgraph.
-
-Requirements on the pathfinding algorithm:
-
-- **Shortest path** — the canonical "simplest" join is preferred. Two-hop paths that pass through intermediate DataKinds are only chosen when no one-hop Relationship exists.
-- **Ambiguity detection** — if **two or more** distinct shortest-length paths exist, compile must fail rather than silently pick one. Authors correct the Model by either adding a disambiguating join hint (future work) or by writing the reference differently.
-- **No-path detection** — if no chain exists, compile must fail with a clear error naming the two kinds.
-- **Determinism** — the neighbor iteration order during BFS must be stable so that ambiguity detection is stable.
-
-BFS satisfies all of these: shortest-path semantics by construction, duplicate-depth detection for ambiguity, visited-set for termination.
 
 ### 4.2 The `RelationshipGraph`
 
@@ -583,110 +543,7 @@ pub struct RelationshipPath(pub Vec<RelationshipId>);
 
 The open question covers whether to **intersect** paths that share intermediate relationships or to keep them distinct as-is. Default for Round 1: keep them distinct; the planner de-dupes join-node materialization internally (`16 §4.2`). Tracked in `14b_questions.md` — the decision depends on how `16` models join subgraph canonicalization.
 
-### 4.6 Worked example
-
-Model fragment:
-
-```yaml
-data_kinds:
-  - kind: Event
-    name: orders
-    primary_key: [order_id]
-    ...
-  - kind: Event
-    name: order_items
-    primary_key: [order_item_id]
-    ...
-  - kind: Entity
-    name: customers
-    primary_key: [customer_id]
-    ...
-
-relationships:
-  - from: order_items
-    to: orders
-    join_keys: [[order_id, order_id]]
-  - from: orders
-    to: customers
-    join_keys: [[customer_id, customer_id]]
-```
-
-Semantics on `order_items`:
-
-```yaml
-on: order_items
-measures:
-  - name: high_value_item_revenue
-    expr: {case: [{when: {gt: [customer.lifetime_value, {literal: 1000}]}, then: line_total}], else: {literal: 0}}
-```
-
-Resolution walk:
-
-- Start post-order traversal of `case` at the root on the `order_items` binding.
-- First-branch `when`-expression recurses into `gt(customer.lifetime_value, 1000)`.
-- `customer.lifetime_value` parses as `EntityRef { name: "customer.lifetime_value" }` per `11 §5.2`'s dotted-path convention. Resolution:
-  - `customer` is a DataKindName reference (→ look up `customers`).
-  - `lifetime_value` is a Semantics on `customers`.
-  - The target kind is `customers`, not `order_items`; BFS triggers.
-- BFS from `order_items`:
-  - Depth 0: `order_items`.
-  - Depth 1 neighbors: `orders`.
-  - Depth 2 neighbors: `customers`. One hit, path `[R(order_items↔orders), R(orders↔customers)]`.
-- BFS exhausts depth 2 with only one hit — no ambiguity.
-- The target `customers.lifetime_value` is resolved via its own Binding (the SimpleDataKind `customers`'s Binding) producing a `PhysicalExpr` subtree.
-- Splice the subtree at `customer.lifetime_value`'s site; `path_signature.paths` now contains `{[R1, R2]}`.
-- Second branch `then: line_total` — `line_total` is on `order_items` (same kind as the owning Binding); no BFS.
-- Third `else: {literal: 0}` — pure literal.
-
-Final entry has `path_signature: Some(PathSignature { paths: {[R1, R2]} })`.
-
-### 4.7 No-path example
-
-If the author removes the `orders ↔ customers` relationship, BFS from `order_items` exhausts without reaching `customers`:
-
-```
-CompileError::NoRelationshipPath {
-  from: DataKindName("order_items"),
-  to:   DataKindName("customers"),
-}
-```
-
-Error code `EXPR_E_0202` (§11.2).
-
-### 4.8 Ambiguity example
-
-If the author introduces two independent relationships between `orders` and `customers`:
-
-```yaml
-relationships:
-  - from: orders
-    to: customers
-    join_keys: [[customer_id, customer_id]]
-    role: buyer
-  - from: orders
-    to: customers
-    join_keys: [[billing_customer_id, customer_id]]
-    role: billing
-```
-
-BFS from `order_items` finds two depth-2 paths to `customers`:
-
-```
-path A: [R(order_items↔orders), R_buyer(orders↔customers)]
-path B: [R(order_items↔orders), R_billing(orders↔customers)]
-```
-
-Both of depth 2; both are hits. `AmbiguousRelationshipPath` fires with both paths in its payload.
-
-The fix is author-side: either remove the unused relationship, or introduce a disambiguating reference form (future work `[TD-14B-RELATIONSHIP-ROLE-HINTS]`).
-
 ## 5. Cycle Detection
-
-### 5.1 Why it runs before type inference
-
-`14 §6.2`'s computed-Semantics type inference requires every referenced Semantics's type to be known before the referencing Semantics can be typed. A cycle in the reference graph means no inference-fixpoint without extra machinery, and more importantly no **semantic** fixpoint — `A = B + 1` and `B = A + 1` is undefined regardless of the types.
-
-14b therefore detects cycles **before** substitution begins, treating the reference graph as a DAG constraint.
 
 ### 5.2 The reference DAG
 
@@ -722,34 +579,6 @@ Outputs:
 **Q8 decision.** Tarjan SCC + topological sort is the Round-1 approach. Rationale: (a) detects every cycle in a single pass, (b) the topological order is a free side-product reused for resolution ordering, (c) stable order is easy to pin down, (d) well-understood algorithm.
 
 **Proposed (Round 1) — single-cycle reporting.** 14b reports the **first** cycle encountered (lexicographically smallest SCC name). Authors fix one cycle at a time and re-run. Alternative: aggregate all cycles in one pass. Round-1 default is single-cycle per I12 (fail-fast); tracked in `14b_questions.md` for a future batch-diagnostic mode `[TD-14B-BATCH-DIAGS]`.
-
-### 5.4 Worked example
-
-Author writes:
-
-```yaml
-on: orders
-measures:
-  - name: a
-    expr: {plus: [b, {literal: 1}]}
-  - name: b
-    expr: {plus: [a, {literal: 1}]}
-```
-
-Reference graph:
-
-- `a → b`
-- `b → a`
-
-Tarjan finds a 2-member SCC `{a, b}`.
-
-```
-CompileError::CyclicReference { cycle: vec!["a", "b"] }
-```
-
-Error code `EXPR_E_0203` (§11.3).
-
-Fix: the author breaks the cycle by rooting one of the two in a physical column or a literal. E.g. `a: {plus: [line_total, {literal: 1}]}`.
 
 ### 5.5 Self-loop
 
@@ -949,10 +778,10 @@ Totals are bounded by `Σ (# bindings per DataKind) × (# Semantics exposed per 
 
 ### 9.1 Per `10 §3.3`'s stage-internal contract
 
-The `compile` stage is the only place where name resolution, catalog I/O, function-registry consultation, expression resolution, and Manifest construction happen. Per `10 §3.3`:
+The `compile` stage is the only place where name resolution, catalog I/O, function-registry consultation, expression resolution, and SemanticManifest construction happen. Per `10 §3.3`:
 
 1. Entry: a validated `SemanticModel` (parse + validate complete).
-2. Exit: a sealed `Manifest` or a `CompileError`.
+2. Exit: a sealed `SemanticManifest` or a `CompileError`.
 
 Within `compile`, 14b fixes the ordering of the resolution-specific sub-passes:
 
@@ -967,8 +796,8 @@ flowchart TD
   G[6. Per-(Semantics, Binding) resolve_to_physical<br/>§3, §6, §7]:::pure
   H[7. Boundary-reconciliation Cast emission<br/>§7]:::pure
   I[8. Populate ResolvedExprTable<br/>§2]:::pure
-  J[9. Seal Manifest]:::seal
-  K["Exit: sealed Manifest"]:::exit
+  J[9. Seal SemanticManifest]:::seal
+  K["Exit: sealed SemanticManifest"]:::exit
 
   A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K
 
@@ -1125,47 +954,9 @@ One narrowing reconciliation warning:
 
 14b emits warnings but does not block compile on them. `10 §5`'s `Diagnostic` transport is the carrier.
 
-## 12. Ratified Decisions Index (Round 1)
-
-| Q | Decision | § |
-|---|---|---|
-| Q1 | `ResolvedExprTable` storage: `BTreeMap<ResolvedExprKey, ResolvedExprEntry>` — deterministic iteration, O(log n) lookup. No separate hash index in v1. | §2.1 |
-| Q2 | `BindingId = u32` newtype — assigned in parsed-Model iteration order; stable within a compile, not stable across edits. Not author-visible. | §2.1 |
-| Q3 | `SemanticsName` is the `11 §4` canonical newtype — unified global namespace, no per-species splits. | §2.1 |
-| Q4 | Binding's `column_mapping[].expr` resolves eagerly in the same pass as Semantics-side `expr:` — uniform algorithm, no separate "bind-later" mode. | §3.4 |
-| Q5 | `Aggregate` → `PhysicalExpr::FunctionCall` rewrite at the compile boundary; no `PhysicalExpr::Aggregate` variant. | §3.10 |
-| Q6 | `RelationshipId = u32` newtype, assigned in parsed-Model iteration order. | §4.2 |
-| Q7 | Cross-kind target Semantics is resolved against every available target Binding; `ResolvedExprTable` stores one entry per `(target_name, target_binding_id)`. Substitution splices the specific entry for the enclosing composition context. | §4.4 |
-| Q8 | Cycle detection is Tarjan SCC + topological sort over the global reference DAG. Topological order doubles as the resolution order. | §5.3 |
-| Q9 | No implicit promotion at BinaryOp / Cast / Coalesce unification. Same-kind-only (with `Unknown` unifying to concrete). Arithmetic `BinaryOp` uses `SameAs(lhs)` for result type per `14 §5.6`. | §6.3, §3.9 |
-| Q10 | Error-variant renaming from 14 §7.3 drafts: `UnresolvedEntityRef → UnknownReference`, `UnreachableSemanticsReference → NoRelationshipPath`, `CircularSemanticsReference → CyclicReference`. Codes `EXPR_E_0201` / `0202` / `0203` preserved. New variants `AmbiguousRelationshipPath` (`EXPR_E_0205`) and `TypeInferenceFailure` (`EXPR_E_0206`, moved into the 02xx sub-range). | §11 |
-| Q11 | `PathSignature.paths: BTreeSet<RelationshipPath>` — deduped paths, deterministic iteration. `Option<PathSignature>`: `None` = local-only resolution; `Some(ps)` = one or more cross-kind walks. | §4.5 |
-| Q12 | Join-key columns from traversed Relationships are recorded inline in `referenced_columns` alongside payload columns. Planner-level split into "join vs. payload" is the planner's concern, driven by `Relationship` metadata. | §10.4 |
-| Q13 | Every `PhysicalExpr` node stored in `ResolvedExprTable` carries a populated `inferred_type`. The entry-level `inferred_type` duplicates the root node's for fast lookup. | §6.4 |
-| Q14 | Semantics-boundary `Cast` emission per `14 §6.4` — widening silent, narrowing emits `Diagnostic::Warning { code: "EXPR_W_CAST_NARROW" }`. The cast wraps the root unconditionally when `declared != inferred` (including cases where the author already cast internally). | §7.1, §7.2, §7.5 |
-| Q15 | Resolution-sub-pass order inside `compile`: catalog fetch → relationship graph → semantics index (Tier-1 merge) → reference-DAG cycle detection → topological order → per-pair resolution → boundary reconciliation → table populate → Manifest seal. | §9.1 |
-| Q16 | Manifest-level serialization: inline `PhysicalExpr` per entry, no interning in v1. `BTreeMap` natural order is the serialization order. | §2.4 |
-| Q17 | Provenance granularity per-entry: source Locations, contributing occurrences, optional `resolved_from_variant` marker. Per-`EntityRef`-site provenance deferred to `[TD-14B-EXPR-PROVENANCE-SITES]`. | §2.6 |
-| Q18 | Fail-fast per-error: first detected resolution error terminates compile with a `Diagnostic::Error`. No multi-error aggregation in v1. | §11.4 |
-
-### 12.1 Tech-debt / deferred extensions referenced above
-
-- **`[TD-14B-EXPR-INTERN]`** — opt-in `PhysicalExpr` interning for large Manifests; requires a separate expression pool and ID-based serialization.
-- **`[TD-14B-RELATIONSHIP-ROLE-HINTS]`** — disambiguating role hints at `EntityRef` call sites when multiple Relationships exist between the same two DataKinds.
-- **`[TD-14B-BATCH-DIAGS]`** — multi-error aggregation mode that collects every resolution-stage error in one pass before terminating.
-- **`[TD-14B-EXPR-PROVENANCE-SITES]`** — per-`EntityRef`-site provenance trails for deep cross-kind resolution diagnostics.
-- **`[TD-14B-PATH-UNIFICATION]`** — planner-side canonicalization policy for multiple `PathSignature.paths` that share intermediate relationships. Tied to `16`'s join-subgraph canonicalization.
-- **`[TD-14B-TYPECLASS-UNIFY]`** — richer unification if `14a`'s `[TD-REGISTRY-TYPECLASS]` lands.
-
-### 12.2 Round 2 scope
-
-- Finalize serialization encoding choices in concert with `33` (Manifest).
-- Finalize multi-`EntityRef` path composition in concert with `16` (composition).
-- Wire the provenance-site extension when the `--explain` tooling lands.
-
 ## 13. Interaction with Other Documents
 
-- **`00` (overview)** — I4 / I5 / I6 / I8 binding invariants; vocabulary (`SemanticsName`, `Binding`, `Relationship`, `Manifest`, `ResolvedExprTable`) all originate there. 14b is one of the load-bearing compile-stage documents that realize I4 / I5 / I8.
+- **`00` (overview)** — I4 / I5 / I6 / I8 binding invariants; vocabulary (`SemanticsName`, `Binding`, `Relationship`, `SemanticManifest`, `ResolvedExprTable`) all originate there. 14b is one of the load-bearing compile-stage documents that realize I4 / I5 / I8.
 - **`10` (resolution pipeline)** — `compile` stage host, `Diagnostic` transport, error-surfacing contract, sync/async posture. 14b's ordering (§9.1) fits within `10 §3.3`'s per-stage contract.
 - **`11` (names and scopes)** — name resolution algorithm (`§11.1`), Tier-1 / Tier-2 occurrence merge (`§6.3`), shape inference for cross-occurrence type unification (`§5.1`). 14b consumes §11.1 verbatim at every identifier site; `§6.3`'s Tier-1 merge is the precondition for §3.1's per-pair invocation.
 - **`13` (types and grain)** — canonical `DataType` set, widening / narrowing lattice, literal typing. 14b's §6 and §7 both read from `13`'s type vocabulary.
@@ -1174,5 +965,5 @@ One narrowing reconciliation warning:
 - **`15` (binding)** — `SemanticMapping` compile-time Binding process, `Expr`-variant semantics, physical-schema validation. 14b realizes the validation: every `Column(name)` in a resolved `PhysicalExpr` is checked against the binding's schema in §3.4 / §10.
 - **`16` (composition)** — plan-time join-subgraph materialization. `PathSignature` from 14b is its input; the planner composes join nodes from `path_signature.paths` per `16 §4`.
 - **`20–25` (data-kind specifications)** — plan-time consumers. Each DataKind spec uses `ResolvedExprTable::lookup(name, binding_id)` at plan time and relies on 14b's completeness contract (`§2.3`).
-- **`33` (manifest)** — Manifest's on-disk encoding. 14b binds the shape of `ResolvedExprTable` and its entries; `33` binds the byte-level encoding including versioning and backward-compat rules.
+- **`33` (manifest)** — SemanticManifest's on-disk encoding. 14b binds the shape of `ResolvedExprTable` and its entries; `33` binds the byte-level encoding including versioning and backward-compat rules.
 - **`34` / `36` (adapters)** — `adapt` stage consumers. Adapters read resolved `PhysicalExpr` trees and render to engine-native SQL / Substrait. 14b's `referenced_columns` list drives adapter column projection; 14b's `inferred_type` per node drives per-node rendering (casting, aggregate pattern matching).

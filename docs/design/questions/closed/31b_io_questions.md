@@ -1,4 +1,10 @@
-# 31b — Open Questions (all resolved)
+---
+doc: design/questions/closed/31b_io_questions
+status: Closed
+purpose: Resolved I/O-layer questions originally raised against `apis/31b_semstrait_core_io.md`
+---
+
+# Closed Questions — `apis/31b_semstrait_core_io.md`
 
 Ratification pass on 2026-04-17 closed every open item in this file. This document is retained as a historical record of the decisions; no live items remain. New questions arising in post-v1 work go into a separate file.
 

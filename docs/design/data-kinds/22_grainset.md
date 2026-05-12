@@ -1,977 +1,535 @@
 ---
-prereqs: [20, 13, 14, 15, 16, 17]
+prereqs: [00, 11, 13, 14, 15, 16, 17, 18, 20, 21, 23, 26, 32]
 authoritative-for:
-  - `GrainsetDataKind` model-layer struct shape (children roster, grain-axis binding, rollup policy)
-  - `ResolvedGrainsetDataKind` manifest-layer counterpart and its per-child indices
-  - `GrainsetChild` — constituent reference, natural grain, per-child Coverage projection
-  - the request-grain extraction algorithm (from grouped Dimensions + temporal filter) consumed at plan time
-  - child-eligibility predicate (grain ≤ request-grain AND Coverage ⊇ requested Semantics) and its deterministic subset check
-  - rollup legality per `TemporalShape` (gated forward-ref to `17`): Timeseries / Events / Snapshot / SCD rules
-  - the v1 cost function (source-count proxy) and the tie-break order (declaration order)
-  - plan-shape contract: Grainset emits a single chosen-child delegation, not a union across candidates
-  - `VALID_E_2200`–`2299`, `COMP_E_2200`–`2299`, `PLAN_E_2200`–`2299` error-code allocations
+  - the `Grainset` variant's authoring surface — which fields are explicit (authored) vs. implicit (compile-derived); cross-references the type-level shape in `32 §3.3` (`Grainset` / `NestedGrainset` concrete forms), `32 §3.2` (`GrainsetBody`), and `32 §4` (`ComplexExtras`)
+  - the V1 strict TemporalShape kind equivalence rule across children + the "≥ 2 unique grains" requirement (stronger than R3's "≥ 2 children")
+  - the cascade-up rule for `TemporalShape.kind` only — `grain` is leaf-only and stays per-child (per SR-E-7 / SR-E-8)
+  - the same-grain pre-merge mechanism — same-grain children at the same Grainset level are folded into an implicit Unionset (`mode: All`, **non-strict** NullFilling) at compile; the Grainset's effective routing units are one per distinct grain
+  - the cross-grain composition mechanism — when no single effective routing unit covers the Request, the planner builds a `ComposedSemanticInterface` (per `16 §5`) and emits a LEFT OUTER JOIN tree (driver = most-covering unit; attached units equi-joined on shared Keys per `18 §2.5`)
+  - the v1 inference-only per-child Coverage model — no authored per-child override; fold from each child's interface + Binding-level Coverage; default behavior is non-strict (a child not providing a Semantics is skipped for Requests touching that Semantics, or NullFilled if it survives via same-grain pre-merge)
+  - plan-time observable invariants for Grainset resolution — single-unit delegation in the simple case; cross-grain LEFT OUTER JOIN tree in the partial-coverage case; rollup wrapper added when chosen unit's grain is finer than Request's grain
+  - the Grainset-specific Precondition surfaces — `VALID_E_2200`–`2299` (structural), `COMP_E_2200`–`2299` (compile), `PLAN_E_2200`–`2299` (plan)
 refined-by:
-  - 17 (`foundations/17_temporal_shape.md` — shape-specific rollup rules, snapshot-pin policies, as-of anchoring for SCD)
-  - 23 (`data-kinds/23_unionset.md` — Grainset children may themselves be Unionsets; field-first resolution across composed surfaces)
-  - 24 (`data-kinds/24_joinset.md` — Grainset children may be Joinset members; Relationship walks through a Grainset's chosen child)
-  - 25 (`data-kinds/25_applicability_matrix.md` — cross-kind cell for Grainset, including "Grainset-of-Grainset" nesting policy)
-  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedGrainsetDataKind` persistence, per-child index layout)
-  - 34 (`apis/34_semstrait_planner.md` — planner entry-point that dispatches Grainset strategy)
-  - 35 (`apis/35_semstrait_ir.md` — `PlanNode` subtree produced by Grainset delegation)
+  - 16 (`foundations/16_composition.md` — broadened `ComposedSemanticInterface` to cover both Joinset per-hop and Grainset cross-grain composition; `CompositionKind` shrunk to `{Grainset, Joinset}`)
+  - 17 (`foundations/17_temporal_shape.md` — shape × grain rollup matrix; `RollupPolicy` semantics; per-shape pin / anchor mechanics)
+  - 23 (`data-kinds/23_unionset.md` — same-grain pre-merge produces an implicit Unionset shaped per `23 §4`)
+  - 24 (`data-kinds/24_joinset.md` — Joinset's per-hop composition shares the broadened `ComposedSemanticInterface` shape with Grainset's cross-grain tree)
+  - 25 (`data-kinds/25_applicability_matrix.md` — per-variant consumption cells for Grainset)
+  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedGrainset` family persistence; cross-grain JOIN-tree storage; same-grain implicit-Unionset hash-id assignment)
+  - 34 (`apis/34_semstrait_planner.md` — concrete `plan` entry point and `GrainsetStrategy` algorithm body)
+  - 35 (`apis/35_semstrait_ir.md` — `PlanNode::{Project, Filter, Agg, Union, Join}` variants emitted by `GrainsetStrategy`)
+  - 36 (`semstrait-adapter` — engine rendering of LEFT OUTER JOIN + DATE_TRUNC + per-shape pin / anchor mechanics)
 ---
 
-# 22. Grainset
+# 22. Grainset (`ComplexDataKind`)
 
-> **Reconciliation (Phase-3, 2026-04-17).** The v1 authoring-layer canonical shape for `Grainset` is ratified across:
+> **Reconciliation (post-thirteenth-pass cascade rebase, 2026-05-03).** The v1 authoring-layer canonical shape for `Grainset` is ratified across:
 >
-> - [`../apis/32_semstrait_model.md §3`](../apis/32_semstrait_model.md) — top-level YAML tag (`grainsets:`), `GrainsetBody` struct shape.
-> - [`../foundations/18_entities.md`](../foundations/18_entities.md) — shared entity types consumed by `GrainsetBody`.
-> - [`26_nesting_matrix.md`](./26_nesting_matrix.md) — nesting rules. Notably **R3** (every `ComplexDataKind` requires ≥ 2 children, auto-closing `Q-GRN-006`) and **R2** (no Grainset-of-Grainset self-nesting, auto-closing `Q-GRN-004`).
-> - **SR-E-8** (`18 §11`): every Grainset child MUST author its own `extras.temporal.grain:` explicitly — no inheritance from the Grainset parent.
+> - [`20_taxonomy.md §2`](./20_taxonomy.md) — sealed trait hierarchy (`DataKind`, `ComplexDataKind`, `PublicDataKind`, `NestedDataKind`); `Grainset` implements `ComplexDataKind + PublicDataKind`, `NestedGrainset` implements `ComplexDataKind + NestedDataKind`.
+> - [`../apis/32_semstrait_model.md §3.2`](../apis/32_semstrait_model.md) — `GrainsetBody { base: DataKindBase<ComplexExtras>, datasets, unionsets, joinsets }`. Children are inlined `Nested*` structs (no `DataKindRef` mechanism for cross-Complex child references in v1).
+> - [`../apis/32_semstrait_model.md §3.3`](../apis/32_semstrait_model.md) — `Grainset` and `NestedGrainset` concrete forms.
+> - [`../apis/32_semstrait_model.md §4`](../apis/32_semstrait_model.md) — `ComplexExtras { temporal: Option<TemporalShape> }`; Grainset authors only `temporal:` in `extras` (no `catalog` / `storage` / `semantic_mapping` per R-6 / SR-5; no `grain` per SR-E-7).
+> - [`../foundations/18_entities.md`](../foundations/18_entities.md) — canonical entity types consumed by `GrainsetBody`'s SemanticInterface (Dimensions / Measures / Metrics / **Keys** / Filters); SR-E-7 (no `grain` on Complex), SR-E-8 (Grainset child MUST author `extras.temporal.grain:` explicitly), Keys per `18 §2.5` (the cross-grain JOIN surface).
+> - [`26_nesting_matrix.md`](./26_nesting_matrix.md) — nesting matrix; R1 (leaves don't nest), R2 (no same-variant self-nesting; type-level field absence in `GrainsetBody`), R3 (`ComplexDataKind` requires ≥ 2 children).
+> - [`../foundations/16_composition.md §5`](../foundations/16_composition.md) — `ComposedSemanticInterface` (broadened in this rebase to cover both Joinset per-hop and Grainset cross-grain composition).
 >
-> This document retains authority for:
+> `22` retains authority for:
 >
-> - The request-grain extraction algorithm (§4) and child-eligibility / child-selection rules.
-> - The v1 cost function (source-count proxy) and declaration-order tie-break.
-> - `GrainsetStrategy` plan-shape contract — single chosen-child delegation, not a union across candidates.
-> - `VALID_E_22NN` / `COMP_E_22NN` / `PLAN_E_22NN` error-code allocations.
+> - The `Grainset` authoring surface — explicit (authored) vs. implicit (compile-derived) fields, with cross-references to the type-level shape in `32 §3` / `32 §4`.
+> - The V1 strict TemporalShape kind equivalence rule across children (mixed shapes is a hard compile error).
+> - The "≥ 2 unique grains" requirement (stronger than R3's ≥ 2 children).
+> - The cascade-up rule for `kind` only — grain stays per-child (per SR-E-7 / SR-E-8).
+> - The same-grain pre-merge mechanism (implicit Unionset per `23 §4`).
+> - The cross-grain LEFT OUTER JOIN composition mechanism (driver = most-covering effective routing unit; attached units equi-joined on shared Keys per `18 §2.5`).
+> - Per-child Coverage inference (no authored override in v1).
+> - Plan-time observable invariants of Grainset resolution.
+> - Variant-specific Precondition surfaces — `VALID_E_2200`–`2299`, `COMP_E_2200`–`2299`, `PLAN_E_2200`–`2299`.
 >
-> Rust-struct and YAML-surface body sections predate `18` (formerly `32c` before the 2026-04-17 promotion); read them as historical. `ColumnMapping` → `SemanticMapping` rename per `18 §10`.
-
----
-
-## Table of Contents
-
-1. [Purpose and Scope](#1-purpose-and-scope)
-2. [The `Grainset` variant](#2-the-grainset-variant)
-3. [Child declaration](#3-child-declaration)
-4. [Child selection algorithm](#4-child-selection-algorithm)
-5. [Interaction with `TemporalShape`](#5-interaction-with-temporalshape)
-6. [Interaction with `Coverage`](#6-interaction-with-coverage)
-7. [Validation Preconditions](#7-validation-preconditions)
-8. [Compile Preconditions](#8-compile-preconditions)
-9. [Plan-stage rules](#9-plan-stage-rules)
-10. [Plan shape](#10-plan-shape)
-11. [Worked example](#11-worked-example)
-12. [Round-1 open items](#12-round-1-open-items)
-
----
+> **Algorithm body relocated.** The `GrainsetStrategy` algorithm body (effective-routing-unit assembly, single-unit delegation, cross-grain JOIN-tree construction, rollup wrapper emission) lives in [`../apis/34_semstrait_planner.md §<GrainsetStrategy>`](../apis/34_semstrait_planner.md) (forthcoming). This rebase parked the body in [`../_drafts/34_grainset_strategy.md`](../_drafts/34_grainset_strategy.md) pending the `34` drafting pass.
+>
+> **Concepts retired or repositioned in this rebase.**
+>
+> - `RollupPolicy` (`ShapeDefault` / `PinOnly` / `PreferFinest`) — implemented internally as a planner knob, NOT exposed in V1 authoring grammar (per G-4). Default behavior follows shape rules in `17`; future fine-tuning hooks may surface in `34`.
+> - The pre-cascade `MixedShapeAdvisoryChildren` warning (`PLAN_W_2202` in pre-rebase `22`) — retired. Mixed shapes are now a hard compile error per V1 strict equivalence (§5.2).
+> - `DataKindRef`-based child references (`GrainsetChild.constituent: DataKindRef`) — retired. Children are inlined `Nested*` structs per `32 §3.2`.
+> - YAML `binding:` / `column_mapping:` wrappers (pre-thirteenth-pass spelling) — dissolved into `extras.storage:` / `extras.semantic_mapping:` per `32 §4`.
+> - `CompositionKind::Grainset` discriminator — survives in `16 §5.3`'s shrunken `CompositionKind { Grainset, Joinset }` enum, but with broadened semantics (Grainset's `ComposedSemanticInterface` carries the cross-grain JOIN-tree shape, distinct from Joinset's relationship-walk shape).
 
 ## 1. Purpose and Scope
 
 ### 1.1 What `22` ratifies
 
-`22` is the per-variant specification for `Grainset` — the `ComplexDataKind` variant that composes N children exposing the same `SemanticInterface` at different grains, and routes a `Request` at plan time to **exactly one** child: the cheapest one whose natural grain and Coverage cover the Request. The variant is introduced in `00 §4.1` and enters the taxonomy through `20`.
+`22` is the per-variant chapter for `Grainset` (one of three `ComplexDataKind` variants in v1, alongside `Unionset` (`23`) and `Joinset` (`24`)). It owns five things: (a) the **authoring surface** — explicit vs. implicit fields the author / consumer sees on the type — with cross-references to the type-level shape in `32 §3` (forms + body) and `32 §4` (`ComplexExtras`); (b) the **temporal-shape rules** specific to Grainset — kind equivalence across children, ≥ 2 unique grains, cascade-up of kind only; (c) the **same-grain pre-merge mechanism** — implicit Unionset assembly at compile per `23 §4`; (d) the **cross-grain composition mechanism** — when no single effective routing unit covers a Request, the planner emits a LEFT OUTER JOIN tree on shared Keys per `18 §2.5`, mediated by a `ComposedSemanticInterface` per `16 §5`; (e) **Grainset-specific Preconditions** in the per-variant code bands `VALID_E_2200`–`2299`, `COMP_E_2200`–`2299`, `PLAN_E_2200`–`2299`.
 
-Concretely, `22` ratifies:
+### 1.2 What `22` does NOT ratify
 
-- **§2** — the `GrainsetDataKind` / `ResolvedGrainsetDataKind` struct shapes, the per-child `GrainsetChild` record, and the composition into `16`'s `CompositionKind::Grainset`.
-- **§3** — the YAML authoring surface (`children:` list; per-child `grain`, `coverage` projection, optional `rollup:` override).
-- **§4** — the child-selection algorithm: request-grain extraction, eligibility predicate, rollup legality gate, cost function, deterministic tie-break.
-- **§5** — how `TemporalShape` (forward-ref to `17`) gates which children are planner-eligible at request time (Timeseries rolls freely, Snapshot pins at its source grain, SCD requires as-of anchoring, Events rolls by bucket-then-aggregate).
-- **§6** — how Grainset consumes `15 §6`'s Binding-level Coverage and `16 §8`'s composition-level Coverage to drive both eligibility and fallback.
-- **§7**–**§9** — the Precondition rosters at each pipeline stage (`validate` / `compile` / `plan`) with stable codes in the `22xx` sub-ranges.
-- **§10** — the plan shape: Grainset emits a delegation to a single chosen child's sub-strategy (Simple / Unionset / Joinset), **not** a Unionset-style UNION ALL across candidates. The chosen child's sub-plan is spliced into the Grainset's owning position in the `SemanticPlan`.
+The sealed trait hierarchy and shared `DataKind` invariants live in `20`. The Rust struct / YAML shape lives in `32 §3` / `32 §4`. Child-DataKind structural rules (R1 / R2 / R3, addressing scheme) live in `26`. SR-E-7 / SR-E-8 (grain-on-complex forbidden; grainset-child-grain-required) live in `18 §3` / `18 §11`. Per-child Binding mechanics live in `15`. The `ComposedSemanticInterface` Rust shape, `UnifiedSemantics` merge, `FieldProvenance` roster, and `CompositionCoverage` fold all live in `16 §5`–`§8`. The same-grain pre-merge implicit Unionset's algorithm body lives in `23 §4` + `_drafts/34_unionset_strategy.md`. The `GrainsetStrategy` algorithm body lives in `34 §<GrainsetStrategy>` (forthcoming; parked in `_drafts/34_grainset_strategy.md`). `TemporalShape` enum variants, SCD subtype catalog, shape × grain rollup matrix, `RollupPolicy` semantics, per-shape pin / anchor mechanics live in `17`. `PlanNode` shapes live in `35`. Engine rendering lives in `36`. Peer-vocabulary references (Cube.js `preAggregations` with `granularity`, dbt MetricFlow `time_spine`, OLAP aggregate-awareness / Kimball) live in `00_overview.md` only.
 
-### 1.2 What `22` does NOT ratify (forward-refs)
-
-- **Field-first resolution that spans multiple Grainsets.** The rule "a Request whose Semantics span two Grainsets resolves via the Relationship graph" is `16 §11`'s implicit-composition path; `22` only governs selection *within* a single Grainset.
-- **The full `TemporalShape` matrix and SCD subtypes.** `17` owns the shape taxonomy and the planner-eligibility gating rules. `22 §5` records the shape-of-the-interaction; it does not redefine the shapes.
-- **Stats-backed cost.** The v1 cost function uses source-count as a proxy (§4.4). A stats-backed cost (row counts, partition counts, estimated scan sizes) is tracked as `[TD-GRAINSET-COST-STATS]` and deferred.
-- **Grainset-of-Grainset nesting rules.** Whether a Grainset may nest another Grainset as a child is an invariant in `12 §2`'s nesting matrix, surfaced per-variant in `25`. `22` consumes the matrix but does not re-litigate it.
-- **Non-temporal grain axes.** `13 §3.4` reserves non-temporal grain axes (geographic, entity) as a future extension; `22` is written against `Grain`'s current temporal-only variant set and trivially generalizes when `13` expands.
-- **The `Relationship` traversal when a Grainset is a constituent of an implicit composition.** `16 §11.5`'s synthesis step consumes a Grainset's `ComposedSemanticInterface`; the child-selection inside the Grainset is still `22 §4`. The two layers compose by delegation.
-
-### 1.3 Relationship to prerequisite docs
-
-- **`00 §4.1`** — introduces `Grainset` as one of the three `ComplexDataKind` variants ("routes queries to the cheapest child covering the requested grain"). `22` is the full spec.
-- **`13 §3`** — `Grain` enum with 7 temporal variants and a total coarseness order; `22 §4.2`'s eligibility predicate uses `Grain::coarseness()` verbatim.
-- **`14` / `14a` / `14b`** — expressions resolved at `compile`; `22`'s per-child selection consumes pre-resolved `PhysicalExpr`s through the child's `ResolvedBinding`s (for Simple children) or `ComposedSemanticInterface` (for Complex children). No expression work at plan time.
-- **`15 §6`** — Binding-level Coverage is the X-axis of source selection; `22`'s eligibility predicate uses Coverage to answer "does this child serve every requested Semantics?"
-- **`16 §5–§8`** — `Grainset` is one of the four `CompositionKind` variants; `22 §2.3` wires the struct into `ComposedSemanticInterface`. `16 §8`'s `CompositionCoverage` is consumed by `22 §6` when the Grainset's children are Complex kinds.
-- **`17`** — shape-gated rollup legality (§5) is a forward-reference; `17` is drafted in parallel.
-- **`20`** — taxonomy-level invariants (one `Binding` per Simple; no Binding on Complex; `ComplexDataKind` composes children without introducing new Semantics beyond the composed surface) are consumed here. `20 §*` is cited where the invariant is used.
-
-### 1.4 Invariants `22` directly upholds
+### 1.3 Guardrails — how `22` upholds `00 §9` invariants
 
 | Invariant | Where `22` keeps it |
 |---|---|
-| **I1** — no raw SQL | Per-child selection is structural; the delegated sub-plan is a `SemanticPlan` subtree assembled from `PlanNode`s and `PhysicalExpr`s, never a string. |
-| **I4** — Manifest determinism | The Manifest's `ResolvedGrainsetDataKind` records children in **declaration order** (§2.2). The child-selection algorithm is a deterministic function of `(Manifest, Request)`: eligibility is a set membership check, cost is arithmetic, ties break by declaration order. Identical Manifest + Request → identical chosen child → identical plan. |
-| **I5** — resolution at compile time | Every child's `SemanticInterface` / `ComposedSemanticInterface`, Coverage, and natural grain is pre-resolved at `compile`. Plan-time selection is index lookup + arithmetic. |
-| **I6** — synchronous plan hot path | `22 §4`'s algorithm has no I/O, no `.await`, no catalog call. All inputs are already in the `Manifest`. |
-| **I8** — Manifest planner-complete | `ResolvedGrainsetDataKind` carries everything the planner needs: pre-sorted child roster, per-child `natural_grain`, per-child Coverage projection, pre-built Semantics → candidate-children index. |
-| **I10** — non-exhaustive | `GrainsetChild`, `RollupPolicy`, and the composition-kind tag are `#[non_exhaustive]`. |
-| **I12** — first-class diagnostics | `22`'s error set lives in `VALID_E_22xx` / `COMP_E_22xx` / `PLAN_E_22xx`. §§7–9 enumerate. |
-
-### 1.5 Peer landscape
-
-- **Cube.js `preAggregations` with `granularity`.** The closest analog: the author declares rolled-up pre-aggregations at different grains; Cube's query router picks the coarsest pre-aggregation that answers the query. `22`'s child-selection is structurally equivalent, re-expressed in canonical vocabulary (children are top-level DataKinds with Bindings; Grain is the Y-axis; Coverage is the X-axis; rollup legality is shape-gated per `17`).
-- **dbt MetricFlow `time_spine` + dimension grains.** MetricFlow declares dimension `granularity` on each model; a Request at a coarser grain rolls up from a finer-grain model when no native-grain model is available. `22` adopts the same "cheapest-child-that-covers" discipline; the differences are (i) semstrait routes to one child (no multi-child merge within a Grainset), (ii) semstrait's Coverage captures the horizontal (per-Semantics) axis that MetricFlow does not surface as a first-class concept.
-- **OLAP aggregate-awareness (Kimball).** The idea — materialize multiple cubes at different grains and route to the cheapest — is decades old. `22`'s contribution is the canonical-layer encoding: grain is a typed `13 §3` enum, Coverage is a per-Semantics subset check, cost is a pluggable function.
-
----
-
-## 2. The `Grainset` variant
-
-### 2.1 Model-layer struct
-
-```rust
-/// The Grainset variant of `ComplexDataKind`. Composes N children
-/// exposing the same semantic surface at different grains and
-/// routes a Request to exactly one child at plan time.
-///
-/// Cannot be a leaf (per `20 §*`); MUST declare at least one child
-/// (§7 `VALID_E_2201`).
-#[non_exhaustive]
-pub struct GrainsetDataKind {
-    /// Children in declaration order. Order is significant: it is
-    /// the tie-break axis in §4.5.
-    pub children: Vec<GrainsetChild>,
-
-    /// The grain-axis `Dimension` name that every child's natural
-    /// grain is measured against. The named Dimension MUST be
-    /// declared on the Grainset's `SemanticInterface` with
-    /// `DimensionType::Temporal` (`13 §4.2`) and MUST be the axis
-    /// carried by each child's `grain:` declaration.
-    pub grain_axis: SemanticsName,
-
-    /// Rollup policy for the Grainset. Governs which children the
-    /// planner may roll up from when no native-grain child exists
-    /// for the Request. See §4.3.
-    pub rollup_policy: RollupPolicy,
-}
-
-/// One child of a Grainset.
-#[non_exhaustive]
-pub struct GrainsetChild {
-    /// Reference to a top-level `DataKind` (Simple, Unionset,
-    /// Grainset, or Joinset — subject to `12 §2`'s nesting matrix).
-    /// Resolved at `compile` to a `DataKindRef`.
-    pub constituent: DataKindRef,
-
-    /// Natural grain of this child on the Grainset's `grain_axis`.
-    /// When omitted in YAML, inherited from the child's own
-    /// temporal-Dimension `grains:` declaration — §3.2 details the
-    /// inheritance.
-    pub grain: Grain,
-
-    /// Per-child Coverage of the Grainset's composed surface:
-    /// which `SemanticsName`s this child natively provides.
-    /// Populated at `compile` from `16 §8`'s `CompositionCoverage`
-    /// fold; not author-declared.
-    pub coverage: CompositionCoverage,
-
-    /// Per-child rollup override. When `None`, inherits
-    /// `GrainsetDataKind.rollup_policy`. See §4.3.
-    pub rollup_override: Option<RollupPolicy>,
-}
-
-/// Rollup policy. Governs whether the planner may roll a finer-grain
-/// child up to a coarser request grain, and — for shapes that need
-/// it — how to anchor the rollup.
-#[non_exhaustive]
-pub enum RollupPolicy {
-    /// Default. The planner may roll up per `TemporalShape` rules
-    /// (§5): Timeseries / Events roll freely; Snapshot pins at its
-    /// source grain; SCD requires as-of anchoring.
-    ShapeDefault,
-
-    /// Suppress rollup. A child is only eligible when its natural
-    /// grain matches the request grain exactly. Useful for pinned
-    /// snapshots where rollup is never correct.
-    PinOnly,
-
-    /// Force rollup. The planner MAY roll up even when a native-grain
-    /// child exists. Rare; used for data-quality workflows where the
-    /// finer-grain source is preferred even at higher scan cost.
-    PreferFinest,
-}
-```
-
-### 2.2 Manifest-layer counterpart
-
-Per `20 §*` and the `Resolved*` prefix convention in `00 §4.1`:
-
-```rust
-/// Manifest-layer Grainset. Planner-optimized: children are indexed
-/// by natural grain and pre-sorted for the eligibility scan.
-pub struct ResolvedGrainsetDataKind {
-    pub children: Vec<ResolvedGrainsetChild>,
-    pub grain_axis: SemanticsName,
-    pub rollup_policy: RollupPolicy,
-
-    /// Index from a requested `SemanticsName` to the set of child
-    /// indices that natively cover it (Coverage in {Native, Derived}).
-    /// Populated at `compile`; O(1) per-Semantics probe at plan time.
-    pub semantics_to_covering_children: HashMap<SemanticsName, Vec<usize>>,
-
-    /// Children pre-sorted by natural grain coarseness ascending
-    /// (`13 §3.2`). The index-into-`children` sequence; not a
-    /// re-ordering of `children` itself.
-    pub children_by_grain_ascending: Vec<usize>,
-
-    /// The composed semantic interface exposed by the Grainset —
-    /// per `16 §5`, with `composition_kind = CompositionKind::Grainset`.
-    pub interface: ComposedSemanticInterface,
-}
-
-pub struct ResolvedGrainsetChild {
-    pub constituent: DataKindRef,
-    pub grain: Grain,
-    pub coverage: CompositionCoverage,
-    pub rollup_override: Option<RollupPolicy>,
-}
-```
-
-`children` preserves the author's declaration order (§4.5 tie-break axis). `children_by_grain_ascending` is the plan-time fast path for "walk children coarsest-to-finest at or below the request grain"; it does not re-order the source `children`.
-
-### 2.3 Composition wiring
-
-A `ResolvedGrainsetDataKind` composes into `16`'s `ComposedSemanticInterface` via the `CompositionKind::Grainset` discriminator:
-
-- `constituents` — the child `DataKindRef`s in declaration order.
-- `interface: UnifiedSemantics` — every child exposes the same logical Semantics surface; the `UnifiedSemantics` merge per `16 §6` is trivial for Grainset (the promotion is always `Shared` when all children declare the field, or `Native` with `FieldOwnership::Native(only_child)` when only some do).
-- `provenance: FieldProvenance` — per-field ownership; `FieldOwnership::Shared` for fields every child covers, `FieldOwnership::Native(child)` for singletons.
-- `coverage: CompositionCoverage` — folded from each child's Binding-level or composition-level Coverage per `16 §8.4`. Entries with `CoverageVariant::NullFill` are **legal on a Grainset** (a child that lacks a specific Semantics may still be eligible when the Request does not name that Semantics; §4.2 is precise).
-- `traversed_paths` — empty. Grainset composition is not path-walk-derived.
-- `composition_kind = CompositionKind::Grainset`.
-
-### 2.4 What Grainset is NOT
-
-- **Not a Unionset.** A Unionset produces rows from every eligible branch and merges them with UNION ALL (per `23`). A Grainset selects **one** child and delegates. The two compose: a Grainset child may be a Unionset, and a Unionset branch may be a Grainset.
-- **Not a Joinset.** Grainset children are not joined; they are alternatives. Selection is exclusive.
-- **Not a materialized view.** The Grainset's role is to pre-declare where the author has arranged rolled-up sources; the planner reads that declaration and picks. Creation and refresh of those rolled-up sources is outside semstrait (per `00 §10`).
-
----
-
-## 3. Child declaration
-
-### 3.1 YAML surface
-
-A Grainset is authored under a top-level `grainsets:` block (the full Model grammar lives in `32`):
-
-```yaml
-grainsets:
-  - name: paid_media_rollups
-    grain_axis: report_date
-    rollup_policy: shape_default      # optional; default shown
-    dimensions:
-      - name: report_date
-        data_type: date
-        type:
-          temporal:
-            grains: [day, week, month, quarter, year]
-      - name: campaign_id
-        data_type: string
-    measures:
-      - name: cost
-        data_type: decimal(18, 4)
-        aggregation: sum
-      - name: clicks
-        data_type: long
-        aggregation: sum
-    children:
-      - kind: paid_media_daily_events    # DataKindRef
-        grain: day
-      - kind: paid_media_daily_snapshot
-        grain: day
-      - kind: paid_media_monthly_snapshot
-        grain: month
-        rollup_override: pin_only
-```
-
-The Grainset's `SemanticInterface` block (dimensions / measures / metrics / keys / filters) is authored on the Grainset itself — this is the **composed surface**. Each child's own interface must be a superset of the composed surface on the Semantics it claims to cover (§6).
-
-### 3.2 Per-child `grain:` inheritance
-
-When a child's `grain:` key is omitted, the natural grain is inherited from the child's own `grain_axis` temporal Dimension declaration:
-
-- If the child is a `Simple` kind, the child's `SemanticInterface` must declare the `grain_axis` Dimension with `type: temporal` and a non-empty `grains:` list. The inherited natural grain is the **finest** grain in that list (per `13 §3.2`'s total order).
-- If the child is a `ComplexDataKind`, the inherited natural grain is the finest grain in the child's composed-surface `grain_axis` Dimension's `grains:` list.
-- If the child's `grain_axis` declaration has no `grains:` (the "temporal only in data type, not for rollup" case per `13 §4.2`), inheritance **fails**: the child MUST declare `grain:` explicitly. Failure: `VALID_E_2204 GrainsetChildGrainUnresolvable`.
-
-**Rationale for "finest as default".** The finest grain is the most permissive: a child at finer grain can be rolled up to any coarser request grain (shape permitting, §5); a child at coarser grain cannot be dis-aggregated. Defaulting to finest reflects the common case (the author wrote the underlying Binding against a fact-level source) and fails loudly when ambiguous.
-
-### 3.3 `Coverage` is compile-time-derived, not author-declared
-
-The per-child `coverage: CompositionCoverage` field on `GrainsetChild` is **not** declared in YAML. It is folded at `compile` from the child's Binding-level Coverage (`15 §6`) for Simple children, or from the child's composition-level Coverage (`16 §8`) for Complex children, projected onto the Grainset's composed-surface Semantics set.
-
-Concretely, for each Semantics name `S` on the Grainset's composed surface, the compile-time fold computes the child's coverage of `S` per `16 §8.4`'s `Native > Derived > NullFill` precedence:
-
-- `Native` — the child directly provides `S`.
-- `Derived` — the child computes `S` via a `PhysicalExpr` referencing columns present on (at least one of) its sources.
-- `NullFill` — the child does not provide `S` at all.
-
-`Native` and `Derived` entries participate in the eligibility predicate (§4.2); `NullFill` entries participate only under the partial-coverage fallback rule (§4.2 step 3).
-
-### 3.4 Constituent references
-
-`GrainsetChild.constituent` is a `DataKindRef` resolved at `compile` to a `DataKindId`. The reference MUST name a top-level DataKind; inline-declared sub-kinds are not permitted here (authors declare each child as a top-level kind and reference it by name, consistent with `11 §5`'s Scope rules).
-
-`12 §2`'s nesting matrix governs which DataKind variants may be children. Round-1 cells:
-
-| Child kind | Permitted as Grainset child? |
-|---|---|
-| `Simple` (`Dataset`) | Yes (common case). |
-| `Unionset` | Yes (per-grain Unionset of multi-source bindings). |
-| `Joinset` | Yes (per-grain Joinset of fact × dimension). |
-| `Grainset` | **Deferred** — `[TD-GRAINSET-NESTED]`. `12 §2` ratifies the current cell; `25`'s applicability matrix surfaces the decision. |
-
-When a child is itself a Complex kind, the Grainset delegates through the child's composed surface; the child's own strategy handles everything below (union merging for Unionset, join path for Joinset).
-
----
-
-## 4. Child selection algorithm
-
-The core planner strategy for Grainset. Runs per-Request, synchronously, against `ResolvedGrainsetDataKind` and the `Manifest` indices.
-
-### 4.1 Request grain extraction
-
-**Inputs:** the `Request` (canonical-layer), the Grainset's `grain_axis`, the Grainset's `grain_axis` Dimension declaration.
-
-**Output:** `RequestGrain` — one of `Some(Grain)` or `None` (grain-axis not queried).
-
-The extraction rule:
-
-```text
-REQUEST_GRAIN_EXTRACT(request, grainset):
-  axis ← grainset.grain_axis
-
-  // (a) Explicit grain selector on the grouped Dimension.
-  //     Authors write `group_by: [{ name: report_date, grain: month }]`
-  //     (YAML surface is `32`'s); at the canonical layer, the Request
-  //     carries the grain selector on the grouped Dimension.
-  for each grouped_dim in request.group_by:
-    if grouped_dim.name == axis and grouped_dim.grain is Some(g):
-      return Some(g)
-
-  // (b) Temporal filter narrowing the grain implicitly.
-  //     E.g. `WHERE DATE_TRUNC(report_date, 'month') = '2024-01-01'`
-  //     — the DATE_TRUNC fixes the request grain at Month.
-  for each filter in request.filters:
-    if filter references axis via a DATE_TRUNC / similar canonical
-       function whose grain argument is a literal `g`:
-      return Some(g)
-
-  // (c) Bare grouping by the axis without a grain selector.
-  //     The request grain is implicitly the finest grain declared
-  //     on the Grainset's grain_axis Dimension.
-  for each grouped_dim in request.group_by:
-    if grouped_dim.name == axis:
-      return Some(finest(grainset.grain_axis.grains))
-
-  // (d) Grain-axis not grouped and not filtered by grain.
-  //     The planner has no grain constraint; selection defaults
-  //     to "coarsest available" (the cheapest child). See §4.4.
-  return None
-```
-
-The `REQUEST_GRAIN_EXTRACT` function is deterministic: the first-hit wins, in the order (a) → (b) → (c) → (d). When a Request's shape yields `None`, §4.4's cost function still picks a child (the cheapest by coverage); the Grainset does not require the request to name a grain.
-
-**Cross-kind grain extraction.** When a Grainset participates in an implicit composition (`16 §11`) or as a Joinset member (`24`), the containing composition's grain-axis determination defers to each constituent Grainset's own `REQUEST_GRAIN_EXTRACT` pass — the function runs once per Grainset on the full Request, not once per composition.
-
-### 4.2 Eligibility
-
-A child is **eligible** for a Request iff:
-
-1. **Grain admissibility.** `child.grain <= request.grain` on `Grain::coarseness()` (`13 §3.2`), OR `request.grain` is `None` (no grain constraint).
-2. **Coverage admissibility.** Every `SemanticsName` named in the Request — in `group_by`, `aggregations`, `filters`, `order_by`, or `select` — has a Coverage entry on the child in `{Native, Derived}`.
-3. **Rollup legality.** Per-child shape (`17`) permits rollup from `child.grain` to `request.grain`. §4.3 details.
-
-The coverage admissibility check is a **deterministic subset check**: `RequestedSemantics ⊆ NativeOrDerivedSemantics(child)`. The Manifest's `semantics_to_covering_children` index (§2.2) serves as the reverse-lookup: for each requested Semantics, enumerate the child indices that cover it Natively or Derivedly; intersect across all requested Semantics; the result is the eligibility set before grain and shape filtering.
-
-```text
-ELIGIBILITY(request, grainset):
-  requested ← extract_requested_semantics(request)
-  request_grain ← REQUEST_GRAIN_EXTRACT(request, grainset)
-
-  candidates ← full set of child indices
-  for each s in requested:
-    covering ← grainset.semantics_to_covering_children.get(s)
-    if covering is empty:
-      return Err(PLAN_E_2202 NoChildCoversSemantics(s))
-    candidates ← candidates ∩ covering
-
-  candidates ← candidates.filter(|i|
-    request_grain is None
-    || grainset.children[i].grain <= request_grain
-  )
-
-  candidates ← candidates.filter(|i|
-    ROLLUP_LEGAL(grainset.children[i], request_grain)   // §4.3
-  )
-
-  return candidates
-```
-
-**Partial-coverage fallback.** If the coverage intersection is empty AND the Grainset's `rollup_policy` permits (default `ShapeDefault`), the planner MAY split the Request across children: each child serves a subset of the requested Semantics, and the Grainset emits a per-subset delegation. Round 1 **does not** ratify this mode — it collapses Grainset's "one child, one plan" semantics into Unionset territory. The Round-1 behavior is `PLAN_E_2201 NoEligibleChild`; cross-child splitting is tracked as `[TD-GRAINSET-PARTIAL-COVERAGE]` (see open question `Q-GRN-002`).
-
-### 4.3 Rollup legality
-
-Per-child shape-gated check. Full matrix lives in `17`; `22` records the per-shape rule and the error surface.
-
-```text
-ROLLUP_LEGAL(child, request_grain):
-  policy ← child.rollup_override.unwrap_or(grainset.rollup_policy)
-  match policy:
-    PinOnly:
-      return request_grain == Some(child.grain)
-    PreferFinest:
-      return request_grain is None || child.grain <= request_grain
-    ShapeDefault:
-      return SHAPE_ROLLUP_LEGAL(child.temporal_shape, child.grain, request_grain)
-```
-
-Where `SHAPE_ROLLUP_LEGAL` is defined by `17` and summarized in `22 §5`. The key rule: **Snapshot pins at its source grain**; rolling a Snapshot up without a pin policy is `PLAN_E_2205 SnapshotRollupWithoutPin`.
-
-The `ShapeDefault` evaluation consults the child's `TemporalShape` as recorded on the child's DataKind (at the `ResolvedDataKind` level; see `20 §*` for the shape-field placement). For Simple children, the shape is authored directly; for Complex children, the shape is derived per `17`'s composition rules (e.g. a Unionset's shape is the common shape of its branches, or `None` if mixed).
-
-### 4.4 Cost function (v1 = source-count proxy)
-
-After §4.2 produces an eligible-candidate set, the planner ranks candidates by **cost**. The v1 cost function is a deliberate proxy:
-
-```text
-COST(child, request):
-  // v1: estimated number of PhysicalSources the child's sub-plan
-  //     will scan for this request. For Simple children, this is
-  //     the cardinality of the child's ResolvedBinding.sources list
-  //     after Coverage pruning (per `15 §6`). For Complex children,
-  //     the sum of the same over each constituent's ResolvedBinding.
-  n ← count_covered_sources(child, request)
-  return n
-```
-
-**Rationale.** Stats-free: we do not have row counts, partition-file sizes, or histogram data at the canonical layer (`00 §10` defers cost-based optimization). Source count is the only count-like property every adapter agrees on and every Binding carries.
-
-**Tiebreaker interaction.** Source-count cost is intentionally coarse — many real Manifests will have multiple children with equal source counts. Ties at §4.4 are resolved by the §4.5 deterministic order.
-
-**Forward-compatibility.** When stats-backed cost lands (`[TD-GRAINSET-COST-STATS]`), `COST` becomes a strategy-injectable function; the rest of §4 is unchanged. The hook will live on the planner's `Planner` trait per `34` (open question `Q-GRN-003`).
-
-### 4.5 Tie-break deterministic order
-
-When §4.4's cost-rank produces multiple children with equal cost, the tiebreaker is **declaration order** — the `Vec<GrainsetChild>` index:
-
-```text
-CHOOSE(candidates, costs):
-  min_cost ← min(costs.values())
-  tied ← candidates.filter(|i| costs[i] == min_cost)
-  return min(tied)      // smallest index wins
-```
-
-Declaration order is the author's ergonomic knob: putting the most-preferred child first makes it the tiebreaker winner. The tie is **not an error** — it is a standard selection outcome. `PLAN_E_2203 AmbiguousChildChoice` is reserved for pathological cases where two children have identical grain, identical Coverage, identical cost, AND identical declaration position in a scenario the Round-1 surface forbids (specifically: a Grainset constructed by `compile` merging two author-written Grainsets — not a v1 feature). In v1 this error is never emitted; it is reserved for `[TD-GRAINSET-MERGE]`.
-
----
-
-## 5. Interaction with `TemporalShape`
-
-The shape-gated rollup legality matrix. Full ratification lives in `17`; this table is the `22`-facing summary. `17` is drafted in parallel; the cells below are the forward-reference contract `22` assumes.
-
-| `TemporalShape` | Natural grain semantics | Rollup legality (via `ShapeDefault`) | Required anchoring | `22`-visible error (on illegal rollup) |
+| **I1** — no raw SQL in canonical layer | The emitted plan tree carries `PlanNode::{Project, Filter, Agg, Union, Join}` with `PhysicalExpr` payloads; no SQL-shaped strings. Adapter rendering (`36`) is the only SQL site. |
+| **I2** — physical types via adapters only | Cross-grain JOIN type-reconciliation uses canonical `DataType` per `13 §2`; no engine types. |
+| **I3** — no engine branching | Zero engine-identity checks in `22`. Every decision reads either resolved manifest indices or per-unit Coverage (compile-derived). |
+| **I4** — SemanticManifest determinism | Effective-routing-unit ordering follows YAML author-declared order across the `datasets:` / `unionsets:` / `joinsets:` arrays (per `32 §6` ordering table). Same-grain pre-merge produces implicit Unionsets in declaration order per `23 §3.1`. Driver selection is most-covering with declaration-order tie-break; attached ordering follows declaration order (G-2c). |
+| **I5** — compile-time resolution | Per-unit Coverage is folded once at compile (§3.2); cross-grain JOIN-tree shape is built at compile from Keys + Coverage; per-Request routing is O(\|units\| × \|Semantics\|) lookups. |
+| **I6** — synchronous hot path | No I/O at any stage of Grainset resolution. |
+| **I8** — planner-complete SemanticManifest | `ResolvedGrainset` carries the effective-routing-unit list, per-unit Coverage projection, the per-pair JOIN-key index, and the `ComposedSemanticInterface`. |
+| **I10** — non-exhaustive public sum types | `Grainset` and `NestedGrainset` are `#[non_exhaustive]` per `32 §3.3`. The internal `RollupPolicy` (per G-4) is `#[non_exhaustive]` even though not authored. |
+| **I12** — first-class Diagnostics | Every error code in §§7–9 is stable and carries a `Diagnostic.location`. |
+
+## 2. Authoring-Time Surface
+
+### 2.1 Explicit vs. implicit fields
+
+The `Grainset` author touches the following surface. Type-level shape lives in `32 §3.3` (`Grainset` / `NestedGrainset` concrete forms), `32 §3.2` (`GrainsetBody`), and `32 §4` (`ComplexExtras`); `22` enumerates obligations and cross-references foundations for substance.
+
+| # | Axis | Explicit (authored) | Implicit (compile-derived) | Cite |
 |---|---|---|---|---|
-| `Timeseries` (dense indexed series) | The child's declared `grain` is the dense series period. | Rolls up freely to any coarser grain via bucket-then-aggregate at plan time. | None. | — (always legal when grain ≤ request-grain) |
-| `Events` (sparse discrete occurrences) | The child's declared `grain` is the bucket period the author pre-rolled to (or the raw `Minute` for untrimmed events). | Rolls up freely: group by `DATE_TRUNC(axis, request_grain)`, aggregate. | None. | — |
-| `Snapshot` (periodic full-state capture) | The child's declared `grain` IS the snapshot period. Snapshots are pinned: each row represents the entity state at exactly that snapshot time; aggregation across snapshots is **semantically unsafe** without a per-snapshot pin policy. | Only legal when `request_grain == child.grain` **OR** a pin policy declares how to aggregate (latest-snapshot-per-period, first-snapshot-per-period, all-snapshots-additive). | `SnapshotPinPolicy` per `17`. | `PLAN_E_2205 SnapshotRollupWithoutPin` |
-| `SCD` (slowly-changing dimension with history) | The child has **no intrinsic grain**; `grain` declared on an SCD child is the grain at which the as-of anchor is evaluated. | Not rollable in the Timeseries/Events sense. Must be resolved via as-of anchoring against a Request-carried as-of timestamp. | `AsOfAnchor` per `17`. | `PLAN_E_2206 SCDRollupWithoutAsOf` |
-| `None` / unspecified | No shape declared. | Legal per grain-coarseness alone; no pin, no anchor, no bucket. | None. | — |
+| A | Identity | `body.base.name` (Public form: globally unique across top-level `data_kinds:` per SR-3; Nested form: scoped to parent's nested-kind scope per `26 §4`). | `data_kind_id` (compile-assigned per `33 §<DataKindId>`); same-grain implicit Unionsets created during pre-merge get content-derived hash-ids per `33 §<implicit-unionset-id>` (forthcoming). | `32 §3.1`, `32 §3.3`, `26 §4`, `23 §3.3` |
+| B | Description | `description: Option<String>` on `Grainset` (Public form only; absent on `NestedGrainset` per `26 §3` "Nested-form structural-only" rule). | None. | `32 §3.3` |
+| C | Semantic interface | `semantic_interface: SemanticInterface` on `Grainset` (Public form only; absent on `NestedGrainset`). Authors Dimensions, Measures, Metrics, **Keys** (the cross-grain JOIN surface — see §3.4), Filters per `18 §1`–`§2`. Components flatten in YAML per `#[serde(flatten)]`. | Per-Semantics inferred-type fields; `EntityRef` resolution for `- ref: <name>` entries; Metric expansion; Computed-Dimension expression resolution per `14b`. | `32 §3.3`, `18 §1`–`§2`, `14b` |
+| D | AI context | `ai_context: Option<AiContext>` on `Grainset` (Public form only). | None. | `32 §3.3`, `18 §6` |
+| E | Children | `body.{datasets, grainsets, joinsets}: Vec<Nested*>` — children are **inlined** `NestedDataset` / `NestedUnionset` / `NestedJoinset` structs per `26`'s nesting matrix (Grainset admits all three Complex variants except itself per R2). Each child MUST author `extras.temporal.grain:` explicitly per SR-E-8. | Per-child Coverage inference (§3.2); same-grain pre-merge into implicit Unionsets (§3.3); cross-grain JOIN-tree shape via `ComposedSemanticInterface` (§3.4). | `32 §3.2`, `26 §1`, `26 §2`, `18 §3.4` (SR-E-8) |
+| F | TemporalShape | `extras.temporal: Option<TemporalShape>` on `ComplexExtras` — carries only `kind` (incl. SCD subtype). Per the V1 strict equivalence rule (§5.2), the Grainset's effective `kind` is the cascade-up of children's kinds (which must all be equivalent). `grain` is type-level forbidden on `ComplexExtras` per SR-E-7. | Cascade-up from children's `extras.temporal.kind`. The Grainset's grain axis is the **set** of children's distinct grain values (≥ 2 per §5.2). | `32 §4`, `17`, `18 §3.3` (SR-E-7), `26 §3.1` |
 
-**The `PinOnly` short-circuit.** Regardless of shape, a child with `rollup_override: PinOnly` is only ever eligible when `request_grain == child.grain` exactly. This is the Round-1 safety valve for authors who know their data cannot correctly roll up (e.g. a Snapshot without a defined pin policy) — they can declare `PinOnly` and the eligibility check excludes rolled-up candidates without needing to involve `17`'s pin machinery.
+**Public vs. Nested form distinction.** Rows B, C, D apply only to the Public form (`Grainset`). The Nested form (`NestedGrainset`) carries only `body` (which contains `base.name`, `extras: ComplexExtras`, and the nested child arrays); fields B/C/D are structurally absent per `26 §3`. The `name` at nested scope is the structural anchor in the parent's nested-kind scope (`26 §4` addressing).
 
-**Mixed-shape Grainsets.** A Grainset MAY declare children of different shapes (`PLAN_E_2207 MixedShapeAdvisoryChildren` is a **warning**, not an error — per §9). Eligibility per child is evaluated per-shape; the cost function compares them uniformly (source count). The Round-1 caveat: authors writing such Grainsets should ensure each shape's pin / anchor policies are explicit, or the resulting plans may surface confusing `PLAN_E_2205` / `PLAN_E_2206`.
+**Internal-only fields (NOT authored).** `RollupPolicy { ShapeDefault, PinOnly, PreferFinest }` is implemented internally as a planner knob (per G-4 ratification, 2026-05-03). YAML carries no `rollup_policy:` / `rollup_override:` field. The default policy follows shape rules in `17`; future fine-tuning hooks may surface in `34`.
 
----
+### 2.2 Nesting interaction
 
-## 6. Interaction with `Coverage`
+A `Grainset`:
 
-### 6.1 Per-child projection from Binding / composition Coverage
+- **MAY** appear at Root scope as a top-level public DataKind (per `32 §2.1`'s `grainsets:` plural tag).
+- **MAY** be nested inline as a `NestedGrainset` under a `Unionset` or `Joinset` (per `26 §1`'s matrix). Nested form is structural-only (no `description` / `semantic_interface` / `ai_context`); the nested `name` is the structural anchor.
+- **MUST NOT** be nested under another `Grainset` (R2; type-level — no `grainsets:` field on `GrainsetBody` per `26 §2.2`).
+- **MUST** carry **≥ 2 children** across `datasets:` / `unionsets:` / `joinsets:` combined (R3 per `26 §2.3`; structural-rule diagnostic owned by `26` / `32`).
+- **MUST** carry **≥ 2 unique `extras.temporal.grain:` values** across the child set (V1 strict; §5.2). Cardinality check is at validate stage; same-grain duplicates are legal individually (they pre-merge per §3.3) but the distinct-grain count must be ≥ 2.
 
-`22`'s per-child Coverage is a **projection** onto the Grainset's composed surface:
+### 2.3 Authoring example — full SemanticInterface surface
 
-```text
-PROJECT_COVERAGE(child, grainset_semantics) -> CompositionCoverage:
-  result ← CompositionCoverage::empty()
-  for each s in grainset_semantics:
-    variant ← if child is Simple:
-      fold child's Binding-level Coverage (`15 §6.2`) for s
-        across child's sources using `Native > Derived > NullFill`
-    else if child is Complex:
-      fold child's composition-level Coverage (`16 §8.4`) for s
-        across child's constituents
-    result.insert((child_ref, s), variant)
-  return result
-```
-
-The Semantics set `grainset_semantics` is the Grainset's composed-surface name set (§2.3's `UnifiedSemantics`'s names). Names that appear on the child but not on the composed surface are ignored (the Grainset exposes only what it declares). Names on the composed surface absent from the child's interface register as `NullFill`.
-
-### 6.2 Admissibility check
-
-Per §4.2 step 2, the admissibility check is `RequestedSemantics ⊆ NativeOrDerivedSemantics(child)`. The Manifest's `semantics_to_covering_children` index pre-computes, at `compile`, the reverse mapping: `SemanticsName → Vec<child_index>` filtered to children whose Coverage of the name is `Native` or `Derived`.
-
-At plan time:
-
-```text
-NATIVELY_COVERED(grainset, s) -> Vec<child_index>:
-  return grainset.semantics_to_covering_children
-    .get(s)
-    .unwrap_or(&empty)
-```
-
-Cost: O(1) HashMap probe per requested Semantics. The intersection across multiple requested Semantics is O(|requested| * |candidates|) in the worst case; for typical Grainsets (≤10 children, ≤50 Semantics) this is sub-microsecond.
-
-### 6.3 Fallback when no child natively covers
-
-If `ELIGIBILITY` (§4.2) returns an empty candidate set, the planner MUST emit `PLAN_E_2201 NoEligibleChild` without falling back to:
-
-- Anonymous union across children (that's Unionset, §2.4).
-- Cross-child column-wise composition (deferred, `[TD-GRAINSET-PARTIAL-COVERAGE]`).
-- Schema-inferred joins between children (explicitly out of scope per `16 §9.3`).
-
-The author's options are:
-
-1. Add a child whose Coverage is a superset of the requested Semantics at the needed grain.
-2. Express the query against a different DataKind (a Unionset, perhaps, or a Joinset).
-3. Reduce the Request (drop a Semantics to satisfy `⊆ NativeOrDerived`).
-
----
-
-## 7. Validation Preconditions
-
-Run by `validate` against a `SemanticModel`. Accumulate all failures per `10 §3.2` before returning. Code range: `VALID_E_2200`–`2299` per `30 §6.2`.
-
-| Code | Variant | Condition |
-|---|---|---|
-| `VALID_E_2200` | `GrainsetMissingGrainAxis { grainset }` | `grain_axis` field is empty or unparsable. |
-| `VALID_E_2201` | `GrainsetNoChildren { grainset }` | `children:` list is empty. A Grainset with zero children is structurally nonsensical. |
-| `VALID_E_2202` | `GrainsetChildDuplicateReference { grainset, constituent, count }` | The same `DataKindRef` appears as a child more than once. Round 1 forbids duplicates (no useful semantics for the planner). |
-| `VALID_E_2203` | `GrainsetChildMalformedGrain { grainset, child_index, value }` | Child's inline `grain:` value is not a valid `Grain` variant per `13 §3.1`. |
-| `VALID_E_2204` | `GrainsetChildGrainUnresolvable { grainset, child_index }` | Child omits `grain:` AND the child's own grain-axis temporal Dimension declaration has no `grains:` list to inherit from. §3.2. |
-| `VALID_E_2205` | `GrainsetGrainAxisNotTemporal { grainset, axis }` | The Grainset's declared `grain_axis` names a Dimension whose `type:` is not `temporal` (per `13 §4.2`). |
-| `VALID_E_2206` | `GrainsetInvalidRollupPolicy { grainset, value }` | Authored `rollup_policy:` / `rollup_override:` string does not match any `RollupPolicy` variant. |
-| `VALID_E_2207` | `GrainsetChildSelfReference { grainset, child_index }` | Child's `DataKindRef` is the Grainset itself. Direct self-reference is forbidden; nested Grainset-of-Grainset is deferred (`[TD-GRAINSET-NESTED]`). |
-
-### 7.1 Typed-variant surface
-
-Per `10 §4`, `validate`-stage failures surface as `ValidateError` variants on `32`'s public API. The mapping above is the canonical variant name; `32` may attach additional Location / SourceSpan context per `30 §5`.
-
----
-
-## 8. Compile Preconditions
-
-Run during `compile` after `validate` passes. Fail-fast per `10 §3.3`. Code range: `COMP_E_2200`–`2299` per `30 §6.2`.
-
-| Code | Variant | Condition |
-|---|---|---|
-| `COMP_E_2200` | `GrainsetChildUnresolved { grainset, child_index, name }` | A child's `DataKindRef` does not resolve to any top-level DataKind in the Manifest. |
-| `COMP_E_2201` | `GrainsetGrainAxisMissingOnInterface { grainset, axis }` | `grain_axis` names a Semantics not on the Grainset's own interface. |
-| `COMP_E_2202` | `GrainsetGrainAxisMissingOnChild { grainset, child_index, axis }` | A child's interface lacks the Grainset's `grain_axis` Semantics (the child does not expose the grain axis at all). |
-| `COMP_E_2203` | `GrainsetChildGrainNotInAxis { grainset, child_index, grain, axis_grains }` | Child's declared `grain` is not a member of the Grainset's `grain_axis.grains:` list. Every child's grain must be one of the grains the Grainset declares. |
-| `COMP_E_2204` | `GrainsetSemanticShapeConflict { grainset, child_index, semantics, expected, found }` | Child's `SemanticInterface` / `ComposedSemanticInterface` disagrees with the Grainset's composed surface on a shape axis (`DataType`, `DimensionType`, `Constraint` — full list per `11 §5` / `13 §2.4`). |
-| `COMP_E_2205` | `GrainsetCoverageUnion { grainset, missing_semantics }` | The union of all children's Coverage fails to natively cover (at `Native` or `Derived`) a Semantics on the Grainset's composed surface. If no child ever provides `s`, `s` cannot be answered at any grain — configuration bug. |
-| `COMP_E_2206` | `GrainsetGrainAxisTypeConflict { grainset, child_index, child_type, axis_type }` | Grain-axis `DataType` on the child does not unify with the Grainset's axis type under `13 §2.4`. |
-| `COMP_E_2207` | `GrainsetNestedGrainsetChild { grainset, child_index, child_ref }` | Child `DataKindRef` resolves to another `Grainset`; deferred (`[TD-GRAINSET-NESTED]`, see §3.4). |
-| `COMP_E_2208` | `GrainsetChildShapeUnknown { grainset, child_index }` | `rollup_policy: ShapeDefault` applies and the child has no `TemporalShape` declared AND the Request-time shape fallback rule (`17`) does not apply. Reported at `compile` because the shape is known statically. |
-| `COMP_E_2209` | `GrainsetChildrenGrainAxisDivergent { grainset, child_indices, axes }` | Two children reference different Semantics names as their grain axis, OR the axis resolves to different canonical Dimensions in different children (after name-resolution collisions). |
-
-### 8.1 Manifest-index build
-
-After Preconditions pass, `compile` builds the Manifest indices consumed by §4.2 / §4.4:
-
-1. Sort `children` by natural grain coarseness ascending → populate `children_by_grain_ascending`.
-2. For each `SemanticsName` on the Grainset's composed surface, enumerate child indices with `CoverageVariant ∈ {Native, Derived}` → populate `semantics_to_covering_children`.
-3. Fold each child's coverage per §6.1 → populate `GrainsetChild.coverage`.
-4. Build `ComposedSemanticInterface` per `16 §5` → attach to `ResolvedGrainsetDataKind.interface`.
-
-Index build is deterministic (I4): the sort is stable, the map is populated in declaration order, the interface follows `16`'s construction rules.
-
----
-
-## 9. Plan-stage rules
-
-Run during `plan` per `10 §3.4`. Synchronous, fail-fast. Code ranges: `PLAN_E_2200`–`2299` (errors) and `PLAN_W_2200`–`2299` (advisories) per `30 §6.2`.
-
-### 9.1 Errors (`Severity::Error`)
-
-| Code | Variant | Condition |
-|---|---|---|
-| `PLAN_E_2200` | `GrainsetNoMatchingChildByGrain { grainset, request_grain, child_grains }` | No child has `child.grain <= request_grain`. Every child is strictly coarser than the Request. |
-| `PLAN_E_2201` | `NoEligibleChild { grainset, request, reasons }` | Post-§4.2, candidate set is empty. `reasons` enumerates per-child why (grain, coverage, shape). |
-| `PLAN_E_2202` | `NoChildCoversSemantics { grainset, semantics }` | A requested Semantics has no child with `{Native, Derived}` coverage — compile's `COMP_E_2205` should have caught this for top-level surfaces, but may surface at plan time when the Semantics was added by an upstream composition layer. |
-| `PLAN_E_2203` | `AmbiguousChildChoice { grainset, candidates, costs }` | Reserved for the compile-merged-Grainset case; never emitted in v1 (see §4.5, `[TD-GRAINSET-MERGE]`). |
-| `PLAN_E_2204` | `GrainsetChildSubplanFailed { grainset, child_index, cause }` | The chosen child's sub-strategy failed to produce a plan. `cause` carries the child's own error. |
-| `PLAN_E_2205` | `SnapshotRollupWithoutPin { grainset, child_index, child_grain, request_grain }` | `ShapeDefault` rollup of a `Snapshot`-shape child requires a pin policy (per `17`), and none is declared. |
-| `PLAN_E_2206` | `SCDRollupWithoutAsOf { grainset, child_index, child_grain }` | `ShapeDefault` selection of an `SCD`-shape child requires an as-of anchor in the Request, and none is present. |
-| `PLAN_E_2207` | `RequestGrainNotInAxisGrains { grainset, request_grain, axis_grains }` | The Request-extracted grain is not a member of the Grainset's `grain_axis.grains:` list. Authors cannot request a grain the Grainset did not declare. |
-| `PLAN_E_2208` | `GrainsetPartialCoverageNotSupported { grainset, request, per_child_coverage }` | The Request requires cross-child column-wise composition; deferred per `[TD-GRAINSET-PARTIAL-COVERAGE]`. Raised instead of silently falling back. |
-
-### 9.2 Advisories (`Severity::Warning`)
-
-| Code | Variant | Condition |
-|---|---|---|
-| `PLAN_W_2200` | `GrainsetRollupUnusedChild { grainset, unused_child_indices }` | One or more children were eligible but a coarser-grain child won the cost rank. Informational: the author may want to prune unused children or understand why finer-grain children cost more. |
-| `PLAN_W_2201` | `GrainsetTieBrokenByOrder { grainset, tied_children, chosen }` | Cost tie resolved by declaration-order tiebreak. Flags an opportunity for the author to make intent explicit (by reordering children or splitting the Grainset). |
-| `PLAN_W_2202` | `MixedShapeAdvisoryChildren { grainset, shape_counts }` | Mixed `TemporalShape`s across children; planner surfaces and proceeds. |
-| `PLAN_W_2203` | `RequestGrainAbsentUsingCoarsest { grainset, chosen_grain }` | Request carried no grain selector; the planner picked the coarsest-grain child via default cost logic. |
-
-### 9.3 Severity policy
-
-Per `30 §7`, errors abort planning; advisories flow through to the `Diagnostic` list on the resulting `SemanticPlan`. Advisories are the author's feedback channel for ergonomic issues that are not bugs.
-
----
-
-## 10. Plan shape
-
-Grainset's plan contribution is a **delegation**: the chosen child's sub-strategy produces a `PlanNode` subtree, and the Grainset splices it into the position in the overall `SemanticPlan` where the Grainset was queried.
-
-### 10.1 Single-child delegation (common case)
-
-For a Grainset directly queried via `Request.from = Some(grainset_ref)`:
-
-```text
-plan(request, grainset):
-  candidates     ← ELIGIBILITY(request, grainset)        // §4.2
-  if candidates.is_empty():
-    return PLAN_E_2201 NoEligibleChild
-  costs          ← candidates.map(|c| COST(c, request))  // §4.4
-  chosen         ← CHOOSE(candidates, costs)             // §4.5
-  sub_request    ← REWRITE_FOR_CHILD(request, chosen)    // §10.2
-  sub_plan       ← plan(sub_request, chosen.constituent) // recurse
-  return WRAP_WITH_GRAIN_ROLLUP(sub_plan, chosen.grain, request.grain)
-```
-
-`WRAP_WITH_GRAIN_ROLLUP` is a no-op when `chosen.grain == request.grain`, and wraps the sub-plan with a `Project(DATE_TRUNC(axis, request_grain))` + `Agg(group_by: request.group_by, aggregations: request.aggregations)` when `chosen.grain < request.grain` and the shape permits (`17`'s rollup rules; `Timeseries` / `Events` — the common case).
-
-### 10.2 Request rewrite for the child
-
-Before delegation, the Request is rewritten onto the child's surface:
-
-- **`from:`** → the child's `DataKindRef`. The child takes over as the planner's target.
-- **`group_by:`** → preserved; the child's own strategy handles the grain-axis binding.
-- **`aggregations:` / `filters:` / `order_by:` / `select:`** → preserved verbatim; the child's Coverage must have already admitted every referenced Semantics per §4.2 step 2.
-- **Grain selector on the grouped axis** → preserved; the `WRAP_WITH_GRAIN_ROLLUP` step handles the `DATE_TRUNC` if the child's grain is finer than the request grain.
-
-### 10.3 ASCII plan trees
-
-**Single-child Simple delegation, native grain** (no rollup needed):
-
-```
-PlanNode::Project [measures: cost, dims: report_date, campaign_id]
-└─ PlanNode::Agg [group_by: (report_date, campaign_id), aggs: SUM(cost)]
-   └─ PlanNode::Scan [source: paid_media_daily_snapshot, grain: day]
-```
-
-**Single-child Simple delegation, rolled up** (child grain = day, request grain = month):
-
-```
-PlanNode::Project [measures: cost, dims: report_date, campaign_id]
-└─ PlanNode::Agg [group_by: (report_date, campaign_id), aggs: SUM(cost)]
-   └─ PlanNode::Project [report_date := DATE_TRUNC(report_date, 'month'),
-                         campaign_id, cost]
-      └─ PlanNode::Scan [source: paid_media_daily_events, grain: day]
-```
-
-**Single-child Complex (Unionset) delegation, native grain**:
-
-```
-PlanNode::Project [measures: cost, dims: report_date]
-└─ PlanNode::Agg [group_by: (report_date), aggs: SUM(cost)]
-   └─ PlanNode::Union [inputs: {adwords_daily, facebook_daily, tiktok_daily},
-                       distinct: false]
-      ├─ PlanNode::Project [... NULL-fill per Unionset Coverage (`23`) ...]
-      │  └─ PlanNode::Scan [adwords_daily]
-      ├─ PlanNode::Project [...]
-      │  └─ PlanNode::Scan [facebook_daily]
-      └─ PlanNode::Project [...]
-         └─ PlanNode::Scan [tiktok_daily]
-```
-
-In the Unionset-child case, the Grainset's work is entirely above the Union node — it picked the child (the Unionset), and the Unionset's own strategy (`23`) produced the Union subtree.
-
-### 10.4 What Grainset does NOT emit
-
-- **No UNION across Grainset children.** Child selection is exclusive; the non-chosen children contribute no rows.
-- **No Join across Grainset children.** Children are alternatives, not joinable.
-- **No implicit composition traversal.** If the Request names Semantics outside the Grainset's composed surface, `PLAN_E_0506 RequestOutOfSurface` (per `16 §14.3`) fires — the Grainset does not silently extend via a Relationship walk.
-
-### 10.5 Splicing into an enclosing plan
-
-When a Grainset is queried indirectly (as a constituent of a Joinset, as a child of another Grainset — once `[TD-GRAINSET-NESTED]` lands, as a Unionset branch), the chosen-child's sub-plan is the value the Grainset returns to the enclosing strategy. The enclosing strategy treats the sub-plan as an opaque `PlanNode` subtree and composes it per its own rules (`23`'s UNION ALL, `24`'s join path, `22` recursive delegation, etc.).
-
-The splice is structural, not syntactic: there is no "Grainset node" in the `PlanNode` enum. The Grainset is a **planner strategy**, not a node type. The output is the chosen child's subtree, optionally wrapped with `Project`/`Agg` for rollup per §10.1.
-
----
-
-## 11. Worked example
-
-### 11.1 Model
+A worked YAML showing every authoring slot a `Grainset` exposes (focus is **completeness of the surface**, not plan emission — see §10 for the plan-shape worked example):
 
 ```yaml
-# Top-level Simple kinds (children of the Grainset)
-datasets:
-  - name: paid_media_hourly_events
-    temporal_shape: events
-    binding:
-      sources:
-        - glob: "s3://lake/events/year=*/month=*/day=*/hour=*/*.parquet"
-        - format: parquet
-      column_mapping:
-        report_date: event_timestamp
-        campaign_id: campaign_id
-        cost: cost_cents
-        clicks: click_count
-    dimensions:
-      - name: report_date
-        data_type: timestamp(0)
-        type:
-          temporal:
-            grains: [minute, hour, day, week, month, quarter, year]
-      - name: campaign_id
-        data_type: string
-    measures:
-      - name: cost
-        data_type: decimal(18, 4)
-        aggregation: sum
-      - name: clicks
-        data_type: long
-        aggregation: sum
-
-  - name: paid_media_daily_snapshot
-    temporal_shape: snapshot
-    binding:
-      sources:
-        - table: "warehouse.paid_media.daily_rollup"
-      column_mapping:
-        report_date: snapshot_date
-        campaign_id: campaign_id
-        cost: daily_cost
-        clicks: daily_clicks
-    dimensions:
-      - name: report_date
-        data_type: date
-        type:
-          temporal:
-            grains: [day, week, month, quarter, year]
-      - name: campaign_id
-        data_type: string
-    measures:
-      - name: cost
-        data_type: decimal(18, 4)
-        aggregation: sum
-      - name: clicks
-        data_type: long
-        aggregation: sum
-
-  - name: paid_media_monthly_snapshot
-    temporal_shape: snapshot
-    binding:
-      sources:
-        - table: "warehouse.paid_media.monthly_rollup"
-      column_mapping:
-        report_date: month_start
-        campaign_id: campaign_id
-        cost: monthly_cost
-    dimensions:
-      - name: report_date
-        data_type: date
-        type:
-          temporal:
-            grains: [month, quarter, year]
-      - name: campaign_id
-        data_type: string
-    measures:
-      - name: cost
-        data_type: decimal(18, 4)
-        aggregation: sum
-      # note: no `clicks` measure on the monthly snapshot
-
-# The Grainset composing the three
 grainsets:
   - name: paid_media_rollups
-    grain_axis: report_date
-    rollup_policy: shape_default
+    description: "Paid-media spend across grains; cross-grain composition supported."
     dimensions:
       - name: report_date
-        data_type: date
-        type:
-          temporal:
-            grains: [day, week, month, quarter, year]
+        data_type: Timestamp
       - name: campaign_id
-        data_type: string
+        data_type: String
     measures:
       - name: cost
-        data_type: decimal(18, 4)
-        aggregation: sum
+        agg: sum
+        expr: cost_cents
+        data_type: Long
       - name: clicks
-        data_type: long
-        aggregation: sum
-    children:
-      - kind: paid_media_hourly_events
-        # grain: inherited — finest of [minute..year] is minute
-      - kind: paid_media_daily_snapshot
-        # grain: inherited — day
-        rollup_override: pin_only   # this snapshot must be queried at its declared grain or rolled up only if 17's pin policy applies
-      - kind: paid_media_monthly_snapshot
-        # grain: inherited — month
-        rollup_override: pin_only
+        agg: sum
+        expr: click_count
+        data_type: Long
+    metrics:
+      - name: cpc
+        expr: cost / clicks
+        data_type: Decimal
+    keys:
+      - name: campaign_id
+        kind: foreign
+    filters:
+      - name: paid_only
+        expr: cost > 0
+    extras:
+      temporal:
+        snapshot:
+          snapshotted_at: report_date
+        # NOTE: no `grain:` here — SR-E-7 forbids grain at any Complex level;
+        #       grain lives on each child's LeafExtras only (SR-E-8).
+    datasets:
+      - name: paid_media_daily
+        extras:
+          catalog: marketing_warehouse
+          storage: { format: Parquet, paths: ["s3://b/daily/*.parquet"] }
+          semantic_mapping:
+            report_date: snapshot_date
+            campaign_id: campaign_pk
+            cost_cents: daily_cost
+            click_count: daily_clicks
+          temporal:
+            snapshot:
+              snapshotted_at: snapshot_date
+              grain: Day
+      - name: paid_media_monthly
+        extras:
+          catalog: marketing_warehouse
+          storage: { format: Parquet, paths: ["s3://b/monthly/*.parquet"] }
+          semantic_mapping:
+            report_date: month_start
+            campaign_id: campaign_pk
+            cost_cents: monthly_cost
+            # note: no `click_count` mapping — child does not provide `clicks`
+          temporal:
+            snapshot:
+              snapshotted_at: month_start
+              grain: Month
 ```
 
-### 11.2 Request A — daily cost
+Notes on this example:
+
+- `dimensions:` / `measures:` / `metrics:` / `keys:` / `filters:` are **flat** at the Grainset level per `#[serde(flatten)]` on the SemanticInterface (per `32 §3.3`).
+- `keys:` declares `campaign_id` as a foreign Key — this is the cross-grain JOIN surface. When a Request needs `clicks` (only on the daily child) AND comes at grain `Month` (only directly served by the monthly child), the planner builds a LEFT OUTER JOIN tree using `campaign_id` as the equi-join key. See §3.4 + §10.
+- `extras.temporal:` on the Grainset carries only `kind` (here `snapshot:`); `grain:` is type-level forbidden on `ComplexExtras` (SR-E-7).
+- Each child authors its own `extras.temporal.grain:` explicitly (SR-E-8) — `Day` for daily, `Month` for monthly. Two distinct grains; satisfies the "≥ 2 unique grains" rule (§5.2).
+- All children share `kind: snapshot` (V1 strict equivalence per §5.2). A child with `kind: events` would be a hard compile error.
+- `paid_media_monthly` does NOT map `click_count` — its Coverage of `clicks` is `NullFill`. Routing for Requests touching `clicks` skips the monthly child unless cross-grain JOIN composition kicks in (§3.4).
+
+## 3. Per-Child Contract
+
+### 3.1 Children list shape and ordering
+
+The `GrainsetBody` carries three child arrays — `datasets: Vec<NestedDataset>`, `unionsets: Vec<NestedUnionset>`, `joinsets: Vec<NestedJoinset>` (per `32 §3.2`). The **canonical child sequence** for plan emission is:
+
+1. all `datasets:` entries in YAML author order, then
+2. all `unionsets:` entries in YAML author order, then
+3. all `joinsets:` entries in YAML author order.
+
+This order is stable (per `32 §6` ordering table) and is the order:
+
+- Same-grain children are merged (declaration order within the same grain determines their order inside the implicit Unionset's `inputs` per `23 §3.1`).
+- Driver selection's tie-break runs (most-covering first; declaration-order tie-break per G-2b).
+- Attached units are added in cross-grain JOIN-tree construction (declaration-order per G-2c — deterministic).
+
+R2 (no same-variant self-nesting) is type-level absence per `32 §3.2` — a `grainsets:` field does not exist on `GrainsetBody`. R3 (≥ 2 children) is the validate-stage rule per `26 §2.3`. Nested-child name uniqueness within a single Grainset's combined child set is the Grainset author's responsibility; collisions surface via the `26 §4` addressing scheme as ambiguous addresses.
+
+### 3.2 Per-child Coverage — v1 inference-only
+
+V1 carries **no authored per-child Coverage override** (parallels `23 §3.2`'s ratification). Per-child Coverage is inferred at compile from each child's interface plus the child's Binding-level Coverage (Simple children) or the child's resolved interface (Complex children).
+
+**Per-Semantics inference rule.** For each surface Semantics `s` on the Grainset's own `SemanticInterface`, and for each child `i`:
+
+- If child `i`'s interface declares a Semantics with the same name `s` (or a `- ref: s` to a root-pool entry shared by the Grainset) AND the child can produce a value (per `15 §10` for Simple, per the child's own resolution for Complex), then child `i` **provides** `s`.
+- Otherwise, child `i` **does not provide** `s` — its Coverage entry is `NullFill`.
+
+**Coverage-completeness check.** Unlike Unionset, a Grainset surface Semantics that NO child provides is NOT auto-rejected: it could still be unreachable at runtime if no Request touches it. But because such a Semantics is unanswerable, it is a structural mistake — `COMP_E_2202 GrainsetCoverageIncomplete` fires at compile (§8). Authors fix by adding the Semantics to ≥ 1 child or removing it from the Grainset's surface.
+
+### 3.3 Same-grain pre-merge — implicit Unionset (`mode: All`, non-strict)
+
+When two or more children share the same `extras.temporal.grain:` value, they are folded at compile into an **implicit Unionset** (`mode: All`, **non-strict** Coverage discipline — i.e. NullFilling per `23 §3.2` rather than the Dataset-multi-source strict discipline of `21 §3.2`). The implicit Unionset becomes one **effective routing unit** at that grain (§4.1). Per G-1 (2026-05-03 ratification).
+
+**Identification.** Same-grain implicit Unionsets get content-derived hash-ids per `33 §<implicit-unionset-id>` (forthcoming) — same mechanism as `21 §3.2`'s multi-source-Dataset implicit Unionsets. They carry no `name:` (authors don't see them).
+
+**Discipline contrast with Dataset multi-source.** Dataset's multi-source implicit Unionset is **strict** (`21 §3.2` `COMP_E_2106` on missing coverage); Grainset's same-grain implicit Unionset is **non-strict** (NullFill at the seam per `23 §4.3`). Reason: same-grain Grainset children are typically authored as variants of the same data slab with intentional roster differences (e.g. two daily snapshots from different business units, each carrying its own subset of Measures), whereas Dataset multi-source represents the same data sliced by physical layout (paths / partitions) where roster heterogeneity signals an authoring mistake.
+
+### 3.4 Cross-grain composition — `ComposedSemanticInterface` + LEFT OUTER JOIN tree
+
+When no single effective routing unit (per §4.1) covers all of a Request's Semantics at the eligible grain, the planner builds a **cross-grain LEFT OUTER JOIN tree**, mediated by a `ComposedSemanticInterface` (per `16 §5`) constructed at compile. Per G-2 (2026-05-03 ratification).
+
+**Build-time (compile)**:
+
+1. Build per-routing-unit Coverage projection of the Grainset's surface (per §3.2; effective routing units after same-grain pre-merge per §3.3).
+2. For each pair of effective routing units, identify **shared Keys** — Keys (per `18 §2.5`) declared on both units' interfaces. The Keys must agree on `data_type` (under `13 §7`'s widening rules).
+3. Construct the `ComposedSemanticInterface`:
+   - `composition_kind = CompositionKind::Grainset` (per `16 §5.3`).
+   - `constituents: Vec<DataKindRef>` — the effective routing units (one per distinct grain).
+   - `interface: UnifiedSemantics` — the Grainset's own `SemanticInterface` lifted into the composition shape per `16 §6`.
+   - `provenance: FieldProvenance` — per-Semantics ownership across units per `16 §7`.
+   - `coverage: CompositionCoverage` — per-(unit, Semantics) Coverage entries per `16 §8`.
+   - `traversed_paths: Vec<RelationshipPath>` — empty (Grainset cross-grain composition uses Keys, not Relationships; cross-grain JOIN-tree details live in `ResolvedGrainset` per `33`, not on `ComposedSemanticInterface`).
+4. Pre-build the cross-grain JOIN-key index: for each pair of units that share Keys, record the equi-join condition.
+
+**Plan-time (per Request)** — see §4.3.
+
+**Hard failure modes (compile)**:
+
+- **No shared Keys between two units the planner needs to join** — `COMP_E_2204 GrainsetCrossGrainKeysAbsent { driver, attached, missing_via }` (§8). Per G-2d ratification: hard compile error rather than runtime fallback. Author fixes by adding the missing Key declaration to one or both units' interfaces.
+- **Key `data_type` disagreement between units** — `COMP_E_2205 GrainsetCrossGrainKeyTypeMismatch` (§8).
+
+## 4. Plan-Time Observable Behavior
+
+A Grainset's plan-time observable behavior is the realization of `GrainsetStrategy::resolve` (algorithm body in `34 §<GrainsetStrategy>`, parked in `_drafts/34_grainset_strategy.md` pending `34` drafting). This section ratifies the observable invariants an author or consumer can rely on; the algorithm body is referenced only for derivation.
+
+### 4.1 Effective routing units
+
+An **effective routing unit** is the planner's routing primitive — one per distinct child `extras.temporal.grain:` value:
+
+- **Single-child case** — exactly one child sits at that grain → the unit is that child (NestedDataset / NestedUnionset / NestedJoinset, resolved per its own Strategy).
+- **Multi-child case** — two or more children share that grain → the unit is the implicit Unionset folded at compile per §3.3. The unit's coverage is the per-Semantics fold over the Unionset members (any one provides → unit provides; non-providers NullFill at the seam per `23 §4.3`).
+
+The Grainset's effective routing units are **one per distinct grain** value across the child set (V1 ≥ 2 per §5.2). Routing decisions (eligibility, driver selection, JOIN-tree construction) operate at the routing-unit granularity, not at the raw-child granularity.
+
+### 4.2 Single-unit delegation (simple case)
+
+When a Request's Semantics set is fully covered by exactly one effective routing unit (after grain-eligibility filtering), `GrainsetStrategy` delegates to that unit's own Strategy and wraps the result in a rollup wrapper if needed:
+
+1. Identify grain-eligible units (units whose `grain ≤ request.grain` per `13 §3.2`'s coarseness order).
+2. Filter to units that fully cover the Request's Semantics set (Coverage `Native` / `Derived` per §3.2).
+3. If exactly one such unit (or multiple with the most-covering equal — declaration-order tie-break per G-2b) → that's the chosen unit.
+4. Run the chosen unit's Strategy on a unit-narrowed Request.
+5. Wrap with `Project (DATE_TRUNC) + Agg` if `chosen_unit.grain` is finer than `request.grain` AND the rollup is shape-legal per `17 §4`.
+
+The "splice" pattern from pre-cascade `22 §10.5` is preserved: there is no `PlanNode::Grainset`. The chosen unit's subplan is the Grainset's contribution; the rollup wrapper (when needed) is built from shared `PlanNode::{Project, Agg}` nodes.
+
+### 4.3 Cross-grain JOIN delegation (partial-coverage case)
+
+When no single grain-eligible unit fully covers the Request's Semantics set, the planner builds a LEFT OUTER JOIN tree using the `ComposedSemanticInterface` (§3.4). Per G-2a / G-2b / G-2c (2026-05-03 ratification).
+
+**Algorithm**:
+
+1. Filter to grain-eligible units.
+2. Identify the **driver** = unit covering the largest subset of the Request's Semantics (Native / Derived). Tie-break: declaration order (G-2b).
+3. Greedily add **attached** units in declaration order (G-2c — deterministic over greedy-by-coverage-delta). Each attached unit must:
+   - Cover ≥ 1 Semantics not yet covered by driver-or-already-attached units.
+   - Share at least one Key (per `18 §2.5`) with the driver (or with an already-attached unit reachable through the JOIN tree).
+4. After all attached units are added, every Request Semantics must be covered. If any remains uncovered → `PLAN_E_2202 GrainsetSemanticsNotCoverableByJoin` (§9).
+5. Emit the JOIN tree:
+   - Driver as the LEFT side.
+   - Each attached unit added via `PlanNode::Join { join_type: LeftOuter }` (per G-2a) on the equi-join condition over shared Keys.
+6. Above the JOIN tree, emit the Request's `Project + Agg + Filter` per the standard observable pipeline.
+
+**Observable plan shape** (worked example in §10.4):
+
+```
+PlanNode::Project       (final shape — Request fields)
+  PlanNode::Agg         (Request's group_by + aggregates; conditional per Measures)
+    PlanNode::Filter    (Request filters above the join)
+      PlanNode::Join { LeftOuter, on: campaign_id = campaign_id }
+        <driver unit's subplan, rolled up to Request grain if needed>
+        <attached unit 1's subplan, rolled up to Request grain if needed>
+      [+ additional joins for further attached units]
+```
+
+Each unit's subplan is produced by its own Strategy (the same Strategy invoked in the single-unit case). For implicit-Unionset units (§4.1 multi-child case), that's `UnionsetStrategy` per `_drafts/34_unionset_strategy.md`.
+
+### 4.4 Rollup mechanics — shape-gated per `17`; `RollupPolicy` is internal-only
+
+When a Request's grain is coarser than a routing unit's grain, the chosen unit's subplan is wrapped with a rollup transformation:
+
+- **`Timeseries` / `Events` shapes** — bucket-then-aggregate via `Project (DATE_TRUNC(axis, request_grain))` + `Agg`. Always legal.
+- **`Snapshot` shape** — pin policy required (per `17`); without a pin policy, rolling a snapshot up across periods is semantically unsafe. Internal `RollupPolicy::PinOnly` is the planner's default for `Snapshot` units when no pin policy is declared.
+- **`SCD` shape** — as-of anchoring required (per `17`); the Request must carry an as-of timestamp. Without one, rollup fails.
+
+The `RollupPolicy { ShapeDefault, PinOnly, PreferFinest }` enum is implemented in the planner but NOT authored in V1 YAML (per G-4). Default behavior:
+
+- `Snapshot` units → `PinOnly` (no rollup unless pin policy declared per `17`).
+- `Timeseries` / `Events` units → `ShapeDefault` (free rollup via DATE_TRUNC + Agg).
+- `SCD` units → `PinOnly` semantically (pin to as-of anchor).
+
+Future fine-tuning hooks (e.g. exposing `PreferFinest` for data-quality workflows where the finer source is preferred even at higher cost) may surface in `34`.
+
+### 4.5 Coverage-driven pruning
+
+Routing units that NullFill every Semantics named in the Request contribute nothing and are pruned before JOIN-tree construction. Pruning collapses the candidate set for both single-unit delegation (§4.2) and cross-grain composition (§4.3); no advisory is emitted (the prune is transparent because Grainset's routing model is "pick covering units", not "merge all units").
+
+## 5. TemporalShape Interaction
+
+### 5.1 Authoring placement and cascade-up of `kind` only
+
+A Grainset's effective `TemporalShape.kind` is **inherited from its children** under the V1 strict equivalence rule (§5.2). Authoring at the Grainset level is permitted via `extras.temporal:` (`ComplexExtras`) and must agree with children's; silent authoring at the Grainset level reads the (unanimous) children's kind as the effective value.
+
+Per SR-E-7 (`18 §3.3`) and the `32 §4` cascade table, only `temporal.<variant>:` (the shape kind) may appear on `ComplexExtras`. **`grain` is type-level forbidden** at the Grainset level — it lives on each child's `LeafExtras` only (per `32 §4`'s cascade table) and per SR-E-8 (`18 §3.4`) MUST be authored explicitly on every Grainset child. Ambient grain inheritance from the Grainset to children is structurally impossible (the `ComplexExtras` shape has no `grain` field).
+
+### 5.2 V1 strict equivalence rule + ≥ 2 unique grains
+
+In V1, all children of a Grainset MUST have:
+
+1. **Equal `kind`** — `Timeseries`, `Events`, `Snapshot`, or `Scd` — must match across all children. Mismatch is `COMP_E_2201 GrainsetChildShapeKindMismatch` (§8). Single consolidated code per the parallel C1 ratification used for Unionset.
+2. **Equal `ScdType`** when `kind = Scd` — `Scd(Type1) + Scd(Type2)` is rejected; subtype must match.
+3. **Children's grain values must include ≥ 2 unique values** — stronger than R3's `≥ 2 children`. A Grainset with `[Day, Day]` (2 children, 1 unique grain) is degenerate (it's just an implicit Unionset at Day with no distinct routing). Validated via `VALID_E_2202 GrainsetInsufficientUniqueGrains` (§7).
+
+**Future direction.** Smart alignment of non-equivalent shapes (e.g. `Events + Snapshot` mixing) is post-V1 and tracked as `[TD-GRAINSET-SHAPE-MIX]`. The pre-cascade `MixedShapeAdvisoryChildren` warning is retired.
+
+### 5.3 Scope boundary with `17`
+
+`22` ratifies only:
+
+- the `extras.temporal:` field carriage on `ComplexExtras` (cross-ref `32 §4`),
+- the V1 strict equivalence rule across children (§5.2),
+- the cascade-up direction (children → Grainset, `kind` only).
+
+`22` does NOT ratify the `TemporalShape` enum variants, the SCD subtype catalog, the shape × grain rollup matrix, the per-shape pin / anchor mechanics, or the `RollupPolicy` enum's default-derivation logic. All of these live in `17`.
+
+## 6. Grain Interaction
+
+### 6.1 Per-child grain authoring (mandatory per SR-E-8)
+
+`grain` lives on each leaf descendant's `LeafExtras` (per `32 §4`); Grainset itself does not author `grain` (SR-E-7). Per SR-E-8 (`18 §3.4`), every Grainset child MUST author its own `extras.temporal.grain:` explicitly — there is no inheritance-from-ancestor mechanism. Validated post-parse at validate stage; diagnostic `validate.grainset-child-grain-required` per `26 §6`.
+
+The Grainset's "grain axis" is the **set** of distinct grain values across children (≥ 2 per §5.2). It is not an authored field on the Grainset; it is derived from children's `extras.temporal.grain:` declarations.
+
+### 6.2 Plan-time grain consultation
+
+Two observable invariants involve `grain`:
+
+- **Grain eligibility** (§4.1). For a Request at grain `G`, an effective routing unit is grain-eligible iff its grain `≤ G` per `13 §3.2`'s coarseness order.
+- **Rollup wrapping** (§4.4). When a chosen unit's grain is finer than the Request's grain, the planner emits a rollup wrapper (`Project (DATE_TRUNC) + Agg`) shape-gated per `17 §4`.
+
+If no routing unit has grain ≤ Request grain → `PLAN_E_2201 GrainsetNoMatchingUnitByGrain` (§9). Authors should add a coarser routing unit or restructure the Request.
+
+### 6.3 Scope boundary with `13` and `17`
+
+- `13 §5` ratifies the `Grain` enum and its coarseness order.
+- `17` ratifies the `TemporalShape × Grain` legality matrix (which rollups are shape-legal).
+- `17` ratifies the per-shape pin / anchor mechanics.
+
+## 7. Validation Preconditions — `VALID_E_2200`–`2299`
+
+Structural well-formedness for Grainsets is partially upstreamed to:
+
+- **R1 / R2** (parse-stage type-level absence per `26 §2.1` / `§2.2`; diagnostics `parse.unknown-field` and `parse.illegal-self-nesting`).
+- **R3** (validate-stage walk per `26 §2.3`; diagnostic `validate.complex-data-kind-insufficient-children`).
+- **SR-E-7** (no `grain` on Complex; type-level absence on `ComplexExtras`).
+- **SR-E-8** (Grainset-child grain required; diagnostic `validate.grainset-child-grain-required` per `26 §6`).
+- **SR-3** name uniqueness, **SR-4** / **SR-5** field validity, **SR-7** unknown-field rejection — all in `32 §6`.
+
+The Grainset-specific structural checks below run at validate stage:
+
+| Code | Variant | Trigger |
+|---|---|---|
+| `VALID_E_2201` | `GrainsetDuplicateNestedChildName { grainset, name, indices }` | Two nested children of the same Grainset (across `datasets:` / `unionsets:` / `joinsets:`) declare the same `body.base.name`. |
+| `VALID_E_2202` | `GrainsetInsufficientUniqueGrains { grainset, distinct_grains }` | Children's `extras.temporal.grain:` values include fewer than 2 distinct values (per §5.2 V1 strict). |
+
+**Extensibility.** Codes `2203`–`2299` reserved; MINOR per `30 §6.3`.
+
+## 8. Compile Preconditions — `COMP_E_2200`–`2299`
+
+Compile-stage checks run after `validate` has passed and child resolution has produced per-child interface + Coverage data + `ComposedSemanticInterface` construction.
+
+| Code | Variant | Trigger |
+|---|---|---|
+| `COMP_E_2201` | `GrainsetChildShapeKindMismatch { grainset, children: Vec<(NestedDataKindName, TemporalShape)> }` | One or more children's `TemporalShape.kind` (or SCD subtype) diverges from the others. Single consolidated code; covers kind mismatches and SCD subtype mismatches per §5.2. Fail-fast. |
+| `COMP_E_2202` | `GrainsetCoverageIncomplete { grainset, semantics }` | A Semantics declared on the Grainset's own `SemanticInterface` is provided by NO child (every child's Coverage is `NullFill`). The Semantics is unanswerable at any grain — authoring mistake. Fail-fast. |
+| `COMP_E_2203` | `GrainsetTemporalShapeKindMismatchWithGrainset { grainset, grainset_kind, child_kinds }` | The Grainset author wrote `extras.temporal:` at the Grainset level AND the kind disagrees with the (unanimous) children's kind. Cascade-up rule per §5.1 requires agreement. |
+| `COMP_E_2204` | `GrainsetCrossGrainKeysAbsent { grainset, driver_unit, attached_unit, missing_via }` | The cross-grain JOIN-tree construction (§3.4) needs to attach `attached_unit` to the JOIN tree, but no shared Keys exist between `attached_unit` and any unit already in the tree (the driver or an earlier attached unit). Per G-2d ratification: hard compile error. |
+| `COMP_E_2205` | `GrainsetCrossGrainKeyTypeMismatch { grainset, key_name, units_with_types: Vec<(NestedDataKindName, DataType)> }` | Two units both declare a Key with the same name but with `DataType`s that cannot be reconciled under `13 §7`'s widening rules. The equi-join would be type-unsafe. |
+| `COMP_E_2206` | `GrainsetCrossGrainNoEquiJoinPath { grainset, request_semantics, driver_unit, missing_units }` | Compile-stage check: for at least one structurally-feasible Request (one that touches Semantics in `request_semantics`), the cross-grain JOIN tree cannot be assembled because some required attached unit has no Key reachable from the driver. (Subset of `COMP_E_2204`; surfaced for static analysis.) |
+
+**Extensibility.** Codes `2207`–`2299` reserved; MINOR per `30 §6.3`.
+
+## 9. Plan-Stage Rules — `PLAN_E_2200`–`2299`
+
+Plan-stage checks run against a specific `Request` and the resolved Grainset.
+
+| Code | Severity | Variant | Trigger |
+|---|---|---|---|
+| `PLAN_E_2201` | Error | `GrainsetNoMatchingUnitByGrain { grainset, request_grain, unit_grains }` | No effective routing unit has `unit.grain ≤ request_grain`. Every unit is strictly coarser than the Request. Authors should add a coarser-grain unit or restructure the Request. |
+| `PLAN_E_2202` | Error | `GrainsetSemanticsNotCoverableByJoin { grainset, request_semantics, uncovered }` | After cross-grain JOIN-tree construction (§4.3), some Semantics in the Request's `select` / `group_by` / `filters` remain uncovered. Authors fix by adding a unit covering the missing Semantics or removing them from the Request. |
+| `PLAN_E_2203` | Error | `GrainsetSnapshotRollupWithoutPin { grainset, unit, unit_grain, request_grain }` | A `Snapshot`-kind unit was selected for a Request requiring rollup but `17`'s pin policy did not declare a coarser-grain aggregation rule. (Internal `RollupPolicy::PinOnly` rejects.) |
+| `PLAN_E_2204` | Error | `GrainsetSCDRollupWithoutAsOf { grainset, unit, unit_grain }` | An `Scd`-kind unit was selected for a Request lacking an as-of anchor. Per `17`'s SCD mechanics. |
+| `PLAN_W_2201` | Warning | `GrainsetUnitPrunable { grainset, unit, reason }` | A routing unit was eliminated from candidacy (Coverage-pruned per §4.5, or grain-ineligible). Advisory; informs authors of unused units. |
+| `PLAN_W_2202` | Warning | `GrainsetCrossGrainJoinFanout { grainset, attached_unit, expected_fanout }` | Cross-grain JOIN may fanout (e.g. monthly-attached joined onto daily-driver introduces a 1-to-N relationship via the equi-join Key). Advisory; authors verify the join doesn't multiplicatively inflate row counts. |
+
+**Extensibility.** Codes `2205`–`2299` (errors) and `2203`–`2299` (warnings) reserved; MINOR per `30 §6.3`.
+
+**Codes retired in this rebase:**
+
+- Pre-cascade `PLAN_W_2202 MixedShapeAdvisoryChildren` — now `COMP_E_2201` (mixed shapes is a hard compile error per V1 strict equivalence).
+- Pre-cascade `PLAN_E_2200 GrainsetNoMatchingChildByGrain` — renamed to `PLAN_E_2201 GrainsetNoMatchingUnitByGrain` (operates at the routing-unit level, not the raw-child level).
+
+## 10. Worked Example
+
+### 10.1 YAML
+
+(Re-uses the §2.3 YAML — `paid_media_rollups` Grainset with two children at `Day` and `Month` grains, both `kind: snapshot`.)
+
+### 10.2 Request A — single-unit case
 
 ```
 Request {
-  from: Some(paid_media_rollups),
-  group_by: [{ name: report_date, grain: day }],
-  aggregations: [sum(cost)],
+  from: paid_media_rollups,
+  fields:  [ report_date (rollup Month), campaign_id, cost ],
+  filters: [ paid_only ],
+}
+```
+
+Effective routing units: `Day` (single child `paid_media_daily`), `Month` (single child `paid_media_monthly`). Both are grain-eligible at `Month` (Day rolls up; Month direct).
+
+Coverage: `cost` is provided by both. `Day` unit covers `cost` Natively; `Month` unit covers `cost` Natively.
+
+Most-covering at Month: tie (both cover {report_date, campaign_id, cost}). Tie-break: declaration order → `Day` (it appears first; `paid_media_daily` is index 0).
+
+Wait — but `Day` requires rollup; `Month` is direct. The "most-covering" tie-break breaks before the cost-of-rollup is consulted. V1 picks `Day` (declaration order). Future cost-aware extensions may flip this.
+
+Single-unit delegation (§4.2): `Day` chosen; rollup wrapper added.
+
+```
+Project          (final shape — report_date (month), campaign_id, cost)
+  Agg            (group_by: [DateTrunc(snapshot_date, Month), campaign_pk], aggregates: [Sum(daily_cost) AS cost])
+    Filter: paid_only
+      Project    (rename per Day unit's seam)
+        Scan     (s3://b/daily/*.parquet)
+```
+
+### 10.3 Request B — cross-grain JOIN case
+
+```
+Request {
+  from: paid_media_rollups,
+  fields:  [ report_date (rollup Month), campaign_id, cost, clicks ],
   filters: [],
 }
 ```
 
-**Walkthrough:**
+Coverage:
 
-1. `REQUEST_GRAIN_EXTRACT` → `Some(Day)` (rule (a)).
-2. **Coverage admissibility.** Requested Semantics: `{report_date, cost}`. All three children cover both Natively. Candidates: `[0, 1, 2]`.
-3. **Grain admissibility.** `hourly_events.grain = Minute` ≤ Day. `daily_snapshot.grain = Day` ≤ Day. `monthly_snapshot.grain = Month` > Day → **excluded**. Candidates: `[0, 1]`.
-4. **Rollup legality.**
-   - Child 0 (`hourly_events`, Events shape, `ShapeDefault`) → rolls freely via bucket-then-aggregate. Legal.
-   - Child 1 (`daily_snapshot`, Snapshot shape, `PinOnly`) → `request_grain == child.grain == Day`. Legal.
-5. **Cost.**
-   - `hourly_events`: ~365 sources per year (hourly-partitioned parquet files) for a 1-day filter, but without a filter, the full glob. Suppose 8760.
-   - `daily_snapshot`: 1 source (a table). Cost 1.
-6. **CHOOSE.** Cost-min → `daily_snapshot` (index 1). No tie.
+- `Day` unit (`paid_media_daily`): covers `cost`, `clicks`, `campaign_id`, `report_date`. (4/4 — full)
+- `Month` unit (`paid_media_monthly`): covers `cost`, `campaign_id`, `report_date`. Does NOT cover `clicks`. (3/4)
 
-**Plan:**
+Single-unit case: `Day` covers all 4 → §4.2 single-unit delegation, no JOIN needed. Plan shape similar to §10.2 but projecting `clicks` too.
 
-```
-PlanNode::Project [measures: cost, dims: report_date]
-└─ PlanNode::Agg [group_by: (report_date), aggs: SUM(cost)]
-   └─ PlanNode::Scan [source: warehouse.paid_media.daily_rollup, grain: day]
-```
+To illustrate the cross-grain JOIN case (§4.3), assume `paid_media_daily` lacks `clicks` but instead has it on a hypothetical `paid_media_quarterly_clicks` unit (kind `snapshot`, grain `Quarter`, only carries `clicks` + `campaign_id`):
 
-### 11.3 Request B — monthly cost
+Coverage:
 
-```
-Request {
-  from: Some(paid_media_rollups),
-  group_by: [{ name: report_date, grain: month }],
-  aggregations: [sum(cost)],
-  filters: [],
-}
-```
+- `Day` unit (`paid_media_daily`): covers `cost`, `campaign_id`, `report_date`. (3/4)
+- `Month` unit (`paid_media_monthly`): covers `cost`, `campaign_id`, `report_date`. (3/4)
+- `Quarter` unit (`paid_media_quarterly_clicks`): covers `clicks`, `campaign_id`, `report_date`. (Quarterly Coverage; rolls up to Month? Month is finer than Quarter → Quarter ineligible at Month grain. Restructure: assume the Request is at grain `Quarter`.)
 
-**Walkthrough:**
+Reframed Request at `Quarter`:
 
-1. `REQUEST_GRAIN_EXTRACT` → `Some(Month)`.
-2. **Coverage admissibility.** `{report_date, cost}`: all three children cover Natively. Candidates: `[0, 1, 2]`.
-3. **Grain admissibility.** All three children have `grain <= Month`. Candidates: `[0, 1, 2]`.
-4. **Rollup legality.**
-   - Child 0 (`hourly_events`, Events, `ShapeDefault`) → rolls freely. Legal.
-   - Child 1 (`daily_snapshot`, Snapshot, `PinOnly`) → `request_grain = Month`, `child.grain = Day`. `PinOnly` requires equality → **excluded**.
-   - Child 2 (`monthly_snapshot`, Snapshot, `PinOnly`) → `request_grain == child.grain == Month`. Legal.
-5. **Cost.**
-   - `hourly_events`: 8760 sources.
-   - `monthly_snapshot`: 1 source.
-6. **CHOOSE.** `monthly_snapshot` (index 2) wins.
+- All three units grain-eligible (Day → Quarter, Month → Quarter, Quarter → Quarter).
+- Most-covering at Quarter: `Day` and `Month` tied at 3 (both cover {cost, campaign_id, report_date}). Declaration-order tie-break → `Day` is driver.
+- `clicks` uncovered by driver → need attached unit. Greedy declaration order: `Month` is next, but doesn't cover `clicks`. Skip to `Quarter`: covers `clicks` AND shares `campaign_id` Key with `Day`. Attach.
+- After driver + 1 attached, all 4 Semantics covered.
 
-**Plan:**
+Observable plan shape:
 
 ```
-PlanNode::Project [measures: cost, dims: report_date]
-└─ PlanNode::Agg [group_by: (report_date), aggs: SUM(cost)]
-   └─ PlanNode::Scan [source: warehouse.paid_media.monthly_rollup, grain: month]
+Project           (final shape — report_date (quarter), campaign_id, cost, clicks)
+  Agg             (group_by: [DateTrunc(report_date, Quarter), campaign_id])
+    Join { LeftOuter, on: campaign_id = campaign_id }
+      <Day unit's subplan, rolled up to Quarter via DateTrunc + Agg>
+      <Quarter unit's subplan, no rollup needed>
 ```
 
-### 11.4 Request C — monthly cost + clicks
+### 10.4 Reading key
 
-```
-Request {
-  from: Some(paid_media_rollups),
-  group_by: [{ name: report_date, grain: month }],
-  aggregations: [sum(cost), sum(clicks)],
-  filters: [],
-}
-```
+- Effective routing units = one per distinct grain. Same-grain children would pre-merge into an implicit Unionset (`mode: All`, non-strict NullFill per §3.3); the Unionset would be the routing unit.
+- §4.2 single-unit delegation is the common case. Cross-grain JOIN (§4.3) fires only when no single unit covers the full Request.
+- LEFT OUTER JOIN preserves driver's row set. Attached units contribute additional Measures via equi-join on shared Keys (per `18 §2.5`). Per G-2a ratification.
+- Driver = most-covering at the Request grain; declaration-order tie-break (G-2b). Attached added in declaration order (G-2c — deterministic).
+- `RollupPolicy` is internal-only in V1 (per G-4). Default rollup behavior follows shape rules in `17`.
+- Algorithm body — exact column ordering, `DateTrunc` placement, partial-aggregate staging, JOIN-key index lookup — lives in `34 §<GrainsetStrategy>` (parked in [`../_drafts/34_grainset_strategy.md`](../_drafts/34_grainset_strategy.md)).
 
-**Walkthrough:**
+## 11. Open Items
 
-1. `REQUEST_GRAIN_EXTRACT` → `Some(Month)`.
-2. **Coverage admissibility.** `clicks` is NOT natively covered by `monthly_snapshot`. `semantics_to_covering_children[clicks] = [0, 1]`. Candidates intersected: `[0, 1]` (index 2 excluded by coverage).
-3. **Grain admissibility.** `hourly_events` → Month: ok. `daily_snapshot` → Month: ok.
-4. **Rollup legality.** `daily_snapshot` is `PinOnly`, request is Month: excluded. Candidates: `[0]`.
-5. **Cost.** `hourly_events` is the only candidate.
-6. **CHOOSE.** `hourly_events`.
+Round-2 review (post-thirteenth-pass cascade rebase, 2026-05-03) closed three previously-open items and re-scoped a fourth; details in [`../questions/closed/22_questions.md`](../questions/closed/22_questions.md). Items remaining open in [`../questions/open/22_questions.md`](../questions/open/22_questions.md):
 
-**Plan:**
+- (none in V1; all Round-1 questions closed or moved to deferred per the rebase)
 
-```
-PlanNode::Project [measures: cost, clicks, dims: report_date]
-└─ PlanNode::Agg [group_by: (report_date), aggs: SUM(cost), SUM(clicks)]
-   └─ PlanNode::Project [report_date := DATE_TRUNC(report_date, 'month'),
-                         campaign_id, cost, clicks]
-      └─ PlanNode::Scan [source: s3://lake/events/...,
-                         grain: minute, shape: events]
-```
+Closed in this rebase:
 
-Advisory `PLAN_W_2200 GrainsetRollupUnusedChild(unused_child_indices: [1, 2])` flows through — the snapshots were ineligible once `clicks` was requested, not because they were too coarse-grained. The advisory informs the author that the monthly snapshot's lack of `clicks` forced a scan of the full Events source; they may want to add `clicks` to the monthly rollup.
+- **Q-GRN-001** (inheritance default for child grain) — moot under SR-E-8 (every Grainset child MUST author `extras.temporal.grain:` explicitly; no inheritance mechanism in V1).
+- **Q-GRN-002** (cross-child partial coverage) — ratified at G-2 as cross-grain LEFT OUTER JOIN composition via `ComposedSemanticInterface` + Keys per `18 §2.5`.
+- **Q-GRN-005** (mixed-shape warning vs. error) — moot under V1 strict equivalence rule (§5.2); mixed shapes are now `COMP_E_2201` hard error.
 
-### 11.5 Request D — hourly cost
+Deferred (post-V1):
 
-```
-Request {
-  from: Some(paid_media_rollups),
-  group_by: [{ name: report_date, grain: hour }],
-  aggregations: [sum(cost)],
-  filters: [],
-}
-```
-
-**Walkthrough:**
-
-1. `REQUEST_GRAIN_EXTRACT` → `Some(Hour)`.
-2. **Coverage admissibility.** Candidates: `[0, 1, 2]`.
-3. **Grain admissibility.** `hourly_events.grain = Minute ≤ Hour`: ok. `daily_snapshot.grain = Day > Hour`: excluded. `monthly_snapshot.grain = Month > Hour`: excluded.
-4. **Rollup legality.** `hourly_events`: legal.
-5. **Cost.** Only candidate.
-6. **CHOOSE.** `hourly_events`.
-
-Had `hourly_events` not existed, step 3 would leave Candidates empty → `PLAN_E_2200 GrainsetNoMatchingChildByGrain` (no child at or below Hour).
+- **Q-GRN-003** — Cost-function pluggability hook site (planner trait vs. adapter trait vs. separate `CostEstimator`). Tracked in [`../questions/deferred/22_questions.md`](../questions/deferred/22_questions.md).
+- `[TD-GRAINSET-SHAPE-MIX]` — smart alignment of non-equivalent shapes (e.g. `Events + Snapshot`).
+- `[TD-GRAINSET-COST-STATS]` — stats-backed cost function for driver / attached selection.
+- `[TD-GRAINSET-NESTED]` — Grainset-of-Grainset nesting (closed via R2 in `26 §2.2`; future matrix relaxation post-V1).
 
 ---
 
-## 12. Round-1 open items
-
-Parked in `docs/design/questions/open/22_questions.md`. Each entry restates the question, lists its refs, and records `22`'s Round-1 default. Entries migrate out of the file as later docs (`17`, `20`, `25`, `33`, `34`) ratify decisions that confirm or amend `22`'s defaults.
-
-Summary of titles:
-
-- **Q-GRN-001** — Inheritance default for child `grain`: finest vs declared (§3.2).
-- **Q-GRN-002** — Cross-child partial coverage: error in v1, or split-and-delegate? (`[TD-GRAINSET-PARTIAL-COVERAGE]`, §4.2 / §9.1 `PLAN_E_2208`).
-- **Q-GRN-003** — Cost function pluggability hook site: planner trait or adapter hook? (`[TD-GRAINSET-COST-STATS]`, §4.4).
-- **Q-GRN-004** — Grainset-of-Grainset nesting (`[TD-GRAINSET-NESTED]`, §3.4 / `COMP_E_2207`).
-- **Q-GRN-005** — Mixed-shape Grainsets: warning vs error (§5 / `PLAN_W_2202`).
-- **Q-GRN-006** — Single-child Grainset degeneracy: lint or accept? (§7 open item).
-
----
-
-## 13. Cross-References
-
-- `00 §4.1` — `Grainset` row in the canonical vocabulary.
-- `00 §9` — I1, I4, I5, I6, I8, I10, I12 (all upheld per §1.4).
-- `10 §3.2` / `§3.3` / `§3.4` — per-stage contracts; §§7–10 fit each.
-- `11 §5` — Scope rules; `DataKindRef` resolution for `GrainsetChild.constituent`.
-- `12 §2` — nesting matrix; the Grainset-child permitted-kinds cell.
-- `13 §3.1` / `§3.2` — `Grain` enum and coarseness order; `13 §4.2` — `TemporalDimension.grains`.
-- `14` / `14a` / `14b` — expressions; `22` consumes pre-resolved `PhysicalExpr`s via child Bindings.
-- `15 §6` — Binding-level Coverage fold; §6.1 projection consumes it.
-- `16 §5` — `ComposedSemanticInterface`; `16 §6` `UnifiedSemantics`; `16 §7` `FieldProvenance`; `16 §8` `CompositionCoverage` fold.
-- `17` *(parallel)* — shape-gated rollup legality matrix, SCD / Snapshot anchoring policies.
-- `20` *(parallel)* — taxonomy-level Complex-DataKind invariants; `ResolvedComplexDataKind` envelope.
-- `23` — Unionset; Grainset children may be Unionsets.
-- `24` — Joinset; Grainset children may be Joinsets, and a Grainset may participate in a Joinset path.
-- `25` — per-kind applicability matrix; Grainset cell.
-- `30 §5` / `§6.2` / `§7` — `Diagnostic` shape, `22xx` code-range allocation, severity policy.
-- `33` — `Manifest` / `ResolvedGrainsetDataKind` persistence.
-- `34` — planner entry-point dispatching Grainset strategy.
-- `35` — `PlanNode` subtree composition.
-
----
-
-**End of document.** Open items in `docs/design/questions/open/22_questions.md`.
+**End of document.** Ratified decisions are inline throughout §§1–9; closed items in [`../questions/closed/22_questions.md`](../questions/closed/22_questions.md); deferred items in [`../questions/deferred/22_questions.md`](../questions/deferred/22_questions.md).

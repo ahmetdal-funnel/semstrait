@@ -20,7 +20,7 @@ refined-by:
 
 # 13. Types and Grain
 
-> **Struct ownership (2026-04-17 consolidation).** The `DimensionType` enum roster and its payload structs (`TemporalDimensionBody`, `BucketedDimensionBody`, `BucketSpec`, `BucketBound`, `MetadataDimensionBody`) are ratified in [`18 §4.1`](./18_entities.md#4-1-dimensiontype-roster). This doc owns the *planner-level and authoring-level semantics* of each variant — what the role means, v1 vs. post-v1 shape boundary, and cross-references to `15 §8` (metadata runtime), `12 §4.4` (Grainset temporal-grain eligibility), and `17` (`TemporalShape` gating).
+> **Struct ownership (2026-04-17 consolidation).** The `DimensionType` enum roster and its payload structs (`TemporalDimensionBody`, `BucketedDimensionBody`, `BucketSpec`, `BucketBound`, `MetadataDimensionBody`) are ratified in [`18 §4.1`](./18_entities.md). This doc owns the *planner-level and authoring-level semantics* of each variant — what the role means, v1 vs. post-v1 shape boundary, and cross-references to `15 §8` (metadata runtime), `12 §4.4` (Grainset temporal-grain eligibility), and `17` (`TemporalShape` gating).
 >
 > **Status:** ratified. Canonical scalar `DataType` set, `Grain` total order, and the `DimensionType` semantics layer (per-variant roles) are all content-complete. Complex types (arrays, structs, maps, JSON/VARIANT) are explicitly out of scope for v1 (§2.5).
 
@@ -167,7 +167,7 @@ pub enum DataType {
 | `timestamp(p)` | `timestamp` (→ `(0)`), `timestamp_ms` (→ `(3)`), `timestamp_us` (→ `(6)`), `timestamp_ns` (→ `(9)`), `datetime` (→ `(6)`) | `DataType::Timestamp { precision }` |
 | `interval` | (none) | `DataType::Interval` |
 
-**Alias handling.** Aliases are parse-time syntactic sugar; the `SemanticModel` carries only canonical `DataType`s. A round-tripped `Manifest` emits canonical forms (`long`, not `bigint`; `integer`, not `int32`). Lints MAY warn on non-canonical aliases; they MUST NOT rewrite author YAML.
+**Alias handling.** Aliases are parse-time syntactic sugar; the `SemanticModel` carries only canonical `DataType`s. A round-tripped `SemanticManifest` emits canonical forms (`long`, not `bigint`; `integer`, not `int32`). Lints MAY warn on non-canonical aliases; they MUST NOT rewrite author YAML.
 
 **Ambiguity-prone aliases.** Bare `int` → `Integer` (32-bit, SQL-standard width). Authors who want a 64-bit integer must write `long` or `bigint` or `int64` explicitly; no silent widening. `number` is accepted as a legacy alias for `Double` but emits a warning Diagnostic recommending migration to `double`. `float` alone — unlike in SQL where `FLOAT(p)` can mean anything — always canonicalizes to **32-bit** `Float`; use `double` for 64-bit.
 
@@ -284,7 +284,7 @@ Adding non-temporal grains is I10-non-breaking.
 
 ## 4. DimensionType Discriminator
 
-The `DimensionType` enum roster and per-variant body structs (`TemporalDimensionBody`, `BucketedDimensionBody`, `BucketSpec`, `BucketBound`, `MetadataDimensionBody`) are ratified in [`18 §4.1`](./18_entities.md#4-1-dimensiontype-roster). Six variants — `Temporal(TemporalDimensionBody)`, `Categorical`, `Binary`, `Geo`, `Bucketed(BucketedDimensionBody)`, `Metadata(MetadataDimensionBody)` — with the payload-bearing variants (`Temporal` / `Bucketed` / `Metadata`) carrying the fields the planner uses; `Categorical` / `Binary` / `Geo` are payload-free in v1 per the sub-shape-polish posture (see `18 §4.1`'s "Sub-shape polish" note for post-v1 extensions like `CategoricalBody::enum_values` / `GeoBody::{lat,lon}`).
+The `DimensionType` enum roster and per-variant body structs (`TemporalDimensionBody`, `BucketedDimensionBody`, `BucketSpec`, `BucketBound`, `MetadataDimensionBody`) are ratified in [`18 §4.1`](./18_entities.md). Six variants — `Temporal(TemporalDimensionBody)`, `Categorical`, `Binary`, `Geo`, `Bucketed(BucketedDimensionBody)`, `Metadata(MetadataDimensionBody)` — with the payload-bearing variants (`Temporal` / `Bucketed` / `Metadata`) carrying the fields the planner uses; `Categorical` / `Binary` / `Geo` are payload-free in v1 per the sub-shape-polish posture (see `18 §4.1`'s "Sub-shape polish" note for post-v1 extensions like `CategoricalBody::enum_values` / `GeoBody::{lat,lon}`).
 
 This section owns the **planner-level and authoring-level semantics** of each variant — what the role means, where each type fits in the resolution pipeline, what the v1 v. post-v1 boundary is.
 
@@ -326,26 +326,18 @@ The `type:` block is a single-key map — exactly one discriminator name with it
 
 ### 4.7 Metadata — planner semantics
 
-- `MetadataDimensionBody { source: MetadataSource }` (see `18 §4.1`; `MetadataSource` full grammar is a sub-shape-polish item). The authoring-time forms the v1 surface must cover are **path-segment extraction** and **Hive-style partition-value extraction**; the runtime extraction mechanic is owned by `15 §8`.
-- **Path-segment extraction (`path.token: N`)** — tokenizes the source path on `/` and returns the 0-indexed segment. Example: path `s3://bucket/month=01/data.parquet` with `token: 2` returns `"month=01"` (raw, no key=value parsing). `15 §8.1` owns the runtime rules and error codes.
-- **Partition-value extraction (`partition.level: N`)** — extracts the value from a Hive-style `key=value` partition at 1-indexed level `N`. Example: partition `year=2024/month=01` with `level: 1` returns `"2024"`. `15 §8.2` owns the runtime rules and error codes.
-- Exactly one of `path:` / `partition:` must be present in the authored `MetadataSource`. Both present or both absent = `ValidateError::MetadataDimensionMalformed`.
+> **v1 scope: path-only.** The author-side `MetadataSource` grammar in `18 §4.1` carries both `path:` and `partition:` arms for forward-compatibility. **v1 only ratifies path-segment extraction**; `partition:` is deferred to v2. The compile pass (`15 §10.4 step 4.0`) rejects `partition: Some(_)` with `COMP_E_0322 MetadataPartitionDeferredV2`. This section retains the partition write-up below as v2 design parking.
+
+- `MetadataDimensionBody { source: MetadataSource }` (see `18 §4.1`; `MetadataSource` full grammar is a sub-shape-polish item). The v1 authoring-time form is **path-segment extraction**; Hive-style partition-value extraction is deferred to v2 (banner above). The compile-time recipe synthesis and runtime extraction mechanic are owned by `15 §5.5` / `15 §8`.
+- **Path-segment extraction (`path.token: N`) — v1 in scope.** Tokenizes the source path on `/` after stripping any scheme prefix, then returns the 0-indexed segment as a raw `String`. Example: path `s3://bucket/month=01/data.parquet` with `token: 2` returns `"month=01"` (raw, no `=`-suffix parsing). `15 §8.1` owns the layer-3 mechanic, the cast-to-declared-`data_type` policy, and the error codes. The compile stage synthesizes a `SemanticMappingValue::Metadata(MetadataDimensionRecipe { extraction: Path { token }, data_type })` entry in the Binding's `SemanticMapping` (`15 §5.5` / `18 §10.4`); per-source resolved `LiteralValue`s land on each `ResolvedPhysicalSource.metadata_values` (`15 §7.6`).
+- **Partition-value extraction (`partition.level: N`) — v2 design parking.** Will extract the value from a Hive-style `key=value` partition at 1-indexed level `N`. Example: partition `year=2024/month=01` with `level: 1` returns `"2024"`. The runtime contract (`15 §8.2`) is parked until v2; v1 compile rejects this arm with `COMP_E_0322`.
+- The author-side `XOR` rule between `path:` / `partition:` (exactly one must be present) is defined at the `MetadataSource` level in `18 §4.1` and enforced at YAML-parse time by `32`. v1 additionally rejects `partition: Some(_)` regardless of the `path:` state (banner above).
 - `11 §6.1.1`'s field catalog entry for `metadata:` references `18 §4.1`'s `MetadataDimensionBody` and this section for the per-variant semantics.
-- `data_type:` is typically `String` (extracted values are text); authors may declare `Integer` / `Long` / `Date` with implicit casting at query time per `15 §9`.
+- `data_type:` is the Dimension's declared type; the layer-3 extraction always returns `String` and the compile stage applies a `Cast` to the declared type per `15 §8.1.2`. Cast failure is fail-fast at compile (`COMP_E_0321`), not at query time.
 
 ## 5. Keys and Dimensions — Separation of Concerns
 
 In Round 1 framing the question "should Keys be a `DimensionType` variant?" was raised. The answer is **no**, for reasons that are worth recording.
-
-### 5.1 Why Keys are NOT a `DimensionType`
-
-- **Different roles.** A Dimension is a *grouping/filtering axis* — something a Request names in `group_by:` or `filter:`. A Key is a *row-identity assertion at the DataKind's grain* — a structural claim about uniqueness, used by the planner for Joinset cardinality inference, Unionset dedup policy, and Grainset rollup target selection (`20–25`). These purposes rarely overlap; collapsing them conflates two orthogonal concerns.
-
-- **Composite nature.** Keys are frequently composite: a `primary` Key on `(customer_id, order_date)` identifies rows by a tuple. Making Key a `DimensionType` would force either (a) treating each Key as a single-Dimension specialization — which loses composition — or (b) introducing a "meta-Dimension" that wraps multiple Dimensions, which is strictly worse than the current clear separation in `11 §6.5` ("Keys are arrangements of Dimensions").
-
-- **Structural vs. semantic surface.** Keys do not appear in expressions; no `expr:` references a Key by name. The Request never names a Key directly. Keys are consumed by the planner internally. A `DimensionType` variant for Key would introduce a name that authors cannot use anywhere except the Key declaration itself — a design smell.
-
-- **SQL correspondence.** In SQL, primary keys and foreign keys are **table-level constraints**, not column types. The current design (Keys as top-level arrangements of Dimensions, per `11 §6.5`) mirrors this conventional structure. Collapsing into `DimensionType` would create a semstrait-specific pattern that engineers versed in SQL would have to un-learn.
 
 ### 5.2 The common-resolution path already exists
 

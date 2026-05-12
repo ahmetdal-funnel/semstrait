@@ -63,20 +63,6 @@ The authoritative legality table. Rows are parent Complex kinds; columns are chi
 
 Top-level DataKinds (Model root children) may be any of `{Simple, Unionset, Grainset, Joinset}` without restriction.
 
-### 2.1 Rationale per banned cell
-
-Three cells are banned; each has the same underlying reason: **same-kind self-nesting always flattens**. Allowing it would produce two distinct Model shapes with identical semantics, multiplying authoring paths and complicating canonicalization.
-
-- **Unionset ⊄ Unionset** — `Union(Union(a, b), c) ≡ Union(a, b, c)`. Two nesting shapes for the same logical union. Authors write one flat Unionset instead. The parser MUST emit `ParseError::IllegalNesting { parent: "unionset", child: "unionset" }` and suggest flattening.
-- **Grainset ⊄ Grainset** — A rollup-of-a-rollup is a single rollup with more levels. A Grainset whose `levels:` entry contained another Grainset would duplicate the level hierarchy at two sites. Authors write one Grainset with the full level chain.
-- **Joinset ⊄ Joinset** — A join-of-joins flattens into a single multi-way join. Nesting a Joinset as a member would force the outer join path to treat the inner Joinset's "output" as a single bindable unit, breaking the invariant that Joinset members are independently bindable (directly as Simple or transparently via their own nested shape). Authors restructure.
-
-### 2.2 Why every other cell is legal
-
-- **Unionset of {Simple, Grainset, Joinset}** — a single logical union surface built from heterogeneous branches. Each branch is a structurally independent DataKind; the Unionset composes their interfaces (per `15` coverage rules).
-- **Grainset of {Simple, Unionset, Joinset}** — each level of the rollup can itself be a Simple table, a Unionset of sources, or a Joinset computed at that level. The rollup operates over whatever the level resolves to.
-- **Joinset of {Simple, Unionset, Grainset}** — join members can be composite kinds. A Joinset whose members are themselves Unionsets or Grainsets just joins across those composites as a whole.
-
 ### 2.3 Depth bound (derived)
 
 Because every Complex kind bans self-nesting, no cycle exists in the nesting DAG. The maximum depth of a Complex-wrapped Simple leaf is **bounded by the number of distinct Complex strategies**: three. The longest legal chain under `12`'s matrix is any permutation of `{Unionset, Grainset, Joinset}` wrapping a Simple leaf:
@@ -159,7 +145,7 @@ A Unionset composes two or more DataKinds that share (or will share, under cover
 ### 3.2 Child cardinality
 
 - **Minimum:** 2 total children across all child lists combined. A single-branch Unionset is `ValidateError::UnionsetMustHaveMultipleChildren` — semantically it's the child itself; authors should replace it directly.
-- **Maximum:** unbounded in principle; practical limits come from Manifest size and planner performance (I6 hot path).
+- **Maximum:** unbounded in principle; practical limits come from SemanticManifest size and planner performance (I6 hot path).
 
 ### 3.3 Interface source
 

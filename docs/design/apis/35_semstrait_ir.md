@@ -8,7 +8,7 @@ authoritative-for:
   - `DialectId` roster and `Dialect` trait surface
   - shared plan-level primitives: `SourceRef`, `ResolvedColumn`, `Name`, `KeyPair`, `SortDir`, `NullOrdering`, `AggregateExpr`, `NodeMeta`
   - well-formedness invariants across a `SemanticPlan` tree (predicates are `PhysicalExpr`; types resolved per `14b`; group-by / join / scan schema alignment)
-  - `IrError` enum and `IR_E_35xx` error-code range
+  - `IrErrorKind` enum and its `Diagnose` impl per `30 §5`
   - serde posture for `SemanticPlan` and the Substrait mapping table (conversion is `36`'s concern; mapping declared here)
   - on-wire shape of `Cardinality` / `JoinType` when they appear on a `PlanNode::Join` (vocabulary ratified in `16 §5`)
 refined-by:
@@ -32,15 +32,15 @@ refined-by:
 - The adapter-consumable output family (§6): `EngineArtifact`, `EnginePlan`, `SqlArtifact`, `DialectId`, `Dialect`. `36` refines *emission* (how an adapter fills them in); `35` ratifies their *shape*.
 - The visitor / traversal API over `PlanNode` trees (§8).
 - Serde derivations for `SemanticPlan` and every public IR type (§9).
-- The `IrError` enum and its stable `IR_E_35xx` codes (§10).
+- The `IrErrorKind` typed-kind enum and its `Diagnose` impl (§10).
 - The Substrait-mapping **table** (§9.2) — declarative correspondence between each `PlanNode` variant and the `substrait::proto::Rel` kind an adapter emits. The conversion *code* lives in `36`.
 
 ### 1.2 What `semstrait-ir` does NOT own
 
-- **Planning strategy and per-DataKind plan assembly.** Every decision that "this `Request` against this `Manifest` expands into a tree of `PlanNode`s in this order" lives in `semstrait-planner` per `34`. `35` ratifies only the **output shape** that planning must produce.
+- **Planning strategy and per-DataKind plan assembly.** Every decision that "this `Request` against this `SemanticManifest` expands into a tree of `PlanNode`s in this order" lives in `semstrait-planner` per `34`. `35` ratifies only the **output shape** that planning must produce.
 - **Optimization passes.** Rule-based rewrites over `SemanticPlan` live in `semstrait-planner` (`34`, stage 5 per `10 §3.5`). `35`'s `walk` / `transform` helpers (§8) are the substrate those rewrites run on, not the rewrites themselves.
 - **Adapter emission.** Translating a `SemanticPlan` into an `EngineArtifact` (SQL text or Substrait proto) is `36`'s contract. `35` ratifies the artifact's structural shape and the Substrait mapping table; the rendering code, dialect-specific SQL, and capability checks all live above.
-- **Manifest shape.** `SemanticPlan` references the Manifest for bindings and resolved expressions (§5.2) via opaque identifiers (`SourceRef`, `BindingId`); the Manifest types themselves live in `semstrait-manifest` per `33`. `35` never embeds `ResolvedDataKind` / `ResolvedBinding` values inline.
+- **SemanticManifest shape.** `SemanticPlan` references the SemanticManifest for bindings and resolved expressions (§5.2) via opaque identifiers (`SourceRef`, `BindingId`); the SemanticManifest types themselves live in `semstrait-manifest` per `33`. `35` never embeds `ResolvedDataKind` / `ResolvedBinding` values inline.
 - **Expression AST.** Every expression on every `PlanNode` is a `semstrait_core::PhysicalExpr` (or its aggregate analogue — see §5.7). The AST definition, wrapper invariants, and `Expr` variant roster all live in `semstrait-core` per `31 §3`.
 
 ### 1.3 Design posture — pure, sync, canonical
@@ -71,7 +71,7 @@ semstrait-ir
 ├── primitives           // SourceRef, ResolvedColumn, Name, KeyPair, SortDir,
 │                        //   NullOrdering, AggregateExpr
 ├── artifact             // EngineArtifact, EnginePlan, SqlArtifact, DialectId, Dialect
-├── error                // IrError (35-owned error enum)
+├── error                // IrErrorKind (35-owned typed-kind enum)
 └── substrait_map        // Substrait mapping TABLE only (no conversion code)
 ```
 
@@ -95,9 +95,8 @@ semstrait-ir
 ///
 /// A `SemanticPlan` is a single rooted tree of `PlanNode`s plus
 /// plan-wide metadata: the names in the final projection order, and any
-/// `Diagnostic`s the planner wishes to surface alongside the plan
-/// (warnings, informational notes — never errors, which abort planning
-/// per `10 §3.4`).
+/// warning-severity diagnostics the planner wishes to surface alongside
+/// the plan (errors abort planning per `10 §3.4`).
 #[non_exhaustive]
 pub struct SemanticPlan {
     /// The root of the plan tree. Never empty; planning produces at
@@ -110,12 +109,16 @@ pub struct SemanticPlan {
     /// (e.g. the SELECT-list alias in generated SQL).
     pub output_names: Vec<Name>,
 
-    /// Non-error diagnostics surfaced by `plan` + `optimize`. Contains
-    /// only `Severity::Warning` / `Severity::Note` entries; errors
-    /// abort planning and never reach `SemanticPlan` per `10 §3.4`.
-    /// Adapters MAY append their own non-error diagnostics during
-    /// `adapt` but are not required to (see `36`).
-    pub diagnostics: Vec<semstrait_core::Diagnostic>,
+    /// Warning-severity diagnostics surfaced by `plan` + `optimize`.
+    /// Contains only `Severity::Warning` entries (per `30 §5.2`'s
+    /// 2-variant Severity); errors abort planning and never reach
+    /// `SemanticPlan` per `10 §3.4`. The element type uses a heterogeneous
+    /// envelope (boxed `Diagnostic<dyn Diagnose>` or an erased
+    /// `PlanDiagnostic` wrapper per `34 §13.2`) so warnings from
+    /// `PlanErrorKind` and `OptimizeErrorKind` can co-exist on the
+    /// artifact. Adapters MAY append their own warning-severity entries
+    /// during `adapt` but are not required to (see `36`).
+    pub diagnostics: Vec<PlanDiagnostic>,
 }
 ```
 
@@ -126,15 +129,15 @@ A `SemanticPlan` is **well-formed** when:
 1. `output_names.len() == root.meta().output_schema.len()` — every output column has a user-visible name.
 2. Every `Name` in `output_names` is a valid identifier (see §5.4).
 3. `root` and every descendant satisfy the tree invariants of §7.
-4. No `Diagnostic` in `diagnostics` has `Severity::Error`.
+4. Every `PlanDiagnostic` in `diagnostics` has `Severity::Warning`.
 
-Construction does **not** re-check invariants 1–3 at runtime (planning established them; re-checking is a planner-regression catch, not a caller contract). An optional `SemanticPlan::validate()` method (§8.3) walks the tree and reports violations as `IrError` for debugging.
+Construction does **not** re-check invariants 1–3 at runtime (planning established them; re-checking is a planner-regression catch, not a caller contract). An optional `SemanticPlan::validate()` method (§8.3) walks the tree and reports violations as `Diagnostic<IrErrorKind>` for debugging.
 
 ### 3.3 Serde
 
 `SemanticPlan` derives `Serialize` / `Deserialize` under the crate-level `serde` feature. The wire form is the direct struct shape; no intermediate envelope. `PhysicalExpr` inside child nodes serializes through `semstrait-core`'s expression serde (`31 §4.5`). `PlanNode` (`#[non_exhaustive]`) uses serde's `untagged` policy with a discriminator field (`kind: "scan" | "filter" | ...`) so the wire form survives the addition of new variants per I10.
 
-A serialized `SemanticPlan` is a format-stable portable plan artifact: two processes with the same compiled Manifest can exchange a `SemanticPlan` and get identical adapter output. This is what makes the crate a faithful IR.
+A serialized `SemanticPlan` is a format-stable portable plan artifact: two processes with the same compiled SemanticManifest can exchange a `SemanticPlan` and get identical adapter output. This is what makes the crate a faithful IR.
 
 ### 3.4 Construction patterns
 
@@ -209,15 +212,21 @@ Eight variants in v1. Every variant wraps a struct (not tuple / record form) so 
 
 ```rust
 /// Reads a resolved source. The only `PlanNode` variant without child
-/// nodes. Per `15 §10.6` the planner walks the `ResolvedBinding` and
-/// emits one `ScanNode` per physical source unit.
+/// nodes. Per `15 §3.5.6 / §10.6` the planner walks the
+/// `ResolvedBinding` and emits one `ScanNode` per `ResolvedPhysicalSource`
+/// in the binding's `sources` list. Each `ResolvedPhysicalSource` is an
+/// engine-level LogicalRelation (one Substrait `ReadRel`, one DataFusion
+/// `TableScan`, one Spark `LogicalRelation`, one SQL `FROM` reference);
+/// engine-internal mechanics (Hive partition discovery, multi-file
+/// consolidation, schema merge) live below the `ScanNode` boundary —
+/// see §4.2.1.
 #[non_exhaustive]
 pub struct ScanNode {
     pub meta: NodeMeta,
 
-    /// Opaque handle into the Manifest. Resolves to a
+    /// Opaque handle into the SemanticManifest. Resolves to a
     /// `ResolvedPhysicalSource` per `15 §7.1`. Adapters consume the
-    /// Manifest + this handle to learn the on-engine table / path /
+    /// SemanticManifest + this handle to learn the on-engine table / path /
     /// format. `35` never stores the expanded path.
     pub source: SourceRef,
 
@@ -236,7 +245,22 @@ pub struct ScanNode {
 }
 ```
 
-`ScanNode` carries **no raw path, no URL, no dialect**. Resolution from `SourceRef` to on-engine identity happens in the adapter via the Manifest (I1).
+`ScanNode` carries **no raw path, no URL, no dialect**. Resolution from `SourceRef` to on-engine identity happens in the adapter via the SemanticManifest (I1).
+
+#### 4.2.1 Partition info — manifest-side, never on `ScanNode`
+
+`ScanNode` carries **no partition columns, no partition transforms, no `partition_def` declarations, and no per-source partition values**. All partition-related metadata, when present, is reachable on the SemanticManifest via `ScanNode.source` — specifically `15 §3.4 PartitionColumn` (structural metadata extracted at compile from Hive-style path segments or catalog partition specs) and `15 §3.5.4 partition_def` (catalog-less Range / List declaration carried verbatim from `extras.storage.partition_def:` per `32 §4`). Engine consumers handle partition pruning from `filters_pushdown` predicates against the source's output columns (which include Hive-derived partition columns when the source is file-based with partition discovery).
+
+This is grounded in the 4-consumer alignment ratified at `Q-MAP-002` closure:
+
+| Consumer | Logical scan rel | Partition info on the rel? |
+|---|---|---|
+| Substrait | `ReadRel { read_type: LocalFiles \| NamedTable \| IcebergTable, filter, best_effort_filter, ... }` | No — partition pruning derived engine-side from `filter` / `best_effort_filter` against partition columns; `FileOrFiles.partition_index` is work-unit partitioning (file slicing across executors), not Hive partitioning. |
+| DataFusion | `TableScan { source: TableSource, filters: Vec<Expr>, ... }` | No — `ListingOptions.table_partition_cols` is config on the source provider, not on the rel. |
+| Spark | `LogicalRelation { relation: BaseRelation, ... }` (`HadoopFsRelation` for files) | No — partition columns surface as regular output columns; `PartitionPruning` runs as an optimizer rule against `Filter` nodes above the relation. |
+| SQL emit (DuckDB / Spark SQL / Trino) | one `FROM` reference (`read_parquet('glob', hive_partitioning=true)` / `parquet.\`path\`` / `<catalog>.<schema>.<table>`) | No — `WHERE` clause drives engine-side pruning. |
+
+Adding partition fields to `ScanNode` would diverge from every primary consumer's expected shape and force adapters to translate semstrait-internal partition carriage into engine-native form on every emit. The IR stays minimal; partition handling is an adapter / engine concern reading from the SemanticManifest, not from the plan. v1 adapters defer pruning to engines; v2+ adapters MAY consult the manifest's `partition_def` / `PartitionColumn[]` for advanced planning hints (per `15 §3.5.4`'s forward-compat clause).
 
 ### 4.3 `Filter` — predicate
 
@@ -394,7 +418,7 @@ pub struct NodeMeta {
     /// Unique identifier for this node in the plan tree. Used by the
     /// optimizer (rule-engine source tracking) and the adapter
     /// (diagnostic correlation). Not stable across planner
-    /// invocations — two runs against the same Manifest + Request
+    /// invocations — two runs against the same SemanticManifest + Request
     /// MAY produce different `NodeId`s.
     pub node_id: NodeId,
 
@@ -411,18 +435,18 @@ pub struct NodeMeta {
 }
 ```
 
-`NodeId` is a newtype over `Uuid::new_v4()` in v1; external consumers should treat it as opaque. `Schema` is a plan-level structural schema (not a Manifest-level `ResolvedDataKind` schema) — `{ fields: Vec<Field> }` where `Field { name: Name, data_type: DataType, nullable: bool }` per `15 §4.2`.
+`NodeId` is a newtype over `Uuid::new_v4()` in v1; external consumers should treat it as opaque. `Schema` is a plan-level structural schema (not a SemanticManifest-level `ResolvedDataKind` schema) — `{ fields: Vec<Field> }` where `Field { name: Name, data_type: DataType, nullable: bool }` per `15 §4.2`.
 
 `SemAnnotation` is an additive `#[non_exhaustive]` sum (AggregateRole, FilterSource, Additivity, KindRef, …) ratified in `34`'s planner notes; `35` re-exports the enum for the purpose of serde-roundtrip fidelity and adapter consumption.
 
 ### 5.2 `SourceRef`
 
 ```rust
-/// Opaque reference to a `ResolvedPhysicalSource` in the Manifest.
+/// Opaque reference to a `ResolvedPhysicalSource` in the SemanticManifest.
 /// Per `15 §7.1` / `00 §4.1`.
 ///
 /// `SourceRef` is a deliberately opaque handle — adapters resolve it
-/// against the Manifest they were handed alongside the `SemanticPlan`.
+/// against the SemanticManifest they were handed alongside the `SemanticPlan`.
 /// No path, URL, catalog name, or file format leaks into the plan
 /// tree. I1 guarantee.
 ///
@@ -477,9 +501,9 @@ pub struct ResolvedColumn {
 pub struct Name(String);
 
 impl Name {
-    /// Validates the identifier; returns `IrError::InvalidName` on
-    /// violation.
-    pub fn new(s: impl Into<String>) -> Result<Self, IrError>;
+    /// Validates the identifier; returns `IrErrorKind::InvalidName` on
+    /// violation. Bare-kind shape per `31 §3.1` construction-site convention.
+    pub fn new(s: impl Into<String>) -> Result<Self, IrErrorKind>;
 
     pub fn as_str(&self) -> &str;
     pub fn into_string(self) -> String;
@@ -488,7 +512,7 @@ impl Name {
 
 #### 5.4.1 Reserved plan-tree tags
 
-Substrait-roundtrip fidelity reserves a small set of identifier prefixes for semstrait's own use: `__semstrait_`, `__plan_`, `__agg_`. Constructing a `Name` with one of these prefixes raises `IrError::ReservedName`. The reserved-prefix set is additive; adding new prefixes is MINOR.
+Substrait-roundtrip fidelity reserves a small set of identifier prefixes for semstrait's own use: `__semstrait_`, `__plan_`, `__agg_`. Constructing a `Name` with one of these prefixes raises `IrErrorKind::ReservedName`. The reserved-prefix set is additive; adding new prefixes is MINOR.
 
 ### 5.5 `KeyPair`
 
@@ -617,9 +641,9 @@ pub enum EnginePlan {
 
 impl EnginePlan {
     /// Serialize the Substrait plan to protobuf bytes.
-    pub fn to_bytes(&self) -> Result<Vec<u8>, IrError>;
+    pub fn to_bytes(&self) -> Result<Vec<u8>, IrErrorKind>;
     /// Serialize the Substrait plan to pretty JSON.
-    pub fn to_json(&self) -> Result<String, IrError>;
+    pub fn to_json(&self) -> Result<String, IrErrorKind>;
 }
 ```
 
@@ -705,7 +729,7 @@ pub enum Capability {
 
 ## 7. Tree Invariants
 
-A **well-formed** `SemanticPlan` satisfies every invariant below. The planner (`34`) is the canonical producer; every invariant below is the planner's contract. `SemanticPlan::validate()` (§8.3) is an optional post-hoc walker that reports violations as `IrError`.
+A **well-formed** `SemanticPlan` satisfies every invariant below. The planner (`34`) is the canonical producer; every invariant below is the planner's contract. `SemanticPlan::validate()` (§8.3) is an optional post-hoc walker that reports violations as `Diagnostic<IrErrorKind>`.
 
 ### 7.1 Expression-wrapper invariants
 
@@ -719,7 +743,7 @@ A **well-formed** `SemanticPlan` satisfies every invariant below. The planner (`
 
 ### 7.3 Scan-schema invariants
 
-- `ScanNode.columns[*]` references actual columns of the resolved source. The planner populates `columns` from the Manifest's `ResolvedBinding.sources[source_index].columns` — if the Manifest is consistent with the plan, this invariant holds.
+- `ScanNode.columns[*]` references actual columns of the resolved source. The planner populates `columns` from the SemanticManifest's `ResolvedBinding.sources[source_index].columns` — if the SemanticManifest is consistent with the plan, this invariant holds.
 - `ScanNode.meta.output_schema.len() == ScanNode.columns.len()`.
 - `ScanNode.meta.output_schema.fields[i].name == ScanNode.columns[i].name` for all `i`.
 
@@ -732,7 +756,7 @@ A **well-formed** `SemanticPlan` satisfies every invariant below. The planner (`
 
 - `JoinNode.on` is non-empty. (Cross-joins deferred per §11.1.)
 - For each `KeyPair`, `left` resolves to a column in `left.meta().output_schema` and `right` resolves to a column in `right.meta().output_schema`.
-- For each `KeyPair`, `left`'s column `data_type` matches `right`'s (modulo nullability). Type reconciliation is a planner responsibility (`15 §10.5` Cast-wrapping at Manifest compile time); a mismatch reaching `35` is `IR_E_3503 JoinKeyTypeMismatch`.
+- For each `KeyPair`, `left`'s column `data_type` matches `right`'s (modulo nullability). Type reconciliation is a planner responsibility (`15 §10.5` Cast-wrapping at SemanticManifest compile time); a mismatch reaching `35` is `IR_E_3503 JoinKeyTypeMismatch`.
 - `JoinNode.meta.output_schema` = structural concatenation of `left.meta().output_schema` and `right.meta().output_schema`, with nullability widened on the outer side per `join_type` (per SQL semantics).
 
 ### 7.6 Union invariants
@@ -798,8 +822,10 @@ impl PlanNode {
 
     /// Bottom-up rewrite: each node is rewritten after its children.
     /// Propagates `Err` if the rewrite function fails on any node.
-    pub fn transform<F>(self, f: F) -> Result<PlanNode, IrError>
-    where F: FnMut(PlanNode) -> Result<PlanNode, IrError>;
+    /// Bare-kind shape per `31 §3.1` construction-site convention; callers
+    /// wrap into `Diagnostic<IrErrorKind>` at the stage boundary if needed.
+    pub fn transform<F>(self, f: F) -> Result<PlanNode, IrErrorKind>
+    where F: FnMut(PlanNode) -> Result<PlanNode, IrErrorKind>;
 
     /// Iterator-style child access; used by generic tree algorithms.
     pub fn children(&self) -> impl Iterator<Item = &PlanNode>;
@@ -814,12 +840,14 @@ Wrapper-level delegation: `SemanticPlan::walk_pre` / `::walk_post` / `::transfor
 ```rust
 impl SemanticPlan {
     /// Full tree walk; re-checks every invariant in §7. Returns the
-    /// first violation as an `IrError`; `Ok(())` on well-formedness.
+    /// first violation as a `Diagnostic<IrErrorKind>` (stage-boundary shape:
+    /// every violation has a definite plan-tree location); `Ok(())` on
+    /// well-formedness.
     ///
     /// Intended use: debug / test harnesses, planner-regression
     /// catches, audit tools. Production callers rely on the planner's
     /// well-formedness guarantee and SHOULD NOT validate on every plan.
-    pub fn validate(&self) -> Result<(), IrError>;
+    pub fn validate(&self) -> Result<(), Diagnostic<IrErrorKind>>;
 }
 ```
 
@@ -831,13 +859,13 @@ impl SemanticPlan {
 
 **Push-down rewrite.** Implement `transform` with a closure that matches `Filter { input: box Scan { .. }, predicate }` and rebuilds the subtree with the predicate in `filters_pushdown`.
 
-**Schema re-check.** Implement `PlanVisitor<Output = Result<(), IrError>>` that recomputes `output_schema` for each variant and compares to `meta().output_schema`; return the first mismatch.
+**Schema re-check.** Implement `PlanVisitor<Output = Result<(), Diagnostic<IrErrorKind>>>` that recomputes `output_schema` for each variant and compares to `meta().output_schema`; return the first mismatch.
 
 ## 9. Serde / Substrait Mapping
 
 ### 9.1 Serde
 
-Every public IR type derives `Serialize` / `Deserialize` under the crate-level `serde` feature flag (§11). `SemanticPlan` is the intended portable form: a serialized plan can be round-tripped across processes sharing the same Manifest. Wire-form stability rules:
+Every public IR type derives `Serialize` / `Deserialize` under the crate-level `serde` feature flag (§11). `SemanticPlan` is the intended portable form: a serialized plan can be round-tripped across processes sharing the same SemanticManifest. Wire-form stability rules:
 
 - Every `#[non_exhaustive]` enum serializes with a `kind` discriminator field (serde-tagged). Adding a variant preserves round-trip of existing variants.
 - Every `#[non_exhaustive]` struct serializes with absent-field-tolerant deserialization. Adding a field preserves round-trip of existing values (new field defaults to its `Default::default` or `None`).
@@ -849,7 +877,7 @@ The adapter crate (`36`) owns the bidirectional conversion between `SemanticPlan
 
 | `PlanNode` variant | Substrait `Rel` kind           | Notes                                                                                                                                            |
 |--------------------|--------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
-| `Scan`             | `ReadRel`                      | `source` resolves to `ReadRel.read_type` via the adapter's Manifest lookup. `filters_pushdown` → `ReadRel.filter` (one conjunction).             |
+| `Scan`             | `ReadRel`                      | `source` resolves to `ReadRel.read_type` via the adapter's SemanticManifest lookup. `filters_pushdown` → `ReadRel.filter` (one conjunction).             |
 | `Filter`           | `FilterRel`                    | `predicate` → `FilterRel.condition`.                                                                                                             |
 | `Project`          | `ProjectRel`                   | `projections` → `ProjectRel.expressions` (order-preserving). Output names carried in `RelRoot.names` at the plan root.                           |
 | `Agg`              | `AggregateRel`                 | `group_by` → one `Grouping` with the referenced columns as `grouping_expressions`. `aggregates` → `AggregateRel.measures`.                       |
@@ -862,110 +890,94 @@ The adapter crate (`36`) owns the bidirectional conversion between `SemanticPlan
 
 The adapter is free to emit Substrait proto plans with extra hints (capacity, parallelism) in `AdvancedExtension.enhancement` slots; those hints are adapter-owned and not round-tripped through `35`.
 
-### 9.3 YAML / JSON alternatives
-
-`SemanticPlan` serialized via `serde_json` is the reference portable form for debugging / testing. There is no semstrait-specific YAML schema for `SemanticPlan` (YAML in semstrait is an authoring-layer concept per `14 §4`, not an IR-layer concept). Adapters producing plan text for logs / dumps SHOULD emit Substrait protobuf or `serde_json`.
-
 ## 10. Error Types
 
-### 10.1 `IrError`
+> **Migration note.** Body sections `§4`–`§8` retain references to legacy `IR_E_*` codes (e.g. `IR_E_3502 UnresolvedType`). Those codes are **retired** per `30 §5`; the public-API surface identifies errors by `IrErrorKind` variant identity. The legacy code prefixes remain in body prose during the migration as cross-reference anchors and will be stripped in a follow-up doc pass. Read `IR_E_NNNN VariantName` in the body as shorthand for `IrErrorKind::VariantName`.
+
+### 10.1 `IrErrorKind`
 
 ```rust
-/// Typed error surface for `semstrait-ir`'s own operations: plan-tree
+use semstrait_core::diagnostic::{Diagnose, Severity};
+use semstrait_core::DataType;
+
+/// Typed-kind enum for `semstrait-ir`'s own operations: plan-tree
 /// construction (`Name` validation), plan walking (`transform`
 /// failures), plan validation (`validate`), and adapter-artifact
 /// serialization (`EnginePlan::to_bytes` / `to_json`).
 ///
-/// All `IrError` variants carry the subsystem prefix `IR_E` per
-/// `30 §6.1` format. Range: `IR_E_3500`–`3599`. `30 §6.2` reserves
-/// the `IR` subsystem prefix for this doc.
+/// Per `30 §5`. Identification is by variant identity (`matches!`);
+/// there is no string-code accessor.
 #[non_exhaustive]
-pub enum IrError {
-    /// IR_E_3500 — `Name::new` was called with an empty or invalid
-    /// identifier.
+pub enum IrErrorKind {
+    /// `Name::new` was called with an empty or invalid identifier.
     InvalidName        { supplied: String, reason: String },
 
-    /// IR_E_3501 — `Name::new` was called with a reserved plan-tree
-    /// prefix (§5.4.1).
+    /// `Name::new` was called with a reserved plan-tree prefix (§5.4.1).
     ReservedName       { supplied: String, prefix: String },
 
-    /// IR_E_3502 — a `PhysicalExpr` reaching the plan tree lacks
-    /// `inferred_type`. Only reported by `SemanticPlan::validate`.
+    /// A `PhysicalExpr` reaching the plan tree lacks `inferred_type`.
+    /// Only reported by `SemanticPlan::validate`.
     UnresolvedType     { location: String, expr_sketch: String },
 
-    /// IR_E_3503 — two `KeyPair` columns have incompatible types on a
-    /// `JoinNode`. Only reported by `SemanticPlan::validate`.
-    JoinKeyTypeMismatch{ pair: KeyPair, left_ty:  semstrait_core::DataType,
-                                        right_ty: semstrait_core::DataType },
+    /// Two `KeyPair` columns have incompatible types on a `JoinNode`.
+    /// Only reported by `SemanticPlan::validate`.
+    JoinKeyTypeMismatch{ pair: KeyPair, left_ty: DataType, right_ty: DataType },
 
-    /// IR_E_3504 — `AggNode.aggregates` contains a duplicate output
-    /// name. Only reported by `SemanticPlan::validate`.
+    /// `AggNode.aggregates` contains a duplicate output name.
+    /// Only reported by `SemanticPlan::validate`.
     DuplicateAggName   { name: Name },
 
-    /// IR_E_3505 — `FilterNode.predicate` has non-Boolean type. Only
-    /// reported by `SemanticPlan::validate`.
-    FilterPredicateNotBoolean { actual: semstrait_core::DataType },
+    /// `FilterNode.predicate` has non-Boolean type.
+    /// Only reported by `SemanticPlan::validate`.
+    FilterPredicateNotBoolean { actual: DataType },
 
-    /// IR_E_3506 — a `PlanNode`'s `meta.output_schema` disagrees with
-    /// the schema computed from its children. Only reported by
+    /// A `PlanNode`'s `meta.output_schema` disagrees with the schema
+    /// computed from its children. Only reported by
     /// `SemanticPlan::validate`.
     SchemaMismatch     { node_kind: &'static str, expected: String, got: String },
 
-    /// IR_E_3507 — `UnionNode.inputs` schemas are not structurally
-    /// compatible.
+    /// `UnionNode.inputs` schemas are not structurally compatible.
     UnionSchemaMismatch{ input_ix: usize, expected: String, got: String },
 
-    /// IR_E_3508 — `UnionNode.inputs.len() < 2`.
+    /// `UnionNode.inputs.len() < 2`.
     UnionArityTooLow   { arity: usize },
 
-    /// IR_E_3509 — a `Name` referenced by `group_by` / `order` / `on`
-    /// does not resolve to a column in the input schema.
+    /// A `Name` referenced by `group_by` / `order` / `on` does not
+    /// resolve to a column in the input schema.
     UnresolvedColumnRef{ name: Name, available: Vec<Name> },
 
-    /// IR_E_3510 — a `FetchNode.limit` / `FetchNode.offset` value is
-    /// out of the adapter's representable range (typically `i64::MAX`
-    /// for Substrait).
+    /// A `FetchNode.limit` / `FetchNode.offset` value is out of the
+    /// adapter's representable range (typically `i64::MAX` for Substrait).
     FetchValueOutOfRange { field: &'static str, value: u64 },
 
-    /// IR_E_3511 — a `transform` / `walk` callback returned an error.
-    /// Wraps the user-supplied error as a boxed `dyn Error`.
+    /// A `transform` / `walk` callback returned an error.
     TransformFailure   { reason: String },
 
-    /// IR_E_3512 — `EnginePlan::to_bytes` / `to_json` failed; wraps
-    /// the underlying `prost::EncodeError` / `serde_json::Error`
-    /// context as a string.
+    /// `EnginePlan::to_bytes` / `to_json` failed; wraps the underlying
+    /// `prost::EncodeError` / `serde_json::Error` context as a string.
     ArtifactSerializationFailed { reason: String },
 
-    /// IR_E_3513 — a visitor-side invariant was violated (e.g. a
-    /// transform produced a structurally invalid subtree that
-    /// immediate post-check caught).
+    /// A visitor-side invariant was violated (e.g. a transform produced
+    /// a structurally invalid subtree that immediate post-check caught).
     TransformInvariantViolated  { reason: String },
 }
 
-impl IrError {
-    pub fn code(&self) -> &'static str;           // IR_E_35xx per variant
-    pub fn severity(&self) -> semstrait_core::Severity; // Always Error for v1
+impl Diagnose for IrErrorKind {
+    fn message(&self) -> String { /* per-variant human text */ }
+    fn severity_default(&self) -> Severity { Severity::Error }
+    fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
 }
-
-impl semstrait_core::IntoDiagnostic for IrError {
-    fn into_diagnostic(self) -> semstrait_core::Diagnostic;
-}
-
-impl std::fmt::Display for IrError { /* per-variant messages */ }
-impl std::error::Error for IrError {}
 ```
 
-`IrError` is owned by `semstrait-ir`. It is not a re-export of `CompileError` or `PlannerError` — those typed enums have different production sites and different lifecycles. A planner-side failure producing a malformed `SemanticPlan` is a `PlannerError` (`34`); that same malformed plan caught by `SemanticPlan::validate()` on the consumer side becomes an `IrError`. Both codes are preserved on the diagnostic for auditability.
+`IrErrorKind` is owned by `semstrait-ir`. It is not a re-export of `CompileErrorKind` or `PlanErrorKind` — those typed-kind enums have different production sites and different lifecycles. A planner-side failure producing a malformed `SemanticPlan` is a `PlanErrorKind` (`34`); that same malformed plan caught by `SemanticPlan::validate()` on the consumer side becomes an `IrErrorKind`. Both surface as `Diagnostic<K>` envelopes for the appropriate `K` per `30 §5.1`.
 
-### 10.2 Code range registration
+### 10.2 Variant identity, not codes
 
-`30 §6.2` reserves `IR_E` for `semstrait-ir`. The v1 range is `IR_E_3500`–`IR_E_3599` (100 codes reserved; 14 in use at v1); `IR_W_35xx` is reserved but unused in v1 (no warnings exist today at `semstrait-ir` level). Registering `IR_W` entries in a future release is MINOR per `30 §6.3`.
+The retired `IR_E_*` numeric range from earlier drafts is gone. Identification is by variant identity per `30 §5.4`; renaming or removing a variant is MAJOR per `30 §2.1`; adding a variant inside `#[non_exhaustive]` is MINOR per `30 §2.2`. The §2 module layout still allocates a dedicated `error` module so the kind enum lives next to its production sites (plan-tree construction, validation, artifact serialization).
 
-The offset (`3500` rather than `0001`) deliberately aligns with this doc's number (`35`) — matching the convention used informally in engineering hallways, and keeping `IR_*` codes lexically distinct from `PLAN_*` / `ADAPT_*`. An amendment against `30 §6.2`'s table will land next to this doc's ratification (`[TD-IR-CODE-TABLE-AMEND]`).
+### 10.3 Warning posture
 
-### 10.3 Warning / Info posture
-
-v1 has no `IR_W_*` / `IR_I_*` codes. Warnings surfaced by planner or optimizer are `PLAN_W_*` / `OPT_W_*` per `30 §6.2`; adapter warnings are `ADAPT_W_*`. `semstrait-ir` itself, being pure data + validation, has no warning-emitting operation.
+`semstrait-ir` itself, being pure data + validation, has no warning-emitting operation in v1. Warnings surfaced by planner or optimizer ride `PlanErrorKind` / `OptimizeErrorKind` envelopes per `34`; adapter warnings ride `AdaptErrorKind` per `36`. If a future v2 walker emits `Severity::Warning` `Diagnostic<IrErrorKind>` (e.g. an "unused PlanNode" advisory), it lands additively under `#[non_exhaustive]` per `30 §2.2`.
 
 ## 11. Stability
 
@@ -975,13 +987,13 @@ v1 has no `IR_W_*` / `IR_I_*` codes. Warnings surfaced by planner or optimizer a
 - **Struct field addition inside a `PlanNode` variant is non-breaking.** Every variant's struct is `#[non_exhaustive]` per §4; adding a new field with a sensible default (`None`, `Vec::new()`, `0`, `false`) is MINOR. Examples: `JoinNode.residual: Option<PhysicalExpr>` for non-equi joins; `ScanNode.order_hint: Option<Vec<(Name, SortDir)>>` for order-preserving scans; `AggregateExpr.filter` (already reserved, §5.7).
 - **`DialectId` const additions are non-breaking.** Adding a new `pub const` on `DialectId` is MINOR.
 - **`SemAnnotation` variant additions are non-breaking** (annotation roster growth is expected as `34` matures).
-- **Error-code additions in the `IR_E_35xx` reserved range are non-breaking** per `30 §6.3`.
+- **Variant additions to `IrErrorKind` inside `#[non_exhaustive]` are non-breaking** per `30 §2.2`.
 - **Substrait mapping table entries are non-breaking** — adding a new `PlanNode` variant with a corresponding Substrait `Rel` kind is MINOR; changing an existing mapping is MAJOR.
 
 ### 11.2 Internal parts
 
 - **`NodeMeta.node_id` values** are not stable across planner invocations. Consumers relying on stable identity across runs should derive identity from the plan-tree shape (e.g. a tree-hash visitor), not from `node_id`.
-- **`SemanticPlan::validate()`'s error-ordering** is not stable. The first violation reported may shift between releases as `validate` reorders its checks for performance; consumers SHOULD treat any `IrError` as a single bad-plan signal, not a "first problem is X" guarantee.
+- **`SemanticPlan::validate()`'s error-ordering** is not stable. The first violation reported may shift between releases as `validate` reorders its checks for performance; consumers SHOULD treat any `Diagnostic<IrErrorKind>` as a single bad-plan signal, not a "first problem is X" guarantee.
 - **Serde's on-wire shape under `#[non_exhaustive]` enums** follows the serde-tagged convention (§9.1). The exact JSON spelling of a `kind` discriminator is stable across MINOR releases; deserializers MUST be tolerant to unknown variant tags (typically mapping unknowns to a skipped-node error rather than panicking).
 
 ### 11.3 Delta with current code
@@ -1004,7 +1016,7 @@ Migration items are tracked in `implementation/40_refactor_plan.md` under `[TD-I
 - **No emission.** `semstrait-ir` contains no `fn adapt(plan) -> EngineArtifact`. Adapter emission (SQL rendering, Substrait proto building, capability checking) lives in `semstrait-adapter` per `36`.
 - **No I/O.** No `std::fs`, no `reqwest`, no `tokio`. Every method on every public type is synchronous and pure. I11 guarantee.
 - **No engine identity.** No adapter-specific logic inside `PlanNode` variants. `Scan` carries `SourceRef` (opaque); `Join` carries `JoinType` (canonical, not engine-specific); `Filter.predicate` is `PhysicalExpr` (canonical, not SQL text). I1 / I3 guarantees.
-- **No Manifest construction.** `semstrait-ir` consumes `SourceRef`s that reference an external Manifest but never constructs one. Manifest construction is `semstrait-manifest`'s responsibility per `33`.
+- **No SemanticManifest construction.** `semstrait-ir` consumes `SourceRef`s that reference an external SemanticManifest but never constructs one. SemanticManifest construction is `semstrait-manifest`'s responsibility per `33`.
 
 ### 12.2 Dependency posture
 
@@ -1041,7 +1053,7 @@ serde   = ["dep:serde", "semstrait-core/serde"]
 | **I7** — strict DAG | `Cargo.toml` lists `semstrait-core` as the only internal workspace dependency. CI check greps for any other `semstrait-*` entry. |
 | **I10** — extensibility | Every `pub enum` and `pub struct` carries `#[non_exhaustive]` except the newtype-over-stable set: `Name`, `SourceRef`, `DialectId`, `NodeId`. An `integration-test` over `cargo public-api` enforces the rule. |
 | **I11** — no downward I/O surprises | No `std::fs`, no `std::net`, no `tokio`, no `reqwest` anywhere in the crate. `substrait`'s `prost` dependency is bytes-encoding only, not I/O. |
-| **I12** — first-class diagnostics | `IntoDiagnostic` implemented on `IrError`; every variant maps to a stable `IR_E_35xx` code. No `Display` output reaches API consumers without passing through `IntoDiagnostic`. |
+| **I12** — first-class diagnostics | `Diagnose` implemented on `IrErrorKind` per `30 §5.4`; identification is by variant identity. The blanket `Display` and `std::error::Error` impls on `Diagnostic<K>` (per `31 §10`) make `Diagnostic<IrErrorKind>` directly usable as a `std::error::Error` value. |
 
 ## 14. Public API Surface Sketch
 
@@ -1099,9 +1111,8 @@ pub enum   Capability                                    // #[non_exhaustive]; r
 ### 14.5 `error`
 
 ```
-pub enum   IrError                                       // 14 variants in v1; IR_E_3500–3513
-impl       IntoDiagnostic for IrError
-impl       std::error::Error for IrError
+pub enum   IrErrorKind                                   // 14 variants in v1; identification by variant identity per `30 §5`
+impl       semstrait_core::diagnostic::Diagnose for IrErrorKind
 ```
 
 ### 14.6 Free functions / inherent impl methods at crate root
@@ -1114,21 +1125,21 @@ impl PlanNode {
     pub fn children_mut(&mut self) -> impl Iterator<Item = &mut PlanNode>;
     pub fn walk_pre<V: PlanVisitor>(&self, v: &mut V) -> V::Output;
     pub fn walk_post<V: PlanVisitor>(&self, v: &mut V) -> V::Output;
-    pub fn transform<F>(self, f: F) -> Result<PlanNode, IrError>
-    where F: FnMut(PlanNode) -> Result<PlanNode, IrError>;
+    pub fn transform<F>(self, f: F) -> Result<PlanNode, IrErrorKind>
+    where F: FnMut(PlanNode) -> Result<PlanNode, IrErrorKind>;
 }
 
 impl SemanticPlan {
-    pub fn validate(&self) -> Result<(), IrError>;
+    pub fn validate(&self) -> Result<(), Diagnostic<IrErrorKind>>;
     pub fn walk_pre<V: PlanVisitor>(&self, v: &mut V) -> V::Output;
     pub fn walk_post<V: PlanVisitor>(&self, v: &mut V) -> V::Output;
-    pub fn transform<F>(self, f: F) -> Result<SemanticPlan, IrError>
-    where F: FnMut(PlanNode) -> Result<PlanNode, IrError>;
+    pub fn transform<F>(self, f: F) -> Result<SemanticPlan, IrErrorKind>
+    where F: FnMut(PlanNode) -> Result<PlanNode, IrErrorKind>;
 }
 
 impl EnginePlan {
-    pub fn to_bytes(&self) -> Result<Vec<u8>, IrError>;
-    pub fn to_json(&self) -> Result<String, IrError>;
+    pub fn to_bytes(&self) -> Result<Vec<u8>, IrErrorKind>;
+    pub fn to_json(&self) -> Result<String, IrErrorKind>;
 }
 ```
 
@@ -1149,43 +1160,9 @@ pub use crate::primitives::{
 pub use crate::artifact::{
     EngineArtifact, EnginePlan, SqlArtifact, DialectId, Dialect, Capability,
 };
-pub use crate::error::IrError;
+pub use crate::error::IrErrorKind;
 
 // Re-exports from semstrait-core that `35`-authoritative surfaces rely on:
 pub use semstrait_core::{Cardinality, JoinType};
 ```
 
-## 15. Ratified Decisions Index
-
-`35` introduces no new expression vocabulary and no new type vocabulary — every type above is ratified upstream in `13`, `14`, `14a`, or `16`. The ratifications below concern **plan-tree shape**, **visibility**, and **boundary** decisions unique to `semstrait-ir` as a crate:
-
-| # | Decision | Rationale | § |
-|---|---|---|---|
-| R1 | `SemanticPlan` is the crate-owned top-level type; `LogicalPlan` is the current code name and is renamed as part of `[TD-IR-RENAME]` | Matches `00 §4.1` canonical vocabulary. Rename is a MINOR via type-alias transition (`pub type LogicalPlan = SemanticPlan;` retained one MINOR cycle). | §3.1 |
-| R2 | `PlanNode` has exactly 8 variants in v1: `Scan`, `Filter`, `Project`, `Agg`, `Join`, `Union`, `Sort`, `Fetch` | Matches the engine-IR structural inspiration (`00 §3` / `35 §1.4`). Distinct, Window, Unnest, TopN are deferred as non-breaking additions. | §4.1 |
-| R3 | Every `PlanNode` variant's inner struct is `#[non_exhaustive]` | I10 — field additions inside a variant are MINOR. | §4 |
-| R4 | `ScanNode` carries `SourceRef` (opaque handle) + `Vec<ResolvedColumn>` + `Vec<PhysicalExpr>` for pushdown. No path, URL, or format string | I1 / I3 — engine identity and path resolution live in the adapter. Adapters consult the Manifest via `SourceRef`. | §4.2 |
-| R5 | `Expr::Aggregate` is NOT carried inside `PhysicalExpr` on any plan-level surface; aggregates live on `AggregateExpr` on `AggNode.aggregates` | Matches `14 §2.3` / `31 §3.3` `PhysicalExpr` wrapper invariants. `AggregateExpr` is a plan-level wrapper carrying the same shape. | §5.7 |
-| R6 | `JoinNode.on: Vec<KeyPair>` with type-reconciled columns; non-equi predicates deferred as `[TD-IR-NON-EQUI-JOIN]` | v1 covers the common case of equijoin over reconciled types. Non-equi is a MINOR addition via `JoinNode.residual: Option<PhysicalExpr>`. | §4.6 |
-| R7 | `JoinNode.cardinality` is required (not `Option<Cardinality>`) and reflects the Relationship graph | Cardinality is always known at plan time; absent cardinality on a Join is a planner bug, not a legitimate state. | §4.6 |
-| R8 | `UnionNode.inputs: Vec<PlanNode>` (n-ary), with `distinct: bool` for `UNION ALL` vs `UNION DISTINCT` | N-ary matches SQL / Substrait `SetRel` shape; avoids right-leaning binary trees for multi-union common case. | §4.7 |
-| R9 | `SortDir` bundles direction + null-ordering; `NullOrdering::Unspecified` defers to the adapter | Keeps `SortNode.order[*]` a single `(Name, SortDir)` tuple; matches Substrait's `SortField.direction`. | §5.6 |
-| R10 | `FetchNode.limit: Option<u64>` and `FetchNode.offset: Option<u64>`; `None` means "no limit / no offset" | `Option` cleanly distinguishes unset from zero; `u64` prevents negative. Values exceeding `i64::MAX` raise `IR_E_3510` at adapter-emit time. | §4.9 |
-| R11 | `DialectId` is a newtype over `&'static str` with `pub const` identities; third-party adapters may extend via the `Dialect` trait | Matches `CanonicalFn`'s newtype-over-stable posture in `semstrait-core` (`31 §5.1`). Extensible without sealing. | §6.4 |
-| R12 | `EngineArtifact = Sql(SqlArtifact) \| Plan(EnginePlan)`; `EnginePlan::Substrait(Box<substrait::proto::Plan>)` is the sole plan form in v1 | Matches `00 §4.1` vocabulary. Future structured-IR emissions (e.g. DataFusion-Logical direct) are MINOR `EnginePlan` variants. | §6 |
-| R13 | `NodeMeta.output_schema: Arc<Schema>` for cheap pass-through schema sharing | Filter, Sort, Fetch share their input's schema without deep clone; measured memory + allocation win over owned schemas. | §5.1 |
-| R14 | `IrError` is a distinct enum from `CompileError` / `PlannerError`; its production sites are `semstrait-ir`-internal (plan construction + validation + artifact serialization) | Keeps the crate boundary clean; `semstrait-ir` does not re-export upstream error variants. | §10.1 |
-| R15 | `IR_E_35xx` reserved range in `30 §6.2`; 14 codes in use at v1 (`3500`–`3513`) | `30 §6.2`'s table amendment tracked as `[TD-IR-CODE-TABLE-AMEND]`. | §10.2 |
-| R16 | `Name` is a validating newtype over `String`; rejects empty and reserved-prefix identifiers | Identifier well-formedness is checked at the plan boundary, not re-checked on every adapter call. | §5.4 |
-| R17 | Serde is a feature-gated opt-in (`serde` feature); `PlanNode` uses serde-tagged `kind` discriminator to survive variant additions | Matches `semstrait-core`'s posture (`31 §11`); enables portable `SemanticPlan` exchange across processes. | §9.1 |
-| R18 | Substrait mapping lives as a **table** in `35 §9.2`; conversion code lives in `36` | Keeps `semstrait-ir` free of `substrait::proto` conversion logic (complexity belongs to the adapter); keeps the mapping in one ratified place. | §9.2 |
-
----
-
-## 16. Round-1 Open Items
-
-See `/docs/design/questions/open/35_questions.md` for the parked questions surfaced during Round-1 drafting. Round-1 defaults above ratify the plan-tree shape enough for `34` / `36` to draft against; the open-questions file records the items that will revisit once downstream drafts push back.
-
----
-
-*Cross-references in this document are by section (e.g. `14 §3.2`, `16 §5.1`, `30 §6.2`). No code-path references are used, per `00 §8`.*

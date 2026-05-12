@@ -25,34 +25,18 @@ refined-by:
   - 30 (`apis/30_api_contracts.md` — error-code allocation for `SR-E-*`)
   - 32 (`apis/32_semstrait_model.md` — root YAML shape; hosts `relationships:` and the shared pools this doc ratifies; SR-* enforcement)
   - 32b (`apis/32b_catalogs_yaml.md` — catalog grammar)
-  - 33 (`apis/33_semstrait_manifest.md` — Manifest-layer `Resolved*` counterparts of the types ratified here)
+  - 33 (`apis/33_semstrait_manifest.md` — SemanticManifest-layer `Resolved*` counterparts of the types ratified here)
   - 34 (`apis/34_semstrait_planner.md` — planner consumption of resolved entity types)
   - 35 (`apis/35_semstrait_ir.md` — `PlanNode::Join` carriage of `JoinType`)
 ---
 
 # 18. Canonical Entity Types
 
-`18` is the consolidated specification for the ratified entity types that populate a `SemanticModel`: shared Semantics pools, relationships, temporal shapes, dimensions / measures / metrics, filters, AI context, keys, and the model-authoring `SemanticMapping` value shape. `32` fixes the root YAML shape and the `DataKind` hierarchy (an apis-layer concern); `18` fixes the entity shapes nested inside (a foundations-layer concern — these types cross-cut every DataKind variant, Manifest, Planner, and IR surface).
+`18` is the consolidated specification for the ratified entity types that populate a `SemanticModel`: shared Semantics pools, relationships, temporal shapes, dimensions / measures / metrics, filters, AI context, keys, and the model-authoring `SemanticMapping` value shape. `32` fixes the root YAML shape and the `DataKind` hierarchy (an apis-layer concern); `18` fixes the entity shapes nested inside (a foundations-layer concern — these types cross-cut every DataKind variant, SemanticManifest, Planner, and IR surface).
 
 > **Reader's note (structural placement).** This doc originally landed as `apis/32c_entities.md` in the late-April 2026 entity-ratification pass. It was promoted to the foundations layer (`foundations/18_entities.md`) in the 2026-04-17 consolidation pass because the types it defines are structurally foundational — they cross-cut every `2x` data-kind variant, every `3x` api surface, and every planner/adapter consumer. Per the directionality rule in `00 §8`, canonical definitions belong in the lowest-numbered doc that owns them; the promotion places entity types in their correct layer. Section numbering is unchanged from `32c` — every `18 §N` was `32c §N` in the prior revision.
 
 Every struct in this document is `#[non_exhaustive]` and every enum is `#[non_exhaustive]` per I10, unless a specific note overrides.
-
-## Table of Contents
-
-1. [Shared Semantics Pools & Reference Grammar](#1-shared-semantics-pools--reference-grammar)
-2. [`Relationship`](#2-relationship)
-3. [`TemporalShape`](#3-temporalshape)
-4. [`Dimension`](#4-dimension)
-5. [`Measure`](#5-measure)
-6. [`Metric`](#6-metric)
-7. [Filter Taxonomy](#7-filter-taxonomy)
-8. [`AiContext`](#8-aicontext)
-9. [`Keys`](#9-keys)
-10. [`SemanticMapping` Value Shape](#10-semanticmapping-value-shape)
-11. [Structural Rules (SR-E-*)](#11-structural-rules-sr-e-)
-
----
 
 ## 1. Shared Semantics Pools & Reference Grammar
 
@@ -154,7 +138,7 @@ A DataKind MAY shadow a root-pool name by inlining a same-named Semantic (e.g. a
 
 ### 2.1 Unified struct — root and Joinset sites
 
-One `Relationship` struct serves both authoring sites: root-level `relationships:` on `SemanticModel`, and `relationships:` on a `JoinsetBody`.
+One `Relationship` struct serves both authoring sites: root-level `relationships:` on `SemanticModel`, and `relationships:` on a `JoinsetBody`. The struct is **semantic-first**: authors declare the relationship's shape (`cardinality`, `integrity`, `optional`, `cross_filter`) and the planner derives the operational `JoinType` per `§2.9`.
 
 ```rust
 #[non_exhaustive]
@@ -162,9 +146,6 @@ pub struct Relationship {
     pub name: String,
     pub from: DataKindName,
     pub to:   DataKindName,
-
-    #[serde(rename = "join_type")]
-    pub join_type: JoinType,
 
     pub keys: Vec<JoinKeyExprPair>,
 
@@ -176,14 +157,29 @@ pub struct Relationship {
     pub cardinality: Cardinality,
 
     #[serde(default)]
-    pub directionality: Directionality,
+    pub integrity: Integrity,
+
+    /// Which side is preserved when matches are absent. Default
+    /// derived from `(cardinality, integrity)` per §2.7. Required
+    /// when `cardinality ∈ {OneToOne, ManyToMany}` per SR-E-13.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional: Option<Optional>,
+
+    /// Direction of filter propagation through the join. Default
+    /// derived from `cardinality` per §2.7. Required when
+    /// `cardinality ∈ {OneToOne, ManyToMany}` per SR-E-13.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_filter: Option<CrossFilter>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_context: Option<AiContext>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 ```
 
-Companion identity newtype — stable `u32` handle used by Manifest indices and compile-time graph walks:
+Companion identity newtype — stable `u32` handle used by SemanticManifest indices and compile-time graph walks:
 
 ```rust
 #[non_exhaustive]
@@ -191,7 +187,11 @@ Companion identity newtype — stable `u32` handle used by Manifest indices and 
 pub struct RelationshipId(pub u32);
 ```
 
-`RelationshipId` is allocated at `compile` in declaration order over the root-level `relationships:` list. It is the key type for the `Manifest.relationship_index`, for `RelationshipGraph` traversal in `14b`, and for `RelationshipPath` in `16 §6`. `PartialOrd` / `Ord` are derived so downstream code (`14b`'s BFS neighbor iteration, `Manifest` indices keyed by `(DataKindId, RelationshipId)`) can rely on natural `u32` ordering without unwrapping the newtype. Its one-copy-only home is this doc; `14b`, `16`, and `33` all reference it from here.
+`RelationshipId` is allocated at `compile` in declaration order over the root-level `relationships:` list. It is the key type for the `SemanticManifest.relationship_index`, for `RelationshipGraph` traversal in `14b`, and for `RelationshipPath` in `16 §6`. `PartialOrd` / `Ord` are derived so downstream code (`14b`'s BFS neighbor iteration, `SemanticManifest` indices keyed by `(DataKindId, RelationshipId)`) can rely on natural `u32` ordering without unwrapping the newtype. Its one-copy-only home is this doc; `14b`, `16`, and `33` all reference it from here.
+
+**Authored vs derived.** `JoinType` is **not** an authoring-layer field. It is derived at compile from `optional` per `§2.9` and carried on the manifest-layer `ResolvedRelationship` (`33 §8.1`). This is a deliberate semantic-first stance: the relationship's shape is the contract; the SQL-level join kind is a consequence.
+
+**No parallel override surface.** Authors who need different join semantics inside a specific Joinset declare a **scope-local Relationship** in that Joinset's `relationships:` block with the divergent fields directly. The scope-shadow rule in `§2.10` resolves the visibility. There is no per-hop override map and no per-edge override mechanism.
 
 ### 2.2 YAML shape
 
@@ -200,32 +200,21 @@ relationships:
   - name: orders_to_customers
     from: orders
     to:   customers
-    join_type: left                      # YAML tag: `join_type:`
     keys:                                # list of equi-pairs
       - from: customer_id                # SemanticExpr on the `from` side
         to:   id                         # SemanticExpr on the `to` side
     # Optional residual predicate — evaluated against the joined rowset.
     filter: "from.order_ts <= to.customer_ts"
     cardinality: many_to_one              # REQUIRED
-    directionality: bidirectional         # default; author can set `forward`
+    integrity: assumed                    # default; alternatives: enforced | none
+    optional: none                        # default per matrix; required on 1:1 / m:m
+    cross_filter: left                    # default per matrix; required on 1:1 / m:m
     description: "Customer ownership of orders."
 ```
 
-### 2.3 `JoinType`
+`left` / `right` in `optional` and `cross_filter` correspond to the `from` / `to` sides respectively (`from` ≡ left, `to` ≡ right). The convention is: **the value names the side on the receiving end of the action** — preservation for `optional`, filter reception for `cross_filter`.
 
-```rust
-#[non_exhaustive]
-pub enum JoinType {
-    Inner,
-    Left,
-    Right,
-    Full,
-}
-```
-
-Temporal / as-of joins (`AsOf`) are explicitly out of scope for v1. Implicit historical semantics (`as_of`, `valid_at`) belong to the planner's temporal-shape handling per `17`, not to the relationship definition.
-
-### 2.4 `Cardinality` — required at every site
+### 2.3 `Cardinality` — required at every site
 
 ```rust
 #[non_exhaustive]
@@ -239,25 +228,110 @@ pub enum Cardinality {
 
 `cardinality:` is required on every `Relationship`, at every authoring site. Authors MUST declare the cardinality they intend; the planner does not infer it. Missing cardinality is `parse.relationship-missing-cardinality` (SR-E-4).
 
-### 2.5 `Directionality`
+`Cardinality` is **planning metadata, not runtime enforcement** — `semstrait` does not scan data to verify the declared multiplicity. Authors assert; the planner trusts. Misdeclaration produces arithmetically incorrect aggregations without a runtime error. This trade-off is explicit (verification would require a scan, violating compile-time-resolution posture I5). See `16 §3` for fanout consequences per variant.
+
+### 2.4 `Optional` — preserved-side enum
 
 ```rust
 #[non_exhaustive]
-pub enum Directionality {
-    /// The relationship is usable as `from -> to` only.
-    Forward,
-    /// The relationship is usable in both directions. Default.
-    Bidirectional,
-}
-
-impl Default for Directionality {
-    fn default() -> Self { Directionality::Bidirectional }
+#[serde(rename_all = "snake_case")]
+pub enum Optional {
+    /// Preserve neither side; drop unmatched rows on both sides. Derives Inner.
+    None,
+    /// Preserve the `from` (left) side; null-pad `to` for unmatched. Derives Left.
+    Left,
+    /// Preserve the `to` (right) side; null-pad `from` for unmatched. Derives Right.
+    Right,
+    /// Preserve both sides; null-pad whichever side lacks a match. Derives Full.
+    Both,
 }
 ```
 
-`Forward` mode is an optimization / modeling hint — the composer can traverse only in the declared direction. `Bidirectional` admits traversal either way; `16 §11` uses the relationship graph to synthesize join paths in both directions.
+`optional:` declares which side's rows are preserved when the join condition lacks matches. The value **names the preserved side**. Default per `§2.7`. **Required** on `OneToOne` and `ManyToMany` (SR-E-13) — there is no defensible default for symmetric cardinalities.
 
-### 2.6 `JoinKeyExprPair` — hybrid equi-key grammar
+### 2.5 `CrossFilter` — filter-flow enum
+
+```rust
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum CrossFilter {
+    /// No filter propagation between sides.
+    None,
+    /// The `from` (left) side receives filters from the `to` side.
+    /// Filter flow: `to → from`.
+    Left,
+    /// The `to` (right) side receives filters from the `from` side.
+    /// Filter flow: `from → to`.
+    Right,
+    /// Bidirectional propagation; both sides receive filters from the other.
+    Both,
+}
+```
+
+`cross_filter:` declares the direction of filter propagation through the join. The value **names the side that receives filters**. Default per `§2.7`. **Required** on `OneToOne` and `ManyToMany` (SR-E-13).
+
+**`ManyToMany` constraint.** When `cardinality == ManyToMany`, `cross_filter ∈ {Left, Right}` is rejected per SR-E-14 (`validate.relationship-many-to-many-cross-filter-directional`). A many-to-many relationship has no natural "one" side, so directional filter propagation is ambiguous; authors MUST declare `Both` or `None`.
+
+**Planner contract.** `cross_filter` is recorded on the canonical `Relationship` and surfaces to the planner via the manifest-layer `ResolvedRelationship`. The exact predicate-placement and pushdown rules driven by this field are owned by the planner doc; `18` ratifies the authoring shape and the validation rules only.
+
+### 2.6 `Integrity` — author-asserted RI strength
+
+```rust
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum Integrity {
+    /// Referential integrity is enforced upstream of `semstrait`
+    /// (catalog FK, application invariant, ETL guarantee). The planner
+    /// MAY trust the assertion for join-default derivation and any
+    /// future RI-trust optimizations. Author-asserted only — semstrait
+    /// performs no compile-time cross-check.
+    Enforced,
+    /// The author believes integrity holds but provides no guarantee.
+    /// Same trust posture as `Enforced` at the planner layer in v1;
+    /// reserved as a separate variant so future optimizations can
+    /// differentiate (e.g. NULL-elision under `Enforced` only).
+    Assumed,
+    /// Orphans exist on at least one side. The planner assumes unmatched
+    /// rows are possible and the default-derivation table biases toward
+    /// preserving the from-side anchor.
+    None,
+}
+
+impl Default for Integrity {
+    fn default() -> Self { Integrity::Assumed }
+}
+```
+
+**Author assertion (α stance).** `integrity:` is informational — `semstrait` does not verify the claim at compile time, against the catalog, or against declared `Key::Foreign` entries (`§9.1`). The same trust posture as `cardinality` (`§2.3`): authors assert; the planner shapes the plan accordingly; misdeclaration produces silent wrong results.
+
+**Why no compile-time cross-check in v1.** Three plausible sources for verifying `Enforced` (author assertion only / catalog-driven / FK-declaration-driven) were considered. v1 commits to the simplest: author assertion. The reservation `Enforced` vs. `Assumed` as distinct variants leaves headroom to add catalog-driven or FK-declaration-driven verification in a future MINOR without authoring-surface churn.
+
+### 2.7 Defaults & requirements matrix
+
+The defaults below apply when `optional:` and/or `cross_filter:` are omitted. Required cells must be authored explicitly.
+
+| `cardinality` | `integrity` | `optional` default | `cross_filter` default |
+|---|---|---|---|
+| `ManyToOne` | `Enforced` | `None` | `Left` |
+| `ManyToOne` | `Assumed` | `None` | `Left` |
+| `ManyToOne` | `None`     | `Left` | `Left` |
+| `OneToMany` | `Enforced` | `None` | `Right` |
+| `OneToMany` | `Assumed` | `Left` | `Right` |
+| `OneToMany` | `None`     | `Left` | `Right` |
+| `OneToOne`  | *any*     | **required** | **required** |
+| `ManyToMany`| *any*     | **required** | **required** (Left/Right rejected) |
+
+Reading conventions:
+- `from` ≡ left, `to` ≡ right.
+- For `ManyToOne` (typical fact → dim): `optional: None` ⇒ Inner (RI-trusted enrichment); `optional: Left` ⇒ Left from-anchored (preserve facts when dim missing).
+- For `OneToMany + Enforced`: defaults to `Inner` because RI guarantees every to-side row has its from-side parent. Authors wanting all from-side rows (including those with no children) declare `optional: Left` explicitly.
+
+Validation rules:
+- `optional` and `cross_filter` required when `cardinality ∈ {OneToOne, ManyToMany}` — `validate.relationship-symmetric-cardinality-incomplete` (SR-E-13).
+- `cross_filter ∈ {Left, Right}` rejected when `cardinality == ManyToMany` — `validate.relationship-many-to-many-cross-filter-directional` (SR-E-14).
+- `integrity: Enforced` is **not** cross-checked at compile (deliberate non-rule per α stance).
+
+### 2.8 `JoinKeyExprPair` — hybrid equi-key grammar
 
 ```rust
 #[non_exhaustive]
@@ -273,12 +347,39 @@ Authors list one `JoinKeyExprPair` per equi-predicate. The planner emits `left.<
 
 **Why a hybrid `keys` + `filter` grammar.** The v1 expected traffic is simple equi-joins; `keys:` makes that common case readable. Non-equi residuals (e.g. `from.valid_from <= to.event_ts`) need a `filter:` escape. Splitting the two keeps equi-joins short and lets the planner still know which predicates are join-structural (for hash-join eligibility, partition pruning, etc.) vs post-join residual.
 
-### 2.7 Authoring sites and scope
+### 2.9 `JoinType` — derived at compile, manifest-only
+
+`JoinType` is **not authored**. It is derived at compile from the relationship's `optional` field and carried on `ResolvedRelationship` (`33 §8.1`) for downstream consumption by `JoinsetStrategy` and `PlanNode::Join` emission.
+
+```rust
+#[non_exhaustive]
+pub enum JoinType {
+    Inner,
+    Left,
+    Right,
+    Full,
+}
+```
+
+Derivation table:
+
+| `optional` | Effective `JoinType` |
+|---|---|
+| `Optional::None`  | `Inner` |
+| `Optional::Left`  | `Left` |
+| `Optional::Right` | `Right` |
+| `Optional::Both`  | `Full` |
+
+Temporal / as-of joins (`AsOf`) remain out of scope for v1; see `17 §5` for the temporal-shape activation matrix.
+
+### 2.10 Authoring sites and scope
 
 | Site | Semantics |
 |---|---|
 | Root-level `semantic_model.relationships:` | Visible to every DataKind in the model; feeds `16 §11`'s implicit composition graph; the planner synthesizes Joinsets per Request when the relationship graph permits. |
-| `JoinsetBody.relationships:` | Scoped to the Joinset's members; pinning a pre-declared traversal. A Joinset-local `Relationship` MAY redeclare a root-level name, in which case the Joinset-local entry takes precedence within the Joinset. |
+| `JoinsetBody.relationships:` | Scope-local to that Joinset. The Relationship struct shape, validation rules, defaults matrix, and derivation table are identical to root-level. A Joinset-local `Relationship` MAY redeclare a root-level name, in which case the Joinset-local entry takes precedence **within the Joinset's scope only**. Scope shadow is the sole mechanism for divergent join semantics inside a Joinset — there is no separate override surface. |
+
+Root-level relationships with no corresponding DataKind (`from:` / `to:` resolves to no known data kind) are `validate.relationship-dangling-endpoint` (SR-E-5).
 
 Root-level relationships with no corresponding DataKind (`from:` / `to:` resolves to no known data kind) are `validate.relationship-dangling-endpoint` (SR-E-5).
 
@@ -943,16 +1044,12 @@ datasets:
           target_columns: [id]
 ```
 
-### 9.1 Why bare Semantic names
-
-Keys refer to Semantics, not physical columns. Binding through `semantic_mapping` resolves each Semantic to its physical column (or expression) at `compile`. Authors never touch physical shape at this layer.
-
 ### 9.2 Keys are metadata, not constraints
 
 Keys are consumed for:
 
 - **Relationship graph** — `16 §11`'s implicit composition consults foreign keys when author-declared `relationships:` are absent.
-- **Manifest statistics** — `compile` emits pre-computed statistics for the planner.
+- **SemanticManifest statistics** — `compile` emits pre-computed statistics for the planner.
 - **Future SemanticInterface exposure** — external consumers (LSP, API) may surface keys as part of the entity description.
 
 Keys are NOT enforced at query time (no duplicate checking, no referential-integrity validation). That's database territory, not a semantic-model concern.
@@ -961,7 +1058,7 @@ Keys are NOT enforced at query time (no duplicate checking, no referential-integ
 
 ## 10. `SemanticMapping` Value Shape
 
-A `semantic_mapping:` entry carries one of three variants, resolved at `compile` during the Binding process (`15`):
+A `semantic_mapping:` entry carries one of four variants, resolved at `compile` during the Binding process (`15`):
 
 ```rust
 #[non_exhaustive]
@@ -976,6 +1073,14 @@ pub enum SemanticMappingValue {
     /// compute. Lives at binding time because the expression references
     /// physical column names, not Semantic names.
     Expr(crate::expr_block::PhysicalExpr),
+
+    /// A metadata-extraction recipe (§10.4). Compile-synthesized from the
+    /// Dimension's `type: metadata` block (per `13 §4.7` / `15 §5.5`); never
+    /// authored under `semantic_mapping:`. Distinct from `Expr` because the
+    /// extraction is not a `PhysicalExpr` but a compile-time mechanic that
+    /// resolves to a per-source `LiteralValue` stored on
+    /// `ResolvedPhysicalSource.metadata_values` (`15 §7.6`).
+    Metadata(MetadataDimensionRecipe),
 }
 ```
 
@@ -998,7 +1103,7 @@ extras:
           unit: hour
 ```
 
-Single-string values dispatch to `Column`; mapping values with `literal:` / `expr:` keys dispatch to `Literal` / `Expr`.
+Single-string values dispatch to `Column`; mapping values with `literal:` / `expr:` keys dispatch to `Literal` / `Expr`. The `Metadata` variant has **no author-facing YAML under `semantic_mapping:`** — it is exclusively compile-synthesized from the Dimension's `type: { metadata: { path: { token: N } } }` block authored on the Dimension itself (per `13 §4.7` and the YAML in §4.2 above). The compile stage's binding-resolution pass (`15 §5.5` / `15 §10.4`) produces the `SemanticMappingValue::Metadata(...)` entry before the completeness check runs.
 
 ### 10.2 `LiteralValue`
 
@@ -1022,6 +1127,35 @@ Each literal carries its `DataType`-equivalent kind tag; the compile-time bindin
 
 An absent `semantic_mapping:` block on a `Dataset`'s `extras` is equivalent to `semantic_mapping: auto`. Explicit entries narrow that default: every Semantic named in the explicit map receives the declared value; every other Semantic on the `Dataset`'s interface is resolved per `auto` (name-identical physical column).
 
+### 10.4 `MetadataDimensionRecipe`
+
+Compile-synthesized payload of `SemanticMappingValue::Metadata`. The recipe pairs the extraction kind with the Dimension's declared `data_type:`; per-source resolved `LiteralValue`s live on each `ResolvedPhysicalSource.metadata_values` (`15 §7.6`), not on the recipe.
+
+```rust
+#[non_exhaustive]
+pub struct MetadataDimensionRecipe {
+    /// The extraction kind. v1: path-token only.
+    pub extraction: MetadataExtraction,
+
+    /// The declared Dimension `data_type:`. Extraction always returns
+    /// `String` at the layer-3 mechanic (`15 §8`); this field is the
+    /// target of the post-extraction `Cast` invoked during compile.
+    pub data_type: DataType,
+}
+
+#[non_exhaustive]
+pub enum MetadataExtraction {
+    /// Extract token at 0-indexed (scheme-stripped) segment position.
+    /// Runtime mechanic in `15 §8.1`.
+    Path { token: u32 },
+    // Future: Partition { level: u32 } — deferred to v2 per `15 §8.0`.
+}
+```
+
+`MetadataExtraction` is `#[non_exhaustive]` so v2 partition-level extraction (or other compile-time-resolvable metadata kinds) can grow as MINOR per `30 §2`. The v1 roster is **path-only**; partition extraction described in `13 §4.7` is non-goal in v1 and explicitly deferred (no `Partition` variant in v1's `MetadataExtraction`).
+
+The recipe is **never serialized at the author surface** — it is a compile-output struct that lives on the SemanticManifest. The `13 §4.7` `MetadataDimensionBody.source: MetadataSource` shape (the Dimension-type author surface) is what the author writes; the binding-resolution pass converts the author-side body into a recipe for `15`'s consumption.
+
 ---
 
 ## 11. Structural Rules (SR-E-*)
@@ -1042,6 +1176,8 @@ Entity-level invariants. Each rule has a stable kebab-case diagnostic code per `
 | **SR-E-10** | A `Dimension` / `Measure` / `Metric` MUST declare `data_type:` at its declaration site. | `parse.semantics-missing-data-type` |
 | **SR-E-11** | Filter names are not cross-referenceable between `DataKindFilter` and `AggregationFilter`. | `validate.filter-wrong-kind` |
 | **SR-E-12** | `data_type:` is immutable across all levels — root-pool and Ref sites must agree; local overrides are forbidden. | `validate.semantics-data-type-mismatch` |
+| **SR-E-13** | `Relationship.optional:` and `Relationship.cross_filter:` are REQUIRED when `cardinality ∈ {OneToOne, ManyToMany}`. Asymmetric cardinalities (`ManyToOne`, `OneToMany`) accept defaults from `§2.7`. | `validate.relationship-symmetric-cardinality-incomplete` |
+| **SR-E-14** | `Relationship.cross_filter ∈ {Left, Right}` is REJECTED when `cardinality == ManyToMany`. A many-to-many relationship has no natural "one" side; directional filter propagation is ambiguous and authors MUST declare `Both` or `None`. | `validate.relationship-many-to-many-cross-filter-directional` |
 
 SR-E-* numbering is append-only; adding a rule is MINOR per `30 §2`.
 
@@ -1051,7 +1187,7 @@ SR-E-* numbering is append-only; adding a rule is MINOR per `30 §2`.
 
 - `32 §1` — root YAML shape and where the shared pools / relationships / data-kinds / semantic-mapping blocks live.
 - `32 §3` — `DataKind` hierarchy; `DatasetBody` / `GrainsetBody` / `UnionsetBody` / `JoinsetBody`. `JoinsetBody.relationships: Vec<Relationship>` uses the unified struct from §2.
-- `32 §4` — `Extras` block; `semantic_mapping:` lives inside, value shape per §10.
+- `32 §4` — `LeafExtras` / `ComplexExtras` blocks; `semantic_mapping:` lives inside `LeafExtras`, value shape per §10.
 - `32 §6` — root `SR-*` rules; complementary to `SR-E-*` here.
 - `32b` — catalog grammar; `CatalogRef` referenced from `extras.catalog:`.
 - `26` — nesting matrix; complements the ≥ 2 children structural rule.

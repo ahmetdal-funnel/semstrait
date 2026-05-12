@@ -1,3 +1,9 @@
+---
+doc: design/questions/open/33_questions
+status: Living
+purpose: Round-1 open items raised against `apis/33_semstrait_manifest.md`
+---
+
 # 33 — Open Questions
 
 Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.md`. Each entry restates the question, lists the relevant ratified references, and proposes a lean next step so a later decision pass can resolve without re-reading the whole doc.
@@ -16,7 +22,7 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 **Arguments pro by-value.**
 - Matches the stage boundary: once compile starts, the Model is no longer the caller's responsibility. Ownership move makes that explicit.
 - Avoids requiring `SemanticModel` to be `Clone` at the call site.
-- Simplifies internal compile passes — the driver is free to move substructures out of the model into the Manifest.
+- Simplifies internal compile passes — the driver is free to move substructures out of the model into the SemanticManifest.
 
 **Arguments pro by-reference.**
 - Callers that A/B-compile the same Model against two catalog snapshots must clone today. A `&SemanticModel` signature would let them skip the clone.
@@ -30,7 +36,7 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 
 ## Q2 — `CompileError` as unified enum vs split
 
-**Question.** `33 §10.1`'s `CompileError` extends `semstrait-core::CompileError` by re-exporting core variants and adding Manifest-layer variants. Should this remain a single enum, or should `33` expose a split `CoreCompileError` + `ManifestCompileError` pair?
+**Question.** `33 §10.1`'s `CompileError` extends `semstrait-core::CompileError` by re-exporting core variants and adding SemanticManifest-layer variants. Should this remain a single enum, or should `33` expose a split `CoreCompileError` + `SemanticManifestCompileError` pair?
 
 **Refs.**
 - `31 §8.3` — `semstrait-core::CompileError` variant roster.
@@ -42,9 +48,9 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 - Stable-code discipline is preserved regardless of enum layout.
 
 **Arguments pro split.**
-- Clearer crate-boundary semantics: core-layer concerns stay in core; Manifest-layer concerns stay in `33`.
+- Clearer crate-boundary semantics: core-layer concerns stay in core; SemanticManifest-layer concerns stay in `33`.
 - Easier to audit what each crate contributes.
-- A core-variant change is guaranteed not to touch the Manifest-layer enum.
+- A core-variant change is guaranteed not to touch the SemanticManifest-layer enum.
 
 **Current position in `33`.** Unified per `33 §10.1`. Tracked as `[TD-33-ERROR-UNIFY]`.
 
@@ -71,25 +77,25 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 
 **Current position in `33`.** bincode per `33 §14.3`. Tracked as `[TD-33-CANONICAL-JSON]`.
 
-**Next step.** Decide after the first round of content-addressable caching benchmarks. If the byte-size delta is negligible at realistic Manifest sizes, switch to JSON-with-`preserve_order` for debuggability.
+**Next step.** Decide after the first round of content-addressable caching benchmarks. If the byte-size delta is negligible at realistic SemanticManifest sizes, switch to JSON-with-`preserve_order` for debuggability.
 
 ---
 
 ## Q4 — `Repository::save` content-hash pre-condition
 
-**Question.** Should `Repository::save` verify that the incoming Manifest's derived `ManifestId` matches its internal content before persisting?
+**Question.** Should `Repository::save` verify that the incoming SemanticManifest's derived `SemanticManifestId` matches its internal content before persisting?
 
 **Refs.**
 - `33 §11.1` — current surface (no pre-condition; id is derived inside `save`).
 - `33 §11.2` — `IntegrityViolation` variant covers the case.
 
 **Arguments pro pre-condition.**
-- Catches hand-crafted / serialization-corrupted Manifests at save-time rather than at later load-time.
-- Enforces the Manifest invariant that `ManifestId::from_manifest(&m)` is stable.
+- Catches hand-crafted / serialization-corrupted SemanticManifests at save-time rather than at later load-time.
+- Enforces the SemanticManifest invariant that `SemanticManifestId::from_manifest(&m)` is stable.
 
 **Arguments against.**
-- Extra hashing per save. Production cost is non-trivial for large Manifests.
-- `save` is idempotent anyway; a corrupt Manifest either fails to decode on load (caught by `DecodeFailed`) or yields a valid-but-wrong Manifest (caught by `IntegrityViolation` when referenced).
+- Extra hashing per save. Production cost is non-trivial for large SemanticManifests.
+- `save` is idempotent anyway; a corrupt SemanticManifest either fails to decode on load (caught by `DecodeFailed`) or yields a valid-but-wrong SemanticManifest (caught by `IntegrityViolation` when referenced).
 
 **Current position in `33`.** No pre-condition in v1.
 
@@ -97,13 +103,13 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 
 ---
 
-## Q5 — `ManifestEncoding::Bincode` enable-in-v1
+## Q5 — `SemanticManifestEncoding::Bincode` enable-in-v1
 
-**Question.** Should `ManifestEncoding::Bincode` be exposed in v1 (alongside `MessagePack` and `Json`) or deferred?
+**Question.** Should `SemanticManifestEncoding::Bincode` be exposed in v1 (alongside `MessagePack` and `Json`) or deferred?
 
 **Refs.**
 - `33 §14.2` — current ratification: deferred.
-- `33 §11.4` — `ManifestEncoding` enum.
+- `33 §11.4` — `SemanticManifestEncoding` enum.
 
 **Arguments pro enable.**
 - Fastest + smallest of the three encodings for the size-insensitive single-machine case.
@@ -132,7 +138,7 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 
 **Arguments against.**
 - POSIX advisory locks vary by filesystem (NFS, FUSE); a cross-platform impl is not trivial.
-- In practice, Manifests are written once at compile; partial-write risk is small.
+- In practice, SemanticManifests are written once at compile; partial-write risk is small.
 
 **Current position in `33`.** No locks in v1.
 
@@ -153,7 +159,7 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 - Drift checking logically is a catalog operation.
 
 **Arguments pro split.**
-- A repository-only caller (e.g. `semstrait-facade` loading a cached Manifest) could skip bringing in a full `CatalogProvider` if only drift checking were needed.
+- A repository-only caller (e.g. `semstrait-facade` loading a cached SemanticManifest) could skip bringing in a full `CatalogProvider` if only drift checking were needed.
 - Separates read-side (`fetch_schema`) from validate-side (`check_schema_drift`) concerns.
 
 **Current position in `33`.** Single-trait per the `37` ratification. `33` defers.
@@ -162,9 +168,9 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 
 ---
 
-## Q8 — `Manifest::datakind` / `relationship` return shape
+## Q8 — `SemanticManifest::datakind` / `relationship` return shape
 
-**Question.** Should `Manifest::datakind(name)` and `Manifest::relationship(id)` return `Option<&T>` or `Result<&T, ManifestLookupError>`?
+**Question.** Should `SemanticManifest::datakind(name)` and `SemanticManifest::relationship(id)` return `Option<&T>` or `Result<&T, SemanticManifestLookupError>`?
 
 **Refs.**
 - `33 §3.4` — current ratification: `Option`.
@@ -179,19 +185,19 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 
 **Current position in `33`.** `Option` per `33 §3.4`.
 
-**Next step.** Stay `Option`. If the error-path ergonomics become a pain, add `Manifest::datakind_or_err` helpers as MINOR additions.
+**Next step.** Stay `Option`. If the error-path ergonomics become a pain, add `SemanticManifest::datakind_or_err` helpers as MINOR additions.
 
 ---
 
 ## Q9 — `ResolvedRelationshipGraph` public-field vs accessor
 
-**Question.** Should `ResolvedRelationshipGraph` be a public field on `Manifest` (promoted from `33 §8.2`'s accessor-only posture) or remain behind the accessor?
+**Question.** Should `ResolvedRelationshipGraph` be a public field on `SemanticManifest` (promoted from `33 §8.2`'s accessor-only posture) or remain behind the accessor?
 
 **Refs.**
 - `33 §8.2` — current ratification: accessor-only; `pub(crate)` field.
 
 **Arguments pro public field.**
-- Consistency with other `Manifest` fields.
+- Consistency with other `SemanticManifest` fields.
 - One fewer indirection for planner code.
 
 **Arguments pro accessor-only.**

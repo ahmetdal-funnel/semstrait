@@ -6,62 +6,76 @@ Entry-point context for any AI coding agent (Cursor, Claude Code, Codex, etc.) w
 
 ## Project mode
 
-`semstrait` is currently in **`spec-driven-dev` mode**.
+`semstrait` is currently in `**spec-driven-dev` mode**.
 
-The project is undergoing a green-field design exercise. The authoritative specification for the target architecture lives under [`docs/design/`](docs/design/). The current code does **not** yet match the spec; a phased migration (described in [`docs/design/implementation/40_refactor_plan.md`](docs/design/implementation/40_refactor_plan.md)) is planned but not yet executed.
+The authoritative target-state specification lives under `[docs/design/](docs/design/)`.  
+The current code does **not** yet match that target; migration is planned in `[docs/design/implementation/40_refactor_plan.md](docs/design/implementation/40_refactor_plan.md)` but not yet executed.
+
+Current stage policy:
+
+1. Define and ratify design specs cleanly.
+2. Execute implementation/migration after spec closure.
 
 ---
 
 ## Required first reads (in order)
 
-Any session touching design / specification / open Q&A MUST read, in this exact order:
+Any session touching design/spec/open Q&A MUST read, in this exact order:
 
-1. **[`docs/design/00_overview.md`](docs/design/00_overview.md)** — the spec contract. Establishes canonical vocabulary, the document map, design invariants, and directionality rules for every other doc under `docs/design/`.
-2. **[`docs/design/STATUS.md`](docs/design/STATUS.md)** — living session-handoff file. Current spec phase, active reconciliation items, deferred topics, open Q&A rounds, and the last-checkpoint summary.
+1. `[docs/design/00_overview.md](docs/design/00_overview.md)` — contract: vocabulary, invariants, directionality.
+2. `[docs/design/STATUS.md](docs/design/STATUS.md)` — active handoff state.
+3. `[docs/design/INDEX.md](docs/design/INDEX.md)` — concept/topic navigator.
+4. `[docs/design/DOCS_MAINTENANCE.md](docs/design/DOCS_MAINTENANCE.md)` — authoring discipline.
 
-Never skip step 1. Never skip step 2.
-
-For code / implementation / refactor work (not spec work), [`CLAUDE.md`](CLAUDE.md) routes to the correct per-area documentation. The `docs/design/` tree remains the target-state source of truth; legacy `docs/*.md` describe the current code state until migration lands.
+Never skip steps 1-2.
 
 ---
 
-## Three documentation buckets
+## Documentation authority model
 
-| Bucket | Path | Status | Use when |
-|---|---|---|---|
-| **Spec — target state (authoritative)** | [`docs/design/`](docs/design/) | Active, ratified in waves | Designing, ratifying, answering spec Q&A, writing new API contracts |
-| **Legacy — current code state (reference-only)** | [`docs/*.md`](docs/) (outside `docs/design/`), per-crate `README.md` | Frozen; will be retired by migration | Understanding *what the code does today* (not what it should do) |
-| **Code — migration-in-progress** | [`crates/`](crates/) | Diverges from spec; migration not started | Code edits until spec is finalized; cite both current behavior and target spec when changing code |
 
-The mapping between legacy and spec documents is in [`docs/design/00_overview.md §11`](docs/design/00_overview.md). The retirement schedule is in [`docs/design/implementation/41_deprecations.md`](docs/design/implementation/41_deprecations.md).
+| Bucket                                              | Path                                                  | Role                                              |
+| --------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------- |
+| **Spec (authoritative target state)**               | `[docs/design/](docs/design/)`                        | Design and ratification source of truth           |
+| **Legacy docs (reference-only current code state)** | `docs/*.md` outside `docs/design/`, crate `README.md` | Understand current behavior only                  |
+| **Code (migration target implementation)**          | `[crates/](crates/)`                                  | Implementation surface that will converge to spec |
+
+
+Rule:
+
+- Use `docs/design/` for target-state decisions.
+- Use legacy docs only to understand current code behavior.
+- Never treat legacy docs as authoritative for architecture direction.
 
 ---
 
 ## Branches
 
-| Branch | Role |
-|---|---|
-| `feature/base-semastrait-dev` | Code-level development against the current architecture |
-| `feature/spec-driven-dev` (**active**) | Spec-driven design work; the `docs/design/` tree is maintained here |
 
-Spec work is committed to `feature/spec-driven-dev`. Code work that anticipates the spec (early migration work) should also target this branch once the refactor plan is ratified.
+| Branch                                 | Role                                         |
+| -------------------------------------- | -------------------------------------------- |
+| `feature/base-semastrait-dev`          | Code-level work against current architecture |
+| `feature/spec-driven-dev` (**active**) | Spec-driven design work                      |
+
+
+Spec work belongs on `feature/spec-driven-dev`.
 
 ---
 
-## Session-close discipline
+## Session-close discipline (spec sessions)
 
-Before ending a session that touched spec content, propose an update to [`docs/design/STATUS.md`](docs/design/STATUS.md) reflecting:
+Before ending a spec session, propose a concise update to `[docs/design/STATUS.md](docs/design/STATUS.md)`:
 
-- Items moved from pending → completed
-- New deferred items (with a pointer to any open-questions file)
-- The next-session starting point (one or two sentences)
+- moved items (open/closed/deferred state changes),
+- newly deferred items,
+- next-session starting point.
 
-The human approves the proposed status update before it is written.
+Human approval is required before writing final status updates.
 
 ---
 
 ## Do not
 
-- Rewrite entries in [`docs/*.md`](docs/) legacy docs as part of spec work. Legacy docs are archived; if spec content contradicts them, fix the spec, not the legacy.
-- Treat [`README.md`](README.md) or [`DECISION_LOG.md`](DECISION_LOG.md) as specification sources. Both describe code state; the spec tree is authoritative for target-state decisions.
-- Introduce abstractions in the spec tree that do not ground in current code (see the lesson captured in `STATUS.md`: desugaring already-implemented shapes is a recurring failure mode — describe, clean, and name what exists; do not fabricate parallel models).
+- Rewrite legacy `docs/*.md` as part of spec work.
+- Treat `[README.md](README.md)` or `[DECISION_LOG.md](DECISION_LOG.md)` as target-state specification sources.
+- Introduce spec abstractions that do not ground in current code (unless explicitly marked as proposed extension).

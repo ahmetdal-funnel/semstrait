@@ -1,13 +1,20 @@
+---
+doc: design/questions/deferred/11_questions
+status: Deferred
+purpose: Session-snapshot of in-flight Constraints DSL questions raised against `foundations/11_names_and_scopes.md` §8
+---
+
 # Constraints — Deferred Session Snapshot
 
 **Status**: Deferred — to be resumed in a dedicated session.
 
-**Parent document**: [`../foundations/11_names_and_scopes.md`](../foundations/11_names_and_scopes.md) §8 (Constraints).
+**Parent document**: [`../../foundations/11_names_and_scopes.md`](../../foundations/11_names_and_scopes.md) §8 (Constraints).
 
 **Related docs**:
-- [`../foundations/10_resolution_pipeline.md`](../foundations/10_resolution_pipeline.md) §3.4 — step-0 validation framing
-- [`../foundations/13_types_and_grain.md`](../foundations/13_types_and_grain.md) §5.3 — Key participation
-- [`../apis/32_semstrait_model.md`](../apis/32_semstrait_model.md) — YAML shape of the `constraints:` block
+
+- [`../../foundations/10_resolution_pipeline.md`](../../foundations/10_resolution_pipeline.md) §3.4 — step-0 validation framing
+- [`../../foundations/13_types_and_grain.md`](../../foundations/13_types_and_grain.md) §5.3 — Key participation
+- [`../../apis/32_semstrait_model.md`](../../apis/32_semstrait_model.md) — YAML shape of the `constraints:` block
 
 ---
 
@@ -19,12 +26,15 @@ Both points below are **ratified** — not open. They are the fixed axis the def
 
 Constraints in `semstrait` are conceptually generic and split along **one axis**:
 
-| Kind | Source | Surface | Authored? |
-|---|---|---|---|
+
+| Kind         | Source                                     | Surface                       | Authored?                  |
+| ------------ | ------------------------------------------ | ----------------------------- | -------------------------- |
 | **Implicit** | Functional role of the entity (what it IS) | Compiler / planner invariants | No — never appears in YAML |
-| **Explicit** | Authored `constraints:` block on a carrier | Model YAML | Yes |
+| **Explicit** | Authored `constraints:` block on a carrier | Model YAML                    | Yes                        |
+
 
 **Implicit examples** (not authoritative — authoritative definitions live in the doc owning that role):
+
 - "Cannot derive `SUM` from a Dimension or Key" — fact about Dimension / Key functional role
 - "Cannot nest Grainset inside Grainset" — fact about nesting matrix (`12_nesting_policy.md`)
 - "Request must include the rollup dim set for a measure without an `agg:`" — fact about request shape
@@ -34,12 +44,14 @@ Implicit constraints are enforced by code invariants (validators, nesting matrix
 
 ### 1.2 Explicit constraint carriers in v1
 
-| Carrier | Code state | Spec state |
-|---|---|---|
-| `Measure` | In code — `MeasureConstraints { dimensions, aggregations }` | Realized, documented |
-| `Metric` | In code — same `MeasureConstraints` type reused | Realized, documented |
-| `Filter` | Not in code | **To-be-ratified in the deferred session** |
-| Any other element | Not in code, not in scope | Future extension behind a named TD, not a section header |
+
+| Carrier           | Code state                                                  | Spec state                                               |
+| ----------------- | ----------------------------------------------------------- | -------------------------------------------------------- |
+| `Measure`         | In code — `MeasureConstraints { dimensions, aggregations }` | Realized, documented                                     |
+| `Metric`          | In code — same `MeasureConstraints` type reused             | Realized, documented                                     |
+| `Filter`          | Not in code                                                 | **To-be-ratified in the deferred session**               |
+| Any other element | Not in code, not in scope                                   | Future extension behind a named TD, not a section header |
+
 
 The structural scope of `11 §8` is these three carriers. No generic "reserved future carriers" scaffolding beyond a single `[TD-CONSTRAINT-CARRIER-EXT]` note.
 
@@ -164,3 +176,4 @@ No `FilterConstraints` type. No `Filter.constraints` field.
 - Begin writing a fourth rewrite of `11 §8` without ratifying Q-R4.3a–d first.
 - Cascade cross-doc constraint updates (`10`, `13`, `32`, `41`, `42`) before `11` itself is rewritten.
 - Re-open the ratified axis in §1 — that decision is final.
+

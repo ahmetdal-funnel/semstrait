@@ -113,7 +113,7 @@ One subsection per canonical variant. Each subsection carries: (a) the canonical
 **Emission notes.**
 
 - **Canonical adapter emission uses `LEFT JOIN`** (bare form). All five SQL engines treat this identically to `LEFT OUTER JOIN`. Explicit `OUTER` is legal but verbose; Round-1 preference is bare.
-- **`Bidirectional` reversal under `16 §2.4.3`.** When the planner walks a `Left`-declared `Relationship` in reverse under `Directionality::Bidirectional`, the effective emission becomes `Right` (see `§3.3`). The adapter flips the keyword at emission time; the canonical-layer `JoinType` value is unchanged.
+- **Reverse-walk emission** (per `16 §2.4.1`). When the planner walks a Relationship with derived `JoinType::Left` in reverse, the effective emission becomes `Right` (see `§3.3`). The adapter flips the keyword at emission time; the canonical-layer `Relationship.optional` value is unchanged. Traversal is always bidirectional in v1 (`16 §2.4`, post-2026-05-12).
 
 ### 3.3 `Right`
 
@@ -139,13 +139,13 @@ Several engines recommend rewriting `RIGHT` to `LEFT` at the SQL layer for optim
 
 1. The `Relationship.from` / `.to` orientation is canonical (`16 §2.2`); preserving it in emission preserves the author's intent across debugging / plan-introspection tooling.
 2. Engine optimizers normalize internally; the emission form does not change execution cost on any first-class engine 🟡.
-3. Authors who want `LEFT`-style narrative swap `from` and `to` at the `Relationship` level (`16 §2.4`).
+3. Authors who want `LEFT`-style narrative swap `from` and `to` at the `Relationship` level (and use `optional: left` to derive `JoinType::Left`).
 
 Tracked as `TD-JOIN-RIGHT-REWRITE` (see Q-JOIN-MAP-003 for the opposite stance — automatic rewrite).
 
-#### 3.3.2 Reversal-under-`Bidirectional`
+#### 3.3.2 Reverse-walk keyword flip
 
-Per `16 §2.4.3`, a `Left`-declared `Relationship` walked in reverse under `Directionality::Bidirectional` emits as `RIGHT JOIN` (the `to` side becomes the "left" in the FROM clause; the original `from` side becomes the "right" and is preserved). Symmetrically, a `Right`-declared `Relationship` walked in reverse emits as `LEFT JOIN`. `Inner` and `Full` are inversion-symmetric and require no keyword flip. The adapter's per-direction emission logic handles this flip; the canonical-layer `JoinType` value is unchanged.
+Per `16 §2.4.1`, a Relationship with derived `JoinType::Left` walked in reverse emits as `RIGHT JOIN` (the `to` side becomes the "left" in the FROM clause; the original `from` side becomes the "right" and is preserved). Symmetrically, derived `Right` walked in reverse emits as `LEFT JOIN`. `Inner` and `Full` are inversion-symmetric and require no keyword flip. The adapter's per-direction emission logic handles this flip; the canonical `Relationship.optional` value is unchanged. (Traversal is always bidirectional in v1 per `16 §2.4`; the authoring-layer `Directionality` enum was retired 2026-05-12.)
 
 ### 3.4 `Full`
 
@@ -200,7 +200,7 @@ See `temporal_shape_mapping.md §4.2` for the authoritative tier table with full
 
 #### 3.5.2 Round-1 emission status
 
-Per `17 §5.1` and `17 §10`, the planner does not emit `JoinType::AsOf(anchor)` in Round 1 and the `32` YAML surface keeps the `join_type:` enum closed at `Inner | Left | Right | Full`. This registry captures the **emission target** adapters will converge on once planner support lands. The cross-referenced `temporal_shape_mapping.md §3.5` / `§4.2` / `§6` rows are equally Round-1 draft; they carry the 🟡 marker pending adapter test-harness verification.
+Per `17 §5.1` and `17 §10`, the planner does not emit `JoinType::AsOf(anchor)` in Round 1; `JoinType` is derived at compile from `Relationship.optional` per `18 §2.9` with the v1 derivation roster staying `Inner | Left | Right | Full`. The `32` YAML surface carries `optional:`, not `join_type:` (post-2026-05-12 rebase). This registry captures the **emission target** adapters will converge on once planner-side `AsOf` activation lands. The cross-referenced `temporal_shape_mapping.md §3.5` / `§4.2` / `§6` rows are equally Round-1 draft; they carry the 🟡 marker pending adapter test-harness verification.
 
 ### 3.6 Reserved future variants — DEFERRED
 
@@ -295,7 +295,7 @@ The `§4.2` table duplicates rows present in `temporal_shape_mapping.md §4.2`. 
 The adapter MAY wrap the join output in a `SELECT DISTINCT ...` when:
 
 1. `Relationship.cardinality == ManyToMany` AND
-2. The planner's fanout-safe rewrite did NOT fire (i.e. `PLAN_W_0502 ManyToManyFanoutAdvisory` was emitted — `16 §14.4`) AND
+2. The planner's fanout-safe rewrite did NOT fire (the underlying `Relationship.cardinality == ManyToMany` is the structural trigger; the prior `PLAN_W_0502 ManyToManyFanoutAdvisory` flag was retired in `16 §14.4` (2026-04-29) per Q-COMP-005's intent-advisory deferral) AND
 3. The composed Request projects only fields that are functionally dependent on the `Relationship.from` primary key.
 
 **Per-engine support.** All five SQL engines natively support `SELECT DISTINCT`; Substrait emits via `AggregateRel` with empty measure list. This is Universal at Round-1 pins.
@@ -320,12 +320,12 @@ For `Cardinality::OneToMany` where the Request wants per-`from`-row aggregation 
 
 Per `16 §12.4`'s soft-check list, certain `(Cardinality, JoinType)` pairs emit advisories. The adapter's emission is unchanged by the advisory — the `JoinType` SQL keyword remains identical regardless of `Cardinality` — but the adapter MAY surface per-engine optimizer hints when available:
 
-| `Cardinality` × `JoinType` | Planner advisory | Adapter-level emission hint |
+| `Cardinality` × `JoinType` | Structural condition | Adapter-level emission hint |
 |---|---|---|
 | `OneToOne` + any | None (clean per `16 §3.3.1`) | — |
-| `OneToMany` + `Inner` / `Left` | `PLAN_W_0501 FanoutAdvisory` if measure on `from` side is `SemiAdditive` / `NonAdditive` | Snowflake `/*+ BROADCAST(to_side) */`-style hint 🟡 when `to` side is known-small dimension; else none. |
-| `ManyToOne` + `Inner` / `Left` | `PLAN_W_0501` if measure on `to` side at mismatched Additivity | Same broadcast hint opportunity for `from` side when dimension-like. |
-| `ManyToMany` + any | `PLAN_W_0502 ManyToManyFanoutAdvisory` | Adapter MAY append `/*+ HINT */` per Q-JOIN-MAP-006; Round-1 posture: no automatic hint emission. |
+| `OneToMany` + `Inner` / `Left` | Fanout introduced; the prior `PLAN_W_0501 FanoutAdvisory` was retired in `16 §14.4` (2026-04-29). Authors are responsible for additivity choice. | Snowflake `/*+ BROADCAST(to_side) */`-style hint 🟡 when `to` side is known-small dimension; else none. |
+| `ManyToOne` + `Inner` / `Left` | Symmetric fanout case; advisory retired alongside `PLAN_W_0501`. | Same broadcast hint opportunity for `from` side when dimension-like. |
+| `ManyToMany` + any | Junction-table modeling is preferred (`16 §3.3.4`); the prior `PLAN_W_0502 ManyToManyFanoutAdvisory` was retired in `16 §14.4`. | Adapter MAY append `/*+ HINT */` per Q-JOIN-MAP-006; Round-1 posture: no automatic hint emission. |
 
 **Engine-specific hint syntax** — reference only, NOT emitted in Round 1:
 

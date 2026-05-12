@@ -1,100 +1,105 @@
 ---
+
 prereqs: [20, 11, 13, 14, 15, 16, 17]
 authoritative-for:
-  - `Joinset` canonical ComplexDataKind shape (`JoinsetDataKind` struct sketch, `DataKind::Joinset` variant)
-  - anchor specification — mandatory single root child, "FROM-clause" semantics, fan-out reference frame
-  - explicit join-path specification (`ExplicitPath`, `JoinHop`, per-hop `RelationshipRef` citation)
-  - implicit join-path selection rules (anchor-biased specialization of `16 §11`'s field-first algorithm)
-  - `JoinsetStrategy` — the planner contract that lowers a resolved `Joinset` into `PlanNode::Join` sequences
-  - per-hop `JoinType` override rules; override-legality matrix against declared `Relationship.join_type`
-  - per-hop `Cardinality` propagation, fan-out accumulation, and multi-fanout advisory emission
-  - as-of activation rules — temporal-shape-gated `JoinType::AsOf` consumption (forward-ref `17 §5`)
-  - v1 binary-arity restatement (per `12 §5.2`), `TD-JOINSET-NARY` tech-debt marker
-  - validate / compile / plan error rosters:
-      - `VALID_E_2400`–`2499` — structural validate-stage `Joinset` failures
-      - `COMP_E_2400`–`2499` — compile-stage path-resolution and override failures
-      - `PLAN_E_2400`–`2499` — plan-stage `Joinset` usage failures
-      - `PLAN_W_2400`–`2499` — plan-stage `Joinset` advisories
-refined-by:
-  - 17 (`foundations/17_temporal_shape.md` — `TemporalShape`, as-of activation matrix for `JoinType::AsOf`)
-  - 25 (cross-kind strategy catalog — Joinset × Grainset, Joinset × Unionset composition rules)
-  - 32 (`apis/32_semstrait_model.md` — YAML surface for the `joinsets:` top-level block and `path:` sub-block)
-  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedJoinset`, the Manifest entry carrying the materialized `ComposedSemanticInterface`)
-  - 34 (`apis/34_semstrait_planner.md` — `JoinsetStrategy` implementation, path-resolve entry points)
-  - 35 (`PlanNode::Join` consumption of `Joinset`-derived join sequences; `JoinNode.from_relationship` + `from_joinset` tagging)
+
+- `Joinset` canonical ComplexDataKind shape (`JoinsetDataKind` struct sketch, `DataKind::Joinset` variant)
+- anchor specification — mandatory single root child, "FROM-clause" semantics, fan-out reference frame
+- explicit join-path specification (`ExplicitPath`, `JoinHop`, per-hop `RelationshipRef` citation)
+- implicit join-path selection rules (anchor-biased specialization of `16 §11`'s field-first algorithm)
+- `JoinsetStrategy` — the planner contract that lowers a resolved `Joinset` into `PlanNode::Join` sequences
+- per-hop `Cardinality` propagation, fan-out accumulation, and multi-fanout advisory emission
+- as-of activation rules — temporal-shape-gated `JoinType::AsOf` consumption (forward-ref `17 §5`)
+- v1 binary-arity restatement (per `12 §5.2`), `TD-JOINSET-NARY` tech-debt marker
+- validate / compile / plan error rosters:
+  - `VALID_E_2400`–`2499` — structural validate-stage `Joinset` failures
+  - `COMP_E_2400`–`2499` — compile-stage path-resolution failures
+  - `PLAN_E_2400`–`2499` — plan-stage `Joinset` usage failures
+  - `PLAN_W_2400`–`2499` — plan-stage `Joinset` advisories
+  refined-by:
+- 17 (`foundations/17_temporal_shape.md` — `TemporalShape`, as-of activation matrix for `JoinType::AsOf`)
+- 25 (cross-kind strategy catalog — Joinset × Grainset, Joinset × Unionset composition rules)
+- 32 (`apis/32_semstrait_model.md` — YAML surface for the `joinsets:` top-level block and `path:` sub-block)
+- 33 (`apis/33_semstrait_manifest.md` — `ResolvedJoinset`, the SemanticManifest entry carrying the materialized `ComposedSemanticInterface`)
+- 34 (`apis/34_semstrait_planner.md` — `JoinsetStrategy` implementation, path-resolve entry points)
+- 35 (`PlanNode::Join` consumption of `Joinset`-derived join sequences; `JoinNode.from_relationship` + `from_joinset` tagging)
+
 ---
 
 # 24. Joinset
 
-> **Reconciliation (Phase-3, 2026-04-17).** The v1 authoring-layer canonical shape for `Joinset` is ratified across:
+> **Reconciliation (Phase-3, 2026-04-17; relationship-block rebase 2026-05-12).** The v1 authoring-layer canonical shape for `Joinset` is ratified across:
 >
-> - [`../apis/32_semstrait_model.md §3`](../apis/32_semstrait_model.md) — top-level YAML tag (`joinsets:`), `JoinsetBody` struct shape.
-> - [`../foundations/18_entities.md §2`](../foundations/18_entities.md) — canonical `Relationship` struct (unified across root-level `relationships:` and `JoinsetBody.relationships`). Key decisions:
->   - `JoinsetBody.relationships: Vec<Relationship>` — no separate `JoinRelationship` / `Path` / `JoinHop` type. The unified struct carries `{ from, to, join_type, keys, filter?, cardinality, directionality, ai_context? }`.
->   - `JoinType` v1 roster: `{Inner, Left, Right, Full}`, `#[non_exhaustive]`. **`AsOf` is descoped for v1** (post-v1 deferred per `17`).
+> - `[../apis/32_semstrait_model.md §3](../apis/32_semstrait_model.md)` — top-level YAML tag (`joinsets:`), `JoinsetBody` struct shape.
+> - `[../foundations/18_entities.md §2](../foundations/18_entities.md)` — canonical `Relationship` struct (unified across root-level `relationships:` and `JoinsetBody.relationships`). Key decisions:
+>   - `JoinsetBody.relationships: Vec<Relationship>` — no separate `JoinRelationship` type. The unified struct is **semantic-first**, carrying `{ name, from, to, keys, filter?, cardinality, integrity, optional?, cross_filter?, ai_context?, description? }`.
+>   - `JoinType` is **derived** at compile from `Relationship.optional` per `18 §2.9`, not authored. v1 roster: `{Inner, Left, Right, Full}`, `#[non_exhaustive]`. `AsOf` is descoped for v1 (post-v1 deferred per `17`).
 >   - Join keys shape: `keys: [{from: <SemanticExpr>, to: <SemanticExpr>}, …]` equi-pair list + optional `filter: <SemanticExpr>` residual predicate.
->   - `cardinality:` is required at every Relationship authoring site (SR-E-4).
->   - `directionality:` is part of the struct (`forward` | `bidirectional`, default `bidirectional`).
-> - [`26_nesting_matrix.md`](./26_nesting_matrix.md) — nesting rules. Notably **R3** (every `ComplexDataKind` requires ≥ 2 children).
-> - [`../questions/open/24_questions.md#post-v1-shape-hint-clusters-folded-in-2026-04-17`](../questions/open/24_questions.md#post-v1-shape-hint-clusters-folded-in-2026-04-17) — Q-24-09 (`JoinAssociativity`) + Q-24-10 (star / snowflake / 3NF shape-tag vocabulary), folded from the former `joinset_shape_semantics.md` sidecar on 2026-04-17.
+>   - `cardinality:` is required at every Relationship authoring site (SR-E-4). `optional:` and `cross_filter:` are required on `OneToOne` / `ManyToMany` (SR-E-13); directional `cross_filter` is forbidden on `ManyToMany` (SR-E-14).
+>   - The earlier `directionality:` field and `Directionality` enum are **retired (2026-05-12)** — every Relationship is bidirectional by construction; authors who need to forbid auto-synthesized reverse traversal declare an explicit Joinset.
+>   - The earlier per-hop **`JoinTypeOverrides` / `HopPosition`** carriage on `JoinsetDataKind` is **retired (2026-05-12)**. A Joinset that needs different join semantics declares a **scope-local `Relationship`** in its own `relationships:` block; the scope-shadow rule in `18 §2.10` resolves visibility. See `16 §13.3` for the sole permitted mechanism.
+> - `[26_nesting_matrix.md](./26_nesting_matrix.md)` — nesting rules. Notably **R3** (every `ComplexDataKind` requires ≥ 2 children).
+> - `[../questions/deferred/24_questions.md](../questions/deferred/24_questions.md)` — Q-24-09 (`JoinAssociativity`) + Q-24-10 (star / snowflake / 3NF shape-tag vocabulary), folded from the former `joinset_shape_semantics.md` sidecar on 2026-04-17.
 >
 > This document retains authority for:
 >
 > - The **anchor** contract (§3) — mandatory single root child, FROM-clause semantics, fan-out reference frame.
 > - The **join-path** contract (§4) — explicit-path vs implicit-path authoring modes and their interaction with the Relationship graph.
-> - `JoinsetStrategy` planner contract (§5) — lowering to `PlanNode::Join` sequences in anchor-outward order; per-hop `JoinType` / `Cardinality` propagation.
+> - `JoinsetStrategy` planner contract (§5) — lowering to `PlanNode::Join` sequences in anchor-outward order; per-hop `Cardinality` propagation; per-hop `JoinType` is derived from each traversed Relationship's `optional` field per `18 §2.9` (no override surface).
 > - `VALID_E_24NN` / `COMP_E_24NN` / `PLAN_E_24NN` / `PLAN_W_24NN` error-code allocations.
 >
-> Rust-struct and YAML-surface body sections predate `18` (formerly `32c`); `JoinRelationship` / `ExplicitPath` / `JoinHop` in body text are pre-unification vocabulary — read the `Relationship` shape from `18 §2`. `AsOf` sections are forward-reference only; v1 does not emit `AsOf` joins. `ColumnMapping` → `SemanticMapping` rename per `18 §10`.
+> Rust-struct and YAML-surface body sections predate `18` (formerly `32c`); `JoinRelationship` / `JoinTypeOverrides` / `HopPosition` in legacy body text are pre-unification or pre-rebase vocabulary — read the `Relationship` shape from `18 §2`. `AsOf` sections are forward-reference only; v1 does not emit `AsOf` joins. `ColumnMapping` → `SemanticMapping` rename per `18 §10`.
 
 ## 1. Purpose and Scope
 
 ### 1.1 What `24` ratifies
 
-`24` is the canonical-layer specification for the **`Joinset`** variant of `DataKind`. It fills in what `16 §13` deferred:
+`24` is the canonical-layer specification for the `**Joinset`** variant of `DataKind`. It fills in what `16 §13` deferred:
 
-- **§2** — the `JoinsetDataKind` canonical struct shape: `{ anchor, members, path, overrides, interface, ... }`, its placement as a `ComplexDataKind` variant, and how it composes via `CompositionKind::Joinset`.
+- **§2** — the `JoinsetDataKind` canonical struct shape: `{ anchor, members, path, relationships, interface, ... }`, its placement as a `ComplexDataKind` variant, and how it composes via `CompositionKind::Joinset`.
 - **§3** — the **anchor** contract: exactly one root child, which member plays the FROM-clause role, which member drives the fan-out reference frame. Rationale for mandating the anchor (determinism, fanout predictability, and traversal ambiguity resolution).
 - **§4** — the **join-path** contract: the two authoring modes (implicit path = name the members, let the planner compute; explicit path = pin a `RelationshipId`-indexed traversal), their selection rules, and their interaction with `16`'s Relationship graph.
-- **§5** — the **`JoinsetStrategy`** planner contract: how the planner lowers a resolved `Joinset` into `PlanNode::Join` nodes in anchor-outward order, how per-hop `JoinType` is selected (with override rules), how `Cardinality` propagates, and how post-join Project nodes reconcile the unified surface per `16 §6`.
+- **§5** — the `**JoinsetStrategy`** planner contract: how the planner lowers a resolved `Joinset` into `PlanNode::Join` nodes in anchor-outward order, how per-hop `JoinType` is derived from each traversed Relationship's `optional` field (per `18 §2.9`; scope-local Relationship shadow per `18 §2.10` is the sole mechanism for divergent join semantics), how `Cardinality` propagates, and how post-join Project nodes reconcile the unified surface per `16 §6`.
 - **§6** — `Joinset` as a **consumer** (not declarer) of `Relationship`s. `Joinset`'s `path` references Relationships by id or by citing the Relationship graph; it never introduces a new Relationship.
-- **§7** — the **`TemporalShape`** interaction: as-of join gating — `JoinType::AsOf` is legal only when the hop's `to`-side carries a temporal shape that `17 §5` sanctions (`Events ↔ Snapshot`, `Events ↔ SCD`, etc.). `17` is parallel-drafted; `24` fixes the integration points so the hookup is mechanical once `17` lands.
-- **§8** — the **`ComposedSemanticInterface`** the `Joinset` publishes: how `UnifiedSemantics` (`16 §6`), `FieldProvenance` (`16 §7`), and `CompositionCoverage` (`16 §8`) apply under `CompositionKind::Joinset`.
+- **§7** — the `**TemporalShape`** interaction: as-of join gating — `JoinType::AsOf` is legal only when the hop's `to`-side carries a temporal shape that `17 §5` sanctions (`Events ↔ Snapshot`, `Events ↔ SCD`, etc.). `17` is parallel-drafted; `24` fixes the integration points so the hookup is mechanical once `17` lands.
+- **§8** — the `**ComposedSemanticInterface`** the `Joinset` publishes: how `UnifiedSemantics` (`16 §6`), `FieldProvenance` (`16 §7`), and `CompositionCoverage` (`16 §8`) apply under `CompositionKind::Joinset`.
 - **§§9–11** — the validate-, compile-, and plan-stage error rosters specific to `Joinset`, allocated against the `*_E_24NN` / `PLAN_W_24NN` ranges.
 - **§12** — two worked examples: a star-schema shape (§12.1) illustrating anchor + implicit path; a multi-path graph (§12.2) illustrating explicit-path pinning.
 
 ### 1.2 What `24` does NOT ratify (forward-refs)
 
-- **`Relationship` shape, `Cardinality`, `JoinType`** — all three live canonically in `16 §§2–4`. `24` cites and consumes; it never redefines.
-- **Implicit composition for `Request.from = None`** — that is `16 §11`'s field-first algorithm, not `Joinset`. Implicit composition produces `CompositionKind::Relationship`; a `Joinset` produces `CompositionKind::Joinset`. §1.3 below sharpens the boundary.
-- **`TemporalShape` variants and the `Additivity × TemporalShape` matrix** — `17`. `24` only records the integration point for `JoinType::AsOf` activation.
+- `**Relationship` shape, `Cardinality`, `JoinType`** — all three live canonically in `16 §§2–4`. `24` cites and consumes; it never redefines.
+- **Implicit composition for `Request.from = None`** — that is `16 §11`'s field-first lookup over compile-time-enumerated compositions (`16 §10.4`). Both implicit and explicit Joinsets produce `CompositionKind::Joinset`; the distinguishing axis is `Origin` per `16 §5.6` (`Origin::Explicit` for author-declared, `Origin::Implicit { id }` for compile-enumerated). §1.3 below sharpens the boundary.
+- `**TemporalShape` variants and the `Additivity × TemporalShape` matrix** — `17`. `24` only records the integration point for `JoinType::AsOf` activation.
 - **N-ary `Joinset` authoring shape** — deferred. `12 §5.2` ratifies binary-arity for v1 under `TD-NESTING-NARY-JOIN`; `24 §2.5` restates the constraint and tracks the semantic shape the N-ary extension will take. The canonical struct in §2.2 is written for N-ary to keep the MINOR lift-to-N-ary purely structural (adding `path: Vec<JoinHop>` rather than swapping in a new struct).
 - **YAML surface for `joinsets:`** — `32`. The `path.on.left` / `path.on.right` structural-label-dotted-column form declared in `12 §5.1` is the v1 YAML convention; `24` reasons about the canonical-layer shape (post-parse, `ResolvedJoinset`).
-- **`ResolvedJoinset` / `PlanNode::Join` exact field rosters** — `33` / `35`. `24` fixes the carriage contract (which fields each layer needs) without freezing struct layout.
+- `**ResolvedJoinset` / `PlanNode::Join` exact field rosters** — `33` / `35`. `24` fixes the carriage contract (which fields each layer needs) without freezing struct layout.
 
 ### 1.3 Sharpening the implicit-vs-`Joinset` boundary
 
 Every Joinset could, in principle, be expressed by declaring the constituent DataKinds plus declaring the required Relationships, and then issuing a `Request.from = None` — `16 §11`'s field-first algorithm would synthesize a `ComposedSemanticInterface` over the same constituents. The two are **not** the same object, and Round-1 design preserves that distinction:
 
-| Dimension | Implicit (`16 §11`) | `Joinset` (`24`) |
-|---|---|---|
-| `CompositionKind` | `Relationship` | `Joinset` |
-| Named / addressable | No (anonymous, Request-scoped) | Yes (a `DataKindRef`; valid `Request.from`) |
-| Anchor | None (BFS is symmetric over the Semantics owners) | Mandatory exactly-one root (§3) |
-| `JoinType` override per hop | Not permitted (uses `Relationship.join_type` verbatim) | Permitted subject to §5.3 legality rules |
-| Manifest lifecycle | Synthesized at `plan` (`16 §10.1`) | Materialized at `compile` (`16 §10.1`) |
-| Depth bound | `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` (`16 §9.1`) | None (authoring a `Joinset` is the escape hatch) |
-| Ambiguous paths | `PLAN_E_0500 AmbiguousImplicitComposition` (`16 §14.3`) | Author pins via explicit path (§4.2); never an error at plan time |
 
-A `Joinset` is what the author reaches for when they need (a) a named surface, (b) a pinned path, (c) a `JoinType` override, or (d) a composition deeper than 4 hops. Everything else an author might otherwise reach for a `Joinset` for is served by implicit composition + declared Relationships.
+| Dimension                   | Implicit (`16 §11`)                                     | `Joinset` (`24`)                                                  |
+| --------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------- |
+| `CompositionKind`           | `Relationship`                                          | `Joinset`                                                         |
+| Named / addressable         | No (anonymous, Request-scoped)                          | Yes (a `DataKindRef`; valid `Request.from`)                       |
+| Anchor                      | None (BFS is symmetric over the Semantics owners)       | Mandatory exactly-one root (§3)                                   |
+| `JoinType` per hop          | Derived from each Relationship's `optional` field       | Same derivation; divergent semantics via scope-local Relationship shadow (`§5.3.2`) |
+| SemanticManifest lifecycle  | Synthesized at `plan` (`16 §10.1`)                      | Materialized at `compile` (`16 §10.1`)                            |
+| Depth bound                 | `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` (`16 §9.1`)        | None (authoring a `Joinset` is the escape hatch)                  |
+| Ambiguous paths             | `PLAN_E_0500 AmbiguousImplicitComposition` (`16 §14.3`) | Author pins via explicit path (§4.2); never an error at plan time |
+
+
+A `Joinset` is what the author reaches for when they need (a) a named surface, (b) a pinned path, (c) divergent join semantics on a hop (via scope-local `Relationship` shadow per `§5.3.2`), or (d) a composition deeper than 4 hops. Everything else an author might otherwise reach for a `Joinset` for is served by implicit composition + declared Relationships.
 
 ### 1.4 Invariants `24` directly upholds
 
 - **I1 — canonical layer.** A `Joinset`'s anchor, members, and path references are `DataKindRef` / `RelationshipId` handles; never SQL column names. Resolution to physical join predicates happens during `JoinsetStrategy` → `PlanNode::Join` lowering, which delegates to `15`-resolved `Binding.column_mapping` at each hop.
-- **I4 — determinism.** For a fixed Manifest and a fixed `Joinset`, the materialized `ComposedSemanticInterface` is bit-identical; the planner's `JoinsetStrategy` emits the same `PlanNode::Join` sequence on every invocation. Implicit-path resolution uses `16 §11.4`'s deterministic neighbor order (extended for anchor bias in §4.1.3).
+- **I4 — determinism.** For a fixed SemanticManifest and a fixed `Joinset`, the materialized `ComposedSemanticInterface` is bit-identical; the planner's `JoinsetStrategy` emits the same `PlanNode::Join` sequence on every invocation. Implicit-path resolution uses `16 §11.4`'s deterministic neighbor order (extended for anchor bias in §4.1.3).
 - **I5 — compile-time resolution.** `Joinset.path` (whether implicit or explicit) is fully resolved to `Vec<RelationshipId>` at `compile`. The `plan` stage never re-walks the Relationship graph for a `Joinset`.
 - **I7 — strict crate DAG.** `Joinset` resolution lives in `semstrait-manifest`; `JoinsetStrategy` lives in `semstrait-planner`; `PlanNode::Join` construction consumes the resolved `Joinset` without re-resolution.
-- **I8 — Manifest is planner-complete.** A `ResolvedJoinset` carries everything the planner needs: resolved anchor, resolved `RelationshipId` sequence with forward/reverse direction per hop, resolved per-hop `JoinType` (post-override), resolved `ComposedSemanticInterface`.
+- **I8 — SemanticManifest is planner-complete.** A `ResolvedJoinset` carries everything the planner needs: resolved anchor, resolved `RelationshipId` sequence with forward/reverse direction per hop, the resolved Relationship at each hop (root-level or scope-local shadow per `18 §2.10`) from which `JoinType` is derived at plan emission, resolved `ComposedSemanticInterface`.
 - **I10 — non-exhaustive extensibility.** `JoinsetDataKind`, `JoinHop`, `ExplicitPath`, `JoinsetStrategy`'s inputs / outputs are all `#[non_exhaustive]`. N-ary lift (`TD-NESTING-NARY-JOIN`) and `JoinType::AsOf` activation (pending `17`) are MINOR additions.
 - **I12 — first-class diagnostics.** Every `Joinset` Precondition has a stable error code in the `*_E_24xx` / `PLAN_W_24xx` ranges (§§9–11).
 
@@ -145,12 +150,16 @@ pub struct JoinsetDataKind {
     /// (§4.2).
     pub path: Option<ExplicitPath>,
 
-    /// Per-hop `JoinType` overrides, indexed by the author-facing
-    /// position in `path` (for explicit) or by pair-of-endpoints
-    /// (for implicit, resolved to position at `compile`). An override
-    /// is legal only per §5.3's matrix. `None` → inherit from the
-    /// underlying `Relationship.join_type` at each hop.
-    pub overrides: JoinTypeOverrides,
+    /// Scope-local `Relationship` declarations. The struct shape,
+    /// validation rules, and defaults matrix are identical to the
+    /// root-level `relationships:` block per `18 §2`. A scope-local
+    /// entry that shares its name with a root-level Relationship
+    /// shadows the root-level one within this Joinset's scope only
+    /// (`18 §2.10`). This is the sole mechanism for varying join
+    /// semantics inside a Joinset — there is no per-hop override
+    /// surface.
+    #[serde(default)]
+    pub relationships: Vec<Relationship>,
 
     /// The Joinset's own interface — the declared Dimensions /
     /// Measures / Metrics / Filters / Keys that live at the Joinset
@@ -160,21 +169,11 @@ pub struct JoinsetDataKind {
     /// dimension).
     pub interface: JoinsetInterface,
 }
-
-/// The per-Joinset JoinType override map. Empty means "no overrides";
-/// every hop uses its declared Relationship's default.
-#[non_exhaustive]
-pub struct JoinTypeOverrides {
-    /// Per-hop overrides, indexed by `HopPosition` (`0..len(path)`).
-    /// Missing entries mean "inherit from Relationship.join_type".
-    pub per_hop: HashMap<HopPosition, JoinType>,
-}
-
-/// Positional index into a resolved Joinset's `Vec<JoinHop>`.
-pub struct HopPosition(pub u16);
 ```
 
-Every field is required at the canonical layer except `path`, `overrides`, and (post-compile) the derived `ComposedSemanticInterface`. The struct is `#[non_exhaustive]` per I10; MINOR additions (`fanout_strategy`, `parallelism_hint`, ...) carry explicit defaults.
+Every field is required at the canonical layer except `path`, `relationships`, and (post-compile) the derived `ComposedSemanticInterface`. The struct is `#[non_exhaustive]` per I10; MINOR additions (`fanout_strategy`, `parallelism_hint`, ...) carry explicit defaults.
+
+> **Retired (2026-05-12).** Earlier drafts of this struct carried `overrides: JoinTypeOverrides` and a companion `HopPosition` newtype for per-hop join-type override carriage. Both are removed in v1 in favour of the scope-local `Relationship` shadow model (`16 §13.3`). See `[../questions/closed/24_questions.md](../questions/closed/24_questions.md)` for the closure record.
 
 ### 2.3 What `ExplicitPath` carries
 
@@ -191,14 +190,14 @@ pub struct ExplicitPath {
 #[non_exhaustive]
 pub struct JoinHop {
     /// The Relationship traversed by this hop. MUST be a
-    /// `RelationshipId` declared in the Manifest's `relationships:`
+    /// `RelationshipId` declared in the SemanticManifest's `relationships:`
     /// top-level block per `16 §2.1`.
     pub relationship: RelationshipId,
 
     /// The traversal direction. `Forward` walks
     /// `Relationship.from → Relationship.to`; `Reverse` walks the
-    /// opposite, which requires `Relationship.directionality ==
-    /// Bidirectional` per `16 §2.4.1`.
+    /// opposite. Every `Relationship` is bidirectional in v1
+    /// (`16 §2.4`), so either direction is always permissible.
     pub direction: HopDirection,
 
     /// The DataKindRef that this hop lands on. Redundant with the
@@ -223,7 +222,7 @@ Per `16 §10.1`, an explicit `ComplexDataKind` is materialized at `compile` as a
 
 ```text
 compile(JoinsetDataKind) → ResolvedJoinset {
-    name, anchor, members, hops: Vec<ResolvedJoinHop>, overrides,
+    name, anchor, members, hops: Vec<ResolvedJoinHop>, relationships,
     interface: ComposedSemanticInterface {
         composition_kind: CompositionKind::Joinset,
         constituents: <members, canonicalised anchor-first>,
@@ -260,31 +259,17 @@ The majority of authored Joinsets declare no Joinset-level semantics and rely en
 
 ## 3. Anchor Specification
 
-### 3.1 Why mandate an anchor
-
-Consider a Joinset over `{Orders, Customers}`. Two query shapes are authoring-plausible:
-
-- "Start from Orders, left-join Customers": preserves every order; customer is a lookup.
-- "Start from Customers, left-join Orders": preserves every customer; orders are a fanout.
-
-The two produce materially different result cardinalities and fanout behavior. Implicit composition (`16 §11`) does not encode a "starting point" — it works from the set of owning kinds outward, and a `JoinType::Inner` walk is order-insensitive. A `Joinset` specifically exists to pin authoring intent, and the most important piece of that intent is **which member drives the row set**.
-
-**Ratification.** A `Joinset` MUST declare exactly one `anchor`. The anchor is:
-
-1. **The FROM-clause member.** In SQL-emission terms, the anchor's scan is the left side of the first join; every other member is joined-to rather than joined-from.
-2. **The row-set reference frame.** Fanout is measured relative to the anchor's row count. A `OneToMany` hop walking away from the anchor fans out the anchor's rows; a `ManyToOne` hop walking away from the anchor does not.
-3. **The traversal root.** Both implicit (§4.1) and explicit (§4.2) paths are specified anchor-outward: hop 0 connects the anchor to a second member; hop `i > 0` extends from the kind reached by hop `i-1`.
-4. **The default native-provenance owner** for the `Joinset`'s composed-surface keys — per `16 §6.5`, a Joinset's composed-surface keys typically echo the anchor's key tuple.
-
 ### 3.2 Rules for the anchor
 
-| Rule | Enforcement |
-|---|---|
-| The anchor MUST be non-empty. | `VALID_E_2401 JoinsetAnchorMissing` — validate-stage structural check. |
-| The anchor MUST be a member of `members`. | `VALID_E_2402 JoinsetAnchorNotMember` — validate-stage. |
-| Exactly one anchor per Joinset. | Enforced by `anchor: DataKindRef` being a scalar; multi-anchor declarations are rejected at YAML parse per `32` (the canonical layer only exposes the one-anchor shape). |
+
+| Rule                                                                      | Enforcement                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The anchor MUST be non-empty.                                             | `VALID_E_2401 JoinsetAnchorMissing` — validate-stage structural check.                                                                                                                                                                                              |
+| The anchor MUST be a member of `members`.                                 | `VALID_E_2402 JoinsetAnchorNotMember` — validate-stage.                                                                                                                                                                                                             |
+| Exactly one anchor per Joinset.                                           | Enforced by `anchor: DataKindRef` being a scalar; multi-anchor declarations are rejected at YAML parse per `32` (the canonical layer only exposes the one-anchor shape).                                                                                            |
 | The anchor MUST be reachable by every other member via the resolved path. | `COMP_E_2403 JoinsetAnchorUnreachable { unreachable_member }` — compile-stage, after path resolution. In v1 with binary arity this is degenerate (the other member is directly reached by the single hop); the rule is stated for forward-compatibility with N-ary. |
-| The anchor MUST NOT itself be a `Joinset` at the YAML authoring level. | Same-kind ban per `12 §2` matrix. `Joinset` is not a legal child of `Joinset` at any role, including anchor. Enforced by `12 §7`'s nesting-matrix validate pass; `24` does not re-enforce. |
+| The anchor MUST NOT itself be a `Joinset` at the YAML authoring level.    | Same-kind ban per `12 §2` matrix. `Joinset` is not a legal child of `Joinset` at any role, including anchor. Enforced by `12 §7`'s nesting-matrix validate pass; `24` does not re-enforce.                                                                          |
+
 
 ### 3.3 FROM-clause semantics
 
@@ -340,8 +325,8 @@ JOINSET_IMPLICIT_PATH(anchor, members, manifest) -> Vec<ResolvedJoinHop> | Compi
           - depth limit = unbounded (Joinset is the escape hatch; 16 §9.1's
             MAX_IMPLICIT_COMPOSITION_DEPTH does NOT apply here)
           - neighbor order = RelationshipId ascending (I4, same as 16 §11.4)
-          - direction constraints = Directionality::Forward edges filterable
-            in their reverse direction only, per 16 §2.4.1
+          - direction constraints = none; every Relationship is bidirectional
+            per 16 §2.4
   5. if paths is empty:
         return COMP_E_2401 JoinsetImplicitNoPath { anchor, target }
   6. if |paths| > 1 AND shortest-path length is not unique:
@@ -360,19 +345,19 @@ JOINSET_IMPLICIT_PATH(anchor, members, manifest) -> Vec<ResolvedJoinHop> | Compi
 2. **No depth limit.** `16 §9.1`'s `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` does NOT apply. Declaring a `Joinset` is exactly what an author does when their path exceeds the implicit depth cap; imposing the same cap on the escape hatch would be pointless.
 3. **Ambiguity handling deferred to compile.** Implicit composition surfaces ambiguity at plan time (`PLAN_E_0500`). Joinset's implicit path surfaces ambiguity at **compile** time (`COMP_E_2402`), because the Joinset is a named surface whose path must be deterministic before plan-time queries land.
 
-Algorithmic I4-determinism is preserved: same Manifest + same anchor + same target → same resolved hops.
+Algorithmic I4-determinism is preserved: same SemanticManifest + same anchor + same target → same resolved hops.
 
 #### 4.1.4 When to use implicit path
 
 Authors prefer implicit when:
 
-- The Manifest has a single shortest Relationship path between anchor and target. Typical for star-schema shapes where the fact → dimension hop is unique.
+- The SemanticManifest has a single shortest Relationship path between anchor and target. Typical for star-schema shapes where the fact → dimension hop is unique.
 - The Relationship path is expected to stabilize; new Relationships that create alternative paths would be caught at the `compile` that introduces them (`COMP_E_2402`), giving the author a chance to pin.
 
 Authors prefer explicit (§4.2) when:
 
 - Multiple equal-length paths exist and the author has a specific one in mind.
-- The default `Relationship.join_type` needs overriding at a specific hop (the override is `HopPosition`-indexed; a stable position requires an explicit path).
+- The author needs divergent join semantics on a specific hop: declare the divergence on a scope-local Relationship (`§5.3.2`) whose `name` matches the hop's traversed Relationship, and pin the explicit path so the scope-local shadow lands on the intended hop.
 - The `Joinset` will grow in the future (e.g. when `TD-NESTING-NARY-JOIN` lifts), and the author wants the traversal shape pinned regardless of later Relationship additions.
 
 ### 4.2 Explicit path
@@ -385,35 +370,38 @@ The author declares `path: Some(ExplicitPath { hops: Vec<JoinHop> })`. Each `Joi
 
 Explicit path validation runs across validate and compile stages:
 
-| Stage | Check | Error |
-|---|---|---|
-| validate | `hops` non-empty | `VALID_E_2403 JoinsetExplicitPathEmpty` |
-| validate | (v1) `hops.len() == 1` | `VALID_E_2400 JoinsetArityV1Violation` |
-| compile | each `hop.relationship` resolves to a Manifest `RelationshipId` | `COMP_E_2404 JoinsetExplicitPathUnknownRelationship { position, relationship }` |
-| compile | `hop_0`'s walked source == `anchor` (given `direction`, the "source" endpoint matches the anchor DataKind) | `COMP_E_2405 JoinsetExplicitPathAnchorMismatch { expected_anchor, actual_source }` |
-| compile | `hop_i.to` matches the Relationship's walked target endpoint (given `direction`) | `COMP_E_2406 JoinsetExplicitPathEndpointMismatch { position, declared_to, computed_to }` |
-| compile | `hop_{i+1}`'s source (given direction) == `hop_i.to` (chain continuity) — no-op for v1 binary, but kept for N-ary forward-compatibility | `COMP_E_2407 JoinsetExplicitPathDiscontinuity { position }` |
-| compile | each hop's `direction` is legal per `Relationship.directionality` (can't walk a `Forward` Relationship in `Reverse`) | `COMP_E_2409 JoinsetReverseForwardOnlyRelationship { position, relationship }` — shares vocabulary with `16 §14.3 PLAN_E_0503` but is a compile-stage error because the Joinset is pre-resolved |
-| compile | (binary v1) exactly the `members` set is covered by the explicit path's endpoints | `COMP_E_2410 JoinsetExplicitPathUncoveredMembers { uncovered }` |
+
+| Stage    | Check                                                                                                                                   | Error                                                                                                                                                                                           |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| validate | `hops` non-empty                                                                                                                        | `VALID_E_2403 JoinsetExplicitPathEmpty`                                                                                                                                                         |
+| validate | (v1) `hops.len() == 1`                                                                                                                  | `VALID_E_2400 JoinsetArityV1Violation`                                                                                                                                                          |
+| compile  | each `hop.relationship` resolves to a SemanticManifest `RelationshipId`                                                                 | `COMP_E_2404 JoinsetExplicitPathUnknownRelationship { position, relationship }`                                                                                                                 |
+| compile  | `hop_0`'s walked source == `anchor` (given `direction`, the "source" endpoint matches the anchor DataKind)                              | `COMP_E_2405 JoinsetExplicitPathAnchorMismatch { expected_anchor, actual_source }`                                                                                                              |
+| compile  | `hop_i.to` matches the Relationship's walked target endpoint (given `direction`)                                                        | `COMP_E_2406 JoinsetExplicitPathEndpointMismatch { position, declared_to, computed_to }`                                                                                                        |
+| compile  | `hop_{i+1}`'s source (given direction) == `hop_i.to` (chain continuity) — no-op for v1 binary, but kept for N-ary forward-compatibility | `COMP_E_2407 JoinsetExplicitPathDiscontinuity { position }`                                                                                                                                     |
+| compile  | (binary v1) exactly the `members` set is covered by the explicit path's endpoints                                                       | `COMP_E_2410 JoinsetExplicitPathUncoveredMembers { uncovered }`                                                                                                                                 |
+
 
 #### 4.2.3 Self-joins and cyclic paths
 
 - `Relationship.from == Relationship.to` (self-joins) is forbidden per `16 §12.4 COMP_E_0403`; a Joinset CANNOT reference a self-referential Relationship because none exist in v1. Tracked as `[TD-COMPOSITION-SELFJOIN]` in `16 §12.4`; `24` inherits.
 - Cyclic explicit paths (visiting the same DataKind twice) are rejected at `VALID_E_2405 JoinsetExplicitPathCyclic`. Binary v1 cannot produce a cycle (one hop), so the rule is N-ary-forward-looking.
 
-#### 4.2.4 Override positioning
+#### 4.2.4 Scope-local Relationship resolution
 
-With an explicit path, `overrides.per_hop[HopPosition(i)]` unambiguously targets `hops[i]`. With an implicit path, the post-resolve hop list also carries positions, and overrides are indexed positionally after resolution. The override map is thus portable between implicit and explicit modes — an author can switch modes without re-keying overrides in v1's binary case (`HopPosition(0)` either way).
+When a Joinset declares a scope-local `Relationship` (per `§5.3.2`) and an explicit path, compile resolves each `hop.relationship` `RelationshipId` against the Joinset's scope first, then falls back to root-level. A scope-local Relationship with the same `name` as a root-level one shadows it within this Joinset (`18 §2.10`); the path's `RelationshipId` is rebound to the scope-local entry. With an implicit path, scope resolution runs after path enumeration: BFS walks the root-level Relationship graph to enumerate paths, then each resolved hop's Relationship is rebound to its scope-local shadow (if any) before `EFFECTIVE_JOIN_TYPE` runs.
 
 ### 4.3 Mode-selection precedence
 
-| `path` value | Resolved mode |
-|---|---|
-| `None` | Implicit (§4.1). |
-| `Some(ExplicitPath { hops: vec![] })` | Rejected at validate (`VALID_E_2403`). Empty explicit paths are never an implicit-fallback. |
-| `Some(ExplicitPath { hops: [_, ..] })` | Explicit (§4.2). |
 
-Round 1 forbids hybrid modes ("use these specific hops plus let the planner fill in the rest"). Hybrid modes are tracked as `[TD-JOINSET-HYBRID-PATH]` in `questions/open/24_questions.md`.
+| `path` value                           | Resolved mode                                                                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `None`                                 | Implicit (§4.1).                                                                            |
+| `Some(ExplicitPath { hops: vec![] })`  | Rejected at validate (`VALID_E_2403`). Empty explicit paths are never an implicit-fallback. |
+| `Some(ExplicitPath { hops: [_, ..] })` | Explicit (§4.2).                                                                            |
+
+
+Round 1 forbids hybrid modes ("use these specific hops plus let the planner fill in the rest"). Hybrid modes are tracked as `[TD-JOINSET-HYBRID-PATH]` in `questions/closed/24_questions.md` (Q-24-02 — closed; TD marker carries the post-v1 reactivation).
 
 ## 5. `JoinsetStrategy`
 
@@ -425,7 +413,7 @@ Round 1 forbids hybrid modes ("use these specific hops plus let the planner fill
 #[non_exhaustive]
 pub struct JoinsetStrategy<'m> {
     pub joinset: &'m ResolvedJoinset,
-    pub manifest: &'m Manifest,
+    pub manifest: &'m SemanticManifest,
 }
 
 impl<'m> JoinsetStrategy<'m> {
@@ -446,9 +434,9 @@ For each `ResolvedJoinHop` in anchor-outward order:
 1. **Left operand.** Hop 0's `left` is the anchor's `PlanNode::Scan`. Hop `i > 0`'s `left` is the join-tree built up through hop `i - 1`. (For v1 binary, only hop 0 exists.)
 2. **Right operand.** Hop `i`'s `right` is the `PlanNode::Scan` of `hops[i].to`.
 3. **Keys.** From `Relationship.keys` (`16 §2.3`), resolved to physical columns via `15`-resolved `Binding.column_mapping`. Direction-aware swap: if `hop.direction == Reverse`, `KeyPair.left` and `KeyPair.right` are swapped so the plan-tree's left-side key matches the anchor-side of the hop.
-4. **`JoinType`.** Per §5.3's override resolution.
-5. **`from_relationship`.** `Some(hop.relationship)`, carrying the originating Relationship for debug / audit.
-6. **`from_joinset`.** `Some(self.joinset.name)` — a new field on `JoinNode` per `35`'s parallel draft, distinguishing `Joinset`-derived joins from `CompositionKind::Relationship` implicit-composition-derived joins. (`24` records the requirement; `35` ratifies the struct.)
+4. `**JoinType`.** Per §5.3's derivation from the resolved Relationship's `optional` field.
+5. `**from_relationship`.** `Some(hop.relationship)`, carrying the originating Relationship for debug / audit.
+6. `**from_joinset`.** `Some(self.joinset.name)` — a new field on `JoinNode` per `35`'s parallel draft, carrying the resolved Joinset's `DataKindName` (which is the synthetic `__implicit_joinset_<8-hex>` for `Origin::Implicit { id }` Joinsets per `16 §5.7`, or the author-declared name for `Origin::Explicit` Joinsets). The two are uniform downstream — strategy emission does not distinguish on `Origin`. (`24` records the requirement; `35` ratifies the struct.)
 
 ASCII plan tree for a binary Joinset `OrdersWithCustomers` anchor-left:
 
@@ -468,56 +456,63 @@ Project <unified surface>
      }
 ```
 
-### 5.3 `JoinType` selection and override legality
+### 5.3 `JoinType` selection — derived from the traversed Relationship
 
-#### 5.3.1 Default selection (no override)
+#### 5.3.1 Default selection
 
-Without override, hop `i`'s `JoinType` is the `JoinType` field of the underlying `Relationship` at `hops[i].relationship`. Direction-agnostic: `Reverse` walks inherit the same declared `JoinType` (the declared `JoinType` is a property of the edge, not a walk direction).
-
-#### 5.3.2 Override application
-
-An override `overrides.per_hop[HopPosition(i)] == Some(override_type)` replaces the default at hop `i`. `JoinsetStrategy` uses `override_type` verbatim for `PlanNode::Join.join_type`.
-
-#### 5.3.3 Override-legality matrix
-
-The override is not unrestricted. Some combinations are structurally illegal because they contradict the underlying Relationship's semantics:
-
-| Relationship's declared `JoinType` | Permitted override | Rationale |
-|---|---|---|
-| `Inner` | `Inner`, `Left`, `Right`, `Full` | Author may relax row-preservation in any direction. |
-| `Left` | `Left`, `Inner` | Tighter-to-Inner is safe (drops unmatched-on-right); widening to `Full` / `Right` is forbidden — the author of the Relationship declared a left-biased preservation, widening violates the edge's semantics. `COMP_E_2411`. |
-| `Right` | `Right`, `Inner` | Symmetric to `Left`. `COMP_E_2411`. |
-| `Full` | `Full`, `Left`, `Right`, `Inner` | All tightenings are safe; `Full` preserves all rows from both sides, narrowing preserves a subset. |
-| `AsOf` (gated on `17`) | `AsOf` only | An as-of join has temporal semantics that no non-temporal join can express; override to a non-`AsOf` would change the meaning entirely. `COMP_E_2412` (forward-ref to §7). |
+Hop `i`'s `JoinType` is **derived** from the underlying `Relationship` at `hops[i].relationship`: the planner reads `Relationship.optional` and applies the `18 §2.9` derivation table (`None → Inner`, `Left → Left`, `Right → Right`, `Both → Full`). Direction-agnostic at the canonical layer: `Reverse` walks read the same canonical `optional` value; the planner substitutes the mirror form (`Left ↔ Right`) at plan emission (per `16 §2.4.1`).
 
 Pseudocode:
 
 ```text
-EFFECTIVE_JOIN_TYPE(hop, overrides, manifest) -> JoinType | CompileError:
-  declared ← manifest.relationship(hop.relationship).join_type
-  match overrides.per_hop.get(hop.position):
-    None → return declared
-    Some(requested) →
-      if (declared, requested) ∈ PERMITTED_OVERRIDES:
-        return requested
-      else:
-        return COMP_E_2411 JoinsetIllegalJoinTypeOverride { position, declared, requested }
+EFFECTIVE_JOIN_TYPE(hop, manifest) -> JoinType:
+  rel ← manifest.relationship_for_hop(hop)        // applies scope-local shadow per 18 §2.10
+  derived ← derive_join_type(rel.optional)        // 18 §2.9 table
+  if hop.direction == Reverse:
+    return mirror(derived)                        // Left ↔ Right; Inner/Full unchanged
+  else:
+    return derived
 ```
 
-#### 5.3.4 Override interaction with fanout
+#### 5.3.2 Varying join semantics inside a Joinset
 
-Overriding `Inner` → `Left` on a `OneToMany` hop preserves anchor rows AND fanouts; both effects stack. Overriding `Inner` → `Full` on a `ManyToMany` hop triggers `PLAN_W_0503 FullOuterManyToManyAdvisory` (inherited from `16 §14.4`) **plus** `PLAN_W_2401 JoinsetJoinTypeOverrideAdvisory` (§11.2) so the author sees both the composition-level advisory and the Joinset-specific "you overrode the declared JoinType" note.
+There is **no per-hop override surface** in v1. A Joinset that needs different join semantics for a given hop declares a **scope-local `Relationship`** in its own `relationships:` block that shadows the root-level one (`18 §2.10`, `16 §13.3`). The scope-local Relationship is a full Relationship: it must declare `cardinality:`, and `optional:` / `cross_filter:` per SR-E-13 / SR-E-14. The derivation table then runs against the scope-local `optional` value during `EFFECTIVE_JOIN_TYPE` resolution.
+
+Example (semi-formal):
+
+```yaml
+# Root-level:
+relationships:
+  - name: orders_to_customers
+    optional: none                    # derives Inner
+    # ...
+
+# Joinset wanting NULL-padded enrichment for facts:
+joinsets:
+  - name: orders_with_optional_customer
+    relationships:
+      - name: orders_to_customers     # scope-local shadow
+        optional: left                # derives Left for this Joinset only
+        # ...
+```
+
+The root-level Relationship's derived `JoinType` is unchanged for all other consumers (implicit composition, other Joinsets). Only this Joinset sees the shadowed entry.
+
+> **Retired (2026-05-12).** Earlier drafts of this section carried §5.3.2 *Override application*, §5.3.3 *Override-legality matrix*, and §5.3.4 *Override interaction with fanout*, with a permitted-override matrix gated on the underlying Relationship's declared `JoinType`. The override surface is removed in favour of the scope-local-shadow rule above. The associated `COMP_E_2411 JoinsetIllegalJoinTypeOverride` and `PLAN_W_2401 JoinsetJoinTypeOverrideAdvisory` are retired (see `[../questions/closed/24_questions.md](../questions/closed/24_questions.md)`); their numeric codes are reserved for forward-compat. Fanout interactions (e.g. anchor preservation under `OneToMany`) carry through verbatim — the scope-local Relationship simply declares the divergent `optional`, and `§5.4`'s fanout accounting reads the same derived `JoinType` it always did.
+
 
 ### 5.4 `Cardinality` propagation
 
 For a single-hop (v1 binary) Joinset, the composed surface's effective cardinality is whatever the single hop produces:
 
-| Walked cardinality | Composed surface cardinality | Fanout |
-|---|---|---|
-| `OneToOne` | anchor-cardinality preserved | none |
-| `OneToMany` (anchor → target) | anchor rows fan out by 0..N | yes |
-| `ManyToOne` (anchor → target) | anchor-cardinality preserved | none |
-| `ManyToMany` | anchor rows fan out; target rows fan out | yes (bidirectional) |
+
+| Walked cardinality            | Composed surface cardinality             | Fanout              |
+| ----------------------------- | ---------------------------------------- | ------------------- |
+| `OneToOne`                    | anchor-cardinality preserved             | none                |
+| `OneToMany` (anchor → target) | anchor rows fan out by 0..N              | yes                 |
+| `ManyToOne` (anchor → target) | anchor-cardinality preserved             | none                |
+| `ManyToMany`                  | anchor rows fan out; target rows fan out | yes (bidirectional) |
+
 
 For N-ary Joinsets (`TD-NESTING-NARY-JOIN`), per-hop walked cardinalities accumulate:
 
@@ -561,22 +556,23 @@ Exact pushdown semantics (predicate pushdown, projection pruning) are `14b` / `2
 
 ## 6. Interaction with `Relationship`
 
-`Joinset` **consumes** top-level `Relationship`s declared in the Model's `relationships:` block (per `16 §2.1`, YAML surface per `32`). `Joinset` does NOT:
+`Joinset` **consumes** top-level `Relationship`s declared in the Model's `relationships:` block (per `16 §2.1`, YAML surface per `32`) and MAY declare **scope-local `Relationship`s** in its own `relationships:` block that shadow root-level entries within the Joinset's scope only (per `18 §2.10`). `Joinset` does NOT:
 
-- Declare new Relationships. Only the Model's `relationships:` top-level block declares Relationships. A `Joinset`'s `path:` references existing `RelationshipId`s; it does not synthesize join edges.
-- Modify existing Relationships. The `Relationship`'s declared `join_type`, `cardinality`, `directionality`, `keys` remain authoritative for implicit composition (`16 §11`). A `Joinset`'s `overrides.per_hop` affects only that Joinset's `JoinsetStrategy` output, never the Manifest's `ResolvedRelationship`.
-- Participate in Relationship-graph validation. `16 §12`'s well-formedness (duplicate detection, key-type agreement, self-reference, etc.) runs on the `relationships:` block independently of any `Joinset` that may consume the resulting edges.
+- Modify root-level Relationships. A root-level Relationship's `cardinality`, `integrity`, `optional`, `cross_filter`, `keys` remain authoritative for implicit composition (`16 §11`) and for every other Joinset that does not shadow it. A scope-local shadow affects only the Joinset that declares it; the root-level entry on the SemanticManifest's `ResolvedRelationship` is unchanged.
+- Participate in root-level Relationship-graph validation. `16 §12`'s well-formedness (duplicate detection, key-type agreement, self-reference, etc.) runs on the root-level `relationships:` block independently of any `Joinset` that may consume the resulting edges. Scope-local Relationships run the same structural rules (`18 §11`, SR-E-4 / SR-E-13 / SR-E-14) within the Joinset's scope.
 
-The reverse direction holds: `Relationship`s are unaware of which `Joinset`s consume them. A Relationship with no consumers (no implicit-composition walks, no `Joinset.path` references) is a perfectly valid Manifest entry; authors routinely declare Relationships defensively for future use.
+The reverse direction holds: `Relationship`s are unaware of which `Joinset`s consume them. A Relationship with no consumers (no implicit-composition walks, no `Joinset.path` references) is a perfectly valid SemanticManifest entry; authors routinely declare Relationships defensively for future use.
 
 ### 6.1 `Joinset`-side references to Relationships
 
-| Reference | Purpose | Validation stage |
-|---|---|---|
-| `ExplicitPath.hops[i].relationship: RelationshipId` | Author-pinned path citation. | compile (`COMP_E_2404`–`COMP_E_2410`). |
-| Implicit-path resolution (`§4.1.2 step 4`) | BFS over the Relationship graph. | compile (`COMP_E_2401`–`COMP_E_2402`). |
-| `JoinsetStrategy`'s `effective_join_type` (§5.3) | Per-hop `JoinType` default lookup. | compile + plan; overrides validated at compile. |
-| `JoinsetStrategy`'s key-pair emission (§5.2 step 3) | Plan-node `KeyPair` carriage. | plan (lookup only; no validation). |
+
+| Reference                                           | Purpose                            | Validation stage                                |
+| --------------------------------------------------- | ---------------------------------- | ----------------------------------------------- |
+| `ExplicitPath.hops[i].relationship: RelationshipId` | Author-pinned path citation.       | compile (`COMP_E_2404`–`COMP_E_2410`).          |
+| Implicit-path resolution (`§4.1.2 step 4`)          | BFS over the Relationship graph.   | compile (`COMP_E_2401`–`COMP_E_2402`).          |
+| `JoinsetStrategy`'s `effective_join_type` (§5.3)    | Per-hop `JoinType` derivation from resolved Relationship's `optional`. | compile + plan; scope-local Relationship shadowing resolved at compile. |
+| `JoinsetStrategy`'s key-pair emission (§5.2 step 3) | Plan-node `KeyPair` carriage.      | plan (lookup only; no validation).              |
+
 
 ## 7. Interaction with `TemporalShape`
 
@@ -590,22 +586,23 @@ Per `16 §4.4.2` and `00 §4.1`'s `TemporalShape` row:
 - `JoinType::AsOf` is the temporal-proximity join variant that, for each row on the anchor side, picks the most-recent row on the target side satisfying an as-of predicate (typically a `valid_from` / `valid_to` range).
 - `AsOf` activation is gated on the pair of endpoint TemporalShapes. The activation matrix — which endpoint-shape pairs permit `AsOf` — lives in `17 §5`.
 
-### 7.2 `Joinset`'s contract re `AsOf`
+### 7.2 `Joinset`'s contract re `AsOf` (forward-ref, v1 descoped)
 
-1. **Implicit implication.** If a Joinset hop walks between two DataKinds whose `TemporalShape` pair **mandates** as-of joining (per `17 §5`'s matrix; canonical case: `Events ↔ Snapshot` and `Events ↔ Scd`), and the underlying `Relationship.join_type != AsOf`, the hop's effective `JoinType` is `AsOf` regardless of the declared `JoinType`. `JoinsetStrategy` overrides silently and emits `PLAN_W_2404 JoinsetAsOfActivation` as an informational advisory so the author sees the activation.
-2. **Explicit declaration.** If the underlying `Relationship.join_type == AsOf`, the hop's effective `JoinType` is `AsOf` unconditionally. An override to a non-`AsOf` type is forbidden (`COMP_E_2412 JoinsetAsOfDowngradeForbidden`) — see §5.3.3 table row for `AsOf`.
-3. **Misapplied override.** If `overrides.per_hop[i] == Some(AsOf)` but the hop's endpoint `TemporalShape` pair does NOT permit `AsOf` per `17 §5`, `COMP_E_2413 JoinsetAsOfShapeMismatch { position, left_shape, right_shape }`. The author declared an as-of override on a non-temporal hop.
-4. **Missing temporal key.** `JoinType::AsOf` requires the `Relationship.keys` to include a time-typed `KeyPair` (`16 §4.4.2`). If absent, `COMP_E_2414 JoinsetAsOfMissingTemporalKey`. This is a compile-stage check; `17 §5` ratifies the temporal-key schema.
+`JoinType::AsOf` is descoped for v1; the rules below are forward-ref scaffolding for the post-v1 MINOR that lands `AsOf` after `17` ratifies. The integration points are:
+
+1. **Implicit activation.** If a Joinset hop walks between two DataKinds whose `TemporalShape` pair **mandates** as-of joining (per `17 §5`'s matrix; canonical case: `Events ↔ Snapshot` and `Events ↔ Scd`), the hop's effective `JoinType` is `AsOf` regardless of the canonical derivation from `Relationship.optional`. `JoinsetStrategy` activates silently and emits `PLAN_W_2404 JoinsetAsOfActivation` as an informational advisory so the author sees the activation.
+2. **Missing temporal key.** `JoinType::AsOf` requires the `Relationship.keys` to include a time-typed `KeyPair` (`16 §4.4.2`). If absent, `COMP_E_2414 JoinsetAsOfMissingTemporalKey`. This is a compile-stage check; `17 §5` ratifies the temporal-key schema.
+
+Author opt-out and shape-mismatch handling for `AsOf` are folded into the scope-local-Relationship model: a Joinset that needs to *prevent* `AsOf` activation declares a scope-local Relationship that diverges in shape (e.g. drops the temporal `KeyPair`), and the temporal pair no longer "mandates" `AsOf`.
 
 ### 7.3 Activation matrix skeleton (to be filled by `17 §5`)
 
-`17 §5` will fill in the precise matrix; `24`'s integration point is the three buckets:
+`17 §5` will fill in the precise matrix; `24`'s integration point is the two buckets:
 
-- **Mandated `AsOf`** (bullet 7.2.1): the `Relationship`'s declared `JoinType` is irrelevant; `JoinsetStrategy` uses `AsOf`. Advisory emitted.
-- **Permitted `AsOf` but not mandated**: both the declared `JoinType` and an `AsOf` override are legal. The author's declaration wins.
-- **Forbidden `AsOf`**: temporal shapes do not support as-of joining; an override to `AsOf` is `COMP_E_2413`.
+- **Mandated `AsOf`** (bullet 7.2.1): the derived `JoinType` is overridden to `AsOf` at plan emission. Advisory emitted.
+- **Permitted `AsOf` but not mandated**: the canonical derivation from `optional` wins; no special handling.
 
-When `17` ratifies, this section is updated to cite `17 §5.X` tables directly. Until then, the error codes `COMP_E_2412`–`COMP_E_2414` are reserved under §10.1; see `questions/open/24_questions.md` Q-24-04.
+When `17` ratifies, this section is updated to cite `17 §5.X` tables directly.
 
 ## 8. Interaction with `ComposedSemanticInterface`
 
@@ -621,13 +618,15 @@ A `Joinset`'s output surface is a `ComposedSemanticInterface` with `composition_
 
 Per `16 §6`, `UnifiedSemantics` merges constituent `SemanticInterface`s into a single queryable surface. For Joinsets:
 
-| Case | Shared-compatible? | `UnifiedSemantics` treatment |
-|---|---|---|
-| A dimension appears on exactly one member. | Trivially. | Bare name on the unified surface; `FieldOwnership::Native(owning_member)`. |
-| A dimension appears on multiple members, shape-compatible per `16 §6.2.3`. | Yes. | Shared; bare name; `FieldOwnership::Shared(members)`. Typical for the **join key column** (`customer_id` when joining Orders ↔ Customers), which is the same `SemanticsName` on both sides by construction (§16 `KeyPair.left / right`). |
-| A dimension appears on multiple members, shape-**in**compatible. | No. | Namespaced (`orders.customer_id`, `returns.customer_id`); bare name is ambiguous. |
-| A measure appears on multiple members with incompatible aggregation. | No (per `16 §6.2.4`). | Namespaced; planner emits `PLAN_E_0505 AmbiguousCompositionReference` if the Request uses the bare form. |
-| The Joinset declares its own derived dimension / measure / metric. | n/a | `FieldOwnership::Derived(physical_expr)` on the unified surface. Contributes to `UnifiedSemantics` alongside per-member contributions. |
+
+| Case                                                                       | Shared-compatible?    | `UnifiedSemantics` treatment                                                                                                                                                                                                             |
+| -------------------------------------------------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A dimension appears on exactly one member.                                 | Trivially.            | Bare name on the unified surface; `FieldOwnership::Native(owning_member)`.                                                                                                                                                               |
+| A dimension appears on multiple members, shape-compatible per `16 §6.2.3`. | Yes.                  | Shared; bare name; `FieldOwnership::Shared(members)`. Typical for the **join key column** (`customer_id` when joining Orders ↔ Customers), which is the same `SemanticsName` on both sides by construction (§16 `KeyPair.left / right`). |
+| A dimension appears on multiple members, shape-**in**compatible.           | No.                   | Namespaced (`orders.customer_id`, `returns.customer_id`); bare name is ambiguous.                                                                                                                                                        |
+| A measure appears on multiple members with incompatible aggregation.       | No (per `16 §6.2.4`). | Namespaced; planner emits `PLAN_E_0505 AmbiguousCompositionReference` if the Request uses the bare form.                                                                                                                                 |
+| The Joinset declares its own derived dimension / measure / metric.         | n/a                   | `FieldOwnership::Derived(physical_expr)` on the unified surface. Contributes to `UnifiedSemantics` alongside per-member contributions.                                                                                                   |
+
 
 The Joinset's own declared keys (§2.6) appear in `UnifiedSemantics.keys`; absent explicit declaration, the unified surface has no composed-level keys and the anchor's keys remain per-constituent.
 
@@ -635,10 +634,10 @@ The Joinset's own declared keys (§2.6) appear in `UnifiedSemantics.keys`; absen
 
 Per `16 §7`, `FieldProvenance` records per-field ownership on the composed surface:
 
-- **`Native(DataKindRef)`** — the field exists on exactly one member. Typical for dimensions / measures specific to a single side.
-- **`Shared(Vec<DataKindRef>)`** — the field exists with compatible shape on multiple members; typical for the join-key column.
-- **`NullFill(Vec<DataKindRef>)`** — per `16 §7.3.3`, this variant is produced ONLY for `CompositionKind::Unionset`. For `CompositionKind::Joinset`, missing-side fields under an outer join (`Left`, `Right`, `Full`) are carried by the JoinType's NULL-fill in SQL emission, NOT by `FieldOwnership::NullFill`. A Joinset's `FieldProvenance` therefore never contains `NullFill` entries.
-- **`Derived(PhysicalExpr)`** — Joinset-level computed fields per §2.6.
+- `**Native(DataKindRef)`** — the field exists on exactly one member. Typical for dimensions / measures specific to a single side.
+- `**Shared(Vec<DataKindRef>)**` — the field exists with compatible shape on multiple members; typical for the join-key column.
+- `**NullFill(Vec<DataKindRef>)**` — per `16 §7.3.3`, this variant is produced ONLY for `CompositionKind::Unionset`. For `CompositionKind::Joinset`, missing-side fields under an outer join (`Left`, `Right`, `Full`) are carried by the JoinType's NULL-fill in SQL emission, NOT by `FieldOwnership::NullFill`. A Joinset's `FieldProvenance` therefore never contains `NullFill` entries.
+- `**Derived(PhysicalExpr)**` — Joinset-level computed fields per §2.6.
 
 ### 8.4 `CompositionCoverage`
 
@@ -651,7 +650,7 @@ JOINSET_COVERAGE_FOLD(joinset) -> CompositionCoverage:
     for unified_name in joinset.interface.interface.all_names():
       entries[(member, unified_name)] ←
         fold_binding_coverage(member, unified_name)
-          // returns Native, Derived, or NullFill per `16 §8.4`
+          // returns Native, Derived, NullFill, or Metadata per `16 §8.4`
   return CompositionCoverage { entries }
 ```
 
@@ -669,7 +668,7 @@ Two `ResolvedJoinset`s are equal iff:
 - Their `anchor` match.
 - Their `constituents` sequences match (order-significant).
 - Their `hops` sequences match (order-significant; each hop's `(relationship, direction, to)` triple).
-- Their `overrides` match.
+- Their scope-local `relationships` rosters match (per-name canonical-form equality of every shadow entry; root-level resolution at each hop yields identical Relationships).
 - Their `ComposedSemanticInterface.interface` match (`UnifiedSemantics` roster).
 
 Per I4 the resolution pipeline is deterministic; two compiles of the same Model produce identical `ResolvedJoinset`s.
@@ -680,16 +679,17 @@ Per I4 the resolution pipeline is deterministic; two compiles of the same Model 
 
 ### 9.1 The roster
 
-| Code | Variant | Condition |
-|---|---|---|
-| `VALID_E_2400` | `JoinsetArityV1Violation { joinset, member_count }` | `members.len() != 2` in v1. Also surfaced by `12 §7 NV-V5`; `24` provides the canonical-layer twin. |
-| `VALID_E_2401` | `JoinsetAnchorMissing { joinset }` | `anchor` is absent (canonical-layer only; YAML surface forces the field present per `32`, but programmatic construction paths need the guard). |
-| `VALID_E_2402` | `JoinsetAnchorNotMember { joinset, anchor, members }` | `anchor` is not in `members`. |
-| `VALID_E_2403` | `JoinsetExplicitPathEmpty { joinset }` | `path == Some(ExplicitPath { hops: vec![] })`. An empty explicit path is not an implicit-fallback (§4.3). |
-| `VALID_E_2404` | `JoinsetMembersEmpty { joinset }` | `members` is empty (no anchor, no other member). Degenerate; covered-by-2401 in practice but kept as a distinct code for clarity when authoring tools surface the error. |
-| `VALID_E_2405` | `JoinsetExplicitPathCyclic { joinset, revisited_member }` | Explicit path visits the same member twice. Binary v1 cannot trigger; N-ary-forward-looking. |
-| `VALID_E_2406` | `JoinsetDuplicateMember { joinset, duplicated }` | `members` contains the same `DataKindRef` twice. |
-| `VALID_E_2407` | `JoinsetOverridesForNonexistentHop { joinset, hop_position }` | `overrides.per_hop` contains an entry for a `HopPosition` outside `0..hops.len()` (resolved-path length). Per §4.2.4, overrides are positional; entries past the end point at a hop the resolved path doesn't have. |
+
+| Code           | Variant                                                       | Condition                                                                                                                                                                                                           |
+| -------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VALID_E_2400` | `JoinsetArityV1Violation { joinset, member_count }`           | `members.len() != 2` in v1. Also surfaced by `12 §7 NV-V5`; `24` provides the canonical-layer twin.                                                                                                                 |
+| `VALID_E_2401` | `JoinsetAnchorMissing { joinset }`                            | `anchor` is absent (canonical-layer only; YAML surface forces the field present per `32`, but programmatic construction paths need the guard).                                                                      |
+| `VALID_E_2402` | `JoinsetAnchorNotMember { joinset, anchor, members }`         | `anchor` is not in `members`.                                                                                                                                                                                       |
+| `VALID_E_2403` | `JoinsetExplicitPathEmpty { joinset }`                        | `path == Some(ExplicitPath { hops: vec![] })`. An empty explicit path is not an implicit-fallback (§4.3).                                                                                                           |
+| `VALID_E_2404` | `JoinsetMembersEmpty { joinset }`                             | `members` is empty (no anchor, no other member). Degenerate; covered-by-2401 in practice but kept as a distinct code for clarity when authoring tools surface the error.                                            |
+| `VALID_E_2405` | `JoinsetExplicitPathCyclic { joinset, revisited_member }`     | Explicit path visits the same member twice. Binary v1 cannot trigger; N-ary-forward-looking.                                                                                                                        |
+| `VALID_E_2406` | `JoinsetDuplicateMember { joinset, duplicated }`              | `members` contains the same `DataKindRef` twice.                                                                                                                                                                    |
+
 
 ### 9.2 Severity and stage
 
@@ -701,7 +701,7 @@ Several `24` validate errors share territory with `11` / `12`:
 
 - `VALID_E_2400 JoinsetArityV1Violation` ≡ `12 §7 NV-V5` nesting-shape check on the YAML side.
 - `VALID_E_2402 JoinsetAnchorNotMember` is a canonical-layer-only check (YAML authoring does not have an anchor-is-member distinction; the anchor IS a member by YAML structure).
-- `VALID_E_2407 JoinsetOverridesForNonexistentHop` is canonical-layer-only.
+**Retired (2026-05-12).** `VALID_E_2407 JoinsetOverridesForNonexistentHop` is retired — the override surface (`overrides.per_hop` / `HopPosition`) no longer exists on `JoinsetDataKind` (`§2.2`). Code reserved for forward-compat.
 
 Double-emission (a single programming-level error triggering both a `12` and a `24` diagnostic) is avoided at the dispatch level in `34`; when both would fire, the more-specific `24` variant is preferred.
 
@@ -711,23 +711,21 @@ Double-emission (a single programming-level error triggering both a `12` and a `
 
 ### 10.1 The roster
 
-| Code | Variant | Condition |
-|---|---|---|
-| `COMP_E_2401` | `JoinsetImplicitNoPath { joinset, anchor, target }` | Implicit-path BFS found no Relationship path from `anchor` to the other member (§4.1.2 step 5). Author must declare the Relationship or an explicit path. |
-| `COMP_E_2402` | `JoinsetImplicitAmbiguousPaths { joinset, anchor, target, candidates: Vec<RelationshipPath> }` | Implicit-path BFS found multiple equal-length shortest paths (§4.1.2 step 6). Author must pin via explicit path. |
-| `COMP_E_2403` | `JoinsetAnchorUnreachable { joinset, unreachable_member }` | Resolved path does not connect the anchor to one of the members. v1 binary-degenerate (the single hop either connects the two or fails at `COMP_E_2401`); N-ary-forward-looking. |
-| `COMP_E_2404` | `JoinsetExplicitPathUnknownRelationship { joinset, position, relationship }` | An explicit `JoinHop.relationship` does not resolve to a Manifest `RelationshipId`. |
-| `COMP_E_2405` | `JoinsetExplicitPathAnchorMismatch { joinset, expected_anchor, actual_source }` | Hop 0's walked source (given `direction`) is not the Joinset's declared anchor. |
-| `COMP_E_2406` | `JoinsetExplicitPathEndpointMismatch { joinset, position, declared_to, computed_to }` | `hop.to` does not match the Relationship's walked target endpoint (given `direction`). |
-| `COMP_E_2407` | `JoinsetExplicitPathDiscontinuity { joinset, position }` | Hop `i+1`'s walked source != hop `i`'s `to`. v1 binary-degenerate; N-ary-forward-looking. |
-| `COMP_E_2408` | `JoinsetArityV1Invariant { joinset, hops_count }` | Resolved hops count `!= 1`. Defense-in-depth guard against validate failing to catch an N-ary input. |
-| `COMP_E_2409` | `JoinsetReverseForwardOnlyRelationship { joinset, position, relationship }` | An explicit hop declares `HopDirection::Reverse` on a Relationship whose `Directionality == Forward` (`16 §2.4.1`). Shares vocabulary with `16 §14.3 PLAN_E_0503` but fires at compile rather than plan, because the Joinset's path is fully resolved at compile. |
-| `COMP_E_2410` | `JoinsetExplicitPathUncoveredMembers { joinset, uncovered: Vec<DataKindRef> }` | The explicit path's endpoints do not cover every `member`. Binary v1 cannot trigger; N-ary-forward-looking. |
-| `COMP_E_2411` | `JoinsetIllegalJoinTypeOverride { joinset, position, declared, requested }` | An override violates §5.3.3's legality matrix. |
-| `COMP_E_2412` | `JoinsetAsOfDowngradeForbidden { joinset, position }` | An override tries to replace an `AsOf` Relationship's `JoinType` with a non-`AsOf` type (§7.2 bullet 2). |
-| `COMP_E_2413` | `JoinsetAsOfShapeMismatch { joinset, position, left_shape, right_shape }` | An override declares `JoinType::AsOf` on a hop whose endpoint `TemporalShape` pair forbids `AsOf` (§7.2 bullet 3). |
-| `COMP_E_2414` | `JoinsetAsOfMissingTemporalKey { joinset, position, relationship }` | A hop's effective `JoinType == AsOf` but the underlying `Relationship.keys` contains no time-typed `KeyPair` (§7.2 bullet 4). |
-| `COMP_E_2415` | `JoinsetMemberNotTopLevel { joinset, member }` | A `members` entry refers to a `DataKindRef` that is not a top-level DataKind in the Model. (Nested-`Simple` binding-only leaves are not queryable on their own, per `12 §6.2`.) |
+
+| Code          | Variant                                                                                        | Condition                                                                                                                                                                                                                                                         |
+| ------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `COMP_E_2401` | `JoinsetImplicitNoPath { joinset, anchor, target }`                                            | Implicit-path BFS found no Relationship path from `anchor` to the other member (§4.1.2 step 5). Author must declare the Relationship or an explicit path.                                                                                                         |
+| `COMP_E_2402` | `JoinsetImplicitAmbiguousPaths { joinset, anchor, target, candidates: Vec<RelationshipPath> }` | Implicit-path BFS found multiple equal-length shortest paths (§4.1.2 step 6). Author must pin via explicit path.                                                                                                                                                  |
+| `COMP_E_2403` | `JoinsetAnchorUnreachable { joinset, unreachable_member }`                                     | Resolved path does not connect the anchor to one of the members. v1 binary-degenerate (the single hop either connects the two or fails at `COMP_E_2401`); N-ary-forward-looking.                                                                                  |
+| `COMP_E_2404` | `JoinsetExplicitPathUnknownRelationship { joinset, position, relationship }`                   | An explicit `JoinHop.relationship` does not resolve to a SemanticManifest `RelationshipId`.                                                                                                                                                                       |
+| `COMP_E_2405` | `JoinsetExplicitPathAnchorMismatch { joinset, expected_anchor, actual_source }`                | Hop 0's walked source (given `direction`) is not the Joinset's declared anchor.                                                                                                                                                                                   |
+| `COMP_E_2406` | `JoinsetExplicitPathEndpointMismatch { joinset, position, declared_to, computed_to }`          | `hop.to` does not match the Relationship's walked target endpoint (given `direction`).                                                                                                                                                                            |
+| `COMP_E_2407` | `JoinsetExplicitPathDiscontinuity { joinset, position }`                                       | Hop `i+1`'s walked source != hop `i`'s `to`. v1 binary-degenerate; N-ary-forward-looking.                                                                                                                                                                         |
+| `COMP_E_2408` | `JoinsetArityV1Invariant { joinset, hops_count }`                                              | Resolved hops count `!= 1`. Defense-in-depth guard against validate failing to catch an N-ary input.                                                                                                                                                              |
+| `COMP_E_2410` | `JoinsetExplicitPathUncoveredMembers { joinset, uncovered: Vec<DataKindRef> }`                 | The explicit path's endpoints do not cover every `member`. Binary v1 cannot trigger; N-ary-forward-looking.                                                                                                                                                       |
+| `COMP_E_2414` | `JoinsetAsOfMissingTemporalKey { joinset, position, relationship }`                            | A hop's effective `JoinType == AsOf` but the underlying `Relationship.keys` contains no time-typed `KeyPair` (§7.2 bullet 2). Forward-ref only — v1 does not emit `AsOf`.                                                                                         |
+| `COMP_E_2415` | `JoinsetMemberNotTopLevel { joinset, member }`                                                 | A `members` entry refers to a `DataKindRef` that is not a top-level DataKind in the Model. (Nested-`Simple` binding-only leaves are not queryable on their own, per `12 §6.2`.)                                                                                   |
+
 
 ### 10.2 Severity and stage
 
@@ -735,7 +733,9 @@ All `COMP_E_24xx` are `Severity::Error`; they fail compile. Per `30 §7`, compil
 
 ### 10.3 Ordering
 
-Path-resolution errors (`COMP_E_2401`–`COMP_E_2410`) fire before override-legality errors (`COMP_E_2411`–`COMP_E_2414`): the hops must resolve before their `JoinType`s can be evaluated. `COMP_E_2415` fires before path resolution (member-resolution is a prerequisite).
+Path-resolution errors (`COMP_E_2401`–`COMP_E_2410`) fire before any temporal-shape-gated errors (`COMP_E_2414`): the hops must resolve before their effective `JoinType`s can be evaluated. `COMP_E_2415` fires before path resolution (member-resolution is a prerequisite).
+
+**Retired (2026-05-12).** `COMP_E_2409 JoinsetReverseForwardOnlyRelationship` is retired — every Relationship is bidirectional per `16 §2.4`; reverse traversal is always legal. `COMP_E_2411 JoinsetIllegalJoinTypeOverride`, `COMP_E_2412 JoinsetAsOfDowngradeForbidden`, and `COMP_E_2413 JoinsetAsOfShapeMismatch` are retired with the per-hop override surface removal (`§2.2`); divergent join semantics surface through structural rules on the scope-local `Relationship` itself (SR-E-4 / SR-E-13 / SR-E-14 in `18 §11`). All four codes are reserved for forward-compat.
 
 ## 11. Plan-Stage Rules
 
@@ -743,299 +743,38 @@ Path-resolution errors (`COMP_E_2401`–`COMP_E_2410`) fire before override-lega
 
 ### 11.1 `PlannerError` additions
 
-| Code | Variant | Condition |
-|---|---|---|
-| `PLAN_E_2400` | `JoinsetRequestOutOfSurface { joinset, name }` | A Request with `from: Some(joinset)` names a `Semantics` not on the Joinset's `ComposedSemanticInterface`. Specialization of `16 §14.3 PLAN_E_0506 RequestOutOfSurface`; the specialized code carries the Joinset's name for a more actionable diagnostic. The planner MAY emit `PLAN_E_0506` OR `PLAN_E_2400`; `24`'s convention is to prefer `PLAN_E_2400` when the surface is a `CompositionKind::Joinset`. |
-| `PLAN_E_2401` | `JoinsetAmbiguousReferenceOnSurface { joinset, name, candidates }` | A bare `SemanticsName` on the Joinset's composed surface is ambiguous per `16 §6.2.3`'s namespacing rule. Specialization of `16 §14.3 PLAN_E_0505`. Same dispatch convention as `PLAN_E_2400`. |
-| `PLAN_E_2402` | `JoinsetNonAdditiveRollupRequired { joinset, measure, hop_cardinality }` | A non-additive measure requires a fanout-safe rewrite over the Joinset's fanout shape, but the Request's shape (or `17`'s `TemporalShape × Additivity` matrix) forbids the rewrite. Specialization of `16 §14.3 PLAN_E_0504`. |
+
+| Code          | Variant                                                                  | Condition                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PLAN_E_2400` | `JoinsetRequestOutOfSurface { joinset, name }`                           | A Request with `from: Some(joinset)` names a `Semantics` not on the Joinset's `ComposedSemanticInterface`. Specialization of `16 §14.3 PLAN_E_0506 RequestOutOfSurface`; the specialized code carries the Joinset's name for a more actionable diagnostic. The planner MAY emit `PLAN_E_0506` OR `PLAN_E_2400`; `24`'s convention is to prefer `PLAN_E_2400` when the surface is a `CompositionKind::Joinset`. |
+| `PLAN_E_2401` | `JoinsetAmbiguousReferenceOnSurface { joinset, name, candidates }`       | A bare `SemanticsName` on the Joinset's composed surface is ambiguous per `16 §6.2.3`'s namespacing rule. Specialization of `16 §14.3 PLAN_E_0505`. Same dispatch convention as `PLAN_E_2400`.                                                                                                                                                                                                                 |
+| `PLAN_E_2402` | `JoinsetNonAdditiveRollupRequired { joinset, measure, hop_cardinality }` | A non-additive measure requires a fanout-safe rewrite over the Joinset's fanout shape, but the Request's shape (or `17`'s `TemporalShape × Additivity` matrix) forbids the rewrite. Joinset-specialized variant of `16 §14.3 PLAN_E_0506 CompositionAggregationConflict`.                                                                                                                                      |
+
 
 ### 11.2 `PlannerError` advisories
 
-| Code | Variant | Condition |
-|---|---|---|
-| `PLAN_W_2400` | `JoinsetFanoutAdvisory { joinset, position, cardinality }` | A hop introduces fanout; `JoinsetStrategy` inserted a fanout-safe rewrite. Joinset-specific companion to `16 §14.4 PLAN_W_0501`. |
-| `PLAN_W_2401` | `JoinsetJoinTypeOverrideAdvisory { joinset, position, declared, effective }` | Informational: an override changed the hop's `JoinType` from the declared default. Emitted once per resolved Joinset that carries any override. Planner-diagnostic-only; does not block. |
-| `PLAN_W_2402` | `JoinsetManyToManyHopAdvisory { joinset, position, relationship }` | A hop's underlying `Relationship.cardinality == ManyToMany`; consider junction-table modeling (`16 §3.3.4`). Joinset-specific companion to `16 §14.4 PLAN_W_0502`. |
-| `PLAN_W_2403` | `JoinsetMultiFanoutAdvisory { joinset, profile }` | The Joinset has more than one fan-out edge (v1 binary: a single `ManyToMany` hop; N-ary: cross-hop accumulation). `JoinsetStrategy` proceeds but the author should consider restructuring. |
-| `PLAN_W_2404` | `JoinsetAsOfActivation { joinset, position, declared, activated }` | `17 §5`'s matrix mandated `JoinType::AsOf` on a hop whose declared `JoinType` was non-`AsOf`. Informational so the author sees the activation. |
+
+| Code          | Variant                                                                      | Condition                                                                                                                                                                                                                                                                                                                                                |
+| ------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PLAN_W_2400` | `JoinsetFanoutAdvisory { joinset, position, cardinality }`                   | A hop introduces fanout; `JoinsetStrategy` inserted a fanout-safe rewrite. Joinset-specialized intent advisory; the cross-DataKind parent (`PLAN_W_0501 FanoutAdvisory`) was retired in `16 §14.4` (2026-04-29) per Q-COMP-005's intent-advisory deferral. Retention vs retirement of the Joinset-specialized variant is `[TD-JOINSET-FANOUT-ADVISORY]`. |
+| `PLAN_W_2402` | `JoinsetManyToManyHopAdvisory { joinset, position, relationship }`           | A hop's underlying `Relationship.cardinality == ManyToMany`; consider junction-table modeling (`16 §3.3.4`). Joinset-specialized intent advisory; the cross-DataKind parent (`PLAN_W_0502 ManyToManyFanoutAdvisory`) was retired in `16 §14.4` (2026-04-29). Retention covered by `[TD-JOINSET-FANOUT-ADVISORY]`.                                        |
+| `PLAN_W_2403` | `JoinsetMultiFanoutAdvisory { joinset, profile }`                            | The Joinset has more than one fan-out edge (v1 binary: a single `ManyToMany` hop; N-ary: cross-hop accumulation). `JoinsetStrategy` proceeds but the author should consider restructuring.                                                                                                                                                               |
+| `PLAN_W_2404` | `JoinsetAsOfActivation { joinset, position, declared, activated }`           | `17 §5`'s matrix mandated `JoinType::AsOf` on a hop whose declared `JoinType` was non-`AsOf`. Informational so the author sees the activation.                                                                                                                                                                                                           |
+
 
 ### 11.3 Severity
 
 All `PLAN_E_24xx` are `Severity::Error`; they fail plan. All `PLAN_W_24xx` are `Severity::Warning`; plan proceeds with the diagnostic emitted.
 
+**Retired (2026-05-12).** `PLAN_W_2401 JoinsetJoinTypeOverrideAdvisory` is retired with the override-surface removal (`§2.2` / `§5.3.2`). Divergent join semantics are now declared structurally via a scope-local `Relationship` and do not warrant a per-resolution advisory. Code reserved for forward-compat.
+
 ### 11.4 Dispatch convention
 
 `16 §14`'s composition errors (`PLAN_E_05xx`) are the generic, composition-kind-agnostic entries. `24`'s `PLAN_E_24xx` / `PLAN_W_24xx` are the Joinset-specialized entries. The planner's convention:
 
-- If the error is clearly Joinset-specific (e.g., `PLAN_W_2401 JoinsetJoinTypeOverrideAdvisory`), emit the `24` code.
+- If the error is clearly Joinset-specific (e.g., `PLAN_W_2403 JoinsetMultiFanoutAdvisory`), emit the `24` code.
 - If the error is a generic composition concern that happens to apply to a Joinset (e.g., a fanout advisory on an implicit composition that coincidentally covers the Joinset's members — see `16 §13.5`), emit the `16` code.
 - Dispatch happens in `34`; `24` fixes the taxonomy without hard-coding dispatch rules.
-
-## 12. Worked Examples
-
-### 12.1 Star schema — fact anchor, implicit paths
-
-Consider a Model with four top-level Simple DataKinds and three Relationships. (For v1 binary Joinsets, the example is narrated as three independent binary Joinsets `orders_x_customers`, `orders_x_products`, `orders_x_dates`, each a two-member pairing; the canonical N-ary star-schema Joinset unifying all four members is tracked under `TD-NESTING-NARY-JOIN` — see `questions/open/24_questions.md` Q-24-01. Each binary Joinset below exercises the full §§3–5 contract.)
-
-```mermaid
-erDiagram
-    ORDERS    ||--o{ CUSTOMERS : "customer_id (ManyToOne)"
-    ORDERS    ||--o{ PRODUCTS  : "product_id  (ManyToOne)"
-    ORDERS    ||--o{ DATES     : "order_date  (ManyToOne)"
-    ORDERS {
-        int   order_id   PK
-        int   customer_id FK
-        int   product_id  FK
-        date  order_date  FK
-        dec   amount
-    }
-    CUSTOMERS {
-        int    customer_id PK
-        string country
-        string segment
-    }
-    PRODUCTS {
-        int    product_id  PK
-        string category
-        string brand
-    }
-    DATES {
-        date   date_id     PK
-        int    week
-        int    month
-    }
-```
-
-Top-level Relationships (shape per `16 §2.2`):
-
-```yaml
-relationships:
-  - name: orders_to_customers
-    from: orders
-    to: customers
-    keys: [{ left: customer_id, right: customer_id }]
-    cardinality: ManyToOne
-    join_type: Left
-    directionality: Bidirectional
-  - name: orders_to_products
-    from: orders
-    to: products
-    keys: [{ left: product_id, right: product_id }]
-    cardinality: ManyToOne
-    join_type: Inner
-    directionality: Bidirectional
-  - name: orders_to_dates
-    from: orders
-    to: dates
-    keys: [{ left: order_date, right: date_id }]
-    cardinality: ManyToOne
-    join_type: Inner
-    directionality: Bidirectional
-```
-
-A binary Joinset "orders with customers" — canonical-layer shape after compile:
-
-```text
-ResolvedJoinset {
-    name: "orders_with_customers",
-    anchor: DataKindRef(orders),
-    members: [DataKindRef(orders), DataKindRef(customers)],
-    hops: [
-        ResolvedJoinHop {
-            relationship: RelationshipId(orders_to_customers),
-            direction: HopDirection::Forward,
-            to: DataKindRef(customers),
-            effective_join_type: JoinType::Left,     // inherited from Relationship
-        }
-    ],
-    overrides: {},
-    interface: ComposedSemanticInterface {
-        composition_kind: CompositionKind::Joinset,
-        constituents: [DataKindRef(orders), DataKindRef(customers)],
-        interface: UnifiedSemantics {
-            dimensions: [
-                UnifiedDimension { name: customer_id, promotion: Shared([orders, customers]) },
-                UnifiedDimension { name: product_id,  promotion: Native(orders) },
-                UnifiedDimension { name: order_date,  promotion: Native(orders) },
-                UnifiedDimension { name: country,     promotion: Native(customers) },
-                UnifiedDimension { name: segment,     promotion: Native(customers) },
-            ],
-            measures: [
-                UnifiedMeasure { name: amount, promotion: Native(orders), aggregation: Sum },
-            ],
-            metrics: [],
-            keys: [KeyDeclaration { name: order_id, owner: orders }],
-        },
-        provenance: FieldProvenance {
-            fields: {
-                "customer_id" → FieldOwnership::Shared([orders, customers]),
-                "product_id"  → FieldOwnership::Native(orders),
-                "order_date"  → FieldOwnership::Native(orders),
-                "country"     → FieldOwnership::Native(customers),
-                "segment"     → FieldOwnership::Native(customers),
-                "amount"      → FieldOwnership::Native(orders),
-            }
-        },
-        coverage: CompositionCoverage {
-            entries: {
-                (orders,    "customer_id") → Native,
-                (customers, "customer_id") → Native,
-                (orders,    "product_id")  → Native,
-                (customers, "product_id")  → NullFill,
-                (orders,    "order_date")  → Native,
-                (customers, "order_date")  → NullFill,
-                (orders,    "country")     → NullFill,
-                (customers, "country")     → Native,
-                (orders,    "segment")     → NullFill,
-                (customers, "segment")     → Native,
-                (orders,    "amount")      → Native,
-                (customers, "amount")      → NullFill,
-            }
-        },
-        traversed_paths: [RelationshipPath([orders_to_customers])],
-    },
-}
-```
-
-Request lowering — a user asks for `sum(amount) by country`:
-
-```text
-Request {
-    from: Some(DataKindRef("orders_with_customers")),
-    select: [country, measure(amount, agg = Sum)],
-    group_by: [country],
-}
-```
-
-`JoinsetStrategy::lower` output:
-
-```text
-Project [country, sum_amount]
-  └── Agg {
-          group_by: [country],
-          aggregates: [sum(amount) AS sum_amount],
-      }
-        └── Project [country, amount]          // Joinset-level unified projection
-              └── Join {
-                      join_type: Left,          // hop 0 default
-                      from_relationship: Some(RelationshipId(orders_to_customers)),
-                      from_joinset: Some("orders_with_customers"),
-                      keys: [(orders.customer_id = customers.customer_id)],
-                      left:  Scan(orders)    [project: customer_id, amount],
-                      right: Scan(customers) [project: customer_id, country],
-                  }
-```
-
-Fanout accounting: `Relationship.cardinality == ManyToOne` on the forward walk → no fanout; `amount` is safely summable. No `PLAN_W_2400` advisory.
-
-### 12.2 Multi-path graph — explicit-path pinning
-
-Consider a Model where `orders` has two distinct address relationships (`ship_to_address_id` and `bill_to_address_id`), both pointing at the same `addresses` table. This is the motivating case for the `16 §2.5` multigraph rule.
-
-Top-level Relationships:
-
-```yaml
-relationships:
-  - name: orders_to_ship_address
-    from: orders
-    to: addresses
-    keys: [{ left: ship_to_address_id, right: address_id }]
-    cardinality: ManyToOne
-    join_type: Inner
-  - name: orders_to_bill_address
-    from: orders
-    to: addresses
-    keys: [{ left: bill_to_address_id, right: address_id }]
-    cardinality: ManyToOne
-    join_type: Inner
-```
-
-An implicit Joinset `orders ⟶ addresses` would fail with `COMP_E_2402 JoinsetImplicitAmbiguousPaths { candidates: [RelationshipPath([orders_to_ship_address]), RelationshipPath([orders_to_bill_address])] }` because two equal-length shortest paths exist.
-
-The author resolves by declaring two explicit Joinsets, each pinning a distinct path:
-
-```text
-Joinset "orders_with_ship_address" (canonical-layer):
-  anchor: orders
-  members: [orders, addresses]
-  path: ExplicitPath {
-      hops: [
-          JoinHop {
-              relationship: RelationshipId(orders_to_ship_address),
-              direction: HopDirection::Forward,
-              to: DataKindRef(addresses),
-          }
-      ]
-  }
-  overrides: {}
-
-Joinset "orders_with_bill_address":
-  anchor: orders
-  members: [orders, addresses]
-  path: ExplicitPath {
-      hops: [
-          JoinHop {
-              relationship: RelationshipId(orders_to_bill_address),
-              direction: HopDirection::Forward,
-              to: DataKindRef(addresses),
-          }
-      ]
-  }
-  overrides: {}
-```
-
-Both Joinsets resolve cleanly; the Manifest materializes both `ResolvedJoinset`s independently. Requests choose between them via `from: Some(DataKindRef(...))`. On the unified surface, the `addresses` member's columns are namespaced to the Joinset's context — e.g. `"orders_with_ship_address".city` vs. `"orders_with_bill_address".city` — because the author has two distinct first-class surfaces, each with its own composed surface.
-
-Because the two Joinsets cover disjoint surfaces (via distinct `RelationshipId`s), authoring both is the recommended pattern where implicit composition alone would fail. `JoinsetStrategy` lowering is identical to §12.1 except for the `from_relationship` field, which differs per Joinset.
-
-#### 12.2.1 Override on an explicit Joinset
-
-Suppose the author wants `orders_with_ship_address` to preserve all orders even when the ship address lookup fails:
-
-```text
-overrides: {
-    HopPosition(0): JoinType::Left
-}
-```
-
-Override-legality check (§5.3.3): declared `Inner` → requested `Left`; permitted (row `Inner` can tighten or relax; `Left` is a relaxation to Inner's strict match). Effective `JoinType` at hop 0 becomes `Left`; `JoinsetStrategy` emits `PLAN_W_2401 JoinsetJoinTypeOverrideAdvisory` as a one-time per-Joinset informational diagnostic.
-
-ASCII plan-tree:
-
-```text
-Project [order_id, city (from addresses, NULL when unmatched)]
-  └── Join {
-          join_type: Left,               // post-override
-          from_relationship: Some(RelationshipId(orders_to_ship_address)),
-          from_joinset: Some("orders_with_ship_address"),
-          keys: [(orders.ship_to_address_id = addresses.address_id)],
-          left:  Scan(orders)    [project: order_id, ship_to_address_id],
-          right: Scan(addresses) [project: address_id, city],
-      }
-```
-
-#### 12.2.2 Illegal override example
-
-If the declared `Relationship.join_type == Left` and the author attempts an override to `Full`:
-
-```text
-overrides: { HopPosition(0): JoinType::Full }
-```
-
-Per §5.3.3, `Left → Full` is forbidden (widening row-preservation beyond the edge's declared preservation). Compile emits `COMP_E_2411 JoinsetIllegalJoinTypeOverride { position: 0, declared: Left, requested: Full }`, the Manifest build fails, and the author sees an actionable diagnostic pinpointing the override site.
-
-## 13. Round-1 Open Items
-
-Tracked in `questions/open/24_questions.md`:
-
-- **Q-24-01** — N-ary Joinset lift (`TD-NESTING-NARY-JOIN` / `[TD-JOINSET-NARY]`): when does it graduate from tech-debt to MINOR, what is the spanning-tree authoring surface, how do multi-hop Cardinality compositions accumulate?
-- **Q-24-02** — Hybrid path mode: should a Joinset be permitted to declare some hops explicitly and let the planner implicit-fill the rest? Round-1 position: prohibited.
-- **Q-24-03** — Override-reach: should `overrides` also permit overriding a hop's `Cardinality` declaration (e.g. downgrading `ManyToMany` to a pinned `OneToMany` when the author knows a specific slice satisfies the constraint)? Round-1 position: no.
-- **Q-24-04** — `AsOf` activation matrix: the exact set of `TemporalShape` pairs that mandate / permit / forbid `AsOf` joining, pending `17 §5` ratification.
-- **Q-24-05** — Joinset reuse by implicit composition: when a `Request.from = None` implicit-composition surface coincides with an existing `ResolvedJoinset`, should the planner substitute the Joinset's pre-built surface? Round-1 position: no (distinct `ComposedSemanticInterface` instances — see `16 §13.5`, `[TD-COMPOSITION-JOINSET-REUSE]`).
-- **Q-24-06** — Self-referential Joinsets (e.g. a Joinset that joins `employees` with itself along a manager relationship): tied to `[TD-COMPOSITION-SELFJOIN]`.
-- **Q-24-07** — Per-hop filter pushdown annotations: should the Joinset declare hop-level filters (e.g. "only join with `addresses` where `country = 'US'`") as part of `ExplicitPath`, or is filter-pushdown an exclusively planner concern?
-- **Q-24-08** — `FieldOwnership::NullFill` for Joinset: `16 §7.3.3` reserves it for Unionset. Should a Joinset with `Left` / `Full` outer joins record NULL-fillability structurally, or continue to rely on `JoinType` semantics at the plan-tree level?
 
 ## 14. Cross-References
 
@@ -1054,10 +793,11 @@ Tracked in `questions/open/24_questions.md`:
 - `23_dataset.md` (parallel draft, numbering per current plan) — `Simple` / Dataset leaf.
 - `25` (pending) — cross-kind strategy catalog (Joinset × Grainset, Joinset × Unionset interactions).
 - `30 §4, §5, §6` — `#[non_exhaustive]` policy, `Diagnostic` shape, error-code range governance; `24` allocates `VALID_E_2400`–`2499`, `COMP_E_2400`–`2499`, `PLAN_E_2400`–`2499`, `PLAN_W_2400`–`2499` under `30 §6.2`'s per-DataKind-doc scheme.
-- `32` (pending) — YAML surface for the `joinsets:` top-level block, `path:` sub-block, `overrides:` sub-block.
-- `33` (pending) — Manifest surface: `ResolvedJoinset`, `ResolvedJoinHop`.
+- `32` (pending) — YAML surface for the `joinsets:` top-level block, `path:` sub-block, and Joinset-scoped `relationships:` sub-block (scope-local Relationship shadow shape).
+- `33` (pending) — SemanticManifest surface: `ResolvedJoinset`, `ResolvedJoinHop`.
 - `34` (pending) — planner surface: `JoinsetStrategy` impl, dispatch rules between `16` generic codes and `24` specialized codes.
 - `35` (pending) — `PlanNode::Join` with `from_relationship` and `from_joinset` tagging fields.
-- `questions/open/24_questions.md` — Round-1 deferred items Q-24-01..Q-24-08.
+- `questions/closed/24_questions.md` — Round-1 ratified Q-24-02..Q-24-08; `questions/deferred/24_questions.md` — Q-24-01 / Q-24-09 / Q-24-10 (deferred for post-v1).
 - `questions/open/16_questions.md` — composition-level deferrals that touch Joinset (`[TD-COMPOSITION-JOINSET-REUSE]`, `[TD-COMPOSITION-SELFJOIN]`, `[TD-COMPOSITION-ASOF]`).
 - Legacy: `docs/JOINSET.md` — early reference; superseded by this document and `16 §13`.
+

@@ -64,7 +64,7 @@ The `FunctionRegistry` is the compile-time catalog compile / `14b` consult to re
 
 The registry is populated before any parse / validate / compile stage consumes it, and is immutable thereafter. Two families of entries contribute to the sealed instance: **core** entries (§2.2) and **adapter-extended** entries (§7).
 
-**Ratified (Round 1, Q1).** The sealed registry is handed to compile as a `&'static FunctionRegistry` — one shared instance per process, initialized eagerly at program startup via an inherently-static path (e.g. `OnceLock<FunctionRegistry>` behind a `pub fn function_registry() -> &'static FunctionRegistry`). No per-Model or per-invocation configurability in v1; a single registry configuration per process. Rationale: eliminates lifetime noise from every signature that touches compile; matches the "planner-complete Manifest + static registry" posture where registry entries are compile-time catalog data, not runtime state. Future need for multiple registry configurations in the same process (e.g. test-harness with swappable adapter sets) is `[TD-REGISTRY-MULTI-CONFIG]`.
+**Ratified (Round 1, Q1).** The sealed registry is handed to compile as a `&'static FunctionRegistry` — one shared instance per process, initialized eagerly at program startup via an inherently-static path (e.g. `OnceLock<FunctionRegistry>` behind a `pub fn function_registry() -> &'static FunctionRegistry`). No per-Model or per-invocation configurability in v1; a single registry configuration per process. Rationale: eliminates lifetime noise from every signature that touches compile; matches the "planner-complete SemanticManifest + static registry" posture where registry entries are compile-time catalog data, not runtime state. Future need for multiple registry configurations in the same process (e.g. test-harness with swappable adapter sets) is `[TD-REGISTRY-MULTI-CONFIG]`.
 
 ### 2.2 Core (built-in) vs adapter-extended entries
 
@@ -363,38 +363,3 @@ All variants are ratified per §10's Round-1 decisions. Concrete per-engine erro
 - **`34` / `36` (adapters)** — extend the registry via §7 and consume resolved `FunctionCall`s at `adapt` time, consulting `registry/functions_mapping.md` for engine-native rendering.
 - **`registry/functions_mapping.md`** — per-engine catalog of native names, rewrite tiers, emulation strategies, portability gaps. `14a` carries canonical shape; this doc carries per-engine reality.
 
-## 10. Ratified Decisions Index (Round 1)
-
-| Q | Decision | § |
-|---|---|---|
-| Q1 | `&'static FunctionRegistry` (process-global static, one configuration per process). `[TD-REGISTRY-MULTI-CONFIG]` tracks future per-invocation configurability. | §2.1 |
-| Q2 | Flat `HashMap<&'static str, FunctionSpec>` storage — core and adapter-extended entries share one namespace. | §2.2 |
-| Q3 | Strict case-sensitive exact match on a single canonical name per spec. No aliases in v1 (`[TD-REGISTRY-ALIASES]`). Names share namespace with `14 §4.4.1`'s reserved AST tags — collision is `CompileError::ReservedTagCollision`. | §2.3 |
-| Q4 | `FunctionSpec` carries `canonical_name`, `category`, `signatures: NonEmpty<FnSignature>`, `description`. No `null_handling`, `deterministic`, `aliases`, `since_version`, `stability`. Determinism flag is `[TD-REGISTRY-DETERMINISM]`. | §3.1 |
-| Q5 | Flat `FunctionCategory` — `Scalar \| Aggregate \| Window(deferred)`. Sub-categorization lives in catalog-presentation headings only. `[TD-REGISTRY-SUBCATEGORY]` for future enum splits. | §3.2 |
-| Q6 | Pure overload-set polymorphism — `signatures: NonEmpty<FnSignature>`, first exact-match wins. `NoMatchingSignature` carries full overload list as `tried_signatures`. `[TD-REGISTRY-TYPECLASS]` for future TypeClass generics. | §3.3 |
-| Q7 | Minimal-4 `ReturnTypeRule` — `Fixed(DataType)`, `SameAs(usize)`, `Promoted(&[usize])`, `Custom(fn)`. No `SameAsTypeVar`, no `NullableOf`. | §3.4 |
-| Q8 | `FnSignature { args, variadic: Option<ParamType>, return_type }` — trailing-variadic only. Optional args expressed as multi-overload arity. `[TD-REGISTRY-MID-VARIADIC]` for mid-signature repeated params. | §3.5 |
-| Q9 | One row per `FunctionSpec` in catalog tables; overloads collapsed into a single `signature(s)` cell. Columns: name, arity, signatures, return-type rule, notes. No per-engine coverage strip, no stability column. | §4.1 |
-| Q10 | Adapter-capability-intersection catalog population — DataFusion ∩ Spark ∩ DuckDB. Non-intersection functions are adapter-extended per §7, not canonical. | §4.1 |
-| Q11 | No canonical BinaryOp promotion lattice in v1 — `14 §5.6` pass-through stands; per-engine behavior documented in `registry/functions_mapping.md`. `[TD-REGISTRY-BINOP-LATTICE]` for future canonicalization. | §5.2 |
-| Q12 | No `portability` field on `FunctionSpec` — intersection-only population makes every canonical entry portable-by-construction. Per-engine detail lives in `registry/functions_mapping.md`. | §6.1 |
-| Q13 | `14a` is engine-agnostic — canonical shape only. `registry/functions_mapping.md` owns all engine-facing detail. | §6.2 |
-| Q14 | Hard error at `adapt` time on unsupported function — `AdaptError::UnsupportedFunction`. No runtime-deferred stubs. Matches `13` / types_mapping `UnsupportedType` precedent. | §6.3 |
-| Q15 | Compile-time `RegistryExtension` trait-impl registration. `const FUNCTIONS: &'static [FunctionSpec]`. No runtime mutation, no proc-macro collection. Initializer-wiring mechanism: `[TD-REGISTRY-EXTENSION-WIRING]`. | §7.1 |
-| Q16 | Hard reject on adapter-vs-core and adapter-vs-adapter collisions — panics during `function_registry()` initialization, carrying `CompileError::AdapterFunctionShadowsCore` / `AdapterFunctionCollision` codes. Engine-specific overrides use rewrite tiers in `registry/functions_mapping.md`, not re-registration. | §7.2 |
-
-### 10.1 Tech-debt / deferred extensions referenced above
-
-- **`[TD-REGISTRY-MULTI-CONFIG]`** — per-invocation or per-Model registry configurations in the same process.
-- **`[TD-REGISTRY-ALIASES]`** — spec-level alias support.
-- **`[TD-REGISTRY-DETERMINISM]`** — `deterministic: bool` flag (drives constant-folding / equivalence rewrites in the optimizer).
-- **`[TD-REGISTRY-SUBCATEGORY]`** — scalar sub-categorization (`Scalar::String` / `Scalar::Math` / …).
-- **`[TD-REGISTRY-TYPECLASS]`** — TypeClass-parameterized generic signatures.
-- **`[TD-REGISTRY-MID-VARIADIC]`** — mid-signature repeated params.
-- **`[TD-REGISTRY-BINOP-LATTICE]`** — canonical BinaryOp promotion lattice with per-engine deviation table.
-- **`[TD-REGISTRY-EXTENSION-WIRING]`** — concrete mechanism for aggregating adapter `FUNCTIONS` arrays into the `&'static` initializer (build.rs vs feature-gated array vs proc-macro).
-
-### 10.2 Round 2 scope
-
-Round 2 populates §4.2–§4.6 against the Q10 intersection policy, verifying each candidate against actual DataFusion / Spark / DuckDB function inventories. The error-model table in §8 finalizes the *pending* variants from §6.3 / §7.2 (now ratified). No further framework decisions expected.

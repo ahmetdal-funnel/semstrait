@@ -19,21 +19,6 @@ refined-by:
 
 > **Status:** Round-1 draft. `39` nails down the public surface of `semstrait` — the **facade crate**, same name as the workspace — as a re-export + `prelude::*` + one-shot-convenience veneer over `semstrait-api` (`38`). Every type exposed here is already ratified in `30`–`38`; `39` adds no new vocabulary, no new types, no new traits, and no new algorithms. It ratifies only **which** subset of the lower-layer surface is promoted to the top-level convenience namespace, **how** feature flags compose against the per-adapter and per-catalog crates, and **what** the `v1` stability promise on `prelude::*` means. Round-1 open items are parked in `questions/open/39_questions.md`.
 
-## Table of Contents
-
-1. [Purpose, Scope, Layering](#1-purpose-scope-layering)
-2. [Public Crate Surface](#2-public-crate-surface)
-3. [The `prelude::*` Module](#3-the-prelude-module)
-4. [One-Shot Convenience Functions](#4-one-shot-convenience-functions)
-5. [Feature Flags](#5-feature-flags)
-6. [Version Alignment](#6-version-alignment)
-7. [Stability](#7-stability)
-8. [Crate Boundaries](#8-crate-boundaries)
-9. [Round-1 Open Items](#9-round-1-open-items)
-10. [Cross-References](#10-cross-references)
-
----
-
 ## 1. Purpose, Scope, Layering
 
 ### 1.1 Purpose
@@ -65,7 +50,7 @@ caller (end-user application, script, test harness)
     ↓ depends on
 semstrait            (facade — re-exports + prelude + run)
     ↓ depends on
-semstrait-api        (38 — unified entry: SemStrait, SemStraitBuilder, SemStraitError)
+semstrait-api        (38 — unified entry: SemStrait, SemStraitBuilder, SemStraitErrorKind)
     ↓ depends on
 semstrait-manifest   semstrait-planner   semstrait-adapter   semstrait-catalog
 (33)                 (34)                (36)                (37)
@@ -84,13 +69,13 @@ The facade's reason-to-exist is ergonomic. A consumer who writes
 ```rust
 use semstrait::prelude::*;
 
-let model = parse(&yaml)?;
-let manifest = compile(model, &registry).await?;
-let plan = plan(&manifest, &request)?;
-let artifact = AnsiSqlAdapter::default().adapt(&plan, &manifest)?;
+let (model, _w_parse)        = parse(&yaml)?;
+let (manifest, _w_compile)   = compile(model, &catalog, &fs).await?;
+let (plan, _w_plan)          = plan(&manifest, request)?;
+let (artifact, _w_adapt)     = AnsiSqlAdapter::default().adapt(&plan, &manifest)?;
 ```
 
-should not need to know that `parse` lives in `semstrait-model`, `compile` in `semstrait-manifest`, `plan` in `semstrait-planner`, and `AnsiSqlAdapter` in `semstrait-adapter`. The facade collapses five `use` lines into one and pins the sub-crate versions so a `cargo update` on `semstrait` is a single coordinated bump (`30 §2.1`).
+should not need to know that `parse` lives in `semstrait-model`, `compile` in `semstrait-manifest`, `plan` in `semstrait-planner`, and `AnsiSqlAdapter` in `semstrait-adapter`. The facade collapses five `use` lines into one and pins the sub-crate versions so a `cargo update` on `semstrait` is a single coordinated bump (`30 §2.1`). Each stage returns the workspace-wide fail-fast tuple per `30 §7`; the warnings carriers `_w_*` are `Diagnostics<*ErrorKind>` for that stage's kind. Consumers who want the unified `SemStraitErrorKind` shape go through `SemStrait::compile_and_plan_and_adapt` (`38 §7`) or `semstrait::run` (`§4`).
 
 Consumers who DO need sub-crate-level control (pick a different adapter registry, supply a custom `Repository`, pin a different `semstrait-catalog` minor) depend on `semstrait-api` directly and bypass this crate. `39` is a convenience, not a chokepoint.
 
@@ -102,14 +87,14 @@ Consumers who DO need sub-crate-level control (pick a different adapter registry
 
 | Name / module | Kind | Source crate | Purpose |
 |---|---|---|---|
-| `core`        | module (re-export) | `semstrait-core` (`31`)         | Shared primitives: `Expr` family, `DataType`, `Diagnostic`, `FunctionRegistry`, `CanonicalFn`. |
-| `model`       | module (re-export) | `semstrait-model` (`32`)        | `SemanticModel`, `parse`, `ParseError`. |
-| `manifest`    | module (re-export) | `semstrait-manifest` (`33`)     | `Manifest`, `compile`, `CompileError`, `Repository` + bundled impls. |
-| `planner`     | module (re-export) | `semstrait-planner` (`34`)      | `Request`, `SessionContext`, `plan`, `optimize`, `PlanError`, `OptimizeError`. |
-| `ir`          | module (re-export) | `semstrait-ir` (`35`)           | `SemanticPlan`, `PlanNode`, `EngineArtifact`, `DialectId`. |
-| `adapter`     | module (re-export) | `semstrait-adapter` (`36`)      | `EngineAdapter`, `AdaptError`, `AdapterCapabilities`, `AnsiSqlAdapter`, `SubstraitAdapter`. |
-| `catalog`     | module (re-export) | `semstrait-catalog` (`37`)      | `CatalogProvider`, `FileSystem`, `NoopCatalogProvider`, `LocalFileSystem`, built-in provider set. |
-| `api`         | module (re-export) | `semstrait-api` (`38`)          | `SemStrait`, `SemStraitBuilder`, `SemStraitError`. |
+| `core`        | module (re-export) | `semstrait-core` (`31`)         | Shared primitives: `Expr` family, `DataType`, `Diagnostic<K>`, `Diagnostics<K>`, `Severity`, `Diagnose`, `Location`, `Span`, `FunctionRegistry`, `CanonicalFn`, `IoErrorKind`. |
+| `model`       | module (re-export) | `semstrait-model` (`32`)        | `SemanticModel`, `parse`, `ParseErrorKind`, `ValidateErrorKind`, `ModelBuildErrorKind`, `CatalogsParseErrorKind`. |
+| `manifest`    | module (re-export) | `semstrait-manifest` (`33`)     | `SemanticManifest`, `compile`, `CompileErrorKind`, `Repository`, `RepositoryErrorKind`, `SemanticManifestLoadErrorKind`, `SemanticManifestDumpErrorKind` + bundled `Repository` impls. |
+| `planner`     | module (re-export) | `semstrait-planner` (`34`)      | `Request`, `SessionContext`, `plan`, `optimize`, `PlanErrorKind`, `OptimizeErrorKind`. |
+| `ir`          | module (re-export) | `semstrait-ir` (`35`)           | `SemanticPlan`, `PlanNode`, `EngineArtifact`, `DialectId`, `IrErrorKind`. |
+| `adapter`     | module (re-export) | `semstrait-adapter` (`36`)      | `EngineAdapter`, `AdaptErrorKind`, `AdapterCapabilities`, `AnsiSqlAdapter`, `SubstraitAdapter`. |
+| `catalog`     | module (re-export) | `semstrait-catalog` (`37`)      | `CatalogProvider`, `FileSystem`, `CatalogProviderErrorKind`, `FileSystemErrorKind`, `NoopCatalogProvider`, `LocalFileSystem`, built-in provider set. |
+| `api`         | module (re-export) | `semstrait-api` (`38`)          | `SemStrait`, `SemStraitBuilder`, `SemStraitErrorKind`, `WarningPolicy`, `StageOrigin`. |
 | `prelude`     | module             | (curated subset)                | See `§3`. |
 | `run`         | `pub fn`           | (this crate — §4)               | One-shot `compile → plan → optimize → adapt`. |
 | `VERSION`     | `pub const`        | (this crate)                    | Workspace version string (`env!("CARGO_PKG_VERSION")`). |
@@ -182,8 +167,10 @@ The prelude pattern follows `31`'s precedent — `31 §14.10` sketched a crate-r
 
 // -- core (31) --
 pub use crate::core::{
-    Diagnostic,
+    Diagnostic,         // generic over the kind: Diagnostic<K>
+    Diagnostics,        // generic carrier vector: Diagnostics<K>
     Severity,
+    Diagnose,           // trait every `*ErrorKind` implements
     DataType,
     CanonicalFn,
 };
@@ -196,7 +183,7 @@ pub use crate::model::{
 
 // -- manifest (33) --
 pub use crate::manifest::{
-    Manifest,
+    SemanticManifest,
     compile,
     Repository,
     InMemoryRepository,
@@ -242,6 +229,8 @@ pub use crate::catalog::{
 pub use crate::api::{
     SemStrait,
     SemStraitBuilder,
+    SemStraitErrorKind,    // unified typed-kind for the orchestrator
+    WarningPolicy,
 };
 ```
 
@@ -259,12 +248,14 @@ Adding a name to `prelude::*` is additive (MINOR, `30 §2.1`). Removing a name i
 
 The following are reachable through `semstrait::<module>::*` but deliberately excluded from `prelude::*`:
 
-- Every `*Error` / `*Errors` enum (consumers prefer `Result<_, Diagnostic>` at API boundaries per `30 §5.5`).
+- Every per-stage `*ErrorKind` enum *except* the unified `SemStraitErrorKind` (the kind variants are consumed via pattern-match on `Diagnostic<K>::kind` and via `From` impls; consumers reach them through their owning sub-crate module, e.g. `semstrait::adapter::AdaptErrorKind`). The unified `SemStraitErrorKind` is included because every `SemStrait` orchestrator method other than the single-stage `adapt` returns it.
 - Every `Resolved*` type from `semstrait-manifest` (consumed at `compile` boundary, not constructed by hand).
 - `PhysicalExpr` / `SemanticExpr` / `Expr` (consumers rarely construct AST nodes directly; authors consume them through `ExprSource` parse boundaries).
 - `FunctionRegistry`, `FunctionSpec`, `FnSignature` (registry is process-global via `core::function_registry()`; rarely referenced by name).
 - Every per-engine adapter type beyond `AnsiSqlAdapter` / the feature-gated `DataFusionSqlAdapter` (the default bundle — see `§5`).
-- Every `*Id` newtype (`CatalogId`, `SourceId`, `ManifestId`) — consumers reference them by value, not by type path.
+- Every `*Id` newtype (`CatalogId`, `SourceId`, `SemanticManifestId`) — consumers reference them by value, not by type path.
+- `Location` / `Span` / `SourceId` from `semstrait-core`'s diagnostic primitive set (consumed via `Diagnostic::location()` accessors; rarely constructed by callers).
+- `StageOrigin` from `semstrait-api §6.6` (used by callers writing log routers; reachable through `semstrait::api::StageOrigin`).
 
 ### 3.5 Glob discipline
 
@@ -277,44 +268,53 @@ The following are reachable through `semstrait::<module>::*` but deliberately ex
 ### 4.1 `semstrait::run`
 
 ```rust
+use crate::core::{Diagnostic, Diagnostics};
+use crate::api::SemStraitErrorKind;
+
 /// Compile a YAML model, plan a request against it, optimize the plan,
 /// and adapt the optimized plan into an `EngineArtifact` — in a single
 /// call. Intended for scripts, tests, and demos where sub-crate-level
 /// control is not needed.
 ///
-/// Equivalent hand-wired form:
+/// Equivalent hand-wired form (using the `38` orchestrator):
 ///
 /// ```ignore
-/// let model = semstrait::model::parse(yaml)?;
-/// let manifest = semstrait::manifest::compile(model, &registry).await?;
-/// let plan = semstrait::planner::plan(&manifest, &request)?;
-/// let plan = semstrait::planner::optimize(plan)?;
-/// let artifact = adapter.adapt(&plan, &manifest)?;
+/// let semstrait = SemStrait::builder()
+///     .with_catalog_provider(Arc::new(NoopCatalogProvider::default()))
+///     .with_file_system(Arc::new(LocalFileSystem::new(/* tmp root */)))
+///     .build()?;
+/// let (artifact, _warnings) =
+///     semstrait.compile_and_plan_and_adapt(yaml, request, adapter).await?;
 /// ```
 ///
-/// The callable-facing catalog is fixed to `NoopCatalogProvider` —
-/// `semstrait::run` does NO external catalog I/O. Callers who need
-/// catalog resolution at compile time drop to the `SemStrait` /
-/// `SemStraitBuilder` surface (`38`) directly.
+/// The callable-facing catalog is fixed to `NoopCatalogProvider` and the
+/// callable-facing filesystem is fixed to a fresh `LocalFileSystem`
+/// rooted at a tempdir — `semstrait::run` does NO external catalog I/O.
+/// Callers who need catalog resolution at compile time drop to the
+/// `SemStrait` / `SemStraitBuilder` surface (`38`) directly.
 pub async fn run(
     yaml: &str,
     request: Request,
     adapter: &dyn EngineAdapter,
-) -> Result<EngineArtifact, SemStraitError>;
+) -> Result<
+    (EngineArtifact, Diagnostics<SemStraitErrorKind>),
+    (Diagnostic<SemStraitErrorKind>, Diagnostics<SemStraitErrorKind>),
+>;
 ```
 
 ### 4.2 Contract
 
-- **Pure over inputs.** `run` performs no I/O beyond what the `Repository` / `CatalogProvider` would have done (and in the default wiring, neither runs — `run` uses `InMemoryRepository` + `NoopCatalogProvider`).
-- **Async.** Inherits `compile`'s async posture per `30 §9` / `33 §9`. The planner and adapter hot paths remain synchronous (I6); the sole `.await` in `run`'s body is on `compile`.
-- **Fail-fast.** Propagates the first stage error as a `SemStraitError` — the unified error type ratified in `38`. Warnings accumulated by upstream stages are preserved on the `Ok` arm where the stage contract carries them (`30 §7`).
+- **Pure over inputs.** `run` performs no I/O beyond what the default-wired `Repository` / `CatalogProvider` / `FileSystem` would have done. With the default wiring (`NoopCatalogProvider` + a tempdir-rooted `LocalFileSystem` + no `Repository`), no external I/O occurs.
+- **Async.** Inherits `compile`'s async posture per `30 §9` / `33 §9`. The planner and adapter hot paths remain synchronous (I6); the sole `.await` in `run`'s body is on the compile segment of `SemStrait::compile_and_plan_and_adapt`.
+- **Fail-fast tuple shape.** Returns the workspace-wide fail-fast tuple over `SemStraitErrorKind` per `30 §7.1` — the success arm carries the artifact plus accumulated warnings (`Diagnostics<SemStraitErrorKind>`); the failure arm carries the originating stage's `Diagnostic<SemStraitErrorKind>` plus warnings observed up to that point. The originating stage is identifiable via the outer `SemStraitErrorKind` variant (`Parse | Validate | Compile | Plan | Optimize | Adapt | …`); the inner `*ErrorKind` variant identifies what specifically failed. This is the same surface a caller would observe by going through `SemStrait::compile_and_plan_and_adapt` directly.
 - **Deterministic.** For identical `(yaml, request)` inputs and an adapter whose `adapt` is deterministic, `run` is byte-deterministic in its `EngineArtifact` output. This falls out of I4 (`00 §9`).
+- **Tracing posture.** `run` emits the standard orchestrator span hierarchy described in `38 §3.6`. The CLI mapping ratified there (`--info` / `--debug` / `--trace`) is the documented convention for binary embedders that wrap `run`; `run` itself takes no verbosity argument and installs no `tracing-subscriber` — that remains the embedder's responsibility per `30 §6`.
 
 ### 4.3 What `run` is NOT
 
 - **Not a router.** `run` takes exactly one adapter; dispatching across engines is a `SemStrait` / `AdapterRegistry` concern (`36 §11`, `38`).
 - **Not a loader.** `run` takes a `&str`; reading YAML from disk, merging multi-file models, or resolving `$include` directives is a caller responsibility (`32 §10.3`).
-- **Not a cache.** `run` compiles every invocation. Persistent `Manifest` caching goes through `Repository::save` / `Repository::load` (`33 §11`).
+- **Not a cache.** `run` compiles every invocation. Persistent `SemanticManifest` caching goes through `Repository::save` / `Repository::load` (`33 §11`).
 - **Not a harness for streaming or incremental planning.** One input, one output, one await.
 
 ### 4.4 No other free functions
@@ -387,7 +387,7 @@ serde = [
 ]
 ```
 
-Default-OFF, per `30 §10.4`. Consumers who serialize `Manifest` / `SemanticPlan` / `Diagnostic` opt in.
+Default-OFF, per `30 §10.4`. Consumers who serialize `SemanticManifest` / `SemanticPlan` / `Diagnostic` opt in.
 
 ### 5.6 Reserved feature names
 
@@ -427,26 +427,13 @@ optional = true
 # ... one entry per optional per-adapter / per-catalog crate
 ```
 
-`=1.0.0` (exact-version pin) — not `^1.0.0` or `1.0` — because the facade re-exports types by identity (`30 §11.3`). A caller who consumes `semstrait::manifest::Manifest` and `semstrait-manifest::Manifest` directly MUST see the same type; cargo's MINOR-compatibility semantics would silently allow a newer patched `semstrait-manifest` to slide in and break type-identity across the boundary.
+`=1.0.0` (exact-version pin) — not `^1.0.0` or `1.0` — because the facade re-exports types by identity (`30 §11.3`). A caller who consumes `semstrait::manifest::SemanticManifest` and `semstrait-manifest::SemanticManifest` directly MUST see the same type; cargo's MINOR-compatibility semantics would silently allow a newer patched `semstrait-manifest` to slide in and break type-identity across the boundary.
 
 ### 6.2 Release rhythm
 
 - **PATCH.** Every sub-crate bumps patch together; the facade bumps to the same patch; `cargo publish` runs across the workspace in one sweep.
 - **MINOR.** Same rhythm; new variants / new fields / new prelude additions land in one coordinated MINOR.
 - **MAJOR.** The facade's MAJOR matches the workspace MAJOR (`30 §2.1`); `prelude::*` evolution across a MAJOR is documented in `implementation/42_migration_notes.md`.
-
-### 6.3 Consumer guidance
-
-A consumer who writes
-
-```toml
-[dependencies]
-semstrait = "1.0"
-```
-
-gets the facade plus pinned sub-crate versions consistent with it; **never** a mixed-version workspace. Mixing sub-crate versions by hand — e.g. bumping `semstrait-manifest = "1.1"` while `semstrait = "1.0"` is still on `=1.0.0` — fails to compile because the facade's pin conflicts. This is intentional: `30 §11.3`'s cross-crate-break guarantee rests on it.
-
----
 
 ## 7. Stability
 
@@ -470,18 +457,6 @@ Breaking changes to any sub-crate propagate through the facade identically (per 
 
 Prelude-specific breaks (a name removed from `prelude::*`, a name retyped incompatibly) follow `30 §12`: deprecated for at least one MINOR before removal.
 
-### 7.4 Migration policy for `prelude::*` growth
-
-A name enters `prelude::*` by appearing in `crates/semstrait/src/prelude.rs` in a MINOR release — additive, no migration note needed beyond a one-line changelog entry.
-
-A name leaves `prelude::*` by:
-
-1. Landing with `#[deprecated(since = "…", note = "use `semstrait::<module>::<name>` instead")]` in MINOR N.
-2. Removal in MAJOR N+1.
-3. `implementation/42_migration_notes.md` entry covering the removal.
-
----
-
 ## 8. Crate Boundaries
 
 | Boundary | Status |
@@ -502,23 +477,6 @@ The entirety of `crates/semstrait/src/` in v1 is expected to be well under 200 s
 
 ---
 
-## 9. Round-1 Open Items
-
-The following drafting decisions are **defaulted** in this document but MUST be confirmed before v1 ratification. All are captured in `docs/design/questions/open/39_questions.md`:
-
-- **Q-FAC-001** — Default-feature composition: `default = ["ansi-sql"]` vs `default = []`. Current default: `ansi-sql` on, to give `cargo add semstrait` a working adapter out of the box.
-- **Q-FAC-002** — Prelude membership of `Name` (`semstrait-ir §5.4`): promoted to the prelude (current default) vs reachable only through `semstrait::ir::Name`. The IR `Name` newtype is not a common first-touch type; concern is resolved one way or the other at `38` ratification.
-- **Q-FAC-003** — `semstrait::run` error type: `SemStraitError` (current default, delegated to `38`) vs `Diagnostic` (align with `30 §5`'s "public APIs return `Diagnostic`" principle). Parked until `38` lands its `SemStraitError` shape.
-- **Q-FAC-004** — `semstrait::run` catalog-wiring: hard-coded `NoopCatalogProvider` (current default, zero-I/O one-shot) vs caller-supplied `&dyn CatalogProvider` parameter. The latter breaks the "one-shot" ergonomic; the former rules out catalog-bound one-shots.
-- **Q-FAC-005** — Exact-version pinning of sub-crates: `=1.0.0` (current default, upholds `30 §2.1`) vs `~1.0` (patch-compatible) vs `^1.0` (minor-compatible). Type-identity argument in `§6.1` favors exact; check against `cargo-semver-checks` before ratification.
-- **Q-FAC-006** — Reserved feature names (`§5.6`): worth enumerating pre-emptively, or open-namespace (first-come-first-served)? Current default: reserve.
-- **Q-FAC-007** — Prelude growth budget: should the prelude cap at ~25 names to remain scannable, or grow organically with sub-crate additions? Current default: no hard cap; membership principles in `§3.3` apply.
-- **Q-FAC-008** — `semstrait::VERSION` constant usefulness: ship it (current default) vs rely on `env!("CARGO_PKG_VERSION")` inline at consumer site.
-
-Each item is parked with arguments-for, arguments-against, and a next-step in `questions/open/39`.
-
----
-
 ## 10. Cross-References
 
 - Overview: `00 §4.1` (canonical vocabulary — every re-exported type defined there), `00 §9` (design invariants I7, I10 uphold through the re-export boundary).
@@ -528,22 +486,3 @@ Each item is parked with arguments-for, arguments-against, and a next-step in `q
 
 ---
 
-## 11. Round-1 Ratifications
-
-- §2.1 — Roster of module-level re-exports (one module per sub-crate, plus `prelude` and `run`).
-- §2.2 — Every sub-crate re-exported wholesale at `semstrait::<module>`; no filtering at the module level.
-- §3.2 — Prelude member list (core / model / manifest / planner / ir / adapter / catalog / api subsets).
-- §3.3 — Membership principles: first-call relevance, unambiguous short name, v1-stable.
-- §4.1 — `semstrait::run` signature: `async fn run(yaml: &str, request: Request, adapter: &dyn EngineAdapter) -> Result<EngineArtifact, SemStraitError>`.
-- §4.4 — No other one-shot free functions in v1.
-- §5.1 — `default = ["ansi-sql"]`.
-- §5.2 / §5.3 — Per-adapter features (`datafusion`, `duckdb`, `spark`, `substrait`) and per-catalog features (`iceberg-rest`, `unity`).
-- §6.1 — Exact-version (`=1.0.0`) pinning for every sub-crate dependency.
-- §7.1 — v1 promise: `use semstrait::prelude::*;` compiled against v1.0 compiles against every v1.x.
-- §8 — Crate boundaries: zero new types, zero new logic (except `run`), no upward workspace dependency.
-
-Exact feature-name literals in §5 are ratified; default-feature contents (`§5.1`) and prelude membership at the edges (`§3.2`) may be amended under the open items in §9 without touching the structural ratifications above.
-
----
-
-*Cross-references in this document are by section (e.g. `30 §2.1`, `33 §9`, `37 §4.1`). No code-path references are used, per `00 §8`.*

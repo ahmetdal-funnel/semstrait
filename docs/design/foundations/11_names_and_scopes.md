@@ -31,7 +31,7 @@ refined-by:
 
 ## 1. Purpose and Scope
 
-`11` ratifies the naming and scoping rules a `SemanticModel` must satisfy, and the lookup mechanics `compile` applies when producing a `Manifest`. It is the first foundations doc after `10` because every subsequent doc refers to Semantics by name; nothing downstream (`12`–`17`, `20`–`25`, `31`–`37`) is well-defined without a pinned scope model.
+`11` ratifies the naming and scoping rules a `SemanticModel` must satisfy, and the lookup mechanics `compile` applies when producing a `SemanticManifest`. It is the first foundations doc after `10` because every subsequent doc refers to Semantics by name; nothing downstream (`12`–`17`, `20`–`25`, `31`–`37`) is well-defined without a pinned scope model.
 
 **What `11` ratifies:**
 
@@ -59,8 +59,8 @@ refined-by:
 
 **Key invariants from `00` that `11` directly upholds:**
 
-- **I5** — all name resolution is compile-time work, captured in the `Manifest`; nothing resolvable remains for `plan`.
-- **I8** — the `Manifest` carries every index `plan` needs; `11`'s lookup algorithm feeds those indices.
+- **I5** — all name resolution is compile-time work, captured in the `SemanticManifest`; nothing resolvable remains for `plan`.
+- **I8** — the `SemanticManifest` carries every index `plan` needs; `11`'s lookup algorithm feeds those indices.
 - Global identity and unified-namespace rules (§3) refine `00 §4.1` for Semantics.
 
 ## 2. The Scope Chain
@@ -157,78 +157,6 @@ A Semantics may first appear at any tier — Model root (Tier-1 shape declaratio
 
 Authoring consequence: modelers write Semantics declarations wherever it reads best. There is no requirement to pre-declare at Model root before use.
 
-### 3.4.1 Worked example — order-independent introduction
-
-Two Models that compile to the **same** `Manifest`. The first has no Tier-1 declarations; the second pulls shared shape up to Tier-1 for readability. Neither is canonical — `compile` does not distinguish them at the registry level.
-
-**Model A — all shape inline at DataKind level:**
-
-```yaml
-version: 1
-semantic_model:
-  name: sales_analytics
-
-  datasets:
-    - name: shopify
-      measures:
-        - name: revenue
-          data_type: decimal
-          additivity: additive
-          agg: sum
-          expr: order_total
-      # binding omitted
-    - name: woocommerce
-      measures:
-        - name: revenue
-          data_type: decimal
-          additivity: additive
-          agg: sum
-          expr: total_amount
-      # binding omitted
-```
-
-**Model B — shape lifted to Tier-1:**
-
-```yaml
-version: 1
-semantic_model:
-  name: sales_analytics
-
-  measures:
-    - name: revenue
-      data_type: decimal
-      additivity: additive
-      agg: sum
-
-  datasets:
-    - name: shopify
-      measures:
-        - name: revenue
-          expr: order_total
-      # binding omitted
-    - name: woocommerce
-      measures:
-        - name: revenue
-          expr: total_amount
-      # binding omitted
-```
-
-Both Models produce the same `Manifest` registry entry for `revenue`:
-
-```
-Semantics registry: revenue
-  shape:
-    element_type: Measure
-    data_type: decimal
-    additivity: Additive
-    agg: sum
-  resolution variants (per top-level DataKind):
-    shopify      → expr: order_total
-    woocommerce  → expr: total_amount
-```
-
-**Disagreement example (compile error):** if Model A's `woocommerce` instead declared `data_type: float`, `compile` would emit `CompileError::SemanticShapeConflict` with diagnostics pointing to both occurrences and the conflicting field.
-
 ## 4. YAML Declaration Forms for Semantics Occurrences
 
 Exactly one form, with an optional scalar shorthand for pure reference.
@@ -275,7 +203,7 @@ YAML anchors (`&foo`) and aliases (`*foo`) operate at the YAML parse layer. The 
 
 - `- *some_measure_anchor` expands to an inline copy of whatever the anchor referenced. That expanded content is then interpreted per §4's field-driven rules — no special treatment.
 - Anchors/aliases are a YAML-layer DRY mechanism for authors, not a Semantics-level reference mechanism. They do NOT create resolution variants, participate in identity, or affect the Semantics registry. Two occurrences produced from the same anchor are two equivalent occurrences, unified by `compile` the same way any other two occurrences are.
-- Tools that serialize or pretty-print a `Manifest` MUST NOT assume that anchors/aliases from the original YAML survive the round trip. The `Manifest` is normalized; the original YAML shape is not reconstructible from it (this matches `00 §4.1` `SemanticModel` as post-parse representation — anchors are resolved during YAML parse, before `parse` returns).
+- Tools that serialize or pretty-print a `SemanticManifest` MUST NOT assume that anchors/aliases from the original YAML survive the round trip. The `SemanticManifest` is normalized; the original YAML shape is not reconstructible from it (this matches `00 §4.1` `SemanticModel` as post-parse representation — anchors are resolved during YAML parse, before `parse` returns).
 
 ## 5. Shape vs. Resolution Variant
 
@@ -308,65 +236,6 @@ A Semantics may have:
 - **one** `expr:` at Model root (Tier-1 default, used by every top-level DataKind that doesn't supply its own),
 - **one** `expr:` per top-level DataKind (DataKind-local variant overriding any Tier-1 default),
 - **or a mix** of the above.
-
-### 5.3 Worked example — shape-unify with per-DataKind variants
-
-A Measure `cost` declared at Tier-1 for shared shape, used by three top-level DataKinds each providing its own `expr:` against different physical columns:
-
-```yaml
-version: 1
-semantic_model:
-  name: paid_media
-
-  measures:
-    - name: cost                  # Tier-1 shape declaration
-      data_type: decimal
-      additivity: additive
-      agg: sum
-      description: "Gross ad spend"
-
-  unionsets:
-    - name: paid_media
-      measures:
-        - name: cost              # variant for `paid_media`'s union branches
-          expr: spend_amount
-      datasets:                   # nested children use the canonical container key
-        - name: adwords_daily
-          # binding omitted
-        - name: facebook_daily
-          # binding omitted
-
-  datasets:
-    - name: organic_social
-      measures:
-        - name: cost              # different variant for `organic_social`
-          expr: "0.0"              # treated as zero-cost channel
-      # binding omitted
-
-    - name: influencer_spend
-      measures:
-        - name: cost              # third variant
-          expr: negotiated_fee_usd
-      # binding omitted
-```
-
-Resulting `Manifest` Semantics registry entry:
-
-```
-Semantics registry: cost
-  shape:
-    element_type: Measure
-    data_type: decimal
-    additivity: Additive
-    agg: sum
-    description: "Gross ad spend"
-  resolution variants (per top-level DataKind):
-    paid_media          → expr: spend_amount
-    organic_social      → expr: "0.0"
-    influencer_spend    → expr: negotiated_fee_usd
-```
-
-If a DataKind omits its own `expr:` for `cost`, the Tier-1 default is used when present; else resolution falls through to direct `SemanticMapping` in the Simple leaf Bindings (15).
 
 ### 5.4 Defaults for omitted shape fields
 
@@ -695,7 +564,7 @@ The same two kind sub-blocks as §8.4.1 are admissible. Authoring matches §8.4.
 
 The v1 implementation's struct is named `MeasureConstraints` in `semstrait-model::types::measure` and is attached to both Measure and Metric carriers. The name is a **legacy artifact** — the spec treats Constraints as per-carrier, so the conceptual naming is `{Measure,Metric}Constraints` (distinct types per carrier) even though the code currently reuses one struct.
 
-> **[TD-CONSTRAINT-RENAME]** — rename `MeasureConstraints` in the model crate to a name that reflects its cross-carrier reuse (e.g. `ElementConstraints`, or per-carrier `MeasureConstraints` + `MetricConstraints`). Schedule with the broader Manifest-schema revision pass; not a v1 blocker.
+> **[TD-CONSTRAINT-RENAME]** — rename `MeasureConstraints` in the model crate to a name that reflects its cross-carrier reuse (e.g. `ElementConstraints`, or per-carrier `MeasureConstraints` + `MetricConstraints`). Schedule with the broader SemanticManifest-schema revision pass; not a v1 blocker.
 
 ### 8.5 Reserved carriers (future design)
 
@@ -747,13 +616,13 @@ The framework retains Cardinality constraints as DataKind-level kinds, deferred 
 | Metric | `dimensions` | step 0 | Same |
 | Metric | `aggregations` (two-stage) | step 0 | Fires only when Metric has `agg:`; otherwise silent-skip per `[TD-AGG-ON-METRIC]` |
 | *(Reserved)* Dimension `rollup:` | — | future `plan` sub-step | Needs resolved Request scope |
-| *(Reserved)* Filter `reachability:` | — | future `compile` | Can be resolved statically against the Manifest |
+| *(Reserved)* Filter `reachability:` | — | future `compile` | Can be resolved statically against the SemanticManifest |
 | *(Reserved)* Filter `requires:` | — | future `plan` sub-step (injection) | Needs Request context to know which Filters are already named |
 | *(Reserved)* DataKind `row_count:` / `null_fraction:` | — | future `plan` sub-step (post-catalog) | Needs `CatalogProvider` stats |
 
 **v1 evaluation entry point.** For realized carriers (Measure, Metric), `ConstraintValidator::check()` runs as the planner's first action — **step 0, pre-resolution** — BEFORE dataset routing, `from:`-resolution, Relationship traversal, or PlanNode construction. Per-Measure / per-Metric algorithm:
 
-1. Resolve `request.entity_name` to a `CompiledDataKind` via the `Manifest`. (If `entity_name` is empty — ad-hoc query — constraint validation is skipped entirely.)
+1. Resolve `request.entity_name` to a `CompiledDataKind` via the `SemanticManifest`. (If `entity_name` is empty — ad-hoc query — constraint validation is skipped entirely.)
 2. Build the *query scope* set: `request.dimensions` ∪ filter-field Dimensions (§8.4.1).
 3. For each name in `request.measures`:
    - If the name resolves to a Measure: run dimensions-check AND aggregations-check (passing the Measure's effective `agg` name).
@@ -788,41 +657,6 @@ pub enum PlannerError {
 
 **Declarative-only.** No inline predicate grammar inside `constraints:`. The inline form architecturally reserved for `ExprSource` (`14 §4`) is not reused here in v1. If a future kind requires a predicate body, a separate design pass decides whether to activate the inline grammar and which wrapper (SemanticExpr / PhysicalExpr) applies.
 
-### 8.9 Round-1 decisions — mapping to the two-layer framework
-
-Round-1 ratified 13 decisions against a flat-taxonomy framing. In the two-layer framework, most decisions survive unchanged as framework-level properties; a few are re-contextualized as per-carrier or per-kind choices.
-
-| Q | Decision | Mapped home in §8 |
-|---|---|---|
-| Q1 | Closed kind vocabulary, narrow realization in v1 | Re-framed: the vocabulary is **closed per carrier** (§8.8); v1 realizes two kinds on two carriers (§8.4). Other candidate kinds become **per-carrier reserved extensions** (§8.5), not top-level "taxonomy categories". |
-| Q2 | No value predicates | Survives — reserved for a future Dimension `value_set:` kind (§8.5.1). |
-| Q3 | No temporal / windowing Constraints | Survives — grain admissibility is `13 §3`, windowing is future Metric-type work. |
-| Q4 | Cardinality deferred pending `CatalogProvider` stats | Re-homed as DataKind `row_count:` / `null_fraction:` kinds (§8.5.4), tracked by `[TD-CARDINALITY-CONSTRAINT]`. |
-| Q5 | No escape-hatch / boolean-predicate kind | Survives — framework boundary (§8 preamble). |
-| Q6 | Declarative-only DSL in v1 | Survives — framework-level (§8.8). |
-| Q7 | Inline grammar reserved, reuses `14 §4.3` when activated | Survives — framework-level, no v1 use (§8.8). |
-| Q8 | Reserved tag per kind | Re-framed: **kind sub-block per carrier** (§8.3 + §8.4/§8.5). Not a flat global tag namespace; per-carrier closure. |
-| Q9 | Wrapper choice (SemanticExpr / PhysicalExpr) N/A in v1 | Survives — no Constraint kind has predicate bodies in v1 (§8.8). |
-| Q10 | Stage placement: validate / compile / plan per-kind | Re-framed as **per-carrier + per-kind matrix** (§8.6 table); v1's realized kinds are all step 0 pre-resolution, not distributed across stages. |
-| Q11 | Accumulation inherits host stage | Re-framed: v1 is fail-fast per carrier (§8.7). Host-stage inheritance becomes relevant when reserved carriers activate at validate/compile stages. |
-| Q12 | Hard error only; no severity | Survives — framework-level (§8.7). |
-| Q13 | Caching deferred to generic Manifest machinery | Survives — `[TD-MANIFEST-INCR-CACHE]`. |
-
-### 8.10 Code-vs-spec delta (audit)
-
-Spec-level naming and framework shape diverge from the current implementation in ways worth recording:
-
-| Spec framework | v1 code reality |
-|---|---|
-| Per-carrier `{Measure,Metric,…}Constraints` types | Single `MeasureConstraints` struct reused for Measures and Metrics — `[TD-CONSTRAINT-RENAME]` |
-| Per-carrier + per-kind stage matrix (§8.6) | Single evaluation point — `ConstraintValidator::check()` at step 0 |
-| Typed `ConstraintError::*` fan-out (future) | `PlannerError::ConstraintViolation { entity, message }` — `[TD-CONSTRAINT-ERROR-FANOUT]` |
-| Reserved carriers (Dimension, Filter, Key, DataKind) | Not in schema — extension points only |
-| `requires:` mechanism (Filter-injection) | Reserved field name per source comment `// This is NOT \`requires\`` — `[TD-REQUIRES-MECHANISM]` |
-| Cardinality kinds (DataKind `row_count:` / `null_fraction:`) | Not in schema — depends on `CatalogProvider` stats — `[TD-CARDINALITY-CONSTRAINT]` |
-
-`§12.2`'s Preconditions `N-C3` … `N-C9` and `14` / `15`'s structural validate-stage rules remain the home for relational integrity, system-level invariants, and structural reference checks on `expr:` bodies — outside the `§8` framework entirely.
-
 ## 9. Cross-Kind Reference Rule
 
 When an expression, Filter, or Constraint in top-level DataKind X references a Semantics whose binding lives only in another top-level DataKind Y, a `Relationship` from X to Y (possibly via intermediate DataKinds) must exist in the Model.
@@ -844,69 +678,6 @@ For every reference `R` in the Kind scope of X naming Semantics `S`:
 ### 9.3 Within-kind references
 
 Inside a top-level DataKind's subtree (its Kind scope plus all nested scopes and Binding scopes underneath), every Semantics named in an expression resolves through the DataKind's own interface and Binding structure. No Relationship is needed — the references never cross a top-level DataKind boundary.
-
-### 9.4 Worked example — within-kind vs. cross-kind
-
-```yaml
-version: 1
-semantic_model:
-  name: sales_analytics
-
-  datasets:
-    - name: orders
-      dimensions:
-        - name: order_date
-          type: temporal
-          data_type: date
-        - name: customer_id
-          data_type: string
-      measures:
-        - name: revenue
-          data_type: decimal
-          agg: sum
-          expr: order_total
-      metrics:
-        - name: revenue_with_tax
-          data_type: decimal
-          additivity: additive
-          expr: revenue * 1.1          # within-kind: `revenue` resolves locally
-      keys:
-        - kind: primary
-          members: [order_id]
-        - kind: foreign
-          members: [customer_id]
-          references: { dataset: customers, key: primary }
-      # binding omitted
-
-    - name: customers
-      dimensions:
-        - name: customer_id
-          data_type: string
-        - name: customer_name
-          data_type: string
-        - name: customer_segment
-          data_type: string
-      keys:
-        - kind: primary
-          members: [customer_id]
-      # binding omitted
-
-  relationships:
-    - name: orders_to_customers
-      from: { dataset: orders, key: foreign-on-customer_id }
-      to:   { dataset: customers, key: primary }
-      cardinality: many_to_one
-```
-
-Compile-time resolution outcomes:
-
-- **Within-kind reference** — `revenue_with_tax = revenue * 1.1` inside `orders`. The reference `revenue` is bound inside `orders`'s own Binding subtree (via its Measure occurrence's `expr: order_total`). §11.1 step 3a resolves locally. No Relationship walk.
-
-- **Cross-kind reference at Request time** — a Request naming `revenue by customer_segment` arrives with `from: orders`. `customer_segment` is NOT bound inside `orders`; it's bound in `customers`. §11.1 step 3b searches the Relationship graph and finds `orders_to_customers`. Path recorded. At plan time, `plan` walks the Relationship (per `16`) to materialize a `PlanNode` that joins `orders` and `customers` before grouping.
-
-- **Within-kind Metric referencing cross-kind-only Semantics would fail.** If `orders` declared `metrics: - name: revenue_by_segment_share expr: revenue / revenue_total_for(customer_segment)`, and `customer_segment` is not in `orders`'s interface, the reference fails at compile with `CompileError::SemanticNotInInterface` (N-C3). The fix is to either expose `customer_segment` on `orders`'s interface (by declaring it there as a cross-kind-resolved Dimension, walked at plan time) or restructure the Metric to live on a Joinset / ComposedSemanticInterface.
-
-The distinction: **within-kind** references are validated by "is this Semantics in this DataKind's interface AND bound in its subtree"; **cross-kind** references are validated by "does a Relationship path exist to reach a binding."
 
 ## 10. Nested-Kind Structural Labels
 
@@ -948,7 +719,7 @@ The full nesting matrix (which Complex may contain which nested-block form) is r
 
 ## 11. Lookup Algorithm
 
-`compile`'s name-resolution pass produces the following indices in the `Manifest`:
+`compile`'s name-resolution pass produces the following indices in the `SemanticManifest`:
 
 - A **global Semantics registry** keyed by name, carrying the unified shape plus the per-DataKind resolution-variant map.
 - A **per-DataKind Semantics table** listing which Semantics are exposed by each top-level DataKind's interface.
@@ -974,7 +745,7 @@ Within an `expr` (from any Semantics in K's Kind scope), referenced names are Se
 
 ### 11.3 Deterministic ordering
 
-All Manifest indices and all Diagnostic streams emitted by `11`'s lookup algorithm MUST be deterministic across runs of the same input. The ratified order:
+All SemanticManifest indices and all Diagnostic streams emitted by `11`'s lookup algorithm MUST be deterministic across runs of the same input. The ratified order:
 
 | Index | Ordering rule |
 |---|---|
@@ -984,7 +755,7 @@ All Manifest indices and all Diagnostic streams emitted by `11`'s lookup algorit
 | Relationship graph | lexicographic by `(from_dataset, to_dataset)` pair |
 | Diagnostic stream | primary: source-document location when present (by `(file, line, col)`); secondary: structural walk order of the Model root's declarations (Model-root Tier-1 blocks first, then top-level DataKinds in declaration order, then Relationships); tertiary: within-list index |
 
-Rationale: deterministic output is required for stable test fixtures, stable Manifest artifacts under snapshot-style CI, and I5-compatible caching. `BTreeMap`-backed indices inside the Manifest make the Semantics / DataKind / path orderings structural rather than policy. Diagnostic ordering is policy because locations may be absent (context-free errors, per `10 §5.1`).
+Rationale: deterministic output is required for stable test fixtures, stable SemanticManifest artifacts under snapshot-style CI, and I5-compatible caching. `BTreeMap`-backed indices inside the SemanticManifest make the Semantics / DataKind / path orderings structural rather than policy. Diagnostic ordering is policy because locations may be absent (context-free errors, per `10 §5.1`).
 
 Structural walk order for Diagnostic streams is the tie-breaker when two Diagnostics share a `None` location — they sort by the lexical position of the declaration they arose from. Within-run determinism is guaranteed; cross-run stability across non-trivial Model edits is not (adding a Tier-1 declaration shifts structural positions).
 

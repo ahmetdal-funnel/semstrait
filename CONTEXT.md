@@ -1,11 +1,24 @@
 # Context
 
-The authoritative project-mode signpost is [`AGENTS.md`](AGENTS.md) (tool-neutral: Cursor / Claude Code / Codex).
+The authoritative project-mode signpost is `[AGENTS.md](AGENTS.md)` (tool-neutral: Cursor / Claude Code / Codex).
 
-Quick links:
+Project stage:
 
-- **Spec / design work** → [`docs/design/00_overview.md`](docs/design/00_overview.md) (mandatory first read) + [`docs/design/STATUS.md`](docs/design/STATUS.md) (session-handoff)
-- **Code / refactor work** → [`CLAUDE.md`](CLAUDE.md) for the full routing table
-- **Active architectural decisions (current code)** → [`DECISION_LOG.md`](DECISION_LOG.md)
+- `spec-driven-dev` is active.
+- Priority is to cleanly define and ratify design specs.
+- Implementation/migration follows after spec closure.
 
-The project is in `spec-driven-dev` mode. The target architecture lives under `docs/design/`; current code does not yet match the spec.
+## Quick links
+
+- **Design/spec sessions (mandatory start order)**:
+  1. `[docs/design/00_overview.md](docs/design/00_overview.md)`
+  2. `[docs/design/STATUS.md](docs/design/STATUS.md)`
+  3. `[docs/design/INDEX.md](docs/design/INDEX.md)`
+  4. `[docs/design/DOCS_MAINTENANCE.md](docs/design/DOCS_MAINTENANCE.md)`
+- **Code/refactor session routing** -> `[CLAUDE.md](CLAUDE.md)`
+
+## Authority rule
+
+- `docs/design/` is authoritative for target-state architecture.
+- Other docs (including `DECISION_LOG.md`, root `README.md`, and legacy `docs/*.md` outside `docs/design/`) are **current-code reference only**.
+- When current-state docs conflict with spec docs, follow `docs/design/` and reconcile through spec artifacts.
