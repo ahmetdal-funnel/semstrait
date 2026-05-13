@@ -2979,6 +2979,18 @@ fn parse_predicate_operand(s: &str) -> Expr {
     parse_operand(trimmed)
 }
 
+fn has_adjacent_space(bytes: &[u8], i: usize) -> bool {
+    preceded_by_space(bytes, i) || followed_by_space(bytes, i)
+}
+
+fn preceded_by_space(bytes: &[u8], i: usize) -> bool {
+    i > 0 && bytes[i - 1] == b' '
+}
+
+fn followed_by_space(bytes: &[u8], i: usize) -> bool {
+    i + 1 < bytes.len() && bytes[i + 1] == b' '
+}
+
 fn try_parse_arithmetic(expr: &str) -> Option<Expr> {
     let bytes = expr.as_bytes();
     let mut state = ScanState::new();
@@ -2994,7 +3006,9 @@ fn try_parse_arithmetic(expr: &str) -> Option<Expr> {
         }
         match b {
             b'+' | b'-' if i > 0 => {
-                last_add_sub = Some(i);
+                if has_adjacent_space(bytes, i) {
+                    last_add_sub = Some(i);
+                }
             }
             b'*' | b'/' if i > 0 => {
                 last_mul_div = Some(i);
@@ -3301,6 +3315,33 @@ mod tests {
                 assert_eq!(bin.op, semstrait_core::BinaryOp::Subtract);
             }
             _ => panic!("expected BinaryOp(Subtract), got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_hyphenated_name_is_entity_ref() {
+        let expr = parse_expr("adwords-averageCost", "adwords-averageCost").unwrap();
+        match &expr {
+            Expr::EntityRef(e) => assert_eq!(e.name, "adwords-averageCost"),
+            other => panic!("expected EntityRef(adwords-averageCost), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_spaced_arithmetic_still_works() {
+        let expr = parse_expr("revenue - cost", "profit").unwrap();
+        match &expr {
+            Expr::BinaryOp(bin) => assert_eq!(bin.op, semstrait_core::BinaryOp::Subtract),
+            other => panic!("expected BinaryOp(Subtract), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_expr_multi_hyphen_name_is_entity_ref() {
+        let expr = parse_expr("adwords-conversions-cost-per-conversion", "adwords-conversions-cost-per-conversion").unwrap();
+        match &expr {
+            Expr::EntityRef(e) => assert_eq!(e.name, "adwords-conversions-cost-per-conversion"),
+            other => panic!("expected EntityRef, got {:?}", other),
         }
     }
 
