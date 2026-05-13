@@ -15,7 +15,11 @@ use serde_yaml::Value;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
-#[builder(start_fn = builder, finish_fn = build)]
+#[builder(
+    start_fn = builder,
+    finish_fn = build,
+    state_mod(name = dimension_builder, vis = "pub"),
+)]
 pub struct Dimension {
     #[builder(start_fn, into)]
     pub name: SemanticsName,
@@ -89,6 +93,50 @@ impl DimensionType {
 
     pub fn metadata(source: MetadataSource) -> Self {
         Self::Metadata(MetadataDimensionBody { source })
+    }
+}
+
+// ── Facade methods on `DimensionBuilder` — `32 §9.7.8` ──────────────
+//
+// Each delegates to `.dim_type(DimensionType::*(...))` on the primary
+// builder. The shared `S::DimType: IsUnset` bound lives on the impl
+// block, so all six are gated on the same single-shot typestate slot.
+
+impl<S: dimension_builder::State> DimensionBuilder<S>
+where
+    S::DimType: dimension_builder::IsUnset,
+{
+    pub fn temporal(
+        self,
+        grains: impl IntoIterator<Item = Grain>,
+    ) -> DimensionBuilder<dimension_builder::SetDimType<S>> {
+        self.dim_type(DimensionType::temporal(grains))
+    }
+
+    pub fn categorical(self) -> DimensionBuilder<dimension_builder::SetDimType<S>> {
+        self.dim_type(DimensionType::categorical())
+    }
+
+    pub fn binary(self) -> DimensionBuilder<dimension_builder::SetDimType<S>> {
+        self.dim_type(DimensionType::binary())
+    }
+
+    pub fn geo(self) -> DimensionBuilder<dimension_builder::SetDimType<S>> {
+        self.dim_type(DimensionType::geo())
+    }
+
+    pub fn bucketed(
+        self,
+        buckets: impl IntoIterator<Item = BucketSpec>,
+    ) -> DimensionBuilder<dimension_builder::SetDimType<S>> {
+        self.dim_type(DimensionType::bucketed(buckets))
+    }
+
+    pub fn metadata(
+        self,
+        source: MetadataSource,
+    ) -> DimensionBuilder<dimension_builder::SetDimType<S>> {
+        self.dim_type(DimensionType::metadata(source))
     }
 }
 

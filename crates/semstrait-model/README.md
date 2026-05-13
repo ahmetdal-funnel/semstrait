@@ -63,33 +63,88 @@ folds every diagnostic into a single
 
 ## Construct from code
 
-The builder API is per-struct and structural-faithful: method names
-equal Rust field names; variant-body constructors map 1:1 onto spec
-shapes (`32 §9.7.1`).
+The builder API has two surfaces — both produce identical `SemanticModel`
+values:
+
+- **Ergonomic facade** (`32 §9.7.8`) — recommended for hand-authored models.
+  Shorter call chains, cross-struct flatteners (`Dataset::builder("orders").catalog("polaris").path("s3://…")`),
+  per-item inserters, agg / additivity shortcuts.
+- **Primary structural surface** (`32 §9.7.1`–`§9.7.6`) — every builder
+  method name equals the Rust field name (`.dim_type(...)`,
+  `.semantic_mapping(...)`). Used by round-trip helpers, schema generators,
+  and code-gen tools; remains canonical.
+
+### Facade form (recommended)
 
 ```rust
 use semstrait_core::{DataType, Grain};
-use semstrait_model::{
-    AdditivityType, AggregationType, Cardinality, ComplexExtras,
-    Dataset, Dimension, DimensionEntry, DimensionType, Grainset,
-    JoinKeyExprPair, KeyDecl, Keys, LeafExtras, LiteralValue, Measure,
-    MeasureEntry, NestedDataset, Relationship, SemanticInterface,
-    SemanticMapping, SemanticMappingValue, SemanticModel, TemporalShape,
-};
+use semstrait_model::*;
 
-// ── Shared root-pool entries ────────────────────────────────────
+let order_ts = Dimension::builder("order_ts")
+    .data_type(DataType::Timestamp { precision: 6 })
+    .temporal([Grain::Minute, Grain::Hour, Grain::Day])
+    .build();
+
+let revenue = Measure::builder("revenue")
+    .data_type(DataType::Decimal { precision: 18, scale: 2 })
+    .sum()
+    .full()
+    .build();
+
+let orders = Dataset::builder("orders")
+    .catalog("polaris_prod")
+    .format(StorageFormat::Parquet)
+    .path("s3://bucket/orders/")
+    .semantic_mapping(
+        SemanticMapping::builder().column("revenue", "amount_cents").build(),
+    )
+    .temporal(TemporalShape::events("order_ts", Some(Grain::Minute)))
+    .description("Order-line fact dataset.")
+    .dimension(DimensionEntry::r#ref("order_ts"))
+    .measure(MeasureEntry::r#ref("revenue"))
+    .primary_key(KeyDecl::builder().fields(vec!["order_id".into()]).build())
+    .build();
+
+let orders_to_customers = Relationship::builder()
+    .name("orders_to_customers")
+    .from("orders")
+    .to("customers")
+    .field("customer_id", "id")
+    .many_to_one()
+    .build()?;
+
+let (model, _diagnostics) = SemanticModel::builder()
+    .name("analytics-v1")
+    .dataset(orders)
+    .dimension(order_ts)
+    .measure(revenue)
+    .relationship(orders_to_customers)
+    .build()?;
+```
+
+#### Conflict semantics (`32 §9.7.8.3`)
+
+- **Field-level last-write-wins.** When the same field is set more than
+  once, the last call wins.
+- **Sub-struct read-modify-write.** Cross-struct flatteners
+  (`.catalog(...)`, `.dimension(...)`, etc.) read the current parent
+  sub-struct, mutate the targeted sub-field, write back. So
+  `.extras(my_extras).catalog("polaris")` preserves every other field of
+  `my_extras` while setting `catalog`. Symmetrically for
+  `.semantic_interface(my_iface).dimension(entry)`.
+
+### Primary structural surface
+
+Round-trip helpers and code-gen tools target the primary surface. Method
+names equal Rust field names; helpers (`DimensionType::temporal(grains)`,
+`TemporalShape::events(...)`) are 1:1 with variant bodies (`32 §9.7.3`).
+
+```rust
 let order_ts = Dimension::builder("order_ts")
     .data_type(DataType::Timestamp { precision: 6 })
     .dim_type(DimensionType::temporal([Grain::Minute, Grain::Hour, Grain::Day]))
     .build();
 
-let revenue = Measure::builder("revenue")
-    .data_type(DataType::Decimal { precision: 18, scale: 2 })
-    .agg(AggregationType::Sum)
-    .additivity(AdditivityType::Full)
-    .build();
-
-// ── Public Dataset (body fields + Public-only fields) ───────────
 let extras = LeafExtras::builder()
     .semantic_mapping(
         SemanticMapping::builder()
@@ -114,55 +169,14 @@ let interface = SemanticInterface::builder()
     .build();
 
 let orders = Dataset::builder("orders")
-    .extras(extras.clone())
+    .extras(extras)
     .description("Order-line fact dataset.")
-    .semantic_interface(interface.clone())
-    .build();
-
-// ── Public Grainset with two NestedDataset children (R3) ────────
-let returns = NestedDataset::builder("returns").extras(extras.clone()).build();
-let refunds = NestedDataset::builder("refunds").extras(extras).build();
-
-let order_events = Grainset::builder("order_events")
-    .extras(ComplexExtras::default())
-    .dataset(returns)
-    .dataset(refunds)
-    .description("Roll-up of order-side events.")
     .semantic_interface(interface)
     .build();
-
-// ── Cross-public Relationship ───────────────────────────────────
-let orders_to_events = Relationship::builder()
-    .name("orders_to_events")
-    .from("orders")
-    .to("order_events")
-    .keys(vec![JoinKeyExprPair::fields("order_id", "order_id")])
-    .cardinality(Cardinality::ManyToOne)
-    .build()?;
-
-// ── Root model — `.build()` runs `validate` ─────────────────────
-let (model, _diagnostics) = SemanticModel::builder()
-    .name("analytics-v1")
-    .dataset(orders)
-    .grainset(order_events)
-    .dimension(order_ts)
-    .measure(revenue)
-    .relationship(orders_to_events)
-    .build()?;
 ```
 
-The structural-fidelity rule (`32 §9.7.1`) constrains the builder API:
-
-- Builder methods equal Rust field names (`.data_type(...)`,
-  `.dim_type(...)`, `.agg(...)`, `.semantic_mapping(...)`) — no
-  abbreviations, no synonyms.
-- Variant-body constructors are 1:1 with the spec body. Example:
-  `DimensionType::temporal(grains)` accepts exactly the
-  [`TemporalDimensionBody`](crate::entities::TemporalDimensionBody)
-  payload (`18 §4.1`); no extra parameters, no side fields.
-- Helpers that conflate multiple spec fields, or that introduce
-  vocabulary outside the spec (e.g. `SemanticMapping::schema_table`),
-  are forbidden by construction.
+The structural-fidelity rules (`32 §9.7.1` R1 / R2 / R3) constrain the
+primary surface; the facade (§9.7.8) layers on top without bypassing it.
 
 ---
 

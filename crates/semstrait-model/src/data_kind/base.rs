@@ -1,6 +1,6 @@
 //! `DataKindBase<E>`, `LeafExtras`, `ComplexExtras` — `32 §3.1`, `§4`.
 
-use crate::data_kind::storage::{CatalogRef, StorageConfig};
+use crate::data_kind::storage::{CatalogRef, PartitionDef, StorageConfig, StorageFormat};
 use crate::entities::mapping::SemanticMapping;
 use crate::entities::temporal::TemporalShape;
 use bon::Builder;
@@ -63,6 +63,61 @@ impl ExtrasFlavor for LeafExtras {
     }
 }
 
+// Inherent `with_*` setters — single source of truth for the LeafExtras
+// flattener logic that `DatasetBuilder` / `NestedDatasetBuilder` facade
+// methods (`32 §9.7.8.5`) delegate to. Storage sub-fields use
+// `Option::get_or_insert_with(Default::default)` so the storage block is
+// auto-created on first sub-field set without an explicit `.storage(...)`
+// call.
+impl LeafExtras {
+    pub fn with_catalog(mut self, c: impl Into<String>) -> Self {
+        self.catalog = Some(CatalogRef::new(c));
+        self
+    }
+    pub fn with_storage(mut self, s: StorageConfig) -> Self {
+        self.storage = Some(s);
+        self
+    }
+    pub fn with_format(mut self, f: StorageFormat) -> Self {
+        self.storage.get_or_insert_with(Default::default).format = Some(f);
+        self
+    }
+    pub fn with_path(mut self, p: impl Into<String>) -> Self {
+        self.storage.get_or_insert_with(Default::default).paths.push(p.into());
+        self
+    }
+    pub fn with_paths(mut self, items: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.storage
+            .get_or_insert_with(Default::default)
+            .paths
+            .extend(items.into_iter().map(Into::into));
+        self
+    }
+    pub fn with_table(mut self, t: impl Into<String>) -> Self {
+        self.storage.get_or_insert_with(Default::default).tables.push(t.into());
+        self
+    }
+    pub fn with_tables(mut self, items: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.storage
+            .get_or_insert_with(Default::default)
+            .tables
+            .extend(items.into_iter().map(Into::into));
+        self
+    }
+    pub fn with_partition_def(mut self, p: PartitionDef) -> Self {
+        self.storage.get_or_insert_with(Default::default).partition_def = Some(p);
+        self
+    }
+    pub fn with_semantic_mapping(mut self, m: SemanticMapping) -> Self {
+        self.semantic_mapping = m;
+        self
+    }
+    pub fn with_temporal(mut self, t: TemporalShape) -> Self {
+        self.temporal = Some(t);
+        self
+    }
+}
+
 /// Complex-axis extras — `Grainset` / `Unionset` / `Joinset` plus
 /// their nested forms. Per R-6, `catalog` / `storage` /
 /// `semantic_mapping` are leaf-only and have no slot here (SR-5).
@@ -78,5 +133,15 @@ pub struct ComplexExtras {
 impl ExtrasFlavor for ComplexExtras {
     fn is_default(&self) -> bool {
         self.temporal.is_none()
+    }
+}
+
+// Inherent `with_*` setters — single source of truth for the
+// ComplexExtras flattener logic that complex DataKind builder facades
+// (`32 §9.7.8.5`) delegate to.
+impl ComplexExtras {
+    pub fn with_temporal(mut self, t: TemporalShape) -> Self {
+        self.temporal = Some(t);
+        self
     }
 }

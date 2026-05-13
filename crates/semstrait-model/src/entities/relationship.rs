@@ -14,8 +14,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
-#[builder(start_fn = builder, finish_fn = finalize)]
+#[builder(
+    start_fn = builder,
+    finish_fn = finalize,
+    state_mod(name = relationship_builder, vis = "pub"),
+)]
 pub struct Relationship {
+    /// Equi-join key pairs. Accumulated via `#[builder(field)]`;
+    /// per-item shortcut `.field(from, to)` lives on
+    /// `RelationshipBuilder` below.
+    #[serde(default)]
+    #[builder(field)]
+    pub keys: Vec<JoinKeyExprPair>,
+
     #[builder(into)]
     pub name: String,
 
@@ -23,11 +34,6 @@ pub struct Relationship {
     pub from: DataKindName,
     #[builder(into)]
     pub to: DataKindName,
-
-    /// Equi-join key pairs.
-    #[serde(default)]
-    #[builder(default)]
-    pub keys: Vec<JoinKeyExprPair>,
 
     /// Optional residual predicate evaluated against the joined
     /// rowset. `None` means equi-join only per `keys`.
@@ -71,6 +77,44 @@ impl<S: relationship_builder::IsComplete> RelationshipBuilder<S> {
         let r = self.finalize();
         validate_relationship_build(&r).map_err(Diagnostic::new)?;
         Ok(r)
+    }
+}
+
+// ── Facade methods on `RelationshipBuilder` — `32 §9.7.8` ───────────
+//
+// `.field(from, to)` pushes a bare-Semantic-field key pair (the
+// common case); `.keys(...)` replaces the whole list and preserves
+// back-compat with the removed bon-generated plural setter. Each
+// cardinality shortcut delegates to `.cardinality(Cardinality::*)`;
+// the shared `IsUnset` bound lives on the impl block.
+
+impl<S: relationship_builder::State> RelationshipBuilder<S> {
+    pub fn field(mut self, from: impl Into<String>, to: impl Into<String>) -> Self {
+        self.keys.push(JoinKeyExprPair::fields(from, to));
+        self
+    }
+
+    pub fn keys(mut self, items: impl IntoIterator<Item = JoinKeyExprPair>) -> Self {
+        self.keys = items.into_iter().collect();
+        self
+    }
+}
+
+impl<S: relationship_builder::State> RelationshipBuilder<S>
+where
+    S::Cardinality: relationship_builder::IsUnset,
+{
+    pub fn one_to_one(self) -> RelationshipBuilder<relationship_builder::SetCardinality<S>> {
+        self.cardinality(Cardinality::OneToOne)
+    }
+    pub fn one_to_many(self) -> RelationshipBuilder<relationship_builder::SetCardinality<S>> {
+        self.cardinality(Cardinality::OneToMany)
+    }
+    pub fn many_to_one(self) -> RelationshipBuilder<relationship_builder::SetCardinality<S>> {
+        self.cardinality(Cardinality::ManyToOne)
+    }
+    pub fn many_to_many(self) -> RelationshipBuilder<relationship_builder::SetCardinality<S>> {
+        self.cardinality(Cardinality::ManyToMany)
     }
 }
 

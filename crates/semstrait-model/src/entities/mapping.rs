@@ -103,6 +103,20 @@ impl SemanticMappingBuilder {
         self
     }
 
+    /// Bulk-insert convenience mirroring [`with_semantic`](Self::with_semantic)
+    /// for multiple entries. Per-pair last-write-wins within the supplied
+    /// iterator and against any earlier inserts on the same builder.
+    pub fn entries<I, N>(mut self, items: I) -> Self
+    where
+        I: IntoIterator<Item = (N, SemanticMappingValue)>,
+        N: Into<SemanticsName>,
+    {
+        for (name, value) in items {
+            self.entries.insert(name.into(), value);
+        }
+        self
+    }
+
     pub fn build(self) -> SemanticMapping {
         if self.entries.is_empty() {
             SemanticMapping::Auto

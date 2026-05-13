@@ -106,8 +106,22 @@ impl<S: semantic_model_builder::State> SemanticModelBuilder<S> {
         self
     }
 
+    pub fn datasets(mut self, items: impl IntoIterator<Item = Dataset>) -> Self {
+        for d in items {
+            self.datasets.push((synthetic_location(), d));
+        }
+        self
+    }
+
     pub fn grainset(mut self, g: Grainset) -> Self {
         self.grainsets.push((synthetic_location(), g));
+        self
+    }
+
+    pub fn grainsets(mut self, items: impl IntoIterator<Item = Grainset>) -> Self {
+        for g in items {
+            self.grainsets.push((synthetic_location(), g));
+        }
         self
     }
 
@@ -116,8 +130,22 @@ impl<S: semantic_model_builder::State> SemanticModelBuilder<S> {
         self
     }
 
+    pub fn unionsets(mut self, items: impl IntoIterator<Item = Unionset>) -> Self {
+        for u in items {
+            self.unionsets.push((synthetic_location(), u));
+        }
+        self
+    }
+
     pub fn joinset(mut self, j: Joinset) -> Self {
         self.joinsets.push((synthetic_location(), j));
+        self
+    }
+
+    pub fn joinsets(mut self, items: impl IntoIterator<Item = Joinset>) -> Self {
+        for j in items {
+            self.joinsets.push((synthetic_location(), j));
+        }
         self
     }
 
@@ -126,13 +154,34 @@ impl<S: semantic_model_builder::State> SemanticModelBuilder<S> {
         self
     }
 
+    pub fn dimensions(mut self, items: impl IntoIterator<Item = Dimension>) -> Self {
+        for d in items {
+            self.dimensions.push((synthetic_location(), d));
+        }
+        self
+    }
+
     pub fn measure(mut self, m: Measure) -> Self {
         self.measures.push((synthetic_location(), m));
         self
     }
 
+    pub fn measures(mut self, items: impl IntoIterator<Item = Measure>) -> Self {
+        for m in items {
+            self.measures.push((synthetic_location(), m));
+        }
+        self
+    }
+
     pub fn metric(mut self, m: Metric) -> Self {
         self.metrics.push((synthetic_location(), m));
+        self
+    }
+
+    pub fn metrics(mut self, items: impl IntoIterator<Item = Metric>) -> Self {
+        for m in items {
+            self.metrics.push((synthetic_location(), m));
+        }
         self
     }
 

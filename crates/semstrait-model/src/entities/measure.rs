@@ -15,10 +15,22 @@ use serde_yaml::Value;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
-#[builder(start_fn = builder, finish_fn = build)]
+#[builder(
+    start_fn = builder,
+    finish_fn = build,
+    state_mod(name = measure_builder, vis = "pub"),
+)]
 pub struct Measure {
     #[builder(start_fn, into)]
     pub name: SemanticsName,
+
+    /// Measure-level conditional-aggregation filters. Each filter
+    /// wraps the Measure in a `CASE WHEN ... THEN expr ELSE NULL END`
+    /// at compile time. Accumulated via `#[builder(field)]`; per-item
+    /// inserter `.filter(...)` lives on `MeasureBuilder` below.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[builder(field)]
+    pub filters: Vec<AggregationFilter>,
 
     pub data_type: DataType,
 
@@ -43,13 +55,74 @@ pub struct Measure {
     /// Optional additivity classification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additivity: Option<AdditivityType>,
+}
 
-    /// Measure-level conditional-aggregation filters. Each filter
-    /// wraps the Measure in a `CASE WHEN ... THEN expr ELSE NULL END`
-    /// at compile time.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[builder(default)]
-    pub filters: Vec<AggregationFilter>,
+// ── Facade methods on `MeasureBuilder` — `32 §9.7.8` ────────────────
+//
+// Aggregation / additivity shortcuts delegate to `.agg(...)` /
+// `.additivity(...)`. Shared `IsUnset` bounds live on the impl
+// blocks. `.filter(item)` pushes onto the `filters` collection;
+// `.filters(items)` replaces it (back-compat with the removed
+// bon-generated plural setter).
+
+impl<S: measure_builder::State> MeasureBuilder<S>
+where
+    S::Agg: measure_builder::IsUnset,
+{
+    pub fn sum(self) -> MeasureBuilder<measure_builder::SetAgg<S>> {
+        self.agg(AggregationType::Sum)
+    }
+    pub fn avg(self) -> MeasureBuilder<measure_builder::SetAgg<S>> {
+        self.agg(AggregationType::Avg)
+    }
+    pub fn count(self) -> MeasureBuilder<measure_builder::SetAgg<S>> {
+        self.agg(AggregationType::Count)
+    }
+    pub fn count_distinct(self) -> MeasureBuilder<measure_builder::SetAgg<S>> {
+        self.agg(AggregationType::CountDistinct)
+    }
+    pub fn min(self) -> MeasureBuilder<measure_builder::SetAgg<S>> {
+        self.agg(AggregationType::Min)
+    }
+    pub fn max(self) -> MeasureBuilder<measure_builder::SetAgg<S>> {
+        self.agg(AggregationType::Max)
+    }
+    pub fn median(self) -> MeasureBuilder<measure_builder::SetAgg<S>> {
+        self.agg(AggregationType::Median)
+    }
+    pub fn std_dev(self) -> MeasureBuilder<measure_builder::SetAgg<S>> {
+        self.agg(AggregationType::StdDev)
+    }
+    pub fn variance(self) -> MeasureBuilder<measure_builder::SetAgg<S>> {
+        self.agg(AggregationType::Variance)
+    }
+}
+
+impl<S: measure_builder::State> MeasureBuilder<S>
+where
+    S::Additivity: measure_builder::IsUnset,
+{
+    pub fn full(self) -> MeasureBuilder<measure_builder::SetAdditivity<S>> {
+        self.additivity(AdditivityType::Full)
+    }
+    pub fn semi(self, s: SemiAdditivity) -> MeasureBuilder<measure_builder::SetAdditivity<S>> {
+        self.additivity(AdditivityType::Semi(s))
+    }
+    pub fn non(self) -> MeasureBuilder<measure_builder::SetAdditivity<S>> {
+        self.additivity(AdditivityType::Non)
+    }
+}
+
+impl<S: measure_builder::State> MeasureBuilder<S> {
+    pub fn filter(mut self, f: AggregationFilter) -> Self {
+        self.filters.push(f);
+        self
+    }
+
+    pub fn filters(mut self, items: impl IntoIterator<Item = AggregationFilter>) -> Self {
+        self.filters = items.into_iter().collect();
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

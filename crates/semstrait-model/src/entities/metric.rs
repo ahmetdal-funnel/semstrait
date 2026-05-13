@@ -2,7 +2,7 @@
 
 use crate::entities::ai::AiContext;
 use crate::entities::filter::AggregationFilter;
-use crate::entities::measure::{AdditivityType, AggregationType};
+use crate::entities::measure::{AdditivityType, AggregationType, SemiAdditivity};
 use crate::expr_ast::ExprSource;
 use crate::types::SemanticsName;
 use bon::Builder;
@@ -19,10 +19,21 @@ use serde_yaml::Value;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Builder)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
-#[builder(start_fn = builder, finish_fn = build)]
+#[builder(
+    start_fn = builder,
+    finish_fn = build,
+    state_mod(name = metric_builder, vis = "pub"),
+)]
 pub struct Metric {
     #[builder(start_fn, into)]
     pub name: SemanticsName,
+
+    /// Conditional-aggregation filters (same shape as Measure).
+    /// Accumulated via `#[builder(field)]`; per-item inserter
+    /// `.filter(...)` lives on `MetricBuilder` below.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[builder(field)]
+    pub filters: Vec<AggregationFilter>,
 
     pub data_type: DataType,
 
@@ -47,10 +58,73 @@ pub struct Metric {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additivity: Option<AdditivityType>,
+}
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[builder(default)]
-    pub filters: Vec<AggregationFilter>,
+// ── Facade methods on `MetricBuilder` — `32 §9.7.8` ─────────────────
+//
+// Mirrors the Measure facade. The `agg:` setter for Metric takes
+// `AggregationType` directly (bon auto-unwraps the `Option<...>`
+// wrapper at the setter boundary). Shared `IsUnset` bounds live on
+// the impl blocks rather than per-method.
+
+impl<S: metric_builder::State> MetricBuilder<S>
+where
+    S::Agg: metric_builder::IsUnset,
+{
+    pub fn sum(self) -> MetricBuilder<metric_builder::SetAgg<S>> {
+        self.agg(AggregationType::Sum)
+    }
+    pub fn avg(self) -> MetricBuilder<metric_builder::SetAgg<S>> {
+        self.agg(AggregationType::Avg)
+    }
+    pub fn count(self) -> MetricBuilder<metric_builder::SetAgg<S>> {
+        self.agg(AggregationType::Count)
+    }
+    pub fn count_distinct(self) -> MetricBuilder<metric_builder::SetAgg<S>> {
+        self.agg(AggregationType::CountDistinct)
+    }
+    pub fn min(self) -> MetricBuilder<metric_builder::SetAgg<S>> {
+        self.agg(AggregationType::Min)
+    }
+    pub fn max(self) -> MetricBuilder<metric_builder::SetAgg<S>> {
+        self.agg(AggregationType::Max)
+    }
+    pub fn median(self) -> MetricBuilder<metric_builder::SetAgg<S>> {
+        self.agg(AggregationType::Median)
+    }
+    pub fn std_dev(self) -> MetricBuilder<metric_builder::SetAgg<S>> {
+        self.agg(AggregationType::StdDev)
+    }
+    pub fn variance(self) -> MetricBuilder<metric_builder::SetAgg<S>> {
+        self.agg(AggregationType::Variance)
+    }
+}
+
+impl<S: metric_builder::State> MetricBuilder<S>
+where
+    S::Additivity: metric_builder::IsUnset,
+{
+    pub fn full(self) -> MetricBuilder<metric_builder::SetAdditivity<S>> {
+        self.additivity(AdditivityType::Full)
+    }
+    pub fn semi(self, s: SemiAdditivity) -> MetricBuilder<metric_builder::SetAdditivity<S>> {
+        self.additivity(AdditivityType::Semi(s))
+    }
+    pub fn non(self) -> MetricBuilder<metric_builder::SetAdditivity<S>> {
+        self.additivity(AdditivityType::Non)
+    }
+}
+
+impl<S: metric_builder::State> MetricBuilder<S> {
+    pub fn filter(mut self, f: AggregationFilter) -> Self {
+        self.filters.push(f);
+        self
+    }
+
+    pub fn filters(mut self, items: impl IntoIterator<Item = AggregationFilter>) -> Self {
+        self.filters = items.into_iter().collect();
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
