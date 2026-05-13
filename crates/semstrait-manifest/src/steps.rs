@@ -2112,7 +2112,11 @@ fn compile_metrics(
     let mut metrics = IndexMap::new();
     for m in entries.values() {
         if let MetricEntry::Inline(met) = m {
-            let expr = resolve_expr_source(&met.expr, &met.name)?;
+            let expr = if met.expr.display_string() == met.name {
+                Expr::entity_ref(&met.name)
+            } else {
+                resolve_expr_source(&met.expr, &met.name)?
+            };
 
             // Validate function calls against registry.
             errors.extend(validate_function_calls(&expr, &met.name, registry));
@@ -3719,6 +3723,30 @@ mod tests {
             }
             _ => panic!("expected BinaryOp(Subtract), got {:?}", expr),
         }
+    }
+
+    #[test]
+    fn test_compile_metrics_hyphenated_self_ref_pass_through() {
+        let name = "klaviyo-unsubscribed_from_list".to_string();
+        let mut entries = BTreeMap::new();
+        entries.insert(name.clone(), MetricEntry::Inline(Metric {
+            name: name.clone(),
+            description: None,
+            data_type: Some(semstrait_model::DataType::I64),
+            ai_context: None,
+            agg: None,
+            expr: semstrait_model::expr_block::ExprSource::Inline(name.clone()),
+            additivity: None,
+            constraints: None,
+            filters: vec![],
+        }));
+
+        let measures = IndexMap::new();
+        let metric_depths = HashMap::new();
+        let result = compile_metrics(&entries, &metric_depths, &measures);
+        assert!(result.is_ok(), "hyphenated self-ref metric must compile: {:?}", result);
+        let compiled = result.unwrap();
+        assert!(compiled.contains_key(&name));
     }
 
     #[test]
