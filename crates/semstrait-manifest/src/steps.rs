@@ -2979,6 +2979,18 @@ fn parse_predicate_operand(s: &str) -> Expr {
     parse_operand(trimmed)
 }
 
+fn has_adjacent_space(bytes: &[u8], i: usize) -> bool {
+    preceded_by_space(bytes, i) || followed_by_space(bytes, i)
+}
+
+fn preceded_by_space(bytes: &[u8], i: usize) -> bool {
+    i > 0 && bytes[i - 1] == b' '
+}
+
+fn followed_by_space(bytes: &[u8], i: usize) -> bool {
+    i + 1 < bytes.len() && bytes[i + 1] == b' '
+}
+
 fn try_parse_arithmetic(expr: &str) -> Option<Expr> {
     let bytes = expr.as_bytes();
     let mut state = ScanState::new();
@@ -2994,13 +3006,7 @@ fn try_parse_arithmetic(expr: &str) -> Option<Expr> {
         }
         match b {
             b'+' | b'-' if i > 0 => {
-                // Require at least one space adjacent to +/- to distinguish
-                // arithmetic operators from hyphens in identifier names like
-                // `adwords-averageCost`. `revenue - cost` has spaces; column
-                // names with hyphens do not.
-                let prev_space = i > 0 && bytes[i - 1] == b' ';
-                let next_space = i + 1 < bytes.len() && bytes[i + 1] == b' ';
-                if prev_space || next_space {
+                if has_adjacent_space(bytes, i) {
                     last_add_sub = Some(i);
                 }
             }
@@ -3312,9 +3318,6 @@ mod tests {
         }
     }
 
-    // Hyphenated names must parse as a single EntityRef, not arithmetic.
-    // Column names like `adwords-averageCost` are atomic identifiers — the
-    // hyphen is part of the name, not a minus operator.
     #[test]
     fn test_parse_expr_hyphenated_name_is_entity_ref() {
         let expr = parse_expr("adwords-averageCost", "adwords-averageCost").unwrap();
@@ -3324,7 +3327,6 @@ mod tests {
         }
     }
 
-    // Spaced arithmetic must still work.
     #[test]
     fn test_parse_expr_spaced_arithmetic_still_works() {
         let expr = parse_expr("revenue - cost", "profit").unwrap();
@@ -3334,7 +3336,6 @@ mod tests {
         }
     }
 
-    // Multi-hyphen names must also be atomic.
     #[test]
     fn test_parse_expr_multi_hyphen_name_is_entity_ref() {
         let expr = parse_expr("adwords-conversions-cost-per-conversion", "adwords-conversions-cost-per-conversion").unwrap();
