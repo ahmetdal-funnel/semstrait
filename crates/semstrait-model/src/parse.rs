@@ -1001,4 +1001,68 @@ semantic_model:
         let err = result.unwrap_err().to_string();
         assert!(err.contains("duplicate") && err.contains("revenue"), "error: {}", err);
     }
+
+    #[test]
+    fn test_unknown_ref_error_includes_entity_name() {
+        let yaml = r#"
+semantic_model:
+  name: ref_test
+  datasets:
+    - name: orders
+      dimensions:
+        - ref: nonexistent_dim
+      measures: []
+      metrics: []
+  dimensions:
+    - name: date
+      data_type: date
+      type:
+        temporal:
+          grains: [day]
+"#;
+        let model = parse(yaml).unwrap();
+        let result = resolve_refs(model);
+        match result {
+            Err(ModelError::RefResolution(msg)) => {
+                assert!(msg.contains("orders"),
+                    "error must include entity name 'orders': {}", msg);
+                assert!(msg.contains("nonexistent_dim"),
+                    "error must include ref name: {}", msg);
+                assert!(msg.contains("date"),
+                    "error must list available dimensions: {}", msg);
+            }
+            other => panic!("expected RefResolution, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unknown_measure_ref_error_includes_entity_name() {
+        let yaml = r#"
+semantic_model:
+  name: ref_test
+  datasets:
+    - name: orders
+      dimensions: []
+      measures:
+        - ref: nonexistent_measure
+      metrics: []
+  measures:
+    - name: revenue
+      data_type: f64
+      agg: sum
+"#;
+        let model = parse(yaml).unwrap();
+        let result = resolve_refs(model);
+        match result {
+            Err(ModelError::RefResolution(msg)) => {
+                assert!(msg.contains("orders"),
+                    "error must include entity name 'orders': {}", msg);
+                assert!(msg.contains("nonexistent_measure"),
+                    "error must include ref name: {}", msg);
+                assert!(msg.contains("revenue"),
+                    "error must list available measures: {}", msg);
+            }
+            other => panic!("expected RefResolution, got {:?}", other),
+        }
+    }
 }
