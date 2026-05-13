@@ -3153,7 +3153,7 @@ fn extract_identifiers_from_expr(expr: &str) -> Vec<String> {
     .into_iter()
     .collect();
 
-    expr.split(|c: char| !c.is_alphanumeric() && c != '_')
+    expr.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
         .filter(|s| !s.is_empty())
         .filter(|s| !sql_keywords.contains(&s.to_lowercase().as_str()))
         .filter(|s| s.parse::<f64>().is_err())
@@ -3943,5 +3943,44 @@ mod tests {
         let result = collect_leaf_measure_additivity(&expr, &measures, &metrics);
         assert_eq!(result.len(), 1);
         assert!(matches!(result[0], AdditivityType::Full));
+    }
+
+    // --- extract_identifiers_from_expr: hyphenated name tests ---
+
+    #[test]
+    fn test_extract_identifiers_hyphenated_name_stays_atomic() {
+        let ids = extract_identifiers_from_expr("adwords-averageCost");
+        assert_eq!(ids, vec!["adwords-averageCost"],
+            "hyphenated name split into sub-tokens: {:?}", ids);
+    }
+
+    #[test]
+    fn test_extract_identifiers_hyphenated_dep_in_expression() {
+        let ids = extract_identifiers_from_expr("adwords-clicks / adwords-impressions");
+        assert!(ids.contains(&"adwords-clicks".to_string()),
+            "adwords-clicks missing from deps: {:?}", ids);
+        assert!(ids.contains(&"adwords-impressions".to_string()),
+            "adwords-impressions missing from deps: {:?}", ids);
+        assert!(!ids.contains(&"adwords".to_string()),
+            "spurious 'adwords' token in deps: {:?}", ids);
+    }
+
+    #[test]
+    fn test_build_metric_graph_hyphenated_dep_edge_built() {
+        let model = empty_model_with_metrics(vec![
+            make_metric("adwords-ctr", "adwords-clicks / adwords-impressions"),
+            make_metric("adwords-clicks", "raw_clicks"),
+            make_metric("adwords-impressions", "raw_impressions"),
+        ]);
+        let result = build_metric_graph(&model);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let depths = result.unwrap();
+        let ctr_depth = depths.get("adwords-ctr").copied().unwrap_or(0);
+        let clicks_depth = depths.get("adwords-clicks").copied().unwrap_or(0);
+        let impressions_depth = depths.get("adwords-impressions").copied().unwrap_or(0);
+        assert!(ctr_depth > clicks_depth,
+            "adwords-ctr depth ({}) must be > adwords-clicks depth ({})", ctr_depth, clicks_depth);
+        assert!(ctr_depth > impressions_depth,
+            "adwords-ctr depth ({}) must be > adwords-impressions depth ({})", ctr_depth, impressions_depth);
     }
 }
