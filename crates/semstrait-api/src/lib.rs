@@ -2,6 +2,11 @@
 //!
 //! All transports share `RequestParser` and `SemstraitEngine`.
 //! Submodules are feature-gated: cli, rest, grpc.
+//!
+//! TODO(refactor): re-align to new semstrait-model surface
+//! (`32_semstrait_model.md`). Downstream of `semstrait-manifest`, so
+//! migrated together with the manifest crate per
+//! `docs/design/implementation/40_refactor_plan.md`.
 
 pub mod engine;
 pub mod error;

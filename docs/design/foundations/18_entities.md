@@ -938,7 +938,7 @@ The two filter types are disjoint: a `DataKindFilter` cannot be named from a Mea
 - A Request's `filters: [name]` resolves only against `DataKindFilter` names.
 - A Measure's / Metric's `filters:` entries are local declarations (inline) — they have no global name table and are not addressable by Request filters.
 
-Attempting a cross-reference is `validate.filter-wrong-kind { name, expected, actual }` (SR-E-11).
+Attempting a cross-reference is `validate.wrong-filter-error { name, expected, actual }` (SR-E-11).
 
 ---
 
@@ -1012,18 +1012,18 @@ pub struct Keys {
 pub struct KeyDecl {
     /// Bare Semantic names — no physical column references.
     /// Resolution through `semantic_mapping` at binding time.
-    pub columns: Vec<SemanticsName>,
+    pub fields: Vec<SemanticsName>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
 #[non_exhaustive]
 pub struct ForeignKeyDecl {
-    pub columns: Vec<SemanticsName>,
+    pub fields: Vec<SemanticsName>,
     /// The target DataKind whose primary / unique key is referenced.
     pub references: DataKindName,
-    /// The target DataKind's key columns — bare Semantic names.
-    pub target_columns: Vec<SemanticsName>,
+    /// The target DataKind's key Semantic names.
+    pub target_fields: Vec<SemanticsName>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -1035,13 +1035,13 @@ YAML:
 datasets:
   - name: orders
     keys:
-      primary: { columns: [order_id] }
+      primary: { fields: [order_id] }
       unique:
-        - { columns: [external_id], name: ext_id_uk }
+        - { fields: [external_id], name: ext_id_uk }
       foreign:
-        - columns: [customer_id]
+        - fields: [customer_id]
           references: customers
-          target_columns: [id]
+          target_fields: [id]
 ```
 
 ### 9.2 Keys are metadata, not constraints
@@ -1174,7 +1174,7 @@ Entity-level invariants. Each rule has a stable kebab-case diagnostic code per `
 | **SR-E-8** | Every `Grainset` child MUST author its own `extras.temporal.grain:` explicitly (no inheritance). | `validate.grainset-child-grain-required` |
 | **SR-E-9** | A `Measure` MUST declare `agg:` at its declaration site. | `parse.measure-missing-agg` |
 | **SR-E-10** | A `Dimension` / `Measure` / `Metric` MUST declare `data_type:` at its declaration site. | `parse.semantics-missing-data-type` |
-| **SR-E-11** | Filter names are not cross-referenceable between `DataKindFilter` and `AggregationFilter`. | `validate.filter-wrong-kind` |
+| **SR-E-11** | Filter names are not cross-referenceable between `DataKindFilter` and `AggregationFilter`. | `validate.wrong-filter-error` |
 | **SR-E-12** | `data_type:` is immutable across all levels — root-pool and Ref sites must agree; local overrides are forbidden. | `validate.semantics-data-type-mismatch` |
 | **SR-E-13** | `Relationship.optional:` and `Relationship.cross_filter:` are REQUIRED when `cardinality ∈ {OneToOne, ManyToMany}`. Asymmetric cardinalities (`ManyToOne`, `OneToMany`) accept defaults from `§2.7`. | `validate.relationship-symmetric-cardinality-incomplete` |
 | **SR-E-14** | `Relationship.cross_filter ∈ {Left, Right}` is REJECTED when `cardinality == ManyToMany`. A many-to-many relationship has no natural "one" side; directional filter propagation is ambiguous and authors MUST declare `Both` or `None`. | `validate.relationship-many-to-many-cross-filter-directional` |

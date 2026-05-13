@@ -4,6 +4,11 @@
 //! Dispatches to kind-specific planners (Grainset, Unionset, Joinset).
 //! Evaluates constraints, additivity, filters. Applies optimizer internally.
 //!
+//! TODO(refactor): re-align to new semstrait-model surface
+//! (`32_semstrait_model.md`). Currently consumes `CompiledManifest`
+//! from `semstrait-manifest`, which itself needs migration. Tracked
+//! in `docs/design/implementation/40_refactor_plan.md`.
+//!
 //! # Architecture
 //!
 //! See `crates/semstrait-planner/README.md` for the full 12-step pipeline. High-level:

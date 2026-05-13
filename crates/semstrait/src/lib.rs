@@ -5,6 +5,11 @@
 //! Single entry point for library consumers. Provides a builder API
 //! and re-exports key types from internal crates.
 //!
+//! TODO(refactor): re-align to new semstrait-model surface
+//! (`32_semstrait_model.md`). Wraps `semstrait-manifest` /
+//! `semstrait-planner` / `semstrait-api`, all of which require
+//! migration per `docs/design/implementation/40_refactor_plan.md`.
+//!
 //! ## Quick Start
 //!
 //! ```rust,ignore

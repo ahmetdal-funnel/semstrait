@@ -127,9 +127,9 @@ All fields are `pub` so that consumers can destructure without getter boilerplat
 
 ### 2.1 Global name uniqueness
 
-Data-kind names are globally unique across the four top-level maps: `datasets["sales"]` and `grainsets["sales"]` cannot both exist. Kind: `ParseErrorKind::DuplicateDataKindName` (SR-3).
+Data-kind names are globally unique across the four top-level maps: `datasets["sales"]` and `grainsets["sales"]` cannot both exist. Kind: `ValidateErrorKind::DuplicateDataKindName` (SR-3) — fired uniformly over single-source, code-built, and cross-source accumulations at `SemanticModelBuilder::build` time (D-10).
 
-Shared pools use their own namespace per carrier: `dimensions["region"]` and `measures["region"]` can coexist. Duplicates within a carrier raise `ParseErrorKind::DuplicateSharedSemanticsName`.
+Shared pools use their own namespace per carrier: `dimensions["region"]` and `measures["region"]` can coexist. Duplicates within a carrier raise `ValidateErrorKind::DuplicateSharedSemanticsName` via the same `.build()` dedup pass.
 
 Nested data kinds use parent-scoped uniqueness (addressing becomes `grainsets[sales].unionsets[regional]`); see `26 §5`.
 
@@ -582,12 +582,12 @@ Root-level invariants enforced at `parse` and the `validate` stage. Each rule ma
 
 | ID        | Rule                                                                                                                                                                                                                                                                                                                                                                                                          | Kind                                                     |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| **SR-1**  | Exactly one `semantic_model:` root key; `deny_unknown_fields` at root.                                                                                                                                                                                                                                                                                                                                        | `ParseErrorKind::UnknownTopLevelBlock`                   |
-| **SR-2**  | Nested data kinds MUST NOT carry `description`, `ai_context`, `dimensions`, `measures`, `metrics`, `keys`, `filters`. Enforced at the type level: `Nested`* structs (§3.3) wrap only a `*Body` — they have no `description`, `ai_context`, or `semantic_interface` fields — and implement `NestedDataKind` (§3.4) as the behavioral marker; `deny_unknown_fields` then rejects the Public-only tags at parse. | `ParseErrorKind::NestedDataKindCarriesInterface`         |
-| **SR-3**  | Names are globally unique across the four top-level data-kind maps (§2.1).                                                                                                                                                                                                                                                                                                                                    | `ParseErrorKind::DuplicateDataKindName`                  |
-| **SR-4**  | Same-variant self-nesting is forbidden: no grainset inside a grainset, no unionset inside a unionset, no joinset inside a joinset. Dataset leaves do not nest. Enforced at the type level by each `*Body` struct's child-field set (§3.2).                                                                                                                                                                    | `ParseErrorKind::IllegalSelfNesting`                     |
+| **SR-1**  | Exactly one `semantic_model:` root key; `deny_unknown_fields` at root.                                                                                                                                                                                                                                                                                                                                        | `ParseErrorKind::UnknownField`                           |
+| **SR-2**  | Nested data kinds MUST NOT carry `description`, `ai_context`, `dimensions`, `measures`, `metrics`, `keys`, `filters`. Enforced at the type level: `Nested`* structs (§3.3) wrap only a `*Body` — they have no `description`, `ai_context`, or `semantic_interface` fields — and implement `NestedDataKind` (§3.4) as the behavioral marker; `deny_unknown_fields` then rejects the Public-only tags at parse. | `ParseErrorKind::UnknownField`                           |
+| **SR-3**  | Names are globally unique across the four top-level data-kind maps (§2.1). Fired at `SemanticModelBuilder::build` (D-10).                                                                                                                                                                                                                                                                                     | `ValidateErrorKind::DuplicateDataKindName`               |
+| **SR-4**  | Same-variant self-nesting is forbidden: no grainset inside a grainset, no unionset inside a unionset, no joinset inside a joinset. Dataset leaves do not nest. Enforced at the type level by each `*Body` struct's child-field set (§3.2); `deny_unknown_fields` then rejects same-variant tags at parse.                                                                                                     | `ParseErrorKind::UnknownField`                           |
 | **SR-5**  | `catalog`, `storage`, `semantic_mapping` are leaf-only — they live on `LeafExtras` and have no slot in `ComplexExtras`. Authoring any of them under a Complex variant's `extras:` block is a parse error. Cascade-from-ancestor does not apply to these fields (R-6 / §4.1).                                                                                                                                  | `ParseErrorKind::UnknownField`                           |
-| **SR-6**  | Post-merge effective-level validation: the cascaded `temporal.<variant>:` at each leaf data kind must satisfy variant-specific structural requirements (e.g. every grainset subtree must resolve a `temporal:` shape kind on every leaf descendant).                                                                                                                                                          | `ValidateErrorKind::MissingRequiredExtras`               |
+| **SR-6**  | _Retired._ Per-variant required-extras rules live in `21 §7` / `22` / `23` / `24` (each chapter owns its own `VALID_E_2[1-4]xx` code band); the Grainset-child-temporal case is covered end-to-end by SR-E-8 (`18 §11`).                                                                                                                                                                                      | —                                                        |
 | **SR-7**  | `deny_unknown_fields` is applied at every struct parse site (model root, data-kind blocks, extras, relationships, semantic elements).                                                                                                                                                                                                                                                                         | `ParseErrorKind::UnknownField`                           |
 | **SR-8**  | Identifier rules: data-kind names and semantic-element names follow `11 §4`.                                                                                                                                                                                                                                                                                                                                  | `ParseErrorKind::InvalidIdentifier`                      |
 | **SR-9**  | `${VAR}` substitution is applied before YAML decoding; unset variables are fatal parse errors (§8).                                                                                                                                                                                                                                                                                                           | `ParseErrorKind::UnsetEnvVar`                            |
@@ -654,15 +654,22 @@ The model crate hosts two accumulating stages per `30 §7.1`: `parse` (YAML → 
 ```rust
 use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
 
-/// YAML `&str` → `SemanticModel`. Pure and synchronous. Accumulating stage
-/// per `30 §7.1`: every independent parse error is collected; warnings
+/// YAML `&str` → `SemanticModelBuilder`. Pure and synchronous. Accumulating
+/// stage per `30 §7.1`: every independent parse error is collected; warnings
 /// found during the pass surface on the success arm.
+///
+/// Returns a builder rather than a finalised model so single-source,
+/// code-built, and cross-source accumulations can share one materialise
+/// path. Callers chain `.build()` (§9.7.6) to obtain the canonical
+/// `SemanticModel` together with any validate-stage diagnostics.
 pub fn parse(
     input: &str,
-) -> Result<(SemanticModel, Diagnostics<ParseErrorKind>), Diagnostics<ParseErrorKind>>;
+) -> Result<SemanticModelBuilder, Diagnostics<ParseErrorKind>>;
 ```
 
 One entry point. No options, no context, no engine / catalog handle.
+
+Per D-10, dup-name detection (SR-3 / SR-E-3) does **not** run at parse — it runs uniformly over the builder's Vec storage at `.build()` time so the same diagnostic surfaces regardless of construction path.
 
 ### 9.2 `ParseErrorKind` roster
 
@@ -675,25 +682,15 @@ pub enum ParseErrorKind {
     // — YAML surface —
     YamlSyntax                    { message: String },
     UnsetEnvVar                   { var: String },
-    MalformedRoot                 { reason: String },
-    UnknownTopLevelBlock          { block: String },
     UnknownField                  { field: String, parent: String },
 
     // — Structural rules (SR-*) —
-    DuplicateDataKindName         { name: String, occurrences: Vec<Location> },
-    NestedDataKindCarriesInterface { parent: String, nested: String, offending_field: String },
-    IllegalSelfNesting            { parent_variant: String, nested_variant: String },
-    InvalidIdentifier             { raw: String, reason: String },
+    InvalidIdentifier             { raw: String, reason: String },           // SR-8
 
-    // — Shared-pool surface —
-    DuplicateSharedSemanticsName  { carrier: String, name: String, occurrences: Vec<Location> },
-
-    // — Semantic-mapping surface —
-    MalformedSemanticMappingValue { data_kind: String, semantic_name: String, reason: String },
-
-    // — Extras —
-    MalformedCatalogRef           { raw: String, reason: String },
-    MalformedTemporalBlock        { reason: String },
+    // — Entity-level invariants (SR-E-*) — fired at parse —
+    RelationshipMissingCardinality { relationship: String },                 // SR-E-4
+    MeasureMissingAgg             { carrier: String, name: String },         // SR-E-9
+    SemanticsMissingDataType      { carrier: String, name: String },         // SR-E-10
 }
 
 impl Diagnose for ParseErrorKind {
@@ -703,9 +700,13 @@ impl Diagnose for ParseErrorKind {
 }
 ```
 
-**Per-variant location.** The primary source span of an error lives on the wrapping `Diagnostic<ParseErrorKind>` (`30 §5.1`'s `location: Option<Location>` field), not on the variant. Variants carry payload data only — including any *secondary* spans like `occurrences: Vec<Location>` for the duplicate-name variants, which list every offending site beyond the primary.
+SR-1 / SR-2 / SR-4 (root-key, nested-data-kind, self-nesting) collapse into `UnknownField` — each is enforced by the absence of the offending field at the type level plus serde's `deny_unknown_fields`, so the surfaced kind is uniform.
 
-**No `code()` accessor.** Identification of a parse error is by **variant identity** (`matches!(diag.kind, ParseErrorKind::DuplicateDataKindName { .. })`), not by a string code. Renaming a variant is a MAJOR change per `30 §2.1`; adding a variant inside `#[non_exhaustive]` is MINOR per `30 §2.2`.
+`Duplicate*` variants migrated to `ValidateErrorKind` (§9.5) per D-10 so cross-source accumulations share the single-source enforcement path.
+
+**Per-variant location.** The primary source span of an error lives on the wrapping `Diagnostic<ParseErrorKind>` (`30 §5.1`'s `location: Option<Location>` field), not on the variant. Variants carry payload data only.
+
+**No `code()` accessor.** Identification of a parse error is by **variant identity** (`matches!(diag.kind, ParseErrorKind::InvalidIdentifier { .. })`), not by a string code. Renaming a variant is a MAJOR change per `30 §2.1`; adding a variant inside `#[non_exhaustive]` is MINOR per `30 §2.2`.
 
 **Accumulation.** `parse` collects every recoverable error into the returned `Diagnostics<ParseErrorKind>` vector before deciding success vs failure. Catastrophic syntactic errors (the YAML parser cannot continue past byte N) short-circuit with a single `YamlSyntax` entry plus any warnings emitted before that point.
 
@@ -736,21 +737,24 @@ pub fn validate(
 ```rust
 #[non_exhaustive]
 pub enum ValidateErrorKind {
-    // — Required-extras presence (SR-6) —
-    MissingRequiredExtras            { data_kind: String, missing: String },
-
     // — Composition shape (SR-10) —
     ComplexDataKindInsufficientChildren { parent: String, child_count: usize },
 
     // — Empty model —
     EmptyModel,
 
+    // — Cross-source / single-file dup detection (SR-3, D-10) —
+    DuplicateDataKindName            { name: String, occurrences: Vec<Location> },
+    DuplicateSharedSemanticsName     { carrier: String, name: String, occurrences: Vec<Location> },
+
     // — Entity-level invariants (SR-E-*) per `18 §11` —
     OrphanSharedSemantics            { carrier: String, name: String },
-    InvalidReferenceOverride         { /* … */ },
     TemporalGrainOnComplex           { data_kind: String },
     GrainsetChildMissingGrain        { grainset: String, child: String },
     /* … additional SR-E-* variants per `18 §11` … */
+
+    // — Shadowing warning (`18 §1.5`) —
+    SemanticsShadowRootPool          { carrier: String, name: String },
 }
 
 impl Diagnose for ValidateErrorKind {
@@ -760,100 +764,467 @@ impl Diagnose for ValidateErrorKind {
 }
 ```
 
+The `Duplicate*` variants migrated from `ParseErrorKind` per D-10: dedup runs uniformly over `SemanticModelBuilder`'s Vec-backed storage at `.build()` time, so single-source, code-built, and cross-source accumulations all surface the same diagnostic with every occurrence's `Location`.
+
+The `SemanticsShadowRootPool` variant carries `Severity::Warning` (the only warning-class variant in v1) and rides through on the `Ok` arm.
+
 The full `SR-E-*` variant roster is enumerated alongside the entity-level invariants in `18 §11` (the canonical home of SR-E-*); variants here mirror those rules 1-to-1 and land MINOR per `30 §2.2` as new SR-E-* numbers are appended.
 
 ### 9.6 Fluent loader: `SemanticModel::loader()`
 
-`parse` and `validate` are the primitives — pure inputs, pure outputs, no config. Most callers want **parse + validate** together, returning a `SemanticModel` ready for `compile` consumption. The fluent loader is the ergonomic entry that fuses the two:
+`parse` and `validate` are the primitives — pure inputs, pure outputs, no config. Most callers want **parse + validate** together, returning a `SemanticModel` ready for `compile` consumption. The fluent loader is the ergonomic entry that fuses the two **plus** filesystem reads.
+
+The loader is parametrized by a **filesystem strategy** (not a phase marker). The type parameter `F: SourceFs` selects how the loader reads source bytes — `LocalFs` for production, `InMemoryFs` for tests. This matches Rust idiom for I/O-strategy parametrization (see `figment`, `config-rs`, `tower`). Compile-time enforcement of "did the caller attach a source?" is dropped in favour of a runtime `ModelBuildErrorKind::NoSource` diagnostic; the cost (one extra runtime check) buys real testability via `InMemoryFs`.
 
 ```rust
+/// Filesystem-strategy trait. Implementors decide how a logical path
+/// resolves to bytes. Sync only — async I/O is not in v1 scope per §10.4.
+pub trait SourceFs {
+    fn read(&self, path: &str) -> Result<Vec<u8>, std::io::Error>;
+}
+
+/// Production strategy — delegates to `std::fs::read`.
+pub struct LocalFs;
+impl SourceFs for LocalFs { /* std::fs::read */ }
+
+/// Test strategy — `HashMap<path, bytes>` lookup, miss => `ErrorKind::NotFound`.
+pub struct InMemoryFs { /* ... */ }
+impl InMemoryFs {
+    pub fn new() -> Self;
+    pub fn insert(&mut self, path: impl Into<String>, contents: impl Into<Vec<u8>>);
+}
+impl SourceFs for InMemoryFs { /* HashMap lookup */ }
+
+/// Loader for `SemanticModel`. Configured via fluent setters, terminated by `build`.
+pub struct SemanticModelLoader<F: SourceFs = LocalFs> { /* fields pub(crate) */ }
+
+impl SemanticModelLoader<LocalFs> {
+    /// Default-strategy entry. Equivalent to `SemanticModel::loader()`.
+    pub fn new() -> Self;
+}
+
+impl<F: SourceFs> SemanticModelLoader<F> {
+    /// Swap the filesystem strategy. Returns a loader with the new `F2`.
+    pub fn with_fs<F2: SourceFs>(self, fs: F2) -> SemanticModelLoader<F2>;
+
+    /// Attach an in-memory YAML payload tagged with a logical `SourceId`.
+    /// Multiple calls accumulate; sources are merged in append order.
+    pub fn from_yaml_str(self, yaml: impl Into<String>, source: SourceId) -> Self;
+
+    /// Resolve `path` via `self.fs.read(path)` at `build()` time.
+    /// `SourceId` defaults to `path` (string form).
+    pub fn from_yaml_file(self, path: impl Into<String>) -> Self;
+
+    /// Attach a pre-parsed catalogs config. Mutually exclusive with
+    /// `from_catalogs_yaml_*` (calls overwrite, last-write-wins).
+    pub fn with_catalogs(self, c: CatalogsConfig) -> Self;
+    pub fn from_catalogs_yaml_str(self, yaml: impl Into<String>, source: SourceId) -> Self;
+    pub fn from_catalogs_yaml_file(self, path: impl Into<String>) -> Self;
+
+    /// Skip the validate pass (default: validate runs). The returned
+    /// model is parsed-only; SR-* / SR-E-* are not enforced. Intended
+    /// for inspector / round-trip tooling.
+    pub fn skip_validate(self) -> Self;
+
+    /// Run the configured pipeline.
+    pub fn build(self) -> Result<
+        (SemanticModel, Diagnostics<ModelBuildErrorKind>),
+        Diagnostics<ModelBuildErrorKind>,
+    >;
+}
+
 impl SemanticModel {
-    /// Entry point for the fluent loader. Returns a typestate builder
-    /// awaiting a source.
-    pub fn loader() -> SemanticModelLoader<NoSource>;
-}
-
-/// Typestate marker — `NoSource` (no input attached yet) vs `HasSource`
-/// (input attached, ready to load). Sealed at the `state` module.
-pub struct NoSource(());
-pub struct HasSource(()); // payload field is `pub(crate)`; not user-constructible
-
-pub struct SemanticModelLoader<State> { /* state field is pub(crate) */ }
-
-impl SemanticModelLoader<NoSource> {
-    /// In-memory YAML payload. Synchronous path — no `io` feature needed.
-    pub fn with_yaml_str(self, yaml: impl Into<String>) -> SemanticModelLoader<HasSource>;
-
-    /// Filesystem / object-store payload via `semstrait-core::io::Source`.
-    /// `io` feature required.
-    #[cfg(feature = "io")]
-    pub fn with_yaml_source<S: Source + ?Sized>(self, src: &S) -> SemanticModelLoader<HasSource>;
-}
-
-impl SemanticModelLoader<HasSource> {
-    /// Async load: read (if a `Source`) → `parse` → `validate`. Async only when the
-    /// loader was configured with `with_yaml_source`; otherwise synchronous path
-    /// is selected via `load_blocking`.
-    #[cfg(feature = "io")]
-    pub async fn load(
-        self,
-    ) -> Result<
-        (SemanticModel, Diagnostics<ModelBuildErrorKind>),
-        Diagnostics<ModelBuildErrorKind>,
-    >;
-
-    /// Synchronous load. Available for `with_yaml_str`-configured loaders only;
-    /// `with_yaml_source` requires `load` (async). Compile error if called on the
-    /// async-path loader.
-    pub fn load_blocking(
-        self,
-    ) -> Result<
-        (SemanticModel, Diagnostics<ModelBuildErrorKind>),
-        Diagnostics<ModelBuildErrorKind>,
-    >;
+    /// Convenience: `SemanticModelLoader::<LocalFs>::new()`.
+    pub fn loader() -> SemanticModelLoader<LocalFs> { SemanticModelLoader::new() }
 }
 
 /// Fused per-stage kind for the loader pipeline. Implements `Diagnose`
 /// by delegating to the wrapped stage kind. Per `30 §5.6` the model crate
 /// owns this fused sum because the loader composes stages whose kinds
-/// live in this same crate (`ParseErrorKind`, `ValidateErrorKind`) plus
-/// `IoErrorKind` from `semstrait-core::io`.
+/// live in this same crate (`ParseErrorKind`, `ValidateErrorKind`,
+/// `CatalogsParseErrorKind`) plus loader-internal kinds.
 #[non_exhaustive]
 pub enum ModelBuildErrorKind {
+    /// No source attached — `build()` was called on an empty loader.
+    NoSource,
+    /// `self.fs.read(path)` failed.
+    SourceIo { path: String, error: std::io::ErrorKind },
     Parse(ParseErrorKind),
+    CatalogsParse(CatalogsParseErrorKind),
     Validate(ValidateErrorKind),
-    #[cfg(feature = "io")]
-    Io(semstrait_core::io::IoErrorKind),
+    /// Per-field builder-internal error (e.g. invalid newtype payload).
+    BuilderField { struct_name: &'static str, field: &'static str, message: String },
 }
 
-impl From<ParseErrorKind>    for ModelBuildErrorKind { /* … */ }
-impl From<ValidateErrorKind> for ModelBuildErrorKind { /* … */ }
-#[cfg(feature = "io")]
-impl From<semstrait_core::io::IoErrorKind> for ModelBuildErrorKind { /* … */ }
+impl From<ParseErrorKind>             for ModelBuildErrorKind { /* … */ }
+impl From<ValidateErrorKind>          for ModelBuildErrorKind { /* … */ }
+impl From<CatalogsParseErrorKind>     for ModelBuildErrorKind { /* … */ }
 
 impl Diagnose for ModelBuildErrorKind { /* delegates to wrapped variant */ }
 ```
 
-**Stages composed by `load` / `load_blocking`** (in order, fail-fast across stages, accumulating within each stage):
+**Stages composed by `build`** (in order, fail-fast across stages, accumulating within each stage):
 
-1. **Read** — only when the source is a `Source`-trait input; reads the payload as `String` via `src.read::<String>().await` (`31b §5`). Errors surface as `Diagnostic<ModelBuildErrorKind>` whose kind is `Io(_)`.
-2. **Parse** — `parse(&yaml)` (§9.1). Errors surface as `Diagnostic<ModelBuildErrorKind>` whose kind is `Parse(_)`.
-3. **Validate** — runs the structural-precondition pass (§9.4–§9.5). Errors surface as `Diagnostic<ModelBuildErrorKind>` whose kind is `Validate(_)`.
+1. **Read** — for each `from_yaml_file`/`from_catalogs_yaml_file` source, call `self.fs.read(path)`. `Err` ⇒ `ModelBuildErrorKind::SourceIo`.
+2. **Parse model** — `parse(&yaml, source)` per attached model source(s). `Err` ⇒ `ModelBuildErrorKind::Parse(_)`.
+3. **Parse catalogs** — when present, `parse_catalogs(&yaml, source)`. `Err` ⇒ `ModelBuildErrorKind::CatalogsParse(_)`.
+4. **Validate** — when `skip_validate()` was NOT called, run the structural-precondition pass (§9.4–§9.5). `Err` ⇒ `ModelBuildErrorKind::Validate(_)`.
 
-Within a stage, every diagnostic the stage produces is collected into the returned `Diagnostics<ModelBuildErrorKind>` vector (parse / validate are accumulating per `30 §7.1`); across stages, the loader halts at the first stage whose Err arm fires and lifts that stage's accumulated set into `ModelBuildErrorKind`. Warnings from earlier stages that completed successfully ride through on the failing stage's Err vector — never silently dropped per `30 §7.3`.
+Within a stage, every diagnostic the stage produces is collected (parse / validate are accumulating per `30 §7.1`); across stages, the loader halts at the first stage whose Err arm fires and lifts that stage's accumulated set into `ModelBuildErrorKind`. Warnings from earlier stages that completed successfully ride through on the failing stage's Err vector — never silently dropped per `30 §7.3`.
 
-**Why typestate?** A loader without a source attached is a programming error — the typestate machinery makes "call `load()` before attaching a source" a compile-time failure rather than a runtime panic / `Result`. The two states (`NoSource`, `HasSource`) are sealed: only this crate constructs the second-state values.
+**Usage.**
 
-**Why retain `parse` and `validate` as primary?** The fluent loader is ergonomic sugar. Callers needing per-stage control (custom error routing per stage, cached parse tree reuse, programmatic post-parse mutations before validate) continue to call `parse(&str)` and `validate(&model)` directly. The two surfaces coexist as primitives (`parse`, `validate`) + ergonomic-fused (`loader().with_yaml_*().load[_blocking]()`).
+```rust
+// Production
+let (model, diags) = SemanticModel::loader()
+    .from_yaml_file("model.yaml")
+    .from_catalogs_yaml_file("catalogs.yaml")
+    .build()?;
+
+// Testing
+let mut fs = InMemoryFs::new();
+fs.insert("model.yaml", REFERENCE_YAML);
+let (model, _) = SemanticModelLoader::<InMemoryFs>::new()
+    .with_fs(fs)
+    .from_yaml_file("model.yaml")
+    .build()?;
+```
+
+**Why FS-strategy parametrization (not typestate)?** A loader without a source attached is still a programming error, but it surfaces as `ModelBuildErrorKind::NoSource` at `build()` time rather than as a compile-time error. The trade-off buys: (a) `with_fs(InMemoryFs)` testability with no `#[cfg(test)]` plumbing, (b) a single `SemanticModelLoader<F>` type instead of a state-machine of marker structs, (c) idiomatic alignment with the broader Rust ecosystem (`figment`, `config-rs`, `tower`). The loss (compile-time "did you attach a source?") is small — every loader call site is a public API entry, and missing a source is a user-evident error at first run.
+
+**Why retain `parse` and `validate` as primary?** The fluent loader is ergonomic sugar. Callers needing per-stage control (custom error routing per stage, cached parse tree reuse, programmatic post-parse mutations before validate) continue to call `parse(&str, source)` and `validate(&model)` directly. The two surfaces coexist as primitives (`parse`, `validate`) + ergonomic-fused (`loader().from_yaml_*().build()`).
 
 **Composition with `semstrait-api`.** `SemStrait::compile_from_yaml` (`38 §3.3`) is the parallel API at the orchestration layer (it adds compile on top). The two lanes don't compete: in-process callers reach for `SemanticModel::loader()` to obtain a `SemanticModel` they can pass to a separate compile call (e.g. for caching mid-pipeline); end-to-end callers reach for `SemStrait::compile_from_yaml` to skip the intermediate handle. The fused `SemStraitErrorKind` (`30 §5.6`) at `semstrait-api` is parallel to `ModelBuildErrorKind` here — same cross-stage aggregation pattern, broader scope.
 
 #### 9.6.2 Stability
 
-- `SemanticModelLoader<State>`, the typestate marker types `NoSource` / `HasSource`, the `SemanticModel::loader()` entry, the `with_yaml_`* setters, and `load` / `load_blocking` are **Stable in v1**.
+- `SemanticModelLoader<F>`, the `SourceFs` trait, `LocalFs`, `InMemoryFs`, the `SemanticModel::loader()` entry, the `from_yaml_*` / `from_catalogs_yaml_*` / `with_fs` / `with_catalogs` / `skip_validate` setters, and `build` are **Stable in v1**.
 - `ModelBuildErrorKind` is `#[non_exhaustive]`; new stage variants land as MINOR per `30 §2.2`. Removing or renaming a variant is MAJOR per `30 §2.1`.
-- The relationship "loader is sugar over `parse + validate`" is a public contract — `load` MUST NOT alter parse / validate semantics; any divergence is a v1 bug.
-- The async-only / sync-only split between `load` and `load_blocking` is intentional and stable. A future `with_yaml_source` consumer that wants a sync wrapper bridges via the caller's executor; `semstrait-model::io` does not provide `block_on`.
+- The relationship "loader is sugar over `parse + parse_catalogs + validate`" is a public contract — `build` MUST NOT alter parse / validate semantics; any divergence is a v1 bug.
+- `LocalFs` is the documented default and is intended to remain so. Adding new built-in `SourceFs` implementations (e.g. an `S3Fs` behind a feature flag) is MINOR.
+
+### 9.7 Builder API
+
+`semstrait-model` exposes a per-struct fluent builder for every public type so callers can construct a `SemanticModel` entirely from code (no YAML in the loop). The builder API is a faithful structural projection of the spec — every method maps 1:1 to a Rust field; every adapter helper maps 1:1 to a structurally-defined variant body. Builders are generated via the `bon` derive macro (`m11-ecosystem` ratified).
+
+#### 9.7.1 Two-surface principle
+
+The builder API exposes two surfaces over the spec-defined struct tree:
+
+1. **Primary structural surface** — generated by `bon` from each public struct. Method names equal field names (`.dim_type(...)`, `.data_type(...)`, `.agg(...)`, `.semantic_mapping(...)`); enum-variant 1:1 helpers (`DimensionType::temporal(grains)`, `TemporalShape::events(...)`) are co-located on the variant type itself per `§9.7.3`. The primary surface is the canonical construction substrate — round-trip helpers, schema generators, and code-gen tools target the primary surface.
+
+2. **Ergonomic facade surface** — additive sugar layered on top of the primary surface (see `§9.7.8`). Facade methods may rename or aggregate primary calls for authoring convenience but never bypass the primitive types — every facade call delegates to one or more primary calls.
+
+The structural source of truth is the type tree (`§2`–`§5` and the per-entity types in `18 §*`), not the builder. The two surfaces are aligned by a hard rule: every facade method must delegate to primary methods on the same builder; no facade method invents a non-spec field, alters round-trip representation, or shadows the primary surface for type queries.
+
+Three rules govern what is allowed on each surface:
+
+- **R1 — primary surface field-name parity (Stable in v1).** On the primary surface, every builder method name equals the Rust field name on the underlying struct. No abbreviations, no synonyms. If a struct field renames in the spec, the primary method renames with it (MAJOR per `30 §2.1`).
+- **R2 — variant-body 1:1 constructors (Stable in v1).** A type-level helper that constructs an enum variant takes exactly that variant body's fields, in declaration order, with no inferred or synthesized values.
+- **R3 — facade surface delegates only (Stable in v1).** The ergonomic facade may rename and aggregate. It MAY NOT introduce non-spec fields, mutate round-trip representation, or bypass primary methods. Round-trip uses the primary surface only.
+
+Violations of R1, R2, or R3 are spec bugs, not implementation bugs. The structural-fidelity audit is planned in CI as `tests/builder_structural_fidelity.rs` and verifies that every facade method has a delegate-only implementation.
+
+#### 9.7.2 Public-vs-Nested envelope split
+
+Per `[26 §3](../data-kinds/26_nesting_matrix.md)`, the Public form carries `description`, `ai_context`, `semantic_interface`; the Nested form does NOT. The builder API enforces this at the **type level** by structural absence — `NestedDataset`/`NestedGrainset`/`NestedUnionset`/`NestedJoinset` simply do not have those fields, so their `bon`-generated builders do not have those methods. No bespoke typestate machinery is involved.
+
+```rust
+use bon::Builder;
+
+#[derive(Debug, Clone, Builder)]
+pub struct Dataset {
+    #[builder(start_fn)] pub name: String,                // body.base.name
+    pub extras: LeafExtras,                                // body.base.extras
+    pub description: Option<String>,
+    pub ai_context: Option<AiContext>,
+    pub semantic_interface: SemanticInterface,
+}
+
+#[derive(Debug, Clone, Builder)]
+pub struct NestedDataset {
+    #[builder(start_fn)] pub name: String,
+    pub extras: LeafExtras,
+    // No description / ai_context / semantic_interface — type-level absence.
+}
+```
+
+#### 9.7.3 Variant-body 1:1 constructors
+
+Authors can either name a variant + body pair fully, or use a 1:1 constructor on the parent type. Constructors map directly to spec-defined variant bodies — they take exactly the body's fields, in declaration order, no inventions.
+
+```rust
+impl DimensionType {
+    /// 1:1 with `Temporal(TemporalDimensionBody { grains })` per `18 §4.1`.
+    pub fn temporal(grains: impl Into<Vec<Grain>>) -> Self;
+    /// 1:1 with `Categorical` (no body).
+    pub fn categorical() -> Self;
+    /// 1:1 with `Binary` (no body).
+    pub fn binary() -> Self;
+    /// 1:1 with `Geo` (no body).
+    pub fn geo() -> Self;
+    /// 1:1 with `Bucketed(BucketedDimensionBody { buckets })`.
+    pub fn bucketed(buckets: impl Into<Vec<BucketSpec>>) -> Self;
+    /// 1:1 with `Metadata(MetadataDimensionBody { source })`.
+    pub fn metadata(source: MetadataSource) -> Self;
+}
+
+impl TemporalShape {
+    /// 1:1 with `TemporalShape { kind: Timeseries(TimeseriesBody { occurred_at }), grain }` per `18 §3.1`.
+    pub fn timeseries(occurred_at: impl Into<SemanticsName>, grain: impl Into<Option<Grain>>) -> Self;
+    pub fn events(event_time: impl Into<SemanticsName>, grain: impl Into<Option<Grain>>) -> Self;
+    pub fn snapshot(snapshotted_at: impl Into<SemanticsName>, grain: impl Into<Option<Grain>>) -> Self;
+    pub fn scd(
+        scd_type: ScdType,
+        valid_from: impl Into<SemanticsName>,
+        valid_to: impl Into<SemanticsName>,
+        grain: impl Into<Option<Grain>>,
+    ) -> Self;
+}
+
+impl JoinKeyExprPair {
+    /// 1:1 with the bare-Semantic-field case where both sides are
+    /// `ExprSource::Inline(name)`. For non-bare cases, construct the
+    /// struct with explicit `from`/`to` `ExprSource`s.
+    pub fn fields(from: impl Into<String>, to: impl Into<String>) -> Self;
+}
+
+impl DimensionEntry {
+    /// 1:1 with `Inline(Dimension)` per `18 §1.2`.
+    pub fn inline(d: Dimension) -> Self;
+    /// 1:1 with `Ref(DimensionRef { name, expr: None })`.
+    pub fn r#ref(name: impl Into<SemanticsName>) -> Self;
+    /// 1:1 with `Ref(DimensionRef { name, expr: Some(expr) })`.
+    pub fn ref_with_expr(name: impl Into<SemanticsName>, expr: impl Into<ExprSource>) -> Self;
+}
+// MeasureEntry, MetricEntry: analogous.
+```
+
+#### 9.7.4 SemanticMapping authoring
+
+`SemanticMapping` is `BTreeMap<SemanticsName, SemanticMappingValue>` per `[18 §10](../foundations/18_entities.md)`. Its builder offers per-variant inserters keyed by semantic name, each 1:1 with a `SemanticMappingValue` variant:
+
+```rust
+impl SemanticMapping {
+    pub fn builder() -> SemanticMappingBuilder;
+}
+
+impl SemanticMappingBuilder {
+    /// 1:1 with `Column(String)`.
+    pub fn column(self, semantic: impl Into<SemanticsName>, column: impl Into<String>) -> Self;
+    /// 1:1 with `Literal(LiteralValue)`.
+    pub fn literal(self, semantic: impl Into<SemanticsName>, value: LiteralValue) -> Self;
+    /// 1:1 with `Expr(PhysicalExpr)`.
+    pub fn expr(self, semantic: impl Into<SemanticsName>, expr: PhysicalExpr) -> Self;
+    // No `metadata(...)` method — `Metadata(MetadataDimensionRecipe)` is
+    // compile-synthesized only per SR-10 / `32 §10`.
+
+    /// Adds an explicit semantic→source mapping entry without naming a
+    /// specific `SemanticMappingValue` variant up front. Transitions the
+    /// builder to `Explicit` form on first call. Last write wins for a
+    /// given `name` within one builder. Useful when the variant is
+    /// chosen dynamically (loader / round-trip) rather than statically
+    /// per-call site.
+    pub fn with_semantic(
+        self,
+        name: impl Into<SemanticsName>,
+        value: SemanticMappingValue,
+    ) -> Self;
+
+    pub fn build(self) -> SemanticMapping;
+}
+```
+
+Example mixing variant-specific inserters with the generic `with_semantic` opening:
+
+```rust
+let mapping = SemanticMapping::builder()
+    .column("revenue", "amount_cents")
+    .with_semantic("currency", SemanticMappingValue::Literal(LiteralValue::String("USD".into())))
+    .build();
+```
+
+#### 9.7.5 Bespoke validation in `.build()`
+
+Most field-level required-vs-optional is enforced by `bon` at compile time (missing required fields ⇒ compile error). A small set of *cross-field* invariants are enforced inside `.build()` because they are derived rather than raw-required:
+
+- `Relationship::builder().build()` — when `cardinality ∈ {OneToOne, ManyToMany}`, both `optional` and `cross_filter` MUST be authored (SR-E-13). When `cardinality == ManyToMany`, `cross_filter` MUST NOT be `Left | Right` (SR-E-14). Violations ⇒ `ModelBuildErrorKind::Validate(...)`.
+- `SemanticMappingValue::Metadata` rejection — the variant exists in the enum (compile-synthesized) but the builder has no `.metadata(...)` method (R3 above).
+- `SemanticModel::builder().build()` — runs the full `validate` pipeline on the constructed model, so all SR-* / SR-E-* rules apply uniformly to YAML-loaded and code-built models.
+
+#### 9.7.6 Resulting usage — spec-faithful end-to-end
+
+```rust
+use semstrait_core::{DataType, Grain, ExprSource};
+use semstrait_model::*;
+
+let order_ts = Dimension::builder("order_ts")
+    .data_type(DataType::Timestamp)
+    .dim_type(DimensionType::temporal([Grain::Minute, Grain::Hour, Grain::Day]))
+    .build();
+
+let revenue = Measure::builder("revenue")
+    .data_type(DataType::Decimal { precision: 18, scale: 2 })
+    .agg(AggregationType::Sum)
+    .expr(ExprSource::Inline("amount_cents * 0.01".into()))
+    .additivity(AdditivityType::Full)
+    .build();
+
+let extras = LeafExtras::builder()
+    .catalog(CatalogRef::new("polaris_prod"))
+    .storage(StorageConfig::builder()
+        .format(StorageFormat::Parquet)
+        .paths(["s3://bucket/orders/"])
+        .build())
+    .semantic_mapping(SemanticMapping::builder()
+        .column("revenue", "net_revenue_cents")
+        .literal("currency", LiteralValue::String("USD".into()))
+        .build())
+    .temporal(TemporalShape::events("order_ts", Some(Grain::Minute)))
+    .build();
+
+let interface = SemanticInterface::builder()
+    .dimension(DimensionEntry::inline(order_ts))
+    .measure(MeasureEntry::r#ref("revenue"))
+    .keys(Keys::builder()
+        .primary(KeyDecl::builder().fields(["order_id"]).build())
+        .build())
+    .build();
+
+let orders = Dataset::builder("orders")
+    .extras(extras)
+    .description("Order-line fact dataset.")
+    .semantic_interface(interface)
+    .build();
+
+let orders_to_customers = Relationship::builder()
+    .name("orders_to_customers")
+    .from("orders").to("customers")
+    .keys([JoinKeyExprPair::fields("customer_id", "id")])
+    .cardinality(Cardinality::ManyToOne)
+    .build()?;
+
+let model = SemanticModel::builder()
+    .name("analytics-v1")
+    .description("Primary analytics model for the order pipeline.")
+    .dataset(orders)
+    .measure(revenue)
+    .relationship(orders_to_customers)
+    .build()?;
+```
+
+#### 9.7.6.1 Same model authored via the ergonomic facade
+
+Both forms produce identical `SemanticModel` values. The facade (§9.7.8) is sugar over the primary surface above; round-trip and code-gen tools continue to use the primary surface.
+
+```rust
+use semstrait_core::{DataType, Grain};
+use semstrait_model::*;
+
+let order_ts = Dimension::builder("order_ts")
+    .data_type(DataType::Timestamp { precision: 6 })
+    .temporal([Grain::Minute, Grain::Hour, Grain::Day])
+    .build();
+
+let revenue = Measure::builder("revenue")
+    .data_type(DataType::Decimal { precision: 18, scale: 2 })
+    .sum()
+    .full()
+    .build();
+
+let orders = Dataset::builder("orders")
+    .catalog("polaris_prod")
+    .format(StorageFormat::Parquet)
+    .path("s3://bucket/orders/")
+    .semantic_mapping(SemanticMapping::builder().column("revenue", "amount_cents").build())
+    .temporal(TemporalShape::events("order_ts", Some(Grain::Minute)))
+    .description("Order-line fact dataset.")
+    .dimension(DimensionEntry::r#ref("order_ts"))
+    .measure(MeasureEntry::r#ref("revenue"))
+    .primary_key(KeyDecl::builder().fields(vec!["order_id".into()]).build())
+    .build();
+
+let orders_to_customers = Relationship::builder()
+    .name("orders_to_customers")
+    .from("orders").to("customers")
+    .field("customer_id", "id")
+    .many_to_one()
+    .build()?;
+
+let (model, _) = SemanticModel::builder()
+    .name("analytics-v1")
+    .description("Primary analytics model for the order pipeline.")
+    .dataset(orders)
+    .dimension(order_ts)
+    .measure(revenue)
+    .relationship(orders_to_customers)
+    .build()?;
+```
+
+#### 9.7.7 Stability
+
+- The set of public builder types (one per public struct in §2 / §3 / §4 / §5 / `18 §*`) is **Stable in v1**.
+- The structural-fidelity rules R1 / R2 / R3 (§9.7.1) govern the primary structural surface (R1 = primary field-name parity; R2 = variant-body 1:1 constructors; R3 = facade delegates only). All three are Stable in v1.
+- Variant-body 1:1 constructors (§9.7.3) are **Stable in v1**. Adding a new constructor is MINOR; removing or renaming one is MAJOR.
+- The ergonomic facade surface (§9.7.8) is **Stable in v1**. Adding a facade method is MINOR per `30 §2.2`; removing or renaming one is MAJOR per `30 §2.1`.
+- `bon` is an implementation detail. Switching to a different builder generator (or hand-rolled builders) is internal — the public method-name and method-signature surface (both primary and facade) stays per R1 / R2 / R3 / §9.7.8.
+- The `state_mod` visibility rule on facade-supporting builders (§9.7.8.1) is **Stable in v1**. Renaming a publicly-exposed state module is MAJOR.
+
+#### 9.7.8 Ergonomic facade (additive)
+
+The ergonomic facade adds authoring-convenience methods on top of the primary structural builders (`§9.7.2`–`§9.7.5`). It is in-scope for v1.
+
+**Goals:** reduce verbosity at common code-built model authoring sites; keep the YAML↔Rust round-trip primary surface untouched; stay strictly delegate-only.
+
+**Non-goals:** replace the primary surface; introduce parallel types; introduce alternative semantics for any spec field.
+
+##### 9.7.8.1 Surface placement
+
+Facade methods are inherent methods on the existing `*Builder<S>` typestate types, defined in `impl<S: state_mod::State> XBuilder<S>` blocks adjacent to the primary `bon`-derived implementation. They share the autocomplete surface with the primary methods. The primary methods remain canonical; an author may always reach for `.dim_type(...)` in preference to `.temporal(...)`.
+
+Facade-supporting builders that expose typestate-transitioning facade methods (whose return type names a `state_mod::Set*<S>` marker, e.g. `dimension_builder::SetDimType<S>`) MUST configure `bon`'s `state_mod` with `vis = "pub"` so external test crates and downstream consumers can name those marker types. Builders whose facade methods all return `Self` (no typestate transition) MAY use `vis = "pub(crate)"`. Publicly-exposed state modules are part of the public crate surface from that point onward; renaming a publicly-exposed state module is MAJOR per `30 §2.1`.
+
+##### 9.7.8.2 Delegation rule
+
+Every facade method's body manipulates only the fields exposed through the primary surface (whether via a bon-generated setter or a hand-written `Self`-returning setter on a `#[builder(field)]` slot). A facade method MUST NOT introduce a hidden writable field that the primary surface does not also reach; if it must, the primary surface is missing a method (file a spec bug).
+
+##### 9.7.8.3 Conflict semantics
+
+Within a single builder chain, a field may be set by both a primary call and one or more facade calls that target a sub-field of the same struct. Two rules resolve conflict:
+
+- **Field-level last-write-wins.** When the same `Option<T>` or scalar field is set more than once, the last call wins. Matches `bon`'s default setter semantics.
+- **Sub-struct read-modify-write (cross-struct flatteners only).** When a facade method targets a *sub-field* of a struct (e.g. `.catalog(...)` targets `extras.catalog: Option<CatalogRef>` on `Dataset::builder()`), the facade reads the current value of the parent struct (or its `Default::default()` if unset), mutates the targeted sub-field, and writes the parent struct back. A `.extras(my_extras)` call followed by `.catalog("polaris")` preserves every other field of `my_extras` while setting `catalog`. Symmetrically for `.semantic_interface(my_iface)` followed by `.dimension(entry)`.
+
+RMW behaviour is enabled by switching the carrier field from a bon-generated setter slot (`Option<T>`) to a `#[builder(field)] T` slot, with a custom inherent setter for backward compatibility. Builders with sub-struct flatteners (`Dataset`, `NestedDataset`, `Grainset`, `NestedGrainset`, `Unionset`, `NestedUnionset`, `Joinset`, `NestedJoinset`, `SemanticInterface`) follow this pattern.
+
+These rules apply uniformly to every facade method. No facade method emits a runtime warning or error on conflict.
+
+##### 9.7.8.4 Stability
+
+- Adding a facade method is MINOR per `30 §2.2`.
+- Removing or renaming a facade method is MAJOR per `30 §2.1`.
+- The conflict-resolution rules in `§9.7.8.3` are **Stable in v1**.
+- The `state_mod` visibility rule (§9.7.8.1) is **Stable in v1**.
+
+##### 9.7.8.5 v1 facade method roster
+
+The following facade additions are landed in v1:
+
+**Per-entity (`Dimension` / `Measure` / `Metric` / `Relationship`):**
+- `Dimension::builder()` — `.temporal(grains)`, `.categorical()`, `.binary()`, `.geo()`, `.bucketed(buckets)`, `.metadata(source)` (each delegates to `.dim_type(DimensionType::*(...))`)
+- `Measure::builder()` — agg shortcuts `.sum()` / `.avg()` / `.count()` / `.count_distinct()` / `.min()` / `.max()` / `.median()` / `.std_dev()` / `.variance()`; additivity shortcuts `.full()` / `.semi(s)` / `.non()`; per-item `.filter(f)`
+- `Metric::builder()` — same agg / additivity / filter shortcuts as Measure (note: `Metric.agg` is `Option<AggregationType>`)
+- `Relationship::builder()` — `.field(from, to)` per-key shortcut; cardinality shortcuts `.one_to_one()` / `.one_to_many()` / `.many_to_one()` / `.many_to_many()`
+
+**Container builders (`SemanticInterface` / `SemanticMapping`):**
+- `SemanticInterface::builder()` — per-item inserters `.dimension(e)` / `.measure(e)` / `.metric(e)` / `.filter(f)`; per-key shortcuts `.primary_key(k)` / `.unique_key(k)` / `.foreign_key(k)`
+- `SemanticMapping::builder()` — bulk `.entries(items)`
+
+**DataKind builders (with cross-struct flatteners per §9.7.8.3):**
+- `Dataset::builder(name)` and `NestedDataset::builder(name)` — `LeafExtras` flatteners `.catalog(s)` / `.storage(c)` / `.format(f)` / `.path(p)` / `.paths(it)` / `.table(t)` / `.tables(it)` / `.partition_def(p)` / `.semantic_mapping(m)` / `.temporal(s)`. Public `Dataset` additionally exposes `SemanticInterface` flatteners `.dimension(e)` / `.dimensions(it)` / `.measure(e)` / `.measures(it)` / `.metric(e)` / `.metrics(it)` / `.filter(f)` / `.filters(it)` / `.keys(k)` / `.primary_key(k)` / `.unique_key(k)` / `.foreign_key(k)`.
+- `Grainset::builder(name)` / `NestedGrainset` / `Unionset::builder(name)` / `NestedUnionset` / `Joinset::builder(name)` / `NestedJoinset` — `ComplexExtras` flattener `.temporal(s)`. Public forms additionally expose the same `SemanticInterface` flatteners as `Dataset`. `Unionset` and `NestedUnionset` additionally expose `.union_all()` / `.union_unique()` (mode shortcuts).
+
+Adding a facade method is MINOR per `§9.7.8.4`. The roster grows append-only.
 
 ---
 

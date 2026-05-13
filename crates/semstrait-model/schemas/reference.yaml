@@ -1,0 +1,347 @@
+# Reference model — every public concept exemplified.
+# Section comments cite the authoritative spec docs under
+# `docs/design/`. Validates clean against `parse` + `validate`
+# (`32 §9.1` / `§9.4`).
+
+semantic_model:
+  # Root metadata (`32 §2`).
+  name: reference_model
+  description: |
+    Reference model exercising every authoring shape in
+    `docs/design/apis/32_semstrait_model.md`. This file is the
+    canonical example consumed by `tests/schema_roundtrip.rs`.
+  ai_context:
+    description: Demo model for documentation purposes.
+    examples:
+      - "show me revenue by country last quarter"
+    unit: usd
+  labels: [demo, reference]
+
+  # ── Shared root pools — `18 §1.1` ────────────────────────────────
+  # Each entry MUST be referenced from at least one DataKind's
+  # `SemanticInterface` (SR-E-3).
+  dimensions:
+    # Temporal (`18 §4.1`)
+    - name: order_ts
+      data_type: timestamp
+      description: Order placement timestamp.
+      type:
+        temporal:
+          grains: [minute, hour, day, week, month]
+    # Categorical (`18 §4.1`)
+    - name: country
+      data_type: string
+      type: categorical
+    # Binary (`18 §4.1`)
+    - name: is_paid
+      data_type: bool
+      type: binary
+    # Geo (`18 §4.1`)
+    - name: origin_geo
+      data_type: string
+      type: geo
+    # Bucketed (`18 §4.1`)
+    - name: revenue_bucket
+      data_type: string
+      type:
+        bucketed:
+          buckets:
+            - name: small
+              upper:
+                int: 100
+            - name: medium
+              lower:
+                int: 100
+              upper:
+                int: 1000
+            - name: large
+              lower:
+                int: 1000
+
+  measures:
+    # AggregationType::Sum + Full additivity (`18 §5`).
+    - name: revenue
+      data_type: decimal(18,2)
+      agg: sum
+      additivity: full
+    # AggregationType::Avg.
+    - name: avg_basket
+      data_type: decimal(18,2)
+      agg: avg
+    # AggregationType::Count.
+    - name: order_count
+      data_type: integer
+      agg: count
+    # AggregationType::CountDistinct.
+    - name: customer_count
+      data_type: integer
+      agg: count_distinct
+    # AggregationType::Min.
+    - name: earliest_ts
+      data_type: timestamp
+      agg: min
+    # AggregationType::Max.
+    - name: latest_ts
+      data_type: timestamp
+      agg: max
+    # AggregationType::Median.
+    - name: median_basket
+      data_type: decimal(18,2)
+      agg: median
+    # AggregationType::StdDev.
+    - name: revenue_stddev
+      data_type: decimal(18,4)
+      agg: std_dev
+    # AggregationType::Variance.
+    - name: revenue_variance
+      data_type: decimal(18,4)
+      agg: variance
+    # Semi additivity (`18 §5`).
+    - name: latest_balance
+      data_type: decimal(18,2)
+      agg: sum
+      additivity:
+        semi:
+          axes: [order_ts]
+          strategy: latest
+
+  metrics:
+    # Computed metric (`18 §6.1`). `expr` is REQUIRED at the declaration
+    # site (or any ref site — SR-E-2 catches all-missing).
+    - name: profit_margin
+      data_type: decimal(18,4)
+      expr: "revenue / nullif(avg_basket, 0)"
+      additivity: full
+
+  # ── Top-level data kinds — `32 §3.3` (Public forms) ──────────────
+  datasets:
+    # Public Dataset with the full LeafExtras roster (catalog + storage
+    # + semantic_mapping + temporal=Events).
+    - name: orders
+      description: Order-line fact table.
+      ai_context:
+        description: Each row is a single order line.
+        unit: usd
+      extras:
+        catalog: polaris_prod
+        storage:
+          format: parquet
+          paths:
+            - s3://my-bucket/orders/
+        semantic_mapping:
+          revenue: amount_cents
+          country: ship_country
+          # Tagged-form literal — the v1 baseline.
+          currency:
+            literal:
+              string: USD
+          # Bare-scalar literal — author shortcut per `18 §10.2`. The
+          # YAML scalar type drives the resulting `LiteralValue` variant
+          # (string / integer / float / bool); decimal / date / timestamp
+          # always require the tagged form because YAML cannot
+          # disambiguate them from strings.
+          tenant:
+            literal: acme
+        temporal:
+          events:
+            event_time: order_ts
+          grain: minute
+      # SemanticInterface — refs into the shared pool with one override.
+      dimensions:
+        - ref: order_ts
+        - ref: country
+        - ref: is_paid
+        - ref: origin_geo
+        - ref: revenue_bucket
+      measures:
+        - ref: revenue
+          # Override site — the only `expr:` overridable on a Measure
+          # ref site (`18 §1.3`).
+          expr: "amount_cents * 0.01"
+        - ref: avg_basket
+        - ref: order_count
+        - ref: customer_count
+        - ref: earliest_ts
+        - ref: latest_ts
+        - ref: median_basket
+        - ref: revenue_stddev
+        - ref: revenue_variance
+        - ref: latest_balance
+      metrics:
+        - ref: profit_margin
+      filters:
+        - name: paid_only
+          expr: "is_paid = true"
+      keys:
+        primary:
+          fields: [order_id]
+        unique:
+          - fields: [external_order_ref]
+        foreign:
+          - fields: [customer_id]
+            references: customers
+            target_fields: [id]
+
+    # Companion Dataset (referenced by the cross-public relationship).
+    # Demonstrates Snapshot temporal shape on a leaf.
+    - name: customers
+      extras:
+        storage:
+          tables: [analytics.customers]
+        temporal:
+          snapshot:
+            snapshotted_at: order_ts
+          grain: day
+      dimensions:
+        - ref: country
+      keys:
+        primary:
+          fields: [id]
+
+    # Demonstrates Timeseries temporal shape.
+    - name: web_events
+      extras:
+        storage:
+          format: parquet
+          paths: [s3://my-bucket/web_events/]
+        temporal:
+          timeseries:
+            occurred_at: order_ts
+          grain: hour
+      dimensions:
+        - ref: order_ts
+      keys:
+        primary:
+          fields: [event_id]
+
+    # Demonstrates SCD Type 1 temporal shape.
+    - name: customer_addresses_t1
+      extras:
+        storage:
+          tables: [analytics.customer_addresses_t1]
+        temporal:
+          scd:
+            scd_type: type1
+            valid_from: order_ts
+            valid_to: order_ts
+          grain: day
+      dimensions:
+        - ref: country
+      keys:
+        primary:
+          fields: [customer_id]
+
+    # Demonstrates SCD Type 2 temporal shape.
+    - name: customer_addresses_t2
+      extras:
+        storage:
+          tables: [analytics.customer_addresses_t2]
+        temporal:
+          scd:
+            scd_type: type2
+            valid_from: order_ts
+            valid_to: order_ts
+          grain: day
+      dimensions:
+        - ref: country
+      keys:
+        primary:
+          fields: [customer_id]
+
+  grainsets:
+    # Public Grainset — composes nested Datasets per `26 §1`. R3 in
+    # `26 §1` requires ≥ 2 children; SR-E-8 requires every leaf child
+    # to author its own `temporal.grain:`.
+    - name: order_rollup
+      description: Roll-up of order-side facts.
+      extras: {}
+      dimensions:
+        - ref: order_ts
+      datasets:
+        - name: returns
+          extras:
+            storage:
+              tables: [analytics.returns]
+            temporal:
+              events:
+                event_time: order_ts
+              grain: day
+        - name: refunds
+          extras:
+            storage:
+              tables: [analytics.refunds]
+            temporal:
+              events:
+                event_time: order_ts
+              grain: day
+
+  unionsets:
+    # Public Unionset — UNION ALL is the default `mode`.
+    - name: all_events
+      extras: {}
+      dimensions:
+        - ref: order_ts
+      mode: all
+      datasets:
+        - name: mobile_events
+          extras:
+            storage:
+              format: parquet
+              paths: [s3://my-bucket/mobile_events/]
+            temporal:
+              timeseries:
+                occurred_at: order_ts
+              grain: hour
+        - name: server_events
+          extras:
+            storage:
+              format: parquet
+              paths: [s3://my-bucket/server_events/]
+            temporal:
+              timeseries:
+                occurred_at: order_ts
+              grain: hour
+
+  joinsets:
+    # Public Joinset — internal `relationships:` and 2 nested children.
+    - name: orders_with_customers
+      extras: {}
+      dimensions:
+        - ref: country
+      datasets:
+        - name: orders_l
+          extras:
+            storage:
+              tables: [analytics.orders_l]
+            temporal:
+              events:
+                event_time: order_ts
+              grain: day
+        - name: customers_r
+          extras:
+            storage:
+              tables: [analytics.customers_r]
+            temporal:
+              snapshot:
+                snapshotted_at: order_ts
+              grain: day
+      relationships:
+        - name: orders_l_to_customers_r
+          from: orders_l
+          to: customers_r
+          keys:
+            - from: customer_id
+              to: id
+          cardinality: many_to_one
+
+  # ── Root-level relationships — `18 §2` (cross-public). ──────────
+  relationships:
+    - name: orders_to_customers
+      description: Orders join to customers on customer_id.
+      from: orders
+      to: customers
+      keys:
+        - from: customer_id
+          to: id
+      cardinality: many_to_one
+      integrity: assumed
