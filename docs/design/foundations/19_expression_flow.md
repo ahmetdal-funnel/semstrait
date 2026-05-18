@@ -17,7 +17,7 @@ authoritative-for:
   - per-site `expr:` shape gates (scalar / Boolean / aggregate admission)
   - Phase B placement rules — filter, `group_by` handoff, computed-Dimension placement, Metric lowering, function-tag axis (`Additivity`), advisory channel
   - request-layer dimension-variation carrier (`RequestDimensionRef { name, variation }`) and `DimensionVariation` enum
-  - unified `Additivity` enum and its two-source SoC (function-level in `14a §3.1` vs model-level in `18 §5.2`)
+  - unified `Additivity` enum and its two-source SoC (function-level in `14a §3.6` vs model-level in `18 §5.2`)
   - typed `Diagnostics<PlanErrorKind>` advisory channel and the unified `PLAN_W_2101 LossyReaggregation` cross-DataKind code
   - the compile-stage `CompileErrorKind` surface for expression resolution (`EXPR_E_02xx` sub-range)
 refined-by:
@@ -177,6 +177,8 @@ pub(crate) struct LoweringCtx<'a> {
 ```
 
 All fields are read-only at the input-model sense except `recursion`, which carries the DFS visited-set used by §3.5's cycle detection. The function is **pure**: no I/O, no time dependence, no RNG; the only mutation is bookkeeping for cycle detection, scoped to a single `resolve` invocation tree.
+
+**Precondition.** The incoming `SemanticExpr` already carries an `Aggregate` root if a Measure or Metric authored it via the `(agg:, expr:)` dual-field surface — that wrapping happens at parse time per `[32 §5.4](../apis/32_semstrait_model.md)`.
 
 The substep order is load-bearing:
 
@@ -482,7 +484,7 @@ Strictly bottom-up over the reference DAG: process Semantics in §3.5.2's topolo
 
 - **Leaves.** `Literal` → literal's canonical type per `[13 §2.1–2.4](13_types_and_grain.md)` (bare `Null` → `DataType::Unknown`, reconciled at boundary). `Column` (under auto) → schema lookup; missing → `UnresolvedColumn`. `Field` → §3.3.2.c kind-resolve then re-dispatch. `{Dim|Measure|Metric|Key} { accessor: None }` → target's root `inferred_type` (already populated by topological order). `{…} { accessor: Some(_) }` → eliminated to `Window` before type inference reaches it.
 - **`FunctionCall`** → `ReturnTypeRule` per `[14a §3.4](14a_function_catalog.md)`. **`Aggregate`** → registry-driven return type for the canonical five (`Sum`/`Avg`/`Count`/`Min`/`Max`) per `[14a §4.7](14a_function_catalog.md)` + SQL:2016 promotion. **`Window`** → window function's return type per `14a`.
-- **`BinaryOp`** → arithmetic: `SameAs(0)` (left operand's type, per `14 §5.6` pass-through); comparison: `Boolean` regardless of operand types; logical (`And`/`Or`): both operands `Boolean`, returns `Boolean` else `TypeInferenceFailure`.
+- **`BinaryOp`** → arithmetic: `SameAs(0)` (left operand's type, per `14 §5.4` pass-through); comparison: `Boolean` regardless of operand types; logical (`And`/`Or`): both operands `Boolean`, returns `Boolean` else `TypeInferenceFailure`.
 - **`UnaryOp`** → `Negate` preserves operand type; `Not` requires + returns `Boolean`.
 - **`Cast { target, … }`** → `target`. No compile-time compatibility check; adapter may reject at render.
 - **`Case` / `Coalesce`** → unified type across branches; each `Case.when` must be `Boolean`.
@@ -491,7 +493,7 @@ Strictly bottom-up over the reference DAG: process Semantics in §3.5.2's topolo
 
 #### 3.6.3 Unification
 
-Minimal: two types unify iff (a) identical (including `Decimal` precision/scale) or (b) one is `DataType::Unknown` (untyped `Null`) and the other is concrete (unifies to the concrete). Otherwise `CompileErrorKind::TypeInferenceFailure { node, reason }`. **No implicit promotion at unification** — `Integer` and `Long` do not auto-unify; authors write explicit `Cast`. This matches `14 §5.6`'s non-coercion posture and keeps inference deterministic.
+Minimal: two types unify iff (a) identical (including `Decimal` precision/scale) or (b) one is `DataType::Unknown` (untyped `Null`) and the other is concrete (unifies to the concrete). Otherwise `CompileErrorKind::TypeInferenceFailure { node, reason }`. **No implicit promotion at unification** — `Integer` and `Long` do not auto-unify; authors write explicit `Cast`. This matches `14 §5.4`'s non-coercion posture and keeps inference deterministic.
 
 #### 3.6.4 The annotation contract
 
@@ -607,7 +609,7 @@ Family A has **no AST variant**. Author writes plain `Case` / `BinaryOp` / `Func
 
 **`Like` canonicalisation.** Bracket classes / POSIX classes / `ILike` / `RLike` / regex extensions are **not** in v1 fold scope. Adapters emitting to engines with looser defaults (e.g. MySQL collation-driven case-folding) compensate during `PhysicalExpr` → engine-AST translation.
 
-**Out of v1 fold scope.** `FunctionCall` (no purity flag in `14a §3.1` yet); regex operators; user-defined functions.
+**Out of v1 fold scope.** `FunctionCall` (no purity flag in `14a §3.1` yet — `[TD-REGISTRY-DETERMINISM]`); regex operators; user-defined functions.
 
 **Per-`Binding` materialisation.** Each `Binding`'s `PhysicalExpr` is independently folded against its own metadata literals; multi-source Datasets produce per-`Binding` distinct results.
 
@@ -817,7 +819,7 @@ Phase A is fail-fast per `[00 §9](../00_overview.md)` **I12**: the first error 
 - Subquery / Lambda / MaskExpression expression forms — correlated needs ride per-kind typed semantic leaves + `Relationship` (`16 §2`).
 - Stringly-typed parameter IDs (`"$1"` style) — superseded by typed `ParameterKey` (`14 §5.2`).
 - Substrait (or other canonical-consumer) wire-portable plan emission — architecturally reserved as a capability-driven adapter path owned by `30` / `36` (`[TD-30-ADAPTER-CAPABILITY]`); no concrete canonical-consumer adapter ships in v1.
-- UDF surface for author-declarable function-level `Additivity` — function-level `Additivity` is hardcoded in `14a §3.1` per built-in aggregate in v1.
+- UDF surface for author-declarable function-level `Additivity` — function-level `Additivity` is hardcoded in `14a §3.6` per built-in aggregate in v1.
 - Per-DataKind advisory specialisation beyond `PLAN_W_2101 LossyReaggregation` — see `[TD-19-ADVISORY-SPECIALISATION]`.
 
 ---

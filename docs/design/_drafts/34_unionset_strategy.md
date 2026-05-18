@@ -96,7 +96,7 @@ The unified column type for each composed-surface Semantics `s` is computed once
 2. **No contributors** (`|contribs(s)| == 0`) — caught earlier by `COMP_E_2302 UnionsetCoverageIncomplete` (`23 §8`); never reaches plan-time.
 3. **Single contributor** — unified type is `t_0`.
 4. **Multiple contributors**:
-   - **Pass-through fast path (per `14 §5.6`)** — if all `t_i` are identical, unified type is the shared type; no `Cast` needed.
+   - **Pass-through fast path (per `14 §5.4`)** — if all `t_i` are identical, unified type is the shared type; no `Cast` needed.
    - **Widening (per `13 §7`)** — if all `t_i` are pairwise cast-compatible, unified type is the LUB. Promotion lattice per `14`. Tie-breaker: first contributor's type wins.
    - **Incompatible** — `COMP_E_2303 UnionsetCrossChildTypeDisagreement` at compile.
 

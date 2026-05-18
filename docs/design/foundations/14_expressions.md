@@ -10,6 +10,7 @@ authoritative-for:
   - the type aliases `PhysicalExpr = Expr<PhysicalLeaf>` and `SemanticExpr = Expr<SemanticLeaf>`
   - the per-kind sugar accessors (`DimensionAccessor`, `MeasureAccessor`, `MetricAccessor`, `KeyAccessor`) carried as optional refinements on the typed semantic leaves
   - the `Parameter` placeholder shape (compile-emitted; plan-bound) and the closed `ParameterKey` set
+  - the non-coercion / pass-through posture — no implicit type promotion, coercion, or cross-operand compatibility checks at the canonical layer; engines own execution-time type compatibility
   - the `ExprSource` YAML authoring surface — Inline DSL string form and Declarative block form
   - the six canonical authoring-surface constructors (`col`, `field`, `dim`, `measure`, `metric`, `key`) with exact YAML-tag ↔ Rust-DSL alignment
   - bare-identifier resolution rules — semantic site defaults to `field`, physical-mapping site defaults to `col`
@@ -42,7 +43,8 @@ refined-by:
 - Two leaf sets that vary by layer: `PhysicalLeaf` (canonical-IR) and `SemanticLeaf` (per-kind typed) (§3.4 / §3.5).
 - The two named layer aliases `PhysicalExpr` and `SemanticExpr` (§3.6).
 - The per-kind typed semantic leaves (`Field`, `Dimension`, `Measure`, `Metric`, `Key`) and the optional sugar accessors carried as `Option<XxxAccessor>` fields on each typed leaf (§4).
-- The compile-emitted `Parameter` placeholder mechanism with typed `ParameterKey` (§5).
+- The compile-emitted `Parameter` placeholder mechanism with typed `ParameterKey` (§5.1–§5.3).
+- The non-coercion / pass-through posture — no implicit type promotion at the canonical layer (§5.4).
 - The six canonical authoring-surface constructors (`col`, `field`, `dim`, `measure`, `metric`, `key`) with exact YAML-tag ↔ Rust-DSL alignment (§6).
 - The `ExprSource` YAML authoring surface, parse-site dispatch, and bare-identifier rules (§6).
 - Per-site shape gates governing which authoring sites admit which expression shapes (§7).
@@ -426,13 +428,25 @@ pub enum ParameterKey {
 }
 ```
 
-The closed parameter set is **internal** — adding members is additive per I10 and is not author-extensible. v1 carries exactly the two keys needed by Family-B-sugar elimination (§4.3); future keys land via `#[non_exhaustive]` additions.
+The closed parameter set is **internal** — adding members is additive per I10 and is not author-extensible. v1 carries exactly the two keys needed by Family-B-sugar elimination (§4.2); future keys land via `#[non_exhaustive]` additions.
 
 ### 5.3 Plan-time binding postcondition
 
 Per the canonical pipeline (`[00 §5](../00_overview.md)`), the planner substitutes `Parameter` leaves against the `Request` during plan construction. The postcondition is that **no `Parameter` survives into adapt-time**: a `Parameter` reaching an adapter is a hard error owned by the planner (`PlanErrorKind`), not the adapter.
 
 The planner-level binding mechanics and the exact `Request` shape that supplies the substitution values live in `[19](19_expression_flow.md)` and `[34 / planner contract](../apis/34_semstrait_planner.md)`. This chapter ratifies the placeholder shape and the postcondition only.
+
+### 5.4 Non-coercion posture (pass-through)
+
+semstrait performs **no implicit type coercion or promotion** at the canonical layer:
+
+- **Function calls** — signature matching requires exact `DataType` equality per-argument per `[14a §3.3](14a_function_catalog.md)`. No `Integer → Long` widening, no `String → Date` parsing. On mismatch: `CompileErrorKind::NoMatchingSignature`. Authors insert explicit `Cast` when types differ.
+- **Binary operators** — arithmetic return type is `SameAs(left_operand)`. Cross-operand type compatibility (`Integer < String`, `Double + Date`) is **not validated at the semstrait layer** — the engine raises its own diagnostics at execution time. This keeps semstrait's compile deterministic and engine-neutral.
+- **Comparison operators** — produce `Boolean` regardless of operand types. No canonical comparison-compatibility matrix in v1.
+- **NULL handling** — NULL-in / NULL-out behaviour is engine-delegated. `FunctionSpec` carries no `null_handling` field; the canonical IR expresses structural null-test shapes (`IsNull`, `Coalesce`, `NullIf`) but does not model per-function null-propagation semantics.
+- **Join-key compatibility** — deferred to the engine per `[13](13_types_and_grain.md)`.
+
+This posture keeps the canonical layer thin and engine-neutral: semstrait compiles structure, not execution semantics. Engine-specific type compatibility (DataFusion's arrow promotion, DuckDB's implicit casts, Spark's ANSI-strict mode) is the adapter's concern.
 
 ---
 

@@ -562,6 +562,25 @@ Single-string values dispatch to `Column`; mapping values with `literal:` / `exp
 
 See `15` for the full binding algorithm; `33` for where the binding output lives.
 
+### 5.4 Aggregate synthesis from `(agg:, expr:)`
+
+Measures and Metrics carry separate `agg:` and `expr:` fields in YAML. At **parse time**, `semstrait-model` wraps these into a single `Aggregate`-rooted `SemanticExpr`:
+
+```text
+agg: sum
+expr: "revenue * quantity"
+  ─→  SemanticExpr::Aggregate {
+         op:       AggregationOp::Sum,
+         args:     [parse_semantic("revenue * quantity")],
+         distinct: false,  // default; `distinct: true` is an explicit author field
+         filter:   None,   // populated from `filter:` if present
+       }
+```
+
+By the time `[19 §3](../foundations/19_expression_flow.md)`'s `resolve` runs, the `SemanticExpr` already carries the `Aggregate` root if a Measure or Metric authored it. The resolution algorithm does not synthesize `Aggregate` — it only resolves the inner `args` tree.
+
+This is a parse-time structural assembly, not a compile-time transformation. The dual-field `(agg:, expr:)` surface is author ergonomics; the canonical representation is always `Expr<L>::Aggregate`.
+
 ---
 
 ## 6. Structural Rules (SR-*)

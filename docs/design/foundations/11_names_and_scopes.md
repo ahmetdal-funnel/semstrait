@@ -472,8 +472,8 @@ A **Constraint** is a declarative rule that narrows how a Semantics element part
 
 - SQL-style relational integrity (`NOT NULL`, `UNIQUE`, `FOREIGN KEY`, `PRIMARY KEY`) — Preconditions in `§12.2` (`N-C3` … `N-C9`).
 - System-level compiler invariants ("SUM only on Measure `expr:`, not on a Dimension / Key column") — validate/compile-stage structural rules in `14` / `15` / `§12.2`.
-- Engine-side operand-type admissibility — deferred to adapters per the `14 §5.6` pass-through posture.
-- Arbitrary boolean-predicate escape-hatches — every admissible Constraint kind is a closed, structured sub-block. The `14 §4.3` inline DSL is not reused inside `constraints:`.
+- Engine-side operand-type admissibility — deferred to adapters per the `14 §5.4` pass-through posture.
+- Arbitrary boolean-predicate escape-hatches — every admissible Constraint kind is a closed, structured sub-block. The `14 §6.3` inline DSL is not reused inside `constraints:`.
 - Authorable severity — every Constraint violation is a hard error (§8.7).
 
 ### 8.1 The Constraint concept

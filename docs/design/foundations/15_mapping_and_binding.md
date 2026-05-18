@@ -493,7 +493,7 @@ Per `11 §6`, a `SimpleDataKind`'s `SemanticInterface` is the complete named sur
 
 **Edge case: `ComputedDimension` (per `14 §1.2`).** These ALWAYS map to `SemanticMappingValue::Expr`; they never have a `Column`-valued entry. The YAML parse enforces this at `32`.
 
-**Edge case: Name case.** `SemanticsName` preserves the author's case (`14 §4.3`); the parser does no case folding. Mapping-key mismatches due to case errors (`"customer_id"` declared, `"CustomerID"` mapped) → `SpuriousBindingEntry` + `MissingBindingEntry` pair.
+**Edge case: Name case.** `SemanticsName` preserves the author's case (`14 §6.5`); the parser does no case folding. Mapping-key mismatches due to case errors (`"customer_id"` declared, `"CustomerID"` mapped) → `SpuriousBindingEntry` + `MissingBindingEntry` pair.
 
 ### 5.7 Shape constraints
 

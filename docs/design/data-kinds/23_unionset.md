@@ -259,7 +259,7 @@ For each composed-surface Semantics `s` that a child does NOT provide (per §3.2
 
 Per composed-surface Semantics `s`, the unified branch column type is derived once at compile:
 
-- **Pass-through fast path** (per `14 §5.6`) — if every contributing child's `DataType` for `s` is identical, the unified type is that shared type; no `Cast` needed.
+- **Pass-through fast path** (per `14 §5.4`) — if every contributing child's `DataType` for `s` is identical, the unified type is that shared type; no `Cast` needed.
 - **Widening** (per `13 §7`) — if contributors' types differ but are pairwise cast-compatible under `13 §7`'s widening rules, the unified type is the LUB. `UnionsetStrategy` wraps non-LUB-typed contributors in `Cast(<col>, <lub>)` inside the seam `Project`. LUB selection follows `14`'s promotion lattice.
 - **Incompatible** — if any pair is not cast-compatible under `13 §7`, `COMP_E_2303 UnionsetCrossChildTypeDisagreement` fires at compile (§8).
 - **Single contributor** — if exactly one child provides `s`, the unified type is that child's type. **No contributor** — caught earlier as `COMP_E_2302 UnionsetCoverageIncomplete` per §3.2.

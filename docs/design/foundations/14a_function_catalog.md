@@ -27,7 +27,7 @@ refined-by:
 
 **Does NOT ratify:** the compile-pipeline substitution/resolution algorithm — `[19 §3](19_expression_flow.md)`; per-engine native-name mapping, rewrite tiers, emulation — `registry/functions_mapping.md`; adapter rendering of resolved `FunctionCall` — `[36](../apis/36_semstrait_adapter.md)`.
 
-**Invariants upheld:** **I1** — registry operates on canonical `Expr::FunctionCall { name, args }`; no SQL text. **I2** — signatures typed in canonical `DataType` / `TypeClass`. **I10** — every public sum carries `#[non_exhaustive]`. Per `14 §6.4`, registered names form the non-reserved Declarative-block tag vocabulary. Per `14 §5.6`, no implicit coercion at call sites — exact-type signature match or `NoMatchingSignature`.
+**Invariants upheld:** **I1** — registry operates on canonical `Expr::FunctionCall { name, args }`; no SQL text. **I2** — signatures typed in canonical `DataType` / `TypeClass`. **I10** — every public sum carries `#[non_exhaustive]`. Per `14 §6.4`, registered names form the non-reserved Declarative-block tag vocabulary. Per `14 §5.4`, no implicit coercion at call sites — exact-type signature match or `NoMatchingSignature`.
 
 ## 2. The `FunctionRegistry` — API and Lifecycle
 
@@ -66,7 +66,7 @@ pub struct FunctionSpec {
 }
 ```
 
-No `null_handling` (NULL-in/out delegated to engine per `14 §5.6`). No `deterministic` (`[TD-REGISTRY-DETERMINISM]`). No `aliases` / `since_version` / `stability` (versioning lives in `apis/30`). Per-engine portability carriage lives entirely in `registry/functions_mapping.md` (§6).
+No `null_handling` (NULL-in/out delegated to engine per `14 §5.4`). No `deterministic` (`[TD-REGISTRY-DETERMINISM]`). No `aliases` / `since_version` / `stability` (versioning lives in `apis/30`). Per-engine portability carriage lives entirely in `registry/functions_mapping.md` (§6).
 
 ### 3.2 `FunctionCategory`
 
@@ -92,7 +92,7 @@ pub struct FnSignature {
 }
 ```
 
-`signatures: NonEmpty<FnSignature>`; lookup attempts each signature in declaration order; first exact match (per-arg `DataType` equality) wins. No TypeClass generics, no implicit coercion (`14 §5.6`). On no match: `NoMatchingSignature { name, arg_types, tried_signatures }` (the `tried_signatures` list mirrors the full overload set so the author can compare directly). TypeClass-parameterised generics deferred under `[TD-REGISTRY-TYPECLASS]`.
+`signatures: NonEmpty<FnSignature>`; lookup attempts each signature in declaration order; first exact match (per-arg `DataType` equality) wins. No TypeClass generics, no implicit coercion (`14 §5.4`). On no match: `NoMatchingSignature { name, arg_types, tried_signatures }` (the `tried_signatures` list mirrors the full overload set so the author can compare directly). TypeClass-parameterised generics deferred under `[TD-REGISTRY-TYPECLASS]`.
 
 **Variadic posture.** `variadic: Some(T)` accepts zero-or-more trailing args of type `T` after the fixed prefix. Mid-signature variadic (e.g. `printf`-style) is `[TD-REGISTRY-MID-VARIADIC]`; not needed in v1. Optional args (`substring(expr, start, [length])`) are expressed as multiple overloads differing in arity.
 
@@ -190,7 +190,7 @@ Candidates: `stddev`, `variance`, `median`, `string_agg`, `percentile_cont`, `pe
 
 `BinaryOpKind` (per `[14 §3.3](14_expressions.md)`) is a dedicated `Expr` variant, not a registry entry. `14a` **does not** publish a canonical promotion lattice because:
 
-1. `14 §5.6`'s pass-through posture delegates result-type derivation to the engine.
+1. `14 §5.4`'s pass-through posture delegates result-type derivation to the engine.
 2. SQL dialects disagree on details (`Decimal` rounding/scale, `Integer / Integer` precision, mixed `Integer + Float`).
 3. Per-engine observed rules live in `registry/functions_mapping.md`'s `BinaryOp` section; authors and adapter implementers consult it there.
 
@@ -227,7 +227,7 @@ Function-resolution errors feed `[19 §8.2](19_expression_flow.md)`'s error rost
 |---|---|
 | `CompileErrorKind::UnknownFunction { name }` | `FunctionCall.name` not in the sealed registry. |
 | `CompileErrorKind::FunctionArityMismatch { name, expected, got }` | Call-site arity outside the spec's declared range. |
-| `CompileErrorKind::NoMatchingSignature { name, arg_types, tried_signatures }` | No overload matches; per `14 §5.6` no implicit coercion — author must `CAST` explicitly. |
+| `CompileErrorKind::NoMatchingSignature { name, arg_types, tried_signatures }` | No overload matches; per `14 §5.4` no implicit coercion — author must `CAST` explicitly. |
 | `CompileErrorKind::ReservedTagCollision { tag, source }` | Adapter registration shadows a `14 §6.4.1` reserved AST tag. |
 | `CompileErrorKind::AdapterFunctionShadowsCore { name, adapter }` | Adapter registered a name already in §4. Surfaces as panic at `function_registry()` initialization. |
 | `CompileErrorKind::AdapterFunctionCollision { name, adapters }` | Two adapters registered the same name. Same surfacing. |

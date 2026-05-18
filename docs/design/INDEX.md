@@ -98,6 +98,7 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 | Semantics element types and naming constraints | [`foundations/11_names_and_scopes.md`](foundations/11_names_and_scopes.md) |
 | `DataType`, `Grain` | [`foundations/13_types_and_grain.md`](foundations/13_types_and_grain.md) |
 | `Expr<L>`, `SemanticExpr`, `PhysicalExpr`, `SemanticLeaf`, `PhysicalLeaf` | [`foundations/14_expressions.md`](foundations/14_expressions.md) |
+| Non-coercion / pass-through posture (no implicit type promotion at canonical layer) | [`foundations/14_expressions.md`](foundations/14_expressions.md) §5.4 |
 | `CanonicalFn`, `FunctionRegistry`, function-level `Additivity` | [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md) |
 | Expression compile-pipeline (Phase A resolution + Phase B placement) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
 | Two-phase expression flow, `resolve`, sugar (Family A/B) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
