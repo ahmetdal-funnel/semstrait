@@ -1,824 +1,743 @@
 ---
-prereqs: [00, 10, 11, 12, 13]
+prereqs: [00, 10, 11, 13, 18]
 authoritative-for:
-  - the shared low-level `Expr` AST (variant taxonomy, exhaustive variant list)
-  - the first-class wrapper types `SemanticExpr` and `PhysicalExpr` and their invariants
-  - the `ExprSource` YAML authoring surface — Inline DSL form and Declarative block form
-  - identifier-resolution rules per expression context (bare identifiers resolve to `EntityRef` in Semantic context, to `Column` in Physical context — no sigil)
-  - computed-Semantics `data_type:` inference with unification against author-declared types
-  - typing contract outline (literal / column / entity-ref / aggregate) — full function signature model lives in `14a`
-  - the parse-and-validate error model for expressions (`ParseError::Expr*`, `ValidateError::*Expr*`)
+  - the layered expression model — one structural tree `Expr<L>` parameterized by leaf type, with two canonical leaf sets
+  - the `Tree` trait (universal traversal contract — `children` / `with_new_children` / visitor / rewriter)
+  - the `ExprLeaf` trait
+  - the structural-variant taxonomy of `Expr<L>` (BinaryOp / UnaryOp / FunctionCall / Cast / Case / InList / Between / Like / IsNull / Coalesce / NullIf / Aggregate / Window)
+  - the `PhysicalLeaf` set (Column / Literal / Parameter) — canonical-IR leaves
+  - the `SemanticLeaf` set (Literal / Column / Field / Dimension / Measure / Metric / Key) — per-kind typed leaves enabled by semantic declarations
+  - the type aliases `PhysicalExpr = Expr<PhysicalLeaf>` and `SemanticExpr = Expr<SemanticLeaf>`
+  - the per-kind sugar accessors (`DimensionAccessor`, `MeasureAccessor`, `MetricAccessor`, `KeyAccessor`) carried as optional refinements on the typed semantic leaves
+  - the `Parameter` placeholder shape (compile-emitted; plan-bound) and the closed `ParameterKey` set
+  - the `ExprSource` YAML authoring surface — Inline DSL string form and Declarative block form
+  - the six canonical authoring-surface constructors (`col`, `field`, `dim`, `measure`, `metric`, `key`) with exact YAML-tag ↔ Rust-DSL alignment
+  - bare-identifier resolution rules — semantic site defaults to `field`, physical-mapping site defaults to `col`
+  - the `Column`-under-`auto`-mapping admissibility rule and the compile-stage auto-mapping synthesis step
+  - per-parse-site dispatch — semantic sites parse to `SemanticExpr`, physical-mapping sites parse to `PhysicalExpr`
+  - per-site shape gates (scalar / boolean / aggregate-admitting)
+  - crate-placement of the expression layer — `semstrait-ir` owns canonical-IR types; `semstrait-core` owns trait scaffolding; `semstrait-model` owns the YAML surface; `semstrait-manifest` owns compile
 refined-by:
-  - 14a (function catalog — `CanonicalFn` newtype, `FunctionRegistry`, `FnSignature` polymorphism, BinaryOp promotion lattice expressed as signatures)
-  - 14b (expression resolution — `ResolvedExprTable`, compile-time substitution algorithm, cross-DataKind path pre-resolution, cycle detection, plan-time lookup contract)
-  - 15 (binding — `column_mapping[].expr` site uses `PhysicalExpr`; schema validation of referenced columns against the resolved physical source)
-  - 16 (composition — cross-kind `SemanticExpr` evaluation traverses `Relationship` paths)
-  - 20–25 (data-kind specifications — how each DataKind consumes ResolvedExprs at plan time)
-  - 34 / 36 (adapters — rendering `PhysicalExpr` to engine-native forms)
-  - registry/functions_mapping.md (authoritative per-engine function mapping catalog)
+  - 14a — `CanonicalFn` newtype, `FunctionRegistry`, `FunctionSpec`, `FnSignature`, `ReturnTypeRule`, `RegistryExtension`, function-level `Additivity`
+  - 19 — Phase A / Phase B compile pipeline; resolution algorithm; sugar contract; per-site shape gates; Phase B placement
+  - 31 — `semstrait-core` public surface (trait scaffolding + support enums)
+  - 35 — `semstrait-ir` public surface (crate-level home for `Expr<L>`, leaf sets, accessors, `Parameter`, `CanonicalFn`/`FunctionRegistry`)
 ---
 
 # 14. Expressions
 
-> This document ratifies the expression-model contract at the Semantics layer.
-> Function catalog details (`CanonicalFn` newtype, `FunctionRegistry`,
-> `FnSignature` polymorphism, BinaryOp promotion lattice) and eager
-> resolution mechanics (`ResolvedExprTable`, substitution algorithm) live in
-> sibling documents `14a` and `14b` to keep each focused.
+> **Status:** ratified (second refinement landed 2026-05-18; cascade rebases of `19` / `31` / `35` complete per `STATUS.md` item N). This chapter ratifies a **layered expression model** in which one structural tree `Expr<L>` is parameterized over its leaf set, with two canonical leaf sets — `PhysicalLeaf` (canonical-IR leaves) and `SemanticLeaf` (per-kind typed leaves enabled by semantic declarations).
+>
+> The shape: `SemanticExpr` is sugar on top of `PhysicalExpr` — they share `Expr<L>`'s structural variants, differ only in leaf set. Per-kind typed semantic leaves (`Field`, `Dimension`, `Measure`, `Metric`, `Key`) carry sugar accessors as `Option<XxxAccessor>` fields (no wrapping `Accessor` enum, no `EntityRef`/`Access` indirection). The authoring surface provides six canonical constructors (`col`, `field`, `dim`, `measure`, `metric`, `key`) with exact YAML-tag ↔ Rust-DSL alignment.
+
+---
 
 ## 1. Purpose and Scope
 
-`14` ratifies the **expression model** semstrait uses from YAML authoring through the SemanticManifest boundary. Expressions are how authors declare computed Semantics (`expr:` on a Measure / Metric / Dimension / Filter) and how Bindings map physical columns into Semantic slots (`column_mapping[].expr`).
+`semstrait` is canonical-first per `[00 §3](../00_overview.md)`. Two conversion boundaries exist: YAML → canonical (compile-time) and canonical → engine (adapt-time). Expressions are the unit through which both boundaries operate.
 
 **What `14` ratifies:**
 
-- A single shared low-level `Expr` AST (§3) — all variants, authoring-facing but not directly a field type outside the expression module.
-- Two first-class wrapper types (§2): `SemanticExpr` (semantic-layer composition; `EntityRef` allowed, `Column` forbidden) and `PhysicalExpr` (binding-layer; `Column` allowed, `EntityRef` forbidden, no aggregation). The wrappers enforce their invariants at construction boundaries.
-- The `ExprSource` YAML authoring surface (§4) — Inline DSL form (string) and Declarative block form (structured YAML) with identical AST results. Context-aware identifier resolution: bare identifiers are `EntityRef`s in a `SemanticExpr` parse site and `Column`s in a `PhysicalExpr` parse site.
-- The **typing contract** outline (§5) — literal typing, column typing (from Binding), EntityRef typing (from referenced Semantics's shape), aggregate typing (from `Aggregation` enum + operand type). The full signature-polymorphism machinery for scalar functions, the BinaryOp promotion lattice, and the `FnSignature`/`ParamType`/`ReturnTypeRule` design live in **`14a`** to keep this document's scope manageable.
-- **Computed-Semantics `data_type:` inference** (§6) — when `expr:` is present and `data_type:` is omitted, the type is inferred from the expression tree; when both are present, the inferred type must unify with the declared one.
-- The **parse and validate error model** for expressions (§7) — the `ParseError::Expr*` and `ValidateError::*Expr*` variants that feed `10 §5`'s `Diagnostic` stream.
+- One structural tree shape `Expr<L>` shared across the pipeline (§3.3).
+- Two leaf sets that vary by layer: `PhysicalLeaf` (canonical-IR) and `SemanticLeaf` (per-kind typed) (§3.4 / §3.5).
+- The two named layer aliases `PhysicalExpr` and `SemanticExpr` (§3.6).
+- The per-kind typed semantic leaves (`Field`, `Dimension`, `Measure`, `Metric`, `Key`) and the optional sugar accessors carried as `Option<XxxAccessor>` fields on each typed leaf (§4).
+- The compile-emitted `Parameter` placeholder mechanism with typed `ParameterKey` (§5).
+- The six canonical authoring-surface constructors (`col`, `field`, `dim`, `measure`, `metric`, `key`) with exact YAML-tag ↔ Rust-DSL alignment (§6).
+- The `ExprSource` YAML authoring surface, parse-site dispatch, and bare-identifier rules (§6).
+- Per-site shape gates governing which authoring sites admit which expression shapes (§7).
+- The auto-mapping synthesis pre-step at compile and the `Column`-under-manual-mapping rejection rule (§8).
+- The crate placement of the expression layer (§9).
 
 **What `14` does NOT ratify** (forward-refs):
 
-- Function signatures, `FunctionRegistry`, `CanonicalFn` newtype, BinaryOp promotion lattice — `14a`.
-- `ResolvedExprTable`, compile-time substitution, cross-DataKind pre-resolution, cycle detection — `14b`.
-- Per-engine function mapping — `registry/functions_mapping.md`.
-- Physical-column schema validation (does the column exist in the resolved source?) — `15`.
-- Plan-time use of `ResolvedExpr`s — `20–25`.
+- `CanonicalFn` newtype, `FunctionRegistry`, `FunctionSpec`, signature polymorphism, return-type rules, function-level `Additivity`, adapter extension API — `[14a](14a_function_catalog.md)`.
+- The compile-time resolution algorithm and the Phase A / Phase B pipeline (substitution, cross-DataKind BFS, cycle detection, type inference, Semantics-boundary reconciliation, `ResolvedExprTable` shape, per-`(Semantics, Binding)` keying, auto-mapping synthesis, sugar contract, Phase B placement, advisory channel) — `[19](19_expression_flow.md)`.
+- `SemanticMapping` value shape — `[18 §10](18_entities.md)`.
+- `Binding` algorithm — `[15](15_mapping_and_binding.md)`.
 
-**Key invariants from `00` / `10` / `11` / `13` that `14` directly upholds:**
+**Key invariants from `[00 §9](../00_overview.md)` that `14` directly upholds:**
 
-- **I7** (`00 §8`) — Semantic expressions reference Semantics by name; resolution to physical columns is a compile-time operation (eager) — expressions in the SemanticManifest are fully resolved, with per-Binding physical expressions pre-computed (per `14b`).
-- `11 §5.1` — `data_type:` across Semantics occurrences must unify. Inferred types from computed Semantics participate in this unification.
-- `11 §6` — element catalog: `expr:` appears on Measures, Metrics, Dimensions, Filters, and `column_mapping[]` entries. Each parse site dictates which wrapper (`SemanticExpr` or `PhysicalExpr`) is produced.
-- `13 §2` — expression types draw from the canonical `DataType` set exclusively.
+- **I1** — no raw SQL in canonical layers. `Expr<L>` is a typed tree; no `String`-as-SQL fields.
+- **I2** — physical types belong to adapters. `Expr<L>` types in canonical `DataType` per `[13](13_types_and_grain.md)`.
+- **I3** — no engine/provider branching in canonical crates. Engine specifics live behind `FunctionRegistry` extensions (`14a`) and adapter rewrites.
+- **I5** — name resolution at compile time. The per-kind typed `SemanticLeaf` variants (`Field`, `Dimension`, `Measure`, `Metric`, `Key`) carry unresolved names at parse and are resolved at compile; `PhysicalLeaf` carries no semantic references.
+- **I7** — strict acyclic crate DAG. The placement in §9 preserves the workspace DAG.
+- **I10** — non-exhaustive public sum types. Every leaf set, structural variant, and accessor enum carries `#[non_exhaustive]`.
+- **I12** — first-class typed diagnostics by stage. Construction-time validations and compile-time errors flow through `Diagnostic<K>` per `[00 §9](../00_overview.md)`.
 
-## 2. Expression Contexts: `SemanticExpr` and `PhysicalExpr`
+---
 
-### 2.2 `SemanticExpr` — semantic-layer composition
+## 2. Layered Model
 
-```rust
-pub struct SemanticExpr(Expr);
+### 2.1 Three concerns, one structural tree
 
-impl SemanticExpr {
-    /// Validates the invariants above, then wraps.
-    pub fn new(expr: Expr) -> Result<Self, ValidateError>;
+The expression layer carries three distinct concerns:
 
-    /// Byte-level access to the inner AST (read-only).
-    pub fn as_expr(&self) -> &Expr;
+1. **Universal traversal** — children, with-new-children, visitor/rewriter walks. Stage-agnostic.
+2. **Canonical IR form** — engine-portable expressions that adapters render. Uses `CanonicalFn` for function identity. References physical columns and compile-emitted parameters.
+3. **Authoring sugar** — references to declared semantic entities (Dimensions / Measures / Metrics / Keys per `[18](18_entities.md)`) and per-entity shorthand operators (e.g. `measure.previous`, `metric.delta`). Available only inside a Semantic context.
 
-    /// Traversal — delegates to `Expr::walk` / `Expr::transform`.
-    pub fn walk<V: Visitor>(&self, visitor: &mut V) -> V::Output;
-    pub fn transform<F: FnMut(Expr) -> Result<Expr, ValidateError>>(
-        self,
-        f: F,
-    ) -> Result<Self, ValidateError>;
-}
-```
+The design separates these three concerns along **leaf-set boundaries**, with one shared structural skeleton:
 
-**Authoring sites** (per `11 §6` element catalog):
+- A single `Expr<L>` enum carries every structural operator (arithmetic, comparison, logical, `Case`, `FunctionCall`, `Aggregate`, `Window`, …) recursively over its own leaf type `L`.
+- A `PhysicalLeaf` set defines the canonical-IR leaves.
+- A `SemanticLeaf` set defines the sugar-enabled leaves.
+- Type aliases name the two named layers — `PhysicalExpr = Expr<PhysicalLeaf>` and `SemanticExpr = Expr<SemanticLeaf>`.
 
-- Measure `expr:` (computed Measures only; a Measure with `agg:` and a physical `column_mapping[].expr` has no `SemanticExpr`)
-- Metric `expr:` (always required — a Metric without an `expr` is not a Metric, per `11 §6.3`)
-- Dimension `expr:` (computed Dimensions, per `11 §6.1`)
-- Filter `expr:` (always required, per `11 §6.4`)
+This is the **layered model**: `SemanticExpr` borrows the entire structural shape of `PhysicalExpr` and exchanges the leaf set for one that includes sugar. The two named types share their structural variants by construction — declared once, used twice.
 
-**Forbidden at**: `column_mapping[].expr` (which is `PhysicalExpr`-typed).
-
-### 2.3 `PhysicalExpr` — binding-layer terminal expression
-
-```rust
-pub struct PhysicalExpr {
-    expr: Expr,
-    /// Populated by compile; None pre-compile at authoring sites.
-    pub inferred_type: Option<DataType>,
-    /// Populated by compile; set of Column names referenced in the expr tree.
-    pub referenced_columns: Vec<String>,
-}
-
-impl PhysicalExpr {
-    /// Parse-site construction (inferred_type: None, referenced_columns: empty).
-    pub fn new_authored(expr: Expr) -> Result<Self, ValidateError>;
-
-    /// Compile-time construction from a resolved expr with known type + refs.
-    pub fn new_resolved(
-        expr: Expr,
-        inferred_type: DataType,
-        referenced_columns: Vec<String>,
-    ) -> Result<Self, ValidateError>;
-
-    pub fn as_expr(&self) -> &Expr;
-    pub fn walk<V: Visitor>(&self, visitor: &mut V) -> V::Output;
-    pub fn transform<F: FnMut(Expr) -> Result<Expr, ValidateError>>(
-        self,
-        f: F,
-    ) -> Result<Self, ValidateError>;
-}
-```
-
-**Authoring sites**:
-
-- `column_mapping[].expr` on a `Binding` (per `15`)
-
-**Compile-produced sites**:
-
-- `ResolvedExprTable` entries (one `PhysicalExpr` per `(Semantics, Binding)`, per `14b`)
-- Optimizer-introduced projections (e.g. reconciliation casts — §6 below)
-
-**Post-compile enrichment.** `inferred_type` and `referenced_columns` are `None` / empty at parse time and populated by `compile` in two places:
-
-1. Authored `column_mapping[].expr` expressions — `compile` infers types (§5) and collects column refs during `validate`→`compile` traversal.
-2. Resolved expressions stored in `ResolvedExprTable` — always populated; `14b` guarantees these fields are `Some` / non-empty before the SemanticManifest is sealed.
-
-### 2.5 The single conversion point
-
-The **only** function that produces a `PhysicalExpr` from a `SemanticExpr` is:
-
-```rust
-/// Resolve a SemanticExpr into a PhysicalExpr, for a specific target Binding.
-/// Called exhaustively by `compile` to populate the SemanticManifest's ResolvedExprTable
-/// (per `14b`) — one resolution per (Semantics, Binding) pair.
-pub fn resolve_to_physical(
-    sem: &SemanticExpr,
-    binding: &Binding,
-    manifest: &PartialSemanticManifest,
-) -> Result<PhysicalExpr, CompileError>;
-```
-
-**Contract:**
-
-1. **EntityRef substitution.** Every `Expr::EntityRef(name)` in `sem` is replaced with the target Binding's `PhysicalExpr` for `name` (looked up in `manifest.resolved_expr_table[name, binding.id]`). Substitution is recursive — a Semantics that transitively references other Semantics is flattened in one pass.
-2. **Cross-kind resolution.** If `name` is declared on a different top-level DataKind than `binding`'s owning kind, the resolution walks the `Relationship` graph per `14b §3`. An unreachable reference (no Relationship path exists) produces `CompileError::UnreachableSemanticsReference`.
-3. **Cycle detection.** If the transitive reference graph contains a cycle (A references B, B references A), `CompileError::CircularSemanticsReference` is raised with the full cycle path.
-4. **Type inference.** The resolved expression tree is type-inferred bottom-up per §5; the result is stored in `PhysicalExpr.inferred_type`.
-5. **Referenced-column collection.** All `Column(name)` leaves of the resolved expression are gathered into `PhysicalExpr.referenced_columns`, enabling predicate-pushdown hints at plan time.
-6. **Column-existence validation.** Every referenced column must exist in `binding.source.schema()` — otherwise `CompileError::UnresolvedColumn`. Column-type vs. Semantics-declared-type reconciliation is handled by boundary-reconciliation `Cast` emission (§6.4), not by a validation error.
-
-Full algorithm, ordering, and cycle-detection invariants are specified in `14b`.
-
-### 2.6 Memory map of the expression-type lattice
+### 2.2 Pipeline at a glance
 
 ```mermaid
 flowchart LR
-    subgraph AUTHORING["YAML authoring layer"]
-        M_EXPR["Measure / Metric /<br/>Dimension / Filter<br/><code>expr:</code>"]
-        CM_EXPR["<code>column_mapping[].expr</code><br/>on Binding"]
-    end
+  subgraph Auth [Authoring surface]
+    YAML["YAML expr:"] --> ES["ExprSource<br/>Inline | Block"]
+  end
 
-    subgraph PARSE["parse stage (10 §3.2)"]
-        ES_S["<code>ExprSource</code><br/>(pre-dispatch)"]
-        ES_P["<code>ExprSource</code><br/>(pre-dispatch)"]
-        SE["<code>SemanticExpr</code><br/>invariants: no Column"]
-        PE_AUTH["<code>PhysicalExpr</code><br/>(authored, inferred_type=None)"]
-    end
+  ES -->|semantic sites| SE["SemanticExpr<br/>= Expr&lt;SemanticLeaf&gt;"]
+  ES -->|physical-mapping sites| PE_AUTH["PhysicalExpr<br/>= Expr&lt;PhysicalLeaf&gt;"]
 
-    subgraph COMPILE["compile stage (10 §3.3)"]
-        RESOLVE["<code>resolve_to_physical</code><br/>— EntityRef substitution<br/>— cycle check<br/>— type inference<br/>— schema validation"]
-        RET["<code>ResolvedExprTable</code><br/>per (Semantics, Binding)<br/>PhysicalExpr with<br/>inferred_type + referenced_columns"]
-    end
+  subgraph Canon [Canonical-IR layer]
+    SE --> COMP["compile<br/>(19 §3)"]
+    COMP --> PE["PhysicalExpr<br/>(canonical, plan-portable)"]
+    PE_AUTH -. authored directly .-> PE
+  end
 
-    subgraph PLAN["plan / optimize / adapt"]
-        LOOKUP["O(1) table lookup<br/>per 14b"]
-        OPT["optimizer rewrites<br/>(PhysicalExpr → PhysicalExpr)"]
-        ADAPT["adapter rendering<br/>PhysicalExpr → SQL / Substrait"]
-    end
+  PE --> PN["PlanNode tree (35)"]
+  PN --> ADAPT["adapter render"]
+  ADAPT --> ART["Engine artifact"]
 
-    M_EXPR --> ES_S --> SE
-    CM_EXPR --> ES_P --> PE_AUTH
-    SE --> RESOLVE
-    PE_AUTH --> RESOLVE
-    RESOLVE --> RET
-    RET --> LOOKUP --> OPT --> ADAPT
-
-    classDef authoring fill:#fff4e6,stroke:#d9822b
-    classDef parse fill:#e6f3ff,stroke:#2b78d9
-    classDef compile fill:#e8f5e9,stroke:#2e7d32
-    classDef plan fill:#f3e5f5,stroke:#7b1fa2
-    class M_EXPR,CM_EXPR authoring
-    class ES_S,ES_P,SE,PE_AUTH parse
-    class RESOLVE,RET compile
-    class LOOKUP,OPT,ADAPT plan
+  classDef auth fill:#fff4e6,stroke:#d9822b
+  classDef canon fill:#e8f5e9,stroke:#2e7d32
+  class YAML,ES,SE,PE_AUTH auth
+  class COMP,PE,PN canon
 ```
 
-**Reading key:**
+Two boundary crossings:
 
-- Orange (authoring) — author-visible YAML sites.
-- Blue (parse) — in-memory model types produced by `parse` / `validate`.
-- Green (compile) — the eager resolution step that bridges Semantic and Physical, producing the SemanticManifest's sealed table.
-- Purple (plan/optimize/adapt) — query-time consumers; all read the same sealed `PhysicalExpr`s.
+- **Authoring → canonical**: parse-site dispatch (`semstrait-model`) decides whether the source enters as `SemanticExpr` or `PhysicalExpr`. Semantic sites (Measure `expr:`, Metric `expr:`, computed Dimension `expr:`, DataKind-level Filter `expr:`) parse to `SemanticExpr`. Physical-mapping sites (`semantic_mapping.<x>.expr:`) parse to `PhysicalExpr` directly. Per-site catalog is in §7.
+- **Canonical → engine**: adapter rewrites `PhysicalExpr` to engine-native shapes after the planner finalises the `PlanNode` tree per `[35](../apis/35_semstrait_ir.md)`.
 
-**Invariant:** the only edge from a `SemanticExpr` to a `PhysicalExpr` is through `resolve_to_physical`. No other code path constructs a `PhysicalExpr` from semantic input.
+`SemanticExpr` is a **transient** form. It exists between parse and compile; it is never persisted in the `SemanticManifest`, never observed by the planner, and never observed by adapters. Only `PhysicalExpr` (modulo `Parameter` leaves bound at plan time per §5) crosses the manifest boundary.
 
-## 3. The Shared `Expr` AST
+### 2.3 Why "sugar on top of canonical"
 
-### 3.1 Variant taxonomy
+The framing matters for clarity:
 
-Eight categories:
+- The **canonical form is foundational**. `PhysicalExpr` is what every downstream stage consumes. It must be expressible without any reference to semantic declarations (an author writing `semantic_mapping.<x>.expr:` writes `PhysicalExpr` directly with no semantic context).
+- **Sugar is opt-in**. `SemanticExpr`'s additional leaves (`Field`, `Dimension`, `Measure`, `Metric`, `Key`) are only meaningful inside a Semantic context — i.e. when at least one Dimension / Measure / Metric is declared. They give authors a shorter, name-driven authoring surface that compiles down to the canonical form.
+- **Structural operators are shared**. `BinaryOp`, `Case`, `FunctionCall`, `Aggregate`, etc. carry the same shape in both forms. The compile pipeline does not re-implement structural traversal; it transforms leaves.
 
-  1. **Leaves** — `Column`, `Literal`, `EntityRef`
-  2. **Arithmetic / logic / compare** — `BinaryOp`, `Negate`, `Not`
-  3. **Flow / structural** — `Case`, `Cast`
-  4. **SQL-shaped predicates** — `InList`, `Between`, `IsNull`, `IsNotNull`, `Like`, `ILike`, `RegexpMatch`, `RegexpExtract`
-  5. **NULL handling** — `Coalesce`, `NullIf`
-  6. **Temporal** — `DateTrunc`
-  7. **Aggregation** — `Aggregate` (closed `Aggregation` enum: `Sum`, `Avg`, `Count`, `Min`, `Max`)
-  8. **Escape hatch** — `FunctionCall` (open, string-keyed; resolved via `14a`'s registry)
+This avoids the maintenance burden of duplicating structural variants across two parallel enums while keeping the type system honest about which leaves are legal where.
 
-### 3.2 Exhaustive variant catalog
+---
 
-Every `Expr` variant, its fields, and its validity per wrapper context. "S" = valid in `SemanticExpr`, "P" = valid in `PhysicalExpr`.
+## 3. Type Architecture
 
-| Variant | Fields | S | P | Notes |
-|---|---|:-:|:-:|---|
-| `Column` | `name: String` | ✗ | ✓ | Physical column name from the binding's `PhysicalSource`. Schema-validated at compile. |
-| `Literal` | `value: LiteralValue` (`Boolean`/`Integer`/`Float`/`Decimal`/`String`/`Date`/`Time`/`Timestamp`/`Interval`/`Binary`/`Null`) | ✓ | ✓ | Canonical literal kinds — one per `DataType` variant plus `Null`. Context-typed per §5.1. |
-| `EntityRef` | `name: String` | ✓ | ✗ | Reference to another Semantics (measure/metric/dimension/filter) by name. Resolved per `11 §7` / `14b`. |
-| `BinaryOp` | `op: BinaryOpKind`, `left: Box<Expr>`, `right: Box<Expr>` | ✓ | ✓ | `BinaryOpKind ::= Add \| Subtract \| Multiply \| Divide \| SafeDivide \| Mod \| Eq \| NotEq \| Lt \| LtEq \| Gt \| GtEq \| And \| Or`. Typing per §5.6. |
-| `Negate` | `expr: Box<Expr>` | ✓ | ✓ | Unary arithmetic negation. Operand must be numeric or `Interval`. |
-| `Not` | `expr: Box<Expr>` | ✓ | ✓ | Logical negation. Operand must be `Boolean`. |
-| `Case` | `when: Vec<WhenClause>`, `else_expr: Option<Box<Expr>>` | ✓ | ✓ | `WhenClause { condition: Expr, result: Expr }`. Sole general-purpose conditional. |
-| `Cast` | `expr: Box<Expr>`, `target: DataType` | ✓ | ✓ | Explicit author cast. Narrowing casts emit `Diagnostic::Warning` per §5.5. |
-| `InList` | `expr: Box<Expr>`, `list: Vec<Expr>`, `negated: bool` | ✓ | ✓ | `negated` encodes `NOT IN`. List elements must unify with `expr` type. |
-| `Between` | `expr: Box<Expr>`, `low: Box<Expr>`, `high: Box<Expr>`, `negated: bool` | ✓ | ✓ | `low` and `high` must unify with `expr`. |
-| `IsNull` | `expr: Box<Expr>` | ✓ | ✓ | Returns `Boolean`. |
-| `IsNotNull` | `expr: Box<Expr>` | ✓ | ✓ | Returns `Boolean`. |
-| `Like` | `expr: Box<Expr>`, `pattern: Box<Expr>`, `negated: bool` | ✓ | ✓ | `expr` and `pattern` must be `String`. |
-| `ILike` | `expr: Box<Expr>`, `pattern: Box<Expr>`, `negated: bool` | ✓ | ✓ | Case-insensitive variant of `Like`. |
-| `RegexpMatch` | `expr: Box<Expr>`, `pattern: Box<Expr>`, `negated: bool` | ✓ | ✓ | `expr` and `pattern` must be `String`. Regex dialect is canonical (RE2-compatible subset); per-engine variance in `registry/functions_mapping.md`. |
-| `RegexpExtract` | `expr: Box<Expr>`, `pattern: Box<Expr>`, `group: Box<Expr>` | ✓ | ✓ | Extracts a capture group as `String`. |
-| `Coalesce` | `args: Vec<Expr>` | ✓ | ✓ | At least 2 args; all args must unify to a common type. Result type = unified type. |
-| `NullIf` | `left: Box<Expr>`, `right: Box<Expr>` | ✓ | ✓ | `left` and `right` must unify. Result type = `left`'s type, nullable. Kept as distinct variant (direct adapter mapping to native `NULLIF`). |
-| `DateTrunc` | `expr: Box<Expr>`, `grain: Grain` | ✓ | ✓ | `expr` must be `Date`, `Time`, or `Timestamp`. `Grain` enum from `13`. Return type matches operand. |
-| `Aggregate` | `aggregation: Aggregation`, `expr: Box<Expr>`, `distinct: bool` | ✓ | ✗ | `Aggregation ::= Sum \| Avg \| Count \| Min \| Max`. Inner `expr` must not itself contain an `Aggregate` (`TD-EXPR-NESTED-AGG`). `distinct` is carried here at the IR level; `COUNT DISTINCT` (and, where engines support them, `SUM DISTINCT` / `AVG DISTINCT`) are expressed as `Aggregate { aggregation: Count, distinct: true }`. |
-| `FunctionCall` | `name: String`, `args: Vec<Expr>` | ✓ | ✓ | Scalar-only. `name` resolved via `FunctionRegistry` at compile (`14a`). Arity and signature checked per `14a`'s `FnSignature`. No `distinct` flag — `distinct` is exclusively an aggregate modifier. |
+### 3.1 The `Tree` trait — universal traversal
 
-**Notes on the catalog:**
-
-- **No `Guard` variant.** Authors who want single-branch "filter into a measure" shapes write a `Case` with a single `WhenClause` and no `else_expr` (equivalent to `CASE WHEN cond THEN expr END`). This subsumes the old `GUARD(cond => expr)` sugar at zero cost — no parse-time sugar, no parser reserved word, no ghost AST variant.
-- **No `distinct` on `FunctionCall`.** `distinct` is a semantics modifier exclusive to aggregation; scalar function calls never take it.
-- **`Aggregation` enum is closed.** Six common aggregates with direct semantic relevance for rollup (`Sum`, `Avg`, `Count`, `Min`, `Max`) — `CountDistinct` does **not** appear as its own variant; it is `Count` with `distinct: true`. Any aggregate outside this closed set (e.g. `PERCENTILE_CONT`, `STDDEV`, `APPROX_COUNT_DISTINCT`) goes through `FunctionCall` with a registry entry of `FunctionCategory::Aggregate`.
-- **Variant count:** 20 variants total. Count excludes `WhenClause`, `LiteralValue`, `BinaryOpKind`, `Aggregation`, `Grain` (supporting types, not `Expr` variants).
-
-### 3.3 Design notes per category
-
-**Leaves (`Column`, `Literal`, `EntityRef`).** The three leaf kinds are the only `Expr` variants whose validity is **strictly context-partitioned**: `Column` is physical-only, `EntityRef` is semantic-only, `Literal` is universal. This partitioning is what the two wrapper types encode at their construction boundary. A single `Expr` tree is well-formed in one context if and only if every leaf of that tree satisfies the wrapper's leaf constraint.
-
-**Arithmetic / logic / compare (`BinaryOp`, `Negate`, `Not`).** `BinaryOp` collapses arithmetic, comparison, and logical operators into one variant discriminated by `BinaryOpKind`. This choice keeps the AST compact (14 kinds × 2 operands = 14 entries, not 14 distinct variants) and matches how optimizer rules are written (most rules apply to "any BinaryOp of kind K"). Semstrait's operand-typing posture is pass-through (§5.6): operand-type admissibility and widening are engine concerns, not semstrait concerns.
-
-**Flow / structural (`Case`, `Cast`).** `Case` is the sole general-purpose conditional. A single-branch `Case { when: [{ condition, result }], else_expr: None }` covers every measure-filter / narrow-branch use case that prior drafts had contemplated behind a `Guard` sugar — authors write the `Case` directly, and the planner / adapter emits native `CASE WHEN ... THEN ... END` with an implicit `NULL` default (or a narrower engine-specific form where the adapter finds one). Pushdown decisions live in the planner / optimizer (`30–32`) based on each `Case`'s actual condition-leaf shape at plan time; there is no compile-time pushdown tag on `Case` — carrying one in the AST was analyzed and found to add no value beyond what the optimizer can rediscover on demand, so the field is deliberately absent. `Cast` is explicit author-driven type conversion; its narrowing policy is in §5.5.
-
-**SQL-shaped predicates (`InList`, `Between`, `IsNull`, `IsNotNull`, `Like`, `ILike`, `RegexpMatch`, `RegexpExtract`).** Each has a direct SQL counterpart and a direct `PlanNode::Filter` emission. They are first-class rather than `FunctionCall`s because: (a) every target engine has native operator support, allowing direct rendering without registry lookup; (b) their typing rules differ enough from general functions (e.g. `Between` requires three-way type unification) to warrant dedicated validation. `negated` flags on `InList`, `Between`, `Like`, `ILike`, `RegexpMatch` carry the `NOT X` form inline — simpler than wrapping in `Expr::Not`.
-
-**NULL handling (`Coalesce`, `NullIf`).** Both are widely-used SQL primitives with direct engine support. `Coalesce` is variadic (N ≥ 2); its N-ary shape is worth keeping distinct from a binary-tree desugaring because optimizer rules (e.g. constant folding `COALESCE(NULL, x) → x`) are easier on the natural form. `NullIf` is kept as a distinct variant rather than consolidated into `Case` because every target engine has a native `NULLIF(a, b)` form with simpler plan-shape and adapter-emission cost than the equivalent three-node `Case`.
-
-**Temporal (`DateTrunc`).** The sole member today. `DateTrunc` is called out as a dedicated variant rather than a `FunctionCall` because (a) its `grain: Grain` argument is an enum from `13`, not a string literal — this gives the planner compile-time granularity information used by `Grainset` routing (per `22_grainset.md`); (b) its typing rule (return type = operand type) is regular enough to express without the full `FnSignature` machinery. Other temporal primitives (`date_add`, `extract`, `date_diff`, etc.) live as `FunctionCall`s with entries in the `FunctionRegistry` — see `14a`.
-
-**Aggregation (`Aggregate`).** The `Aggregation` enum is **closed** — `Sum`, `Avg`, `Count`, `Min`, `Max`. Any aggregate outside this set (`PERCENTILE_CONT`, `STDDEV`, `APPROX_COUNT_DISTINCT`, engine-specific exotic aggregates) goes through `FunctionCall` with `FunctionCategory::Aggregate` in the registry. Keeping the enum closed for the five universal aggregates gives the planner precise pattern-matching for rollup semantics (per `20–25` Additivity rules). The `distinct: bool` flag is carried only here — `FunctionCall` is strictly scalar and never takes `distinct`. Semantically, `distinct: true` with `Count` expresses classic `COUNT DISTINCT`; with `Sum` or `Avg` it expresses `SUM DISTINCT` / `AVG DISTINCT` where the target engine supports those forms, and adapters that do not are free to reject the combination at `adapt` time. `TD-EXPR-NESTED-AGG` — validation today rejects `Aggregate` inside `Aggregate`. Window functions (which would allow a form of nested aggregation via `OVER` clauses) are deferred (`TD-EXPR-WINDOW`).
-
-**Escape hatch (`FunctionCall`).** Open, string-keyed, resolved at compile against `FunctionRegistry`. Authors reach for this when the AST doesn't have a dedicated variant — string functions (`upper`, `lower`, `substr`, `concat`), math functions (`round`, `abs`, `sqrt`, `power`), date/time functions (`date_add`, `extract`), conditional helpers (`greatest`, `least`), and any adapter-extended function. The registry defines arity, signatures, portability flags, and adapter rewrite rules (all in `14a`). Complex functions that need structural rewriting (`explode`, `unnest`, `lateral` projections) live here behind `TD-EXPR-COMPLEX-FN` until the adapter-rewrite pipeline grows enough shape-rewriting capability — see `14a` for the rewriter taxonomy.
-
-### 3.4 Traversal contract (`walk`, `transform`)
-
-Traversal logic lives on the shared low-level `Expr` type — every wrapper delegates. This guarantees that any analysis pass (type inference, cycle detection, column-reference collection, pushdown-safety analysis) sees the same traversal order regardless of which wrapper hosts the tree.
+The traversal contract is **node-shape-agnostic** — it works for `Expr<L>` regardless of leaf set, and may also be implemented for plan-tree nodes per `[35](../apis/35_semstrait_ir.md)`. The trait is therefore stage-agnostic.
 
 ```rust
-impl Expr {
-    /// Pre-order traversal: visitor sees each node before its children.
-    pub fn walk<V: Visitor>(&self, visitor: &mut V) -> V::Output;
-
-    /// Bottom-up rewrite: each node is rewritten after its children.
-    /// Rewrite may fail (returning Err), aborting the transform.
-    pub fn transform<F>(self, f: F) -> Result<Expr, ValidateError>
-    where F: FnMut(Expr) -> Result<Expr, ValidateError>;
-
-    /// Iterator-style child access; used by generic tree algorithms.
-    pub fn children(&self) -> impl Iterator<Item = &Expr>;
+pub trait Tree: Sized {
+    fn children(&self) -> Vec<&Self>;
+    fn with_new_children(self, new_children: Vec<Self>) -> Result<Self, ValidateErrorKind>;
 }
 ```
 
-Wrapper-level delegation: `SemanticExpr::walk` and `PhysicalExpr::walk` call `Expr::walk` directly; `*::transform` calls `Expr::transform` and re-wraps the result, re-checking wrapper invariants at the boundary.
+Default-derived helpers on `Tree` (no separate trait method required):
 
-**Invariant**: `transform` MUST preserve wrapper invariants. If a rewrite rule would introduce a `Column` into a `SemanticExpr` context (for example), the wrapper's `transform` returns `Err(ValidateError::ColumnInSemanticExpr)`. This is the only place runtime invariant checking happens outside of construction.
+```rust
+impl<T: Tree> T {
+    /// Pre-order read-only walk.
+    pub fn apply<V: Visitor<Self>>(&self, v: &mut V) -> V::Output { /* default body */ }
+    /// Bottom-up rewrite.
+    pub fn transform<F>(self, f: F) -> Result<Self, ValidateErrorKind>
+    where F: FnMut(Self) -> Result<Self, ValidateErrorKind> { /* default body */ }
+}
+```
 
-### 3.5 Out-of-scope AST variants (deferred)
+`Visitor` / `Rewriter` companion traits follow the `f_down` / `f_up` shape (compatible with the pattern documented for canonical tree-traversal libraries):
 
-  - **TD-EXPR-COMPLEX-FN** — complex / explode / lateral functions: modeled as `FunctionCall` for now; adapter rewrites handle them.
-  - **TD-EXPR-ARRAY-LITERAL** — array/struct/map literals (tracking with `13 §2.5` deferred complex types)
-  - **TD-EXPR-WINDOW** — window functions (OVER clause)
+```rust
+pub trait Visitor<N> {
+    type Output;
+    fn f_down(&mut self, node: &N) -> ControlFlow<Self::Output>;
+    fn f_up(&mut self,   node: &N) -> ControlFlow<Self::Output>;
+}
 
-## 4. `ExprSource` YAML Grammar
+pub trait Rewriter<N> {
+    fn f_down(&mut self, node: N) -> Result<N, ValidateErrorKind>;
+    fn f_up(&mut self,   node: N) -> Result<N, ValidateErrorKind>;
+}
+```
 
-### 4.1 Two authoring forms, one AST
+The trait surface stays small. All algorithmic work in the rest of the pipeline (compile, plan, adapt) composes these primitives.
 
-  - `Inline(String)` — constrained SQL-like DSL; for simple arithmetic, column/entity refs, basic comparisons
-  - `Declarative(ExprBlock)` — structured YAML tree; 1:1 with `Expr` variants; for complex expressions (nested `Case`, multi-argument functions)
+### 3.2 The `ExprLeaf` trait
 
-### 4.2 Parse-site dispatch
+Each leaf set implements a small trait that exposes the per-leaf metadata the structural layer needs:
 
-Each YAML site explicitly parses to either `SemanticExpr` or `PhysicalExpr`:
+```rust
+pub trait ExprLeaf: Sized + Clone + Debug {
+    /// Canonical logical type carried (or inferred) by this leaf.
+    /// Returns `None` only when type cannot be determined locally
+    /// (e.g. untyped `Null`, untyped `Field` before resolution).
+    fn inferred_type(&self) -> Option<&DataType>;
+}
+```
+
+`ExprLeaf` is intentionally minimal — leaf-set–specific behaviour (e.g., semantic-ref resolution per `[19 §3](19_expression_flow.md)`, `Parameter` binding at plan time) lives at the site that operates on the leaf, not as a trait method. This keeps the trait surface stable across leaf-set evolution.
+
+### 3.3 `Expr<L>` — structural-variant catalog
+
+The structural variants are declared once and parameterised over `L`. Every structural variant is `#[non_exhaustive]` per I10.
+
+```rust
+#[non_exhaustive]
+pub enum Expr<L: ExprLeaf> {
+    Leaf(L),
+
+    BinaryOp     { op: BinaryOpKind, left: Box<Self>, right: Box<Self> },
+    UnaryOp      { op: UnaryOpKind,  operand: Box<Self> },
+    FunctionCall { name: CanonicalFn, args: Vec<Self> },
+    Cast         { input: Box<Self>, target: DataType, on_failure: CastFailure },
+    Case         { whens: Vec<(Self, Self)>, else_: Option<Box<Self>> },
+    InList       { value: Box<Self>, list: Vec<Self>, negated: bool },
+    Between      { value: Box<Self>, low: Box<Self>, high: Box<Self>, negated: bool },
+    Like         { value: Box<Self>, pattern: Box<Self>, kind: LikeKind },
+    IsNull(Box<Self>),
+    Coalesce(Vec<Self>),
+    NullIf       { left: Box<Self>, right: Box<Self> },
+    Aggregate    { op: AggregationOp, args: Vec<Self>, distinct: bool, filter: Option<Box<Self>> },
+    Window       { function: WindowFn, args: Vec<Self>, partition_by: Vec<Self>, order_by: Vec<Self>, frame: Option<WindowFrame> },
+}
+```
+
+**Notes on the structural catalog:**
+
+- `BinaryOpKind` covers the canonical arithmetic / comparison / logical operators (`Add`, `Subtract`, `Multiply`, `Divide`, `SafeDivide`, `Mod`, `Eq`, `NotEq`, `Lt`, `LtEq`, `Gt`, `GtEq`, `And`, `Or`). `UnaryOpKind` covers `Negate` and `Not`. Both enums are `#[non_exhaustive]`.
+- `CanonicalFn` is the stable canonical function identity per `[14a](14a_function_catalog.md)`; the registry is the single source of truth for which names exist.
+- `Aggregate`'s `filter` field carries the canonical `agg(expr) FILTER (WHERE p)` shape; adapter compensation for engines without native `FILTER` is the adapter's concern (not part of the canonical IR).
+- `Window` is in the structural catalog (rather than being a leaf) because its inner operands recurse over `Self`. In practice, `Window` is **compile-emitted only** — author-facing parsers do not accept window syntax; `Window` nodes enter the tree exclusively through sugar-accessor elimination during compile (§4.2 — typed leaves with `accessor: Some(_)` lower to `Window`-rooted subtrees).
+- Engine-specific operators or function-shaped predicates do **not** add `Expr<L>` variants. They land as `FunctionCall` entries via `FunctionRegistry` extensions per `[14a](14a_function_catalog.md)`.
+
+### 3.4 `PhysicalLeaf` — canonical-IR leaf set
+
+The canonical-IR leaf set carries exactly what the planner and adapters need:
+
+```rust
+#[non_exhaustive]
+pub enum PhysicalLeaf {
+    /// Physical column reference (binding-resolved).
+    Column(ColumnRef),
+
+    /// Typed literal value.
+    Literal(Literal),
+
+    /// Compile-emitted, plan-bound parameter placeholder.
+    /// Replaced with a concrete value during planning (§5).
+    Parameter(Parameter),
+}
+
+impl ExprLeaf for PhysicalLeaf { /* per-variant inferred_type */ }
+```
+
+`PhysicalExpr = Expr<PhysicalLeaf>` is the **canonical IR form**. Adapters render from this form. The `SemanticManifest` stores `PhysicalExpr` per-`(Semantics, Binding)` pair per `[19 §3.2](19_expression_flow.md)`.
+
+Notable invariants on `PhysicalExpr`:
+
+- No `Field` / `Dimension` / `Measure` / `Metric` / `Key` — semantic references are eliminated during compile.
+- No sugar accessors — typed-leaf-with-accessor leaves are eliminated during compile (lowered to `Window`-rooted subtrees per §4.2).
+- `Parameter` leaves are the only non-resolved state the canonical IR carries; they MUST be substituted before adapt time (§5.3 postcondition).
+
+### 3.5 `SemanticLeaf` — per-kind typed leaf set
+
+The semantic leaf set carries **per-kind typed leaves**, eliminating the bare-identifier ambiguity that previously surfaced under `semantic_mapping: auto` name collisions. Each typed leaf optionally carries a kind-specific sugar accessor (§4).
+
+```rust
+#[non_exhaustive]
+pub enum SemanticLeaf {
+    /// Typed literal value.
+    Literal(Literal),
+
+    /// Physical column reference. Type-admissible inside SemanticExpr, but
+    /// LEGAL only when the owning binding uses `semantic_mapping: auto`.
+    /// Compile rejects this leaf under manual mapping (see §8).
+    /// Authored as `col(name)` or via bare identifier in physical-mapping sites.
+    Column(ColumnRef),
+
+    /// Untyped semantic reference. Kind resolved at compile by name lookup
+    /// against the semantic registry. Authored as `field(name)` or via bare
+    /// identifier in semantic sites.
+    Field(SemanticsName),
+
+    /// Typed Dimension reference, optionally with sugar accessor.
+    /// Authored as `dim(name)` or `dim(name).first()` / `.lag(2)` / etc.
+    Dimension { name: SemanticsName, accessor: Option<DimensionAccessor> },
+
+    /// Typed Measure reference, optionally with sugar accessor.
+    /// Authored as `measure(name)` or `measure(name).previous()` / `.delta()` / etc.
+    Measure { name: SemanticsName, accessor: Option<MeasureAccessor> },
+
+    /// Typed Metric reference, optionally with sugar accessor.
+    Metric { name: SemanticsName, accessor: Option<MetricAccessor> },
+
+    /// Typed Key reference, optionally with sugar accessor.
+    Key { name: SemanticsName, accessor: Option<KeyAccessor> },
+}
+
+impl ExprLeaf for SemanticLeaf { /* per-variant inferred_type — None for unresolved Field */ }
+```
+
+`SemanticExpr = Expr<SemanticLeaf>` is the **authoring form** of an expression inside any semantic site.
+
+Notable properties:
+
+- **No `EntityRef` wrapper, no `Access` wrapper, no `Accessor` outer enum.** Every semantic reference is a typed leaf whose variant tag already encodes the entity kind. The per-kind accessor enums (§4) sit as `Option<…>` fields on the typed leaves.
+- **`Field` is the untyped fallback.** When the author writes a bare identifier or explicit `field(name)`, the leaf carries no kind hint; compile resolves the kind by registry lookup.
+- **`Dimension` / `Measure` / `Metric` / `Key` are kind-pinned.** Compile fails fast if the registered semantic at `name` has a different kind than the authored leaf variant.
+- **`Column` is conditionally legal.** Type-admissible (so the parser can construct it), but compile rejects it under manual mapping (§8). Under `semantic_mapping: auto`, compile synthesizes `SemanticMapping` entries for `Column` leaves and the rest of resolution proceeds as with manual mapping.
+- **Sugar accessor agreement is type-enforced.** A `Dimension` leaf can only carry a `DimensionAccessor`, not a `MeasureAccessor` — the variant signature prevents mismatched pairings at construction time.
+- **No `Parameter`.** Parameters are exclusively compile-emitted and live only in `PhysicalLeaf`.
+
+### 3.6 Type aliases
+
+```rust
+pub type PhysicalExpr = Expr<PhysicalLeaf>;
+pub type SemanticExpr = Expr<SemanticLeaf>;
+```
+
+These are the spelled-out names used throughout downstream docs and APIs. The generic form `Expr<L>` appears in trait bounds and shared algorithmic code.
+
+### 3.7 Forbidden combinations are type-enforced
+
+Because the leaf sets differ structurally:
+
+- `PhysicalExpr` **cannot contain** `Field` / `Dimension` / `Measure` / `Metric` / `Key` — those variants do not exist in `PhysicalLeaf`. All semantic references are eliminated during compile.
+- `SemanticExpr` **cannot contain** `Parameter` — `Parameter` is a `PhysicalLeaf`-only variant.
+- A `Dimension`-tagged leaf cannot carry a `MeasureAccessor` (or any non-Dimension accessor) — the variant signature `Dimension { name, accessor: Option<DimensionAccessor> }` enforces kind agreement at construction. The same holds for `Measure` / `Metric` / `Key`.
+
+These invariants are upheld at the type level, not by runtime assertion. There is no `try_into_physical` runtime check, no defensive `panic!` for "Field found in PhysicalExpr".
+
+**`SemanticLeaf::Column` is type-admissible but context-validated.** The leaf can be constructed (via `col(name)` or via bare identifier at a physical-mapping site that re-uses the same leaf set), but compile rejects it under manual mapping. The full rule is in §8.
+
+The remaining structural invariants (e.g., `Aggregate` admitted only in aggregate-admitting sites, `Window` author-rejected) are construction-boundary checks; see §7.
+
+---
+
+## 4. Per-Entity Accessor Sugar
+
+### 4.1 The per-kind accessor enums
+
+Per-entity sugar lets authors write shorthand like `measure("revenue").previous()` or `metric("conv_rate").delta()`. The mechanism is a kind-specific accessor enum carried as an `Option<…>` field on the typed semantic leaves (§3.5):
+
+```rust
+#[non_exhaustive]
+pub enum DimensionAccessor {
+    First,
+    Last,
+    Lag(u32),
+    Lead(u32),
+}
+
+#[non_exhaustive]
+pub enum MeasureAccessor {
+    Previous,
+    Next,
+    Lag(u32),
+    Lead(u32),
+    Delta,
+    PercentChange,
+}
+
+#[non_exhaustive]
+pub enum MetricAccessor {
+    Previous,
+    Next,
+    Lag(u32),
+    Lead(u32),
+    Delta,
+    PercentChange,
+}
+
+#[non_exhaustive]
+pub enum KeyAccessor {
+    First,
+    Last,
+    Lag(u32),
+    Lead(u32),
+}
+```
+
+Two structural pairings emerge:
+
+- **`MetricAccessor` mirrors `MeasureAccessor` 1:1**. A Metric is a per-group already-aggregated value at access time, structurally identical to a Measure at the output projection stage.
+- **`KeyAccessor` mirrors `DimensionAccessor` 1:1**. A Key is a Dimension-shaped entity for sugar purposes; the windowed accessor surface is symmetric.
+
+There is **no outer `Accessor` wrapping enum**. Each per-kind accessor enum is carried directly on the matching typed leaf (`SemanticLeaf::Dimension { accessor: Option<DimensionAccessor> }`, etc.). The type system enforces kind agreement at construction: a `Dimension` leaf simply has no way to carry a `MeasureAccessor`.
+
+The `Field` leaf carries no accessor — it is the untyped semantic reference whose kind is resolved at compile. To apply sugar, authors use the typed accessor for the matching kind (`measure("x").delta()`, not `field("x").delta()`).
+
+### 4.2 Sugar elimination shape
+
+A typed leaf with `accessor: Some(_)` lowers at compile to a canonical `Window`-rooted subtree:
+
+```text
+SemanticLeaf::Measure { name: "revenue", accessor: Some(MeasureAccessor::Previous) }
+  ─→ Expr::Window {
+       function: <derived from accessor>,
+       args:         [<resolved Measure "revenue" expr>],
+       partition_by: [Parameter(RequestDimensionsMinusTemporal)],
+       order_by:     [Parameter(RequestTemporalAxis)],
+       frame:        Some(<derived from accessor>),
+     }
+```
+
+A typed leaf with `accessor: None` lowers to whatever the registered semantic at `name` resolves to (its own `expr` tree under the binding's `SemanticMapping`), unwrapped — no `Window` is emitted.
+
+Compile substitutes the entity reference (the `name` field) inside `args` via the binding's `SemanticMapping` per `[15](15_mapping_and_binding.md)`. The `partition_by` / `order_by` slots emit `Parameter` leaves whose `ParameterKey`s are bound at plan time (§5).
+
+**Sugar-on-sugar handling.** Some accessors lower to compositions that still contain typed leaves with `accessor: Some(_)` — for example, `Delta` lowers to `operand - operand.Previous`, where `operand.Previous` is still a typed leaf with `Some(Previous)` accessor. The compile pipeline runs sugar elimination **to fixpoint** so that every typed leaf with a non-`None` accessor is eliminated before downstream substeps begin. Detailed substep ordering lives in `[19 §3.1](19_expression_flow.md)`.
+
+---
+
+## 5. Parameter — Compile-Emitted Placeholder
+
+### 5.1 Shape
+
+```rust
+pub struct Parameter {
+    pub key: ParameterKey,
+    pub data_type: DataType,
+}
+```
+
+`Parameter` carries a typed key (not a stringly identifier) and a mandatory `data_type` at compile-emit time. The `data_type` lets downstream stages reason about the placeholder's eventual concrete shape without re-deriving it.
+
+### 5.2 `ParameterKey` — closed set
+
+```rust
+#[non_exhaustive]
+pub enum ParameterKey {
+    RequestDimensionsMinusTemporal,
+    RequestTemporalAxis,
+}
+```
+
+The closed parameter set is **internal** — adding members is additive per I10 and is not author-extensible. v1 carries exactly the two keys needed by Family-B-sugar elimination (§4.3); future keys land via `#[non_exhaustive]` additions.
+
+### 5.3 Plan-time binding postcondition
+
+Per the canonical pipeline (`[00 §5](../00_overview.md)`), the planner substitutes `Parameter` leaves against the `Request` during plan construction. The postcondition is that **no `Parameter` survives into adapt-time**: a `Parameter` reaching an adapter is a hard error owned by the planner (`PlanErrorKind`), not the adapter.
+
+The planner-level binding mechanics and the exact `Request` shape that supplies the substitution values live in `[19](19_expression_flow.md)` and `[34 / planner contract](../apis/34_semstrait_planner.md)`. This chapter ratifies the placeholder shape and the postcondition only.
+
+---
+
+## 6. ExprSource — YAML Authoring Surface
+
+### 6.1 Two forms, one tree
+
+```rust
+#[non_exhaustive]
+pub enum ExprSource {
+    /// Constrained SQL-like DSL string.
+    Inline(String),
+
+    /// Structured YAML tree.
+    Block(ExprBlock),
+}
+```
+
+Both forms produce a tree value of the parse-site's expected type — `SemanticExpr` (semantic sites) or `PhysicalExpr` (physical-mapping sites). The two forms are **interchangeable** in expressive power for everything that fits the Inline DSL's grammar; the Declarative form additionally covers everything the Inline DSL deliberately omits.
+
+`ExprBlock` is a structured YAML AST whose tags map 1:1 to `Expr<L>` structural variants for the reserved set, and dispatch to `FunctionRegistry` (`14a`) for any non-reserved tag. The full tag catalog and dispatch rules are described in §6.4.
+
+### 6.2 Parse-site dispatch
+
+Parsing produces a typed result per site:
 
 ```rust
 impl ExprSource {
-    pub fn parse_semantic(&self) -> Result<SemanticExpr, ParseError>;
-    pub fn parse_physical(&self) -> Result<PhysicalExpr, ParseError>;
+    /// Parse at a semantic site. Bare identifiers resolve to `Field(name)`.
+    pub fn parse_semantic(&self, ctx: &ParseCtx) -> Result<SemanticExpr, ParseErrorKind>;
+
+    /// Parse at a physical-mapping site. Bare identifiers resolve to `Column(name)`.
+    /// Semantic tags (`field`, `dim`, `measure`, `metric`, `key`) are rejected.
+    pub fn parse_physical(&self, ctx: &ParseCtx) -> Result<PhysicalExpr, ParseErrorKind>;
 }
 ```
 
-### 4.3 Inline DSL grammar
+The site catalog — which authoring locations parse via which method — is in §7. The owning crate for parse-site dispatch is `semstrait-model` (§9.3).
 
-Lexer rules (strict SQL-style):
+### 6.3 Inline DSL grammar (outline)
 
-  - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`, resolved per parse site:
-    - Semantic parse site → `EntityRef(name)`
-    - Physical parse site → `Column(name)`
-  - String literals: single-quoted `'x'` or double-quoted `"x"` → `Literal::String`
-  - Numeric literals: `123`, `3.14`, `1.5e10` — typed per §5.1 (integer literal defaults to `Long`, float literal defaults to `Double`; context-narrowing rules in §5.1)
-  - Keyword literals: `true`, `false` → `Literal::Boolean`; `null` → `Literal::Null`
-  - **No `@` sigil; no `{{ name }}` escape form.** Identifier ambiguity (reserved words, identifiers that collide with keywords, identifiers with spaces, or columns literally named `true` / `null`) is expressed via **Declarative block tagged forms** — `{literal: ...}`, `{column: ...}`, `{entity_ref: ...}`.
+The Inline DSL is a minimal SQL-shaped grammar covering common day-to-day expressions:
 
-Operator set (minimal, SQL-shaped):
+- **Identifiers**: `[A-Za-z_][A-Za-z0-9_]*`, resolved per parse site (§6.5).
+- **Literals**: integer / float / single- or double-quoted string / boolean / `null`.
+- **Operators**: `+`, `-`, `*`, `/`, `%`, comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`), logical (`AND`, `OR`, `NOT`), unary negation, `IS NULL`, `IS NOT NULL`.
+- **Function call form**: `name(arg1, arg2, ...)`; `name` resolves against `FunctionRegistry` at compile.
+- **Parentheses** for grouping.
 
-  - Arithmetic: `+`, `-`, `*`, `/`, `%`
-  - Comparison: `=`, `<>`, `<`, `<=`, `>`, `>=`
-  - Logical: `AND`, `OR`, `NOT`
-  - Unary: `-` (negation)
-  - Nullability: `IS NULL`, `IS NOT NULL`
-  - Function-call form: `name(arg1, arg2, ...)` — `name` resolves against `FunctionRegistry` at compile time
-  - Parentheses for grouping
+What the Inline DSL deliberately does NOT accept (use Declarative block instead):
 
-What Inline DSL does NOT accept (author must use Declarative block):
+- `CAST(x AS Type)` — use `{cast: {...}}`
+- `CASE WHEN ... THEN ... ELSE ... END` — use `{case: {...}}`
+- `BETWEEN`, `IN`, `LIKE`, regex operators, `DATE_TRUNC` — use explicit tags
+- Aggregations — use `{aggregate: {...}}` or carry via Measure `agg:` per `[18 §5.2](18_entities.md)`
+- `NULLIF` / `COALESCE` — use explicit tags
 
-  - `CAST(x AS Type)` → `{cast: {expr, as}}`
-  - `CASE WHEN ... THEN ... ELSE ... END` → `{case: {when: [...], else: ...}}`
-  - `BETWEEN`, `IN`, `LIKE` / `ILIKE` / `REGEXP_MATCH` / `REGEXP_EXTRACT`, `DATE_TRUNC` → explicit tags
-  - Aggregations (`SUM`, `AVG`, etc.) → `{aggregate: {fn: ..., expr, distinct}}`
-  - `NULLIF` / `COALESCE` → explicit tags
+Operator precedence follows SQL convention; the full table is the implementer's reference and is uncontroversial. v1 may ship without the Inline DSL if Declarative form is sufficient — the carrier enum reserves the variant either way.
 
-`ParseError::InlineDslSyntax { location, expected, found }` is raised on any token or production outside the grammar above.
+### 6.4 Declarative block tags
 
-`TD-EXPR-DSL-LEXER` — current `semstrait-core` has no dedicated Inline DSL lexer; parsing today reuses parts of `sqlparser-rs`. `implementation/40_refactor_plan.md` lands a minimal hand-written lexer/parser implementing exactly the grammar here.
+A Declarative block is a single-key map whose key is a **tag**:
 
-#### 4.3.1 Operator precedence (highest-to-lowest)
+1. **Reserved AST tags** map 1:1 to `Expr<L>` structural variants. The full catalog is in §6.4.1.
+2. **Function-registry tags** — any non-reserved tag is looked up in `FunctionRegistry` (`14a`); on hit, the block parses as a shortcut for `FunctionCall { name: <tag>, args }` using the registry's declared arity / arg-shape. On miss, `ParseErrorKind::UnknownTag`.
 
-Precedence mirrors SQL standard; lower-numbered rows bind tighter.
+This dispatch model means **every registered scalar function is authorable as a top-level tag** without bloating the parser or the AST.
 
-| Prec | Operators | Associativity |
-|---|---|---|
-| 1 | `(...)` (grouping), `name(...)` (function call) | left |
-| 2 | unary `-` (negation), unary `NOT` | right |
-| 3 | `*`, `/`, `%` | left |
-| 4 | binary `+`, `-` | left |
-| 5 | `IS NULL`, `IS NOT NULL` (postfix) | — |
-| 6 | `=`, `<>`, `<`, `<=`, `>`, `>=` | non-associative |
-| 7 | `AND` | left |
-| 8 | `OR` | left |
+#### 6.4.1 Reserved tag catalog
 
-Grouping with parentheses is always available and encouraged for clarity. The grammar is unambiguous at every precedence level; `InlineDslSyntax` never arises from precedence-tied ambiguity.
+Each reserved tag maps 1:1 to an `Expr<L>` structural variant from §3.3 or to a leaf from §3.4 / §3.5. The leaf-tag names align exactly with the Rust DSL constructor names so YAML and Rust use the same vocabulary.
 
-### 4.4 Declarative block form
+**Leaf tags** (authoring-surface constructors):
 
-Declarative form is a structured YAML tree. Each block is a single-key map; the key is a **tag** that selects how the block parses. Tags partition into two disjoint sets:
+| Tag | Maps to | Site legality | Carries accessor? |
+|---|---|---|---|
+| `col` | `PhysicalLeaf::Column` (or `SemanticLeaf::Column` under `auto`) | both | no |
+| `literal` | `PhysicalLeaf::Literal` / `SemanticLeaf::Literal` | both | no |
+| `field` | `SemanticLeaf::Field` | semantic only | no |
+| `dim` | `SemanticLeaf::Dimension` | semantic only | yes — optional `DimensionAccessor` |
+| `measure` | `SemanticLeaf::Measure` | semantic only | yes — optional `MeasureAccessor` |
+| `metric` | `SemanticLeaf::Metric` | semantic only | yes — optional `MetricAccessor` |
+| `key` | `SemanticLeaf::Key` | semantic only | yes — optional `KeyAccessor` |
 
-1. **Reserved AST tags** (21 tags, enumerated in §4.4.1). These map 1:1 to the `Expr` variants of §3.2 and carry the variant's fields directly. Their shape is fixed by the grammar; the parser does not consult the `FunctionRegistry` for them.
-2. **Function-registry tags** (open set). Any tag **not** in the reserved list is looked up by name in the compile-time `FunctionRegistry` (defined in `14a`). On hit, the block is parsed as a shortcut for `{function_call: {name: <tag>, args: ...}}` using the registry's declared arity / arg-shape. On miss, `ParseError::DeclarativeBlockUnknownTag { tag, location }`.
-
-This dispatch model means **every registered scalar function is authorable as a dedicated top-level tag** (e.g. `{upper: <expr>}` is the registry-dispatched sugar for `{function_call: {name: "upper", args: [<expr>]}}`) without bloating the AST or the parser's reserved-word table — the registry is the single source of truth for what function tags exist. Adapters that extend the registry (e.g. a Spark-specific function) automatically extend the tag vocabulary with no parser change needed.
-
-**Reserved-tag collision policy.** Adapter registry entries for the 21 reserved tags are rejected at compile time (`CompileError::ReservedTagCollision { tag, source: adapter_name }`) — adapters cannot shadow AST-variant tags with function entries.
-
-**Bare-scalar rules** (apply inside a block's field value):
-
-- Bare string `'x'` or `"x"` (explicitly quoted) → `Literal::String`.
-- Bare unquoted string `x` at a field that expects an `Expr` → context-resolved like the Inline DSL: `EntityRef` in a `SemanticExpr` parse site, `Column` in a `PhysicalExpr` parse site.
-- Bare number → numeric literal per §5.1 (integer → `Long`, float → `Double`, context-narrowed per §5.1).
-- Bare `true` / `false` → `Literal::Boolean`; bare `null` → `Literal::Null`.
-- To force literal interpretation of an ambiguous string (e.g. the word `"true"` as a string value, not the boolean), use the explicit `{literal: {type: String, value: "true"}}` form.
-
-#### 4.4.1 Reserved AST-tag catalog
-
-Each reserved tag maps 1:1 to an `Expr` variant of §3.2. Field shape below is the YAML surface; the parser produces the corresponding `Expr` node.
-
-| AST variant | Reserved tag | Shape |
-|---|---|---|
-| `Column(name)` | `column` | `{column: "col_name"}` (physical context only) |
-| `Literal(value)` | `literal` | `{literal: {type: <DataType>, value: <scalar>}}` — `type` optional; omitted → context-typed per §5.1 |
-| `EntityRef(name)` | `entity_ref` | `{entity_ref: "measure_name"}` (semantic context only) |
-| `BinaryOp{op,left,right}` | `binary_op` | `{binary_op: {op: Add, left: <expr>, right: <expr>}}`. `op` ∈ `Add`/`Subtract`/`Multiply`/`Divide`/`SafeDivide`/`Mod`/`Eq`/`NotEq`/`Lt`/`LtEq`/`Gt`/`GtEq`/`And`/`Or` |
-| `Negate(expr)` | `negate` | `{negate: <expr>}` |
-| `Not(expr)` | `not` | `{not: <expr>}` |
-| `Case{when,else_expr}` | `case` | `{case: {when: [{condition: <expr>, result: <expr>}, ...], else: <expr-or-omitted>}}` |
-| `Cast{expr,target}` | `cast` | `{cast: {expr: <expr>, as: <DataType>}}` |
-| `InList{expr,list,negated}` | `in_list` | `{in_list: {expr: <expr>, list: [<expr>, ...], negated: false}}` — `negated` optional, default `false` |
-| `Between{expr,low,high,negated}` | `between` | `{between: {expr: <expr>, low: <expr>, high: <expr>, negated: false}}` |
-| `IsNull(expr)` | `is_null` | `{is_null: <expr>}` |
-| `IsNotNull(expr)` | `is_not_null` | `{is_not_null: <expr>}` |
-| `Like{expr,pattern,negated}` | `like` | `{like: {expr: <expr>, pattern: <expr>, negated: false}}` |
-| `ILike{expr,pattern,negated}` | `ilike` | `{ilike: {expr: <expr>, pattern: <expr>, negated: false}}` |
-| `RegexpMatch{expr,pattern,negated}` | `regexp_match` | `{regexp_match: {expr: <expr>, pattern: <expr>, negated: false}}` |
-| `RegexpExtract{expr,pattern,group}` | `regexp_extract` | `{regexp_extract: {expr: <expr>, pattern: <expr>, group: <expr>}}` |
-| `Coalesce(args)` | `coalesce` | `{coalesce: [<expr>, <expr>, ...]}` — ≥ 2 args |
-| `NullIf{left,right}` | `nullif` | `{nullif: {left: <expr>, right: <expr>}}` |
-| `DateTrunc{expr,grain}` | `date_trunc` | `{date_trunc: {expr: <expr>, grain: Day}}` — `grain` is a `Grain` enum variant |
-| `Aggregate{aggregation,expr,distinct}` | `aggregate` | `{aggregate: {fn: Sum, expr: <expr>, distinct: false}}`. `fn` ∈ `Sum`/`Avg`/`Count`/`Min`/`Max`; `distinct` optional default `false`. `COUNT DISTINCT` is expressed as `{fn: Count, distinct: true}`. |
-| `FunctionCall{name,args}` | `function_call` | `{function_call: {name: "upper", args: [<expr>, ...]}}` — the explicit / verbose form. Authors typically use the registry-dispatched sugar (e.g. `{upper: <expr>}`) instead. |
-
-#### 4.4.2 Function-registry dispatch
-
-For any tag **not** in §4.4.1, the parser consults `FunctionRegistry`:
-
-```text
-parse_block(tag, body):
-  if tag in RESERVED_AST_TAGS:                 # §4.4.1
-      return parse_reserved_tag(tag, body)
-  match FunctionRegistry.lookup(tag):
-      Some(spec) => return FunctionCall {
-          name: spec.canonical_name,
-          args: parse_args_for_spec(body, spec),
-      }
-      None       => raise ParseError::DeclarativeBlockUnknownTag { tag, location }
-```
-
-`parse_args_for_spec` uses the registry entry's `FnSignature` to interpret the block body:
-
-- Single-arg function (arity = 1) — body is a single `<expr>`. Example: `{upper: name}` → `FunctionCall { name: "upper", args: [EntityRef("name")] }`.
-- Multi-arg positional function — body is a list of `<expr>`s. Example: `{concat: [a, b, c]}` → `FunctionCall { name: "concat", args: [a, b, c] }`.
-- Mixed-arg / named-arg function — body is a map with the registry-declared field names. Example: `{substring: {expr: name, start: 1, length: 3}}` → `FunctionCall { name: "substring", args: [name, 1, 3] }` (arg order from the `FnSignature`).
-
-The registry's `FnSignature` determines which of the three shapes applies per function. Arity / arg-shape mismatches raise `ParseError::DeclarativeBlockArity { tag, expected, got, location }`.
-
-**Consistency with Inline DSL.** The parser produces **identical `Expr` trees** from either form. Three equivalent authoring paths for the same semantics:
+Short forms (no accessor):
 
 ```yaml
-- name: upper_region
-  expr: "upper(region)"                       # Inline DSL
-
-- name: upper_region
-  expr:
-    upper: region                             # Registry-dispatched sugar
-
-- name: upper_region
-  expr:
-    function_call: {name: upper, args: [region]}   # Verbose reserved form
+expr: { dim: region }
+expr: { measure: revenue }
+expr: { field: conversion_rate }
+expr: { col: amount_cents }       # legal in SemanticExpr only under auto mapping (§8)
 ```
 
-All three produce the same `SemanticExpr(FunctionCall("upper", [EntityRef("region")]))`.
+Long forms (with accessor):
 
-`ParseError::DeclarativeBlockUnknownTag { tag, location }` covers any tag neither reserved nor registered. `CompileError::ReservedTagCollision { tag, source }` is raised when an adapter's registry registration attempts to shadow a reserved AST tag.
-
-### 4.5 Choice of form — when to use which
-
-Both forms produce the same `Expr` tree and therefore the same runtime behavior. Guidelines (informal, not enforced):
-
-- **Inline** when the expression fits the minimal operator set (arithmetic, comparison, logical, `IS NULL`, function calls) and reads naturally on one line. Examples: `"revenue - costs"`, `"region = 'US'"`, `"upper(name)"`, `"status IS NOT NULL"`.
-- **Declarative** when the expression (a) uses anything outside the minimal Inline set — `CAST`, `CASE`, `BETWEEN`, `IN`, `LIKE`, `ILIKE`, `REGEXP_*`, `DATE_TRUNC`, aggregations, `NULLIF`, `COALESCE`; (b) contains nested conditionals; (c) relies on a literal that would be ambiguous in a string form (e.g. a string literal that happens to match an identifier pattern); (d) benefits from multi-line structure for readability.
-
-When in doubt, prefer Inline for readability. Reviewers should not reject an expression for choice of form alone — both are first-class.
-
-## 5. Typing (Outline)
-
-The full signature-polymorphism machinery (`FnSignature`, `ParamType`, `TypeClass`, `ReturnTypeRule`) for scalar functions and the BinaryOp promotion lattice live in **`14a`**. This section establishes the base typing contract for non-function nodes — enough for a reader to understand how `compile` types a non-`FunctionCall` expression end-to-end.
-
-### 5.1 Literal typing
-
-Each `LiteralValue` variant has a canonical default type. Literals are **context-typed**: when the surrounding context has a concrete expected type, the literal adopts it if value-compatible; otherwise it falls back to its default.
-
-| Literal kind | Default type | Context narrowing |
-|---|---|---|
-| `Boolean(_)` | `Boolean` | — |
-| `Integer(n)` | `Integer` | Narrows to `Byte` / `Short` when context demands and `n` fits the target range. Widens to `Long` when context demands. Overflow at narrowing → `CompileError::LiteralOverflow { value, target }`. |
-| `Float(f)` | `Double` | Narrows to `Float` when context demands and `f` is exactly representable in `Float` precision. Lossy narrowing → `CompileError::LiteralPrecisionLoss`. |
-| `Decimal { value, precision, scale }` | `Decimal { precision, scale }` as authored | Context-narrowing to a different precision/scale succeeds if the literal value fits exactly; otherwise `CompileError::LiteralPrecisionLoss`. Author-declared precision/scale are authoritative — semstrait does not carry an arithmetic promotion lattice. |
-| `String(_)` | `String` | — |
-| `Date(_)` | `Date` | — |
-| `Time { value, precision }` | `Time { precision }` | — |
-| `Timestamp { value, precision }` | `Timestamp { precision }` | — |
-| `Interval(_)` | `Interval` | — |
-| `Binary(_)` | `Binary` | — |
-| `Null` | **Untyped** — carries no type until inferred from context | — |
-
-**`Null` handling.** A `Null` literal is **untyped at the leaf**; its final type is inferred from its use-site by the rules below. Semstrait does **not** require authors to wrap every `Null` in a `CAST(NULL AS T)` — local inference handles the common cases:
-
-- **Inside a structural node** (`Case`'s `result` / `else_expr`, `Coalesce`'s args, `NullIf`'s operands, `InList`'s list elements): the `Null` adopts the unified type of its sibling branches. A `Case { when: [{cond, THEN expr}], else_expr: Null }` infers `else_expr: Null` to the type of `expr`; similarly for `Coalesce([x, y, Null])` → `Null` adopts `type_of(x) ⊔ type_of(y)`.
-- **At a Semantics boundary** (top of an `expr:` tree): the `Null` adopts the Semantics's declared `data_type:` (when one is declared). If no `data_type:` is declared and local inference cannot derive a type from any sibling or use-site — i.e. the expression's top-level shape is a bare `Null` with nothing else to anchor it — the compile stage raises `CompileError::TypeInferenceFailure { reason: "untyped Null at Semantics boundary with no data_type: declared", location }` (see `10 §5` diagnostics). The fix is either to declare `data_type:` on the Semantics or to write an explicit `{cast: {expr: {literal: null}, as: <DataType>}}`.
-- **As a BinaryOp / comparison / function-argument operand**: semstrait does **not** validate the operand's type class (per §5.6). `Null` simply carries `Untyped` through; the engine applies its own SQL NULL semantics at execution time.
-
-**`data_type: null` at a Semantics declaration site** is not legal — the `data_type:` field's value set is the closed canonical `DataType` enum (per `13 §2`), and `Null` is not a member. Writing `data_type: null` raises `ParseError::NullAsDataType { location }`.
-
-### 5.2 Column typing (from Binding)
-
-An `Expr::Column(name)` inside a `PhysicalExpr` draws its type from the resolved `PhysicalSource` schema for the owning `Binding`:
-
-```
-type_of(Column(name), binding) := binding.source.schema.column_type(name)
+```yaml
+expr: { measure: { name: revenue, accessor: previous } }
+expr: { dim: { name: order_date, accessor: { lag: 2 } } }
 ```
 
-**Errors:**
-
-- Column does not exist in schema → `CompileError::UnresolvedColumn { name, binding, location }`.
-- Column's physical type is not expressible as any canonical `DataType` (per `13`) → `CompileError::UnrepresentablePhysicalType { engine_type, location }`. The canonical set is authoritative; engine types that fall outside it (rare — mostly bespoke ARRAY/STRUCT/MAP variants today) are flagged per `13 §2.5`.
-
-**Type-mismatch between Binding-declared physical type and the expected type from the Semantics's declared `data_type:`** is not an error at Column-typing time — it surfaces at projection-time reconciliation (§6 CAST emission rule). Full schema-validation details live in `15`.
-
-### 5.3 EntityRef typing (from referenced Semantics)
-
-An `Expr::EntityRef(name)` inside a `SemanticExpr` resolves to the referenced Semantics's `data_type:`:
-
-```
-type_of(EntityRef(name), manifest) := manifest.semantics[name].data_type
-```
-
-`manifest.semantics[name].data_type` is either (a) the author-declared `data_type:` field, or (b) the inferred type from that Semantics's own `expr:` if no `data_type:` was declared (per §6). For cross-kind references, the lookup traverses the `Relationship` graph per `14b §3`; the resolved `data_type` is unchanged by path traversal (type comes from the referenced Semantics's shape, which `11 §5.1` guarantees is unified across all occurrences).
-
-**Errors:**
-
-- Name not declared anywhere → `CompileError::UnresolvedEntityRef { name, location }`.
-- Name declared in a DataKind unreachable from the referencing context (no Relationship path) → `CompileError::UnreachableSemanticsReference { name, from_kind, location }`.
-- Reference cycle → `CompileError::CircularSemanticsReference { cycle, location }`.
-
-### 5.4 Aggregate typing
-
-The `Aggregation` enum is closed (`Sum`, `Avg`, `Count`, `Min`, `Max`); return-type per aggregation follows **SQL:2016-style promotion**:
-
-| Aggregation | Input type class | Return type |
-|---|---|---|
-| `Sum` | `Byte` / `Short` / `Integer` / `Long` | `Long` |
-| `Sum` | `Float` / `Double` | `Double` |
-| `Sum` | `Decimal(p, s)` | `Decimal(min(p + 10, 38), s)` |
-| `Sum` | `Interval` | `Interval` |
-| `Avg` | any integer | `Double` |
-| `Avg` | `Float` / `Double` | `Double` |
-| `Avg` | `Decimal(p, s)` | `Decimal(min(p + 4, 38), min(s + 4, 38))` |
-| `Min`, `Max` | any operand type | same as operand |
-| `Count` | any (including `Null`-only operand when `distinct: true` — i.e. `COUNT DISTINCT`) | `Long` |
-
-**Canonical rule + registry override.** The table above is the **canonical** semstrait inference rule. Per-engine variance (if any) is documented in `registry/functions_mapping.md`; if a target engine's native return type differs, the adapter emits a reconciliation cast at artifact-emission time. DataFusion, Spark, and DuckDB all match the canonical rule for the aggregates above.
-
-**Operand policy.** `Aggregate.expr` must not itself contain an `Aggregate` (`TD-EXPR-NESTED-AGG` — enforced by `ValidateError::NestedAggregate { outer, inner, location }`). Beyond that, operand-type admissibility is **not** validated at the semstrait layer: if the engine cannot sum a `String` or average a `Boolean`, the engine raises its own error at execution time. This follows the general pass-through policy of §5.6 — semstrait is a semantic interface, not a compute engine, and does not replicate SQL engines' operand-type catalogs.
-
-**`distinct` modifier.** `Aggregate.distinct: true` renders as the engine's native `DISTINCT` form — `COUNT(DISTINCT x)`, `SUM(DISTINCT x)`, `AVG(DISTINCT x)` where supported. Adapters targeting an engine that does not implement `DISTINCT` for a given aggregation raise `AdaptError::UnsupportedAggregateDistinct { aggregation, engine }` at `adapt` time. Semstrait does not statically constrain the combination — validity is an adapter-time concern.
-
-**Wrapper invariant:** `Aggregate` inside a `PhysicalExpr` is `ValidateError::AggregateInPhysicalExpr { location }` — construction-time check per §2.3.
-
-### 5.5 Structural-node typing
-
-Semstrait's typing posture for structural nodes is **shape-validating**, not **operand-admissibility-validating**: structural constraints whose violation would make the `Expr` tree nonsensical (e.g. a `Not` operand that is not `Boolean`-shaped, a `Case` `when[].condition` that is not a predicate) are enforced at compile time; operand-type compatibility rules that SQL engines already enforce natively are **not duplicated** — see §5.6 for the rationale.
-
-| Node | Typing rule |
-|---|---|
-| `Case { when, else_expr }` | Every `when[].condition` must be `Boolean`-shaped (produces `Boolean` under local inference). `when[].result` and `else_expr` branches are **not required to unify** at the semstrait layer — the engine's `CASE` semantics decides the result type at execution time. Local inference derives the result type by taking the first non-`Null` branch's inferred type (for semstrait-boundary type propagation per §5.1); if all branches are `Null`, the result is `Untyped` until the use-site pins it down. Absent `else_expr` implies an implicit `NULL` branch. |
-| `Cast { expr, target }` | Result = `target`. Narrowing casts (target precision < expr precision, target range narrower than expr range) emit `Diagnostic::Warning { code: "EXPR_W_CAST_NARROW", ... }` at compile time; runtime behavior is per-engine. Widening casts silent. String-to-other and other-to-string casts always allowed with no warning. |
-| `Coalesce(args)` | ≥ 2 args required (arity check). Result type = first non-`Null`-inferred arg type (for boundary inference). Cross-arg type compatibility is not validated at semstrait layer. |
-| `NullIf { left, right }` | Result type = inferred type of `left` (nullable). Operand compatibility not validated. |
-| `InList { expr, list, ... }` | List arity ≥ 1. Result = `Boolean`. Element/expr type compatibility not validated. |
-| `Between { expr, low, high, ... }` | Result = `Boolean`. Operand type compatibility not validated. |
-| `Like` / `ILike` / `RegexpMatch` | Result = `Boolean`. String-ness of operands is not validated by semstrait — the engine reports its own error at execution time if an adapter cannot emit the predicate against a non-string operand. |
-| `RegexpExtract { expr, pattern, group }` | Result = `String` nullable. Operand-type compatibility not validated. |
-| `IsNull(expr)` / `IsNotNull(expr)` | Any operand type; result = `Boolean`. |
-| `Not(expr)` | Result = `Boolean`. Semstrait does not validate that `expr` inferred type is `Boolean` — the shape is trusted from the author / engine. |
-| `Negate(expr)` | Result = inferred type of `expr`. Numeric / temporal admissibility is engine-enforced. |
-| `DateTrunc { expr, grain }` | Result = inferred type of `expr`. `grain` is a `Grain` enum value from `13`; operand temporal-ness and grain-compatibility are engine-enforced. |
-
-**Shape validations that remain** (enforced; not engine-deferred):
-
-- Arity of variadic nodes (`Coalesce` ≥ 2; `Case.when` ≥ 1; `FunctionCall` / `Aggregate` per registry / enum).
-- Wrapper invariants (`Column` in `SemanticExpr`, `EntityRef` in `PhysicalExpr`, `Aggregate` in `PhysicalExpr` — all from §2.3).
-- Nested-aggregate rejection (`TD-EXPR-NESTED-AGG`, §5.4).
-- `Cast.target` is a valid `DataType` variant.
-
-### 5.6 BinaryOp typing — pass-through posture
-
-Semstrait does **not** validate BinaryOp operand type compatibility. This is a deliberate scope decision:
-
-- Semstrait is a **semantic interface**, not a compute engine. Operand-type admissibility — "can `Integer + String` be computed?", "do both sides of `<` share a comparable type class?", "is the `AND` operand actually `Boolean`?" — is a compute-engine concern. Every target engine already enforces these rules natively at execution time with its own diagnostics.
-- Replicating engine-side type-class validation at the semstrait layer would force `semstrait-core` to carry a canonical promotion lattice, a `TypeClass` taxonomy, and a comparison-compatibility matrix — all of which would need per-engine reconciliation tables as soon as engine semantics diverge (Spark vs. DuckDB vs. DataFusion all differ subtly on implicit widening and comparison rules). That is weeks of ongoing maintenance for zero semantic value to semstrait users.
-- For the same reason, semstrait emits **no implicit widening CAST** for BinaryOp operands. The engine widens internally per its own rules; the adapter renders the `BinaryOp` directly.
-
-What semstrait **does** for BinaryOp typing:
-
-- **`SafeDivide` runtime contract.** `SafeDivide` is semantically `Divide` except its runtime contract is "return `NULL` on zero divisor" — no `DivideByZero` error. Adapters render this as the engine's native safe-divide form (e.g. `NULLIF(b, 0)` wrapping, or a native `safe_divide` function where available); the registry's `portability` flags record per-engine coverage.
-- **Logical shape.** `And`, `Or` are documented as returning `Boolean`; `Not` also returns `Boolean`. Whether the operand is genuinely `Boolean`-typed is an engine concern.
-- **Result-type derivation for local inference.** For a `BinaryOp` node, the result type used by semstrait's local inference (only needed at a Semantics-boundary top-level expression per §5.1) is:
-  - `Eq` / `NotEq` / `Lt` / `LtEq` / `Gt` / `GtEq` / `And` / `Or` → `Boolean`
-  - `Add` / `Subtract` / `Multiply` / `Divide` / `SafeDivide` / `Mod` → take the inferred type of the left operand. If the left operand is `Untyped` (bare `Null`), fall back to the right operand; if both are `Untyped`, the `BinaryOp` itself remains `Untyped` and inference propagates upward.
-
-This minimal result-type rule exists **solely** to satisfy the Semantics-boundary inference contract of §5.1 / §6; it is not a claim about arithmetic semantics. The engine's actual arithmetic behavior (including widening, overflow, precision) is the engine's to define.
-
-### 5.7 Type-inference algorithm (bottom-up, Semantics-local)
-
-Type inference is **only** required at a Semantics boundary where a declared `data_type:` must be reconciled with the inferred type of the expression (per §6). For every other consumer (planner, optimizer, adapter), the expression tree is passed through without further type annotation — the engine does its own typing.
-
-```
-infer_boundary_type(expr, context) -> Result<DataType, CompileError>
-  post-order traversal of expr:
-    for each node n:
-      let children_types = [infer_boundary_type(c, context) for c in n.children()]
-      match n:
-        Literal(v)    => default type per §5.1 literal table, context-narrowed
-        Column(name)  => context.binding.schema.column_type(name)     // §5.2
-        EntityRef(nm) => context.manifest.semantics[nm].data_type     // §5.3
-        Aggregate{..} => SQL:2016 promotion per §5.4
-        Case{..}      => first non-Untyped branch's type (§5.5)
-        BinaryOp{..}  => per §5.6 minimal result-type rule
-        FunctionCall  => signature resolution per `14a §5`
-        Cast{target}  => target
-        Null          => Untyped (propagates up until a concrete type anchors it)
-        ...           => other structural rules per §5.5
-      return inferred_type
-```
-
-**Context object:**
+The Rust DSL mirrors these exactly:
 
 ```rust
-pub struct TypingContext<'a> {
-    pub binding: Option<&'a Binding>,       // Some for PhysicalExpr; None for SemanticExpr
-    pub manifest: &'a PartialSemanticManifest,
-    pub expected_type: Option<DataType>,    // for context-typed literals
-    pub registry: &'a FunctionRegistry,
-}
+expr: dim("region"),
+expr: measure("revenue"),
+expr: measure("revenue").previous(),
+expr: dim("order_date").lag(2),
+expr: col("amount_cents"),                      // under auto mapping only
 ```
 
-Typing is **Semantics-local** — each top-level `SemanticExpr` / `PhysicalExpr` at a Semantics boundary is inferred independently; no whole-program type-inference fixed-point is needed because every reference resolves to an already-determined type (columns from schema, entity refs to another Semantics whose type is either declared up-front or independently inferred at its own boundary). The compile order guarantees that an EntityRef's referent has a resolved type before the referencing expression is inferred — cycles are rejected by `CompileError::CircularSemanticsReference` before type inference even runs.
+**Structural tags** (per §3.3 variants):
 
-**Errors raised by boundary inference:**
+| Tag | Structural variant |
+|---|---|
+| `binary_op` | `BinaryOp` |
+| `unary_op` | `UnaryOp` |
+| `function_call` | `FunctionCall` (explicit; the verbose form) |
+| `cast` | `Cast` |
+| `case` | `Case` |
+| `in_list` | `InList` |
+| `between` | `Between` |
+| `like` | `Like` |
+| `is_null` | `IsNull` |
+| `coalesce` | `Coalesce` |
+| `nullif` | `NullIf` |
+| `aggregate` | `Aggregate` |
 
-- `CompileError::TypeInferenceFailure { reason, location }` — no concrete type could be derived for a Semantics-boundary expression (bare untyped `Null`, all-`Null` structural expression, no `data_type:` declared).
-- `CompileError::LiteralOverflow { value, target }` — integer literal does not fit a context-narrowed target type.
-- `CompileError::LiteralPrecisionLoss { value, target }` — float literal not exactly representable in a context-narrowed target type.
-- Name-resolution errors per §5.2 / §5.3 (`UnresolvedColumn`, `UnresolvedEntityRef`, `UnreachableSemanticsReference`, `CircularSemanticsReference`).
+`Window` is intentionally **not** authorable — it is compile-emitted only (§3.3 note).
 
-Semstrait does **not** raise operand-type-compatibility errors during boundary inference (no `UncomparableTypes`, `UnifyConflict`, `AggregateOperandType`, or `IncompatibleGrain`) — per §5.5 / §5.6, those checks are deferred to the engine at execution time.
+Reserved-tag collisions with function-registry registrations are rejected at registry seal time per `[14a](14a_function_catalog.md)`.
 
-## 6. Computed-Semantics `data_type:` Inference
+**Site legality**. `dim` / `measure` / `metric` / `key` / `field` are rejected at physical-mapping sites (`semantic_mapping.<x>.expr:`) — a `PhysicalExpr` cannot reference semantics. `col` is legal in either site, but `SemanticLeaf::Column` is conditionally legal at compile per §8.
 
-Every Semantics element (Measure, Metric, Dimension, Filter) carries an optional `data_type:` shape field and an optional `expr:` resolution-variant field (per `11 §5`). The combination determines how `compile` establishes that Semantics's authoritative type.
+### 6.5 Bare-identifier resolution per site
 
-### 6.1 The three author modes
+Within both Inline DSL and Declarative form's bare-scalar slots:
 
-| Mode | `data_type:` | `expr:` | Behavior |
+- At a **semantic site** parse — bare identifier → `SemanticLeaf::Field(name)`. Equivalent to writing `{ field: name }` explicitly. Kind is resolved at compile by registry lookup.
+- At a **physical-mapping site** parse — bare identifier → `PhysicalLeaf::Column(name)`. Equivalent to writing `{ col: name }` explicitly.
+
+There is no sigil; the parse site supplies the context. To force a specific accessor when the bare-identifier default isn't what you want — e.g. when a column and a semantic share a name under `semantic_mapping: auto` (see §8) — use the explicit typed constructor:
+
+- `{ col: revenue }` — unambiguously the physical column.
+- `{ field: revenue }` — unambiguously the semantic at that name (kind resolved at compile).
+- `{ measure: revenue }` — unambiguously the Measure named `revenue`; compile rejects with `KindMismatch` if `revenue` resolves to a Dimension / Metric / Key instead.
+
+To force literal interpretation when an identifier collides with a reserved keyword or a literal-shaped name (e.g. `true` as a string column name), authors use the explicit `{ literal: ... }` tagged form.
+
+---
+
+## 7. Per-Site Shape Gates
+
+Different authoring sites require different expression *shapes* — scalar / Boolean / aggregate-admitting. The gate is a property of the site, not of the expression type.
+
+The site catalog (per-element shape and parse-site dispatch):
+
+| Site | Parses to | Shape required | Aggregate-admitting? |
 |---|---|---|---|
-| **Direct** | present | absent | Type declared by author; `compile` reconciles against the Binding's physical column type (see §6.4 CAST emission). |
-| **Inferred** | absent | present | Type inferred from the expression tree via §5.7; `compile` stores the inferred type as the Semantics's authoritative type. A second occurrence of the same Semantics name in another DataKind must produce the same inferred type (shape unification). |
-| **Checked** | present | present | Inferred type from `expr:` must unify with author-declared `data_type:` per §6.2. On mismatch: `CompileError::ComputedTypeUnifyConflict { declared, inferred, location }`. |
+| `measures.<m>.expr` | `SemanticExpr` | scalar | no — aggregation carried by `agg:` per `[18 §5.2](18_entities.md)` |
+| `measures.<m>.filters[].expr` | `SemanticExpr` | Boolean | no — scalar predicate inlined into the aggregate's `filter` |
+| `metrics.<m>.expr` | `SemanticExpr` | scalar | no — `agg:` (optional) at top-level; `expr:` is a scalar formula over already-aggregated values |
+| `metrics.<m>.filters[].expr` | `SemanticExpr` | Boolean | no (compile-split per metric semantics) |
+| `dimensions.<d>.expr` (computed) | `SemanticExpr` | scalar | no |
+| `filters.<f>.expr` (DataKind-level) | `SemanticExpr` | Boolean | yes — HAVING-style predicates may reference aggregated values |
+| `extras.semantic_mapping.<x>.expr` | `PhysicalExpr` | scalar | no |
 
-A Semantics with **neither** `data_type:` nor `expr:` has no way to establish a type. Whether this is well-formed depends on the Semantics kind: Filters and certain Measures with `agg:` default-typed from the aggregation rule may omit both; others require at least one. Per-element requirements live in `11 §6`.
+**Structural shape gates** enforced at parse / construction time:
 
-### 6.2 Unification rule (strict)
+- Author-written `Aggregate { ... }` syntax inside `expr:` is **rejected at all sites except `filters.<f>.expr`**. Aggregation is carried by the structurally separate `agg:` tag on Measures and Metrics per `[18 §5.2](18_entities.md)`.
+- A typed leaf carrying `accessor: Some(_)` whose lowered shape contains `Aggregate` or `Window` is gated against sites whose required result is scalar/Boolean and not aggregate-admitting. The check is on the *lowered* shape, not on syntactic surface — sugars carry their own admissibility metadata.
+- `filters[].expr` is admitted only on `measures.<m>` and `metrics.<m>`. No `keys` member-level filter slot. No `dimensions.<d>.filter` — DataKind-level filtering uses the `filters:` block.
 
-`data_type:` unification is **strict**: two types unify if and only if they are structurally identical. For parameterized types (`Decimal { precision, scale }`, `Time { precision }`, `Timestamp { precision }`), every parameter must match. `Integer` does NOT auto-widen to `Long` at the declared site — no implicit semstrait-side widening exists for any type pair.
+The full mechanics of how Phase-B placement consumes these shape gates live in `[19](19_expression_flow.md)` (rebase pending — see §12).
 
-**`Null` handling in unification:**
+---
 
-- `Null` at an expression leaf is **untyped**. Local inference at a Semantics boundary derives the expression's top-level type from the sibling branches per §5.1 / §5.5 (e.g. a `Case`'s first non-`Null` branch's type, a `Coalesce`'s first non-`Null` arg's type); the resulting type is reconciled against any author-declared `data_type:`.
-- `Null` as a **declared** `data_type:` is a ParseError (`ParseError::NullAsDataType`) — the `data_type:` field's value set is the closed canonical `DataType` enum and `Null` is not a member.
-- An expression whose top-level inference cannot derive any concrete type (bare `Null` at the boundary, or an all-`Null` `Case` / `Coalesce` with no `data_type:` declared) raises `CompileError::TypeInferenceFailure { reason, location }` (per `10 §5`). The author must either declare `data_type:` or cast the result explicitly: `expr: {cast: {expr: {literal: null}, as: Integer}}`.
+## 8. Compile-Time Resolution (pointer)
 
-### 6.3 Interaction with `11 §5.2` shape-vs-resolution split
+`SemanticExpr` → `PhysicalExpr` lowering is owned by `semstrait-manifest::compile`. The full algorithm — substep order, per-leaf-kind substitution rules, cross-DataKind path resolution, cycle detection, type inference, Semantics-boundary reconciliation, per-`(Semantics, Binding)` keying of `ResolvedExprTable`, auto-mapping synthesis pre-step, and the `Column`-under-manual-mapping + `SemanticKindMismatch` error rules — lives in `[19 §3](19_expression_flow.md)`.
 
-Per `11 §5.2`, `data_type:` is a **shape field** — it must unify across every occurrence of a Semantics name. `expr:` is a **resolution-variant field** — it may legally differ across occurrences (e.g. two DataKinds compute the same Metric via different formulas). The typing rules reconcile the two:
+**Type-level postcondition (upheld here by `PhysicalLeaf`'s variant set).** `PhysicalExpr` carries no `Field` / `Dimension` / `Measure` / `Metric` / `Key` leaves and no typed leaves carrying `accessor: Some(_)`. Compile rewrites every such leaf; `PhysicalLeaf`'s structural shape makes the postcondition unforgeable (per §3.7).
 
-1. If **any** occurrence declares `data_type:`, that declaration is authoritative for the whole name. All other occurrences' `expr:`s must infer a unifying type.
-2. If **no** occurrence declares `data_type:`, every occurrence's `expr:` must infer the same type. The common inferred type becomes the authoritative type stored in the SemanticManifest.
-3. If occurrences conflict — one's `expr:` infers `Integer`, another's infers `Decimal(10,2)`, neither declares — that's `CompileError::ShapeInferenceConflict { name, variants: Vec<(DataKind, DataType)>, location }`.
+---
 
-### 6.4 CAST emission sites
+## 9. Crate Placement
 
-`Expr::Cast` nodes appear in the resolved IR at exactly **two** sites:
+The layered model maps onto the workspace DAG as follows. Each crate has exactly one job.
 
-1. **Author-written casts** — the author wrote `CAST(...)` in Inline DSL or `{cast: {...}}` in Declarative block. Preserved verbatim.
-2. **Semantics-boundary reconciliation.** For every `(Semantics, Binding)` pair, if the Semantics has a declared `data_type:` and the resolved `PhysicalExpr`'s top-level inferred type differs from it, the compile stage wraps the resolved expression in a `Cast` targeting the declared type before storing it in `ResolvedExprTable`. Narrowing reconciliations emit `Diagnostic::Warning { code: "EXPR_W_CAST_NARROW", ... }`.
-
-**No other site emits `Cast`.** In particular:
-
-- Operand widening for BinaryOp arithmetic does **not** produce explicit Casts (§5.6 — engine handles arithmetic widening natively).
-- Cross-type comparison (`Integer = 'abc'`, `Date < 5`) does **not** produce an implicit Cast (§5.6 — engine enforces comparability at execution time).
-- Function-argument coercion does **not** produce implicit Casts (`14a` — registry signatures are non-coercive; either an exact signature matches or `CompileError::NoMatchingSignature` is raised, prompting the author to cast explicitly).
-
-```yaml
-# DataKind: orders
-metrics:
-  - name: net_amount
-    data_type: Decimal(13, 2)
-    expr: "gross_revenue - discounts"      # gross_revenue, discounts both Decimal(12,2) in this binding
-
-# DataKind: returns
-metrics:
-  - name: net_amount                       # same name — shape must unify
-    data_type: Decimal(13, 2)              # identical declaration
-    expr: "-abs(amount)"                   # amount is Decimal(12,2) in this binding
+```mermaid
+flowchart LR
+  C["semstrait-core<br/>primitives + Tree trait + ExprLeaf trait"] --> IR["semstrait-ir<br/>Expr&lt;L&gt; + leaf sets + CanonicalFn + FunctionRegistry + PlanNode"]
+  IR --> M["semstrait-model<br/>ExprSource + ExprBlock + parse-site dispatch"]
+  M --> MAN["semstrait-manifest<br/>compile: SemanticExpr → PhysicalExpr"]
+  MAN --> P["semstrait-planner<br/>plan: Request × Manifest → PlanNode tree"]
+  P --> A["semstrait-adapter<br/>render: PhysicalExpr → engine artifact"]
 ```
 
-Semstrait compile-time behavior:
+### 9.1 `semstrait-core`
 
-- **Shape check.** Both occurrences declare `data_type: Decimal(13, 2)`. These unify trivially (identical).
-- **Boundary reconciliation.** For `orders.net_amount`, the top-level expression `gross_revenue - discounts` locally infers (per §5.6) to the type of the left operand, `Decimal(12, 2)`. This differs from the declared `Decimal(13, 2)` → the compile stage emits a widening `Cast` wrapping the resolved expression (silent — widening, not narrowing).
-- **Same for `returns.net_amount`.** `-abs(amount)` locally infers to `Decimal(12, 2)`; a widening `Cast` is emitted.
+Owns:
 
-**What semstrait does NOT do here:**
+- The `Tree` trait + `Visitor` / `Rewriter` companion traits (§3.1).
+- The `ExprLeaf` trait (§3.2).
+- Bare types shared by every layer: `DataType`, `Grain`, `Literal`, `BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`.
+- The cross-cutting diagnostic primitives (`Diagnostic<K>`, `Diagnose`, `Severity`, `Location`, `Span`, `SourceId`) per the broader workspace policy.
 
-- It does not compute "the real arithmetic result type" of `Decimal(12,2) - Decimal(12,2)` from a promotion lattice. The engine decides that at execution time per its own arithmetic rules. Semstrait carries only the Semantics-declared type on the SemanticManifest; the engine-computed type at runtime may legally differ and the reconciliation Cast bridges any gap.
+Does NOT own:
 
-**If neither occurrence declares `data_type:`:** the pass-through posture of §5.6 means `compile` has no promotion-lattice rule to derive a common inferred type, and there is nothing to reconcile. The Semantics will not have a SemanticManifest-level type in that case; downstream consumers that require one (e.g. cross-DataKind shape unification at `11 §5.1`) will raise `CompileError::TypeInferenceFailure` at the point of demand, prompting the author to add a `data_type:` declaration.
+- `Expr<L>` itself (lives in `semstrait-ir`).
+- `CanonicalFn` / `FunctionRegistry` (lives in `semstrait-ir`).
+- `PhysicalLeaf` / `SemanticLeaf` (lives in `semstrait-ir`).
 
-## 7. Error Model
+Rationale: `semstrait-core` is the workspace-DAG leaf. Keeping only primitives + trait scaffolding here means every other crate can depend on it without dragging in canonical-IR vocabulary it may not need.
 
-All expression errors are surfaced via the `10 §5` `Diagnostic` stream. Each error below is a typed variant of its stage's error enum (internal), rendered into a `Diagnostic` at the API boundary. Error codes follow the `{SUBSYSTEM}_{SEVERITY}_{NNNN}` convention; `EXPR_E_*` for errors, `EXPR_W_*` for warnings.
+### 9.2 `semstrait-ir` — canonical-IR layer
 
-### 7.1 Parse-stage errors (`ParseError::Expr*`)
+Owns:
 
-Per `10 §3.2`, `parse` accumulates errors. Every malformed expression produces a diagnostic; parsing continues past each error to surface as many as possible in one run.
+- The `Expr<L>` structural enum (§3.3).
+- The `PhysicalLeaf` and `SemanticLeaf` enums (§3.4 / §3.5), including the per-kind typed semantic leaves (`Field`, `Dimension`, `Measure`, `Metric`, `Key`).
+- The `PhysicalExpr` / `SemanticExpr` type aliases (§3.6).
+- The per-kind accessor enums (`DimensionAccessor`, `MeasureAccessor`, `MetricAccessor`, `KeyAccessor`) carried as `Option<…>` fields on the typed semantic leaves (§4.1).
+- The `Parameter` placeholder + `ParameterKey` closed enum (§5.1 / §5.2).
+- The authoring-surface constructors (`col`, `field`, `dim`, `measure`, `metric`, `key`) in `expr_fn` per the layered-DSL pattern (§6.4.1).
+- `CanonicalFn` and the `FunctionRegistry` per `[14a](14a_function_catalog.md)`.
+- `PlanNode` and the canonical plan-tree per `[35](../apis/35_semstrait_ir.md)`.
 
-| Variant | Code | When |
-|---|---|---|
-| `ParseError::InlineDslSyntax { location, expected, found }` | `EXPR_E_0001` | Inline DSL token or production outside the §4.3 grammar. |
-| `ParseError::DeclarativeBlockUnknownTag { tag, location }` | `EXPR_E_0002` | Declarative block tag is neither a reserved AST tag (§4.4.1) nor a name registered in `FunctionRegistry` (§4.4.2). |
-| `ParseError::DeclarativeBlockArity { tag, expected, got, location }` | `EXPR_E_0003` | Declarative block has wrong number of arguments for its tag (e.g. `{coalesce: [x]}` — coalesce requires ≥ 2; or a registry-dispatched function tag violates its declared arity). |
-| `ParseError::DeclarativeBlockShape { tag, reason, location }` | `EXPR_E_0004` | Declarative block's shape is malformed for its tag (e.g. missing required field, wrong value type). |
-| `ParseError::LiteralTypeMismatch { expected, got, location }` | `EXPR_E_0005` | Literal type does not match its authored form (e.g. `{literal: {type: Integer, value: "abc"}}`). |
-| `ParseError::NullAsDataType { location }` | `EXPR_E_0006` | `data_type: null` at a declaration site — `Null` is not a member of the canonical `DataType` enum. |
-| `ParseError::UnquotedIdentifierIsReserved { name, location }` | `EXPR_E_0007` | Bare identifier in Inline DSL collides with a reserved keyword (`TRUE`, `FALSE`, `NULL`, `AND`, `OR`, `NOT`, `IS`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`). Author must use the Declarative block's tagged form. |
-| `ParseError::DistinctOnScalarFunction { tag, location }` | `EXPR_E_0008` | `distinct: true` appears inside a scalar-function block (reserved or registry-dispatched). `distinct` is an aggregate modifier only. |
+Rationale: this crate is the **canonical Internal Representation** of the workspace. It carries every type the post-compile pipeline operates on. Adapters consume from here; the manifest produces from here; the planner composes from here.
 
-### 7.2 Validate-stage errors (context invariants)
+### 9.3 `semstrait-model`
 
-Per `10 §3.2` / `11 §7`, `validate` accumulates errors. These are checks that require a well-formed AST but no catalog or reference resolution.
+Owns:
 
-| Variant | Code | When |
-|---|---|---|
-| `ValidateError::ColumnInSemanticExpr { column, location }` | `EXPR_E_0101` | `Expr::Column` inside a `SemanticExpr` context (wrapper invariant §2.2). |
-| `ValidateError::EntityRefInPhysicalExpr { name, location }` | `EXPR_E_0102` | `Expr::EntityRef` inside a `PhysicalExpr` context (wrapper invariant §2.3). |
-| `ValidateError::AggregateInPhysicalExpr { location }` | `EXPR_E_0103` | `Expr::Aggregate` inside a `PhysicalExpr` context (wrapper invariant §2.3). |
-| `ValidateError::NestedAggregate { outer, inner, location }` | `EXPR_E_0104` | `Aggregate` contains another `Aggregate` (TD-EXPR-NESTED-AGG). |
-| `ValidateError::ReservedIdentifier { name, kind, location }` | `EXPR_E_0105` | Identifier (EntityRef / Column) uses a reserved name (`path`, `partition`, `occurred_at`, `snapshotted_at`, `valid_from`, `valid_to`, other Metadata-Dimension tokens per `13 §4.7`). |
-| `ValidateError::CaseConditionNotBoolean { location }` | `EXPR_E_0106` | `Case`'s `when[].condition` is structurally not a predicate (e.g. a bare column reference with no comparison / `IsNull` / logical wrapper). This is a shape check, not a type check — it rejects `CASE WHEN revenue THEN ...` where the author clearly meant a predicate. |
+- The `ExprSource` enum and the `ExprBlock` reserved-tag AST (§6).
+- Parse-site dispatch (`parse_semantic` / `parse_physical`) (§6.2).
+- The Inline DSL grammar implementation (§6.3) when shipped.
+- The author-facing entity types (`Dimension`, `Measure`, `Metric`, `Key`, `Filter`, …) per `[18](18_entities.md)`.
+- Structural validation that does not require catalog resolution.
 
-### 7.3 Compile-stage errors (name + type resolution)
+Depends on `semstrait-ir` because every parsing entry point produces a typed `Expr<L>` value owned by `semstrait-ir`.
 
-Per `10 §3.3`, `compile` fails fast — the first error aborts the stage. Eager resolution per `14b` cannot proceed past an unresolvable reference or type mismatch without producing downstream cascade noise.
+### 9.4 `semstrait-manifest`
 
-**Name resolution:**
+Owns:
 
-| Variant | Code | When |
-|---|---|---|
-| `CompileError::UnresolvedEntityRef { name, location }` | `EXPR_E_0201` | Name not declared anywhere in the Model. |
-| `CompileError::UnreachableSemanticsReference { name, from_kind, location }` | `EXPR_E_0202` | Name declared in a DataKind unreachable from the referencing context (no Relationship path). |
-| `CompileError::CircularSemanticsReference { cycle, location }` | `EXPR_E_0203` | Transitive reference graph contains a cycle. |
-| `CompileError::UnresolvedColumn { name, binding, location }` | `EXPR_E_0204` | `Expr::Column(name)` references a column not in the Binding's `PhysicalSource` schema. |
+- The `compile` entry point that transforms `SemanticExpr` into `PhysicalExpr` per `[19 §3](19_expression_flow.md)`.
+- `ResolvedExprTable` and per-`(Semantics, Binding)` storage per `[19 §3.2](19_expression_flow.md)`.
+- The sealed `SemanticManifest` artifact.
 
-**Function resolution** (full machinery in `14a`):
+Does not invent new expression types — uses the types from `semstrait-ir`.
 
-| Variant | Code | When |
-|---|---|---|
-| `CompileError::UnknownFunction { name, location }` | `EXPR_E_0301` | `FunctionCall` name not in the `FunctionRegistry`. |
-| `CompileError::FunctionArityMismatch { name, expected, got, location }` | `EXPR_E_0302` | Function called with wrong argument count. |
-| `CompileError::NoMatchingSignature { name, arg_types, tried_signatures, location }` | `EXPR_E_0303` | No `FnSignature` in the function's spec matches the actual argument types. Semstrait does **not** attempt implicit coercion; the author must add an explicit `CAST`. |
-| `CompileError::ReservedTagCollision { tag, source, location }` | `EXPR_E_0304` | Adapter registry registration attempted to shadow a reserved AST tag (§4.4.1). |
+### 9.5 Downstream
 
-**Type resolution:**
+`semstrait-planner` and `semstrait-adapter` consume `PhysicalExpr` and `PlanNode` from `semstrait-ir`. They contribute no new expression types; planner-side `Parameter` substitution and adapter-side engine rewrites operate on `PhysicalExpr`.
 
-| Variant | Code | When |
-|---|---|---|
-| `CompileError::TypeInferenceFailure { reason, location }` | `EXPR_E_0401` | Top-level type inference at a Semantics boundary cannot derive a concrete type (bare untyped `Null` at the boundary with no `data_type:` declared, or an all-`Null` structural expression with no declared type). |
-| `CompileError::ComputedTypeUnifyConflict { name, declared, inferred, location }` | `EXPR_E_0402` | Semantics declares `data_type:` that does not unify with the boundary-inferred type from its `expr:`. |
-| `CompileError::ShapeInferenceConflict { name, variants, location }` | `EXPR_E_0403` | Multiple occurrences of a Semantics name infer different boundary types and no occurrence pins the shape via `data_type:`. |
-| `CompileError::UnrepresentablePhysicalType { engine_type, location }` | `EXPR_E_0404` | Physical column's engine type has no canonical `DataType` mapping (per `13 §2.5`). |
-| `CompileError::LiteralOverflow { value, target, location }` | `EXPR_E_0405` | Integer literal does not fit a narrowed target context (e.g. `{literal: {type: Byte, value: 300}}`). |
-| `CompileError::LiteralPrecisionLoss { value, target, location }` | `EXPR_E_0406` | Float literal not exactly representable in the narrowed target context. |
+---
 
-**Notes on what is deliberately absent:**
+## 10. Design Invariants Upheld
 
-- There is no `UncomparableTypes`, `TypeClassViolation`, `OperandWideningFailed`, or similar cross-operand validation error. Per §5.6, BinaryOp / comparison / function-argument type compatibility is an engine concern, not a semstrait concern. The engine raises its own diagnostics at execution time.
-- There is no `UnifyConflict` across `Case` arms / `Coalesce` args / `InList` elements. Per §5.5, semstrait does not require those branches to unify at the semstrait layer.
-- There is no `AggregateOperandType` check (e.g. `Sum` over `String`). Per §5.4, aggregate operand admissibility is engine-enforced.
+The following `[00 §9](../00_overview.md)` invariants find concrete realisations here:
 
-### 7.4 Compile-stage warnings
+| Invariant | Realisation in `14` |
+|---|---|
+| **I1** — no raw SQL in canonical layers | `Expr<L>` is a typed tree. Authoring strings (`ExprSource::Inline`) are deliberately not canonical — they are parsed into `Expr<L>` before crossing any stage boundary. |
+| **I2** — physical types belong to adapters | Every leaf and structural variant types in canonical `DataType` per `[13](13_types_and_grain.md)`. No `arrow::*` / `spark::*` types appear. |
+| **I3** — no engine/provider branching in canonical crates | `FunctionCall { name: CanonicalFn, .. }` references canonical identities. Per-engine name remaps and rewrites live in adapters per `[14a](14a_function_catalog.md)`. |
+| **I5** — name resolution at compile time | `SemanticLeaf::Field` / `Dimension` / `Measure` / `Metric` / `Key` carry unresolved names at parse; compile substitutes per binding (§8). `PhysicalLeaf` carries no semantic names. |
+| **I7** — strict acyclic crate DAG | The placement in §9 preserves the DAG; `semstrait-core` remains the leaf. `semstrait-ir` ↑ `semstrait-model` ↑ `semstrait-manifest` ↑ `semstrait-planner` ↑ `semstrait-adapter`. |
+| **I10** — non-exhaustive public sum types | Every public enum in §3–§5 is `#[non_exhaustive]`. Adding a `MeasureAccessor` variant, an `Expr<L>` structural variant, or a `ParameterKey` is additive. |
+| **I12** — first-class typed diagnostics | Construction-time invariant violations surface as `Diagnostic<ValidateErrorKind>`. Compile-time resolution failures surface as `Diagnostic<CompileErrorKind>` per the kind enums defined by `semstrait-model` and `semstrait-manifest`. |
 
-Warnings never abort compilation; they accumulate into the `Diagnostic` stream alongside any errors.
+---
 
-| Variant | Code | When |
-|---|---|---|
-| `Warning::CastNarrowing { from, to, location }` | `EXPR_W_0001` | Narrowing cast (author-written or boundary-reconciliation). Runtime behavior is per-engine. |
-| `Warning::AdditivityMismatch { name, declared, inferred_from_shape, location }` | `EXPR_W_0002` | Author-declared `additivity:` differs from what the planner would infer from `TemporalShape` context (per `11 §7` / `17 §4`). |
+## 11. Out of Scope for v1
 
-### 7.5 Error accumulation policy summary
+Deferred per `[00 §10](../00_overview.md)` and per the workspace's pre-1.0 surface policy:
 
-Consistent with `10 §5`:
+- **`Window` author surface**. `Window` is compile-emitted only via sugar-accessor elimination on the typed semantic leaves. Direct authoring of window functions (frame clauses, `RANGE BETWEEN`, etc.) is post-v1.
+- **Subquery / correlated subquery / lambda / mask expression forms**. Cross-DataKind correlation rides through the per-kind typed semantic leaves + `Relationship` per `[16](16_composition.md)`.
+- **Substrait wire emission as a canonical target**. Substrait is one possible adapter output; the canonical IR is not Substrait-isomorphic.
+- **Stringly-typed parameter IDs** (`"$1"` style). Superseded by typed `ParameterKey` (§5.2).
+- **Type-class-parameterised function signatures**. v1 uses overload-set polymorphism per `[14a](14a_function_catalog.md)`.
+- **Full SQL query parsing**. A future optional crate may lower `sqlparser-rs` AST to `SemanticExpr` + `Request` at the boundary; the canonical IR is not extended for this.
 
-- **`parse`** — accumulates all expression-level syntax errors. A single run reports every malformed expression.
-- **`validate`** — accumulates all expression-level context-invariant violations. A single run reports every wrapper-invariant breach.
-- **`compile`** — fails fast. The first name-resolution or type-inference error aborts the stage; eager resolution (`14b`) can't reliably continue past an unresolvable reference without producing unreliable cascade errors. Warnings do not abort.
-- **`plan` / `optimize` / `adapt`** — do not produce expression-level errors; expressions are already resolved and typed in the SemanticManifest (per `14b`).
+---
 
-## 8. Interaction with Other Documents
+## 12. Cross-References
 
-  - **`10` (resolution pipeline)** — §3 defines where expression parsing and typing live; §5 defines the `Diagnostic` channel; `14` errors feed that channel.
-  - **`11` (names and scopes)** — `expr:` is a resolution-variant field (§5.2); `data_type:` is a shape field (§5.1); §7 cross-kind references drive the eager substitution in `14b`.
-  - **`12` (nesting policy)** — no direct interaction; expressions are scoped at the Semantics declaration level, not the nesting boundary.
-  - **`13` (types and grain)** — all expression types draw from the canonical `DataType` set; `DateTrunc` uses the `Grain` enum.
-  - **`14a` (function catalog)** — `FunctionRegistry`, `CanonicalFn` newtype, `FnSignature` polymorphism, BinaryOp promotion lattice.
-  - **`14b` (expression resolution)** — `ResolvedExprTable`, the eager compile-time substitution contract, cross-DataKind path pre-resolution, plan-time lookup.
-  - **`15` (binding)** — `column_mapping[].expr` site uses `PhysicalExpr`; schema validation runs against the resolved physical source.
-  - **`16` (composition)** — `SemanticExpr` references that cross DataKind boundaries traverse `Relationship` paths.
-  - **`20–25` (data-kind specifications)** — plan-time consumers of `ResolvedExpr`s; expression-rewrite rules at the optimize stage key on `CanonicalFn` constants from `14a`.
-  - **`34` / `36` (adapters)** — `PhysicalExpr` rendering to engine-native SQL / Substrait plan fragments.
-  - **`registry/functions_mapping.md`** — per-engine mapping of canonical functions to native forms.
+Upstream:
+
+- `[00_overview.md](../00_overview.md)` — canonical-first contract, vocabulary, invariants I1–I12.
+- `[13_types_and_grain.md](13_types_and_grain.md)` — canonical `DataType` set; `Grain`.
+- `[15_mapping_and_binding.md](15_mapping_and_binding.md)` — `SemanticMapping`, the `Binding` process consumed at compile.
+- `[16_composition.md](16_composition.md)` — `Relationship` graph; cross-DataKind reference resolution path.
+- `[18_entities.md](18_entities.md)` — entity-kind canonical names (Dimension / Measure / Metric / Key); `Measure` / `Metric` `(agg:, expr:)` pairing; model-level `Additivity`; `SemanticMapping` value shape.
+
+Refinement:
+
+- `[14a_function_catalog.md](14a_function_catalog.md)` — `CanonicalFn`, `FunctionRegistry`, signature polymorphism, return-type rules, function-level `Additivity`.
+- `[19_expression_flow.md](19_expression_flow.md)` — Phase A / Phase B compile pipeline; resolution algorithm; sugar contract; per-site shape gates; Phase B placement; advisory channel.
+
+Downstream:
+
+- `[../apis/31_semstrait_core.md](../apis/31_semstrait_core.md)` — trait scaffolding + support enums (no expression types).
+- `[../apis/32_semstrait_model.md](../apis/32_semstrait_model.md)` — `semstrait-model`'s parse-site dispatch surface.
+- `[../apis/33_semstrait_manifest.md](../apis/33_semstrait_manifest.md)` — compile entry point; `ResolvedExprTable` storage; `Provenance`.
+- `[../apis/35_semstrait_ir.md](../apis/35_semstrait_ir.md)` — canonical-IR crate (`Expr<L>`, leaf sets, accessors, `Parameter`, `CanonicalFn`/`FunctionRegistry`).
+- `[../apis/36_semstrait_adapter.md](../apis/36_semstrait_adapter.md)` — adapter rendering of `PhysicalExpr` to engine artifacts.

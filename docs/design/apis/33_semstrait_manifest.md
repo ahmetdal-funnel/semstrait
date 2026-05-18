@@ -1,6 +1,5 @@
 ---
-
-## prereqs: [10, 11, 13, 14, 14a, 14b, 15, 16, 17, 18, 20, 30, 31, 31b]
+prereqs: [10, 11, 13, 14, 14a, 15, 16, 17, 18, 19, 20, 30, 31, 31b]
 authoritative-for:
   - the `semstrait-manifest` public-API surface — crate boundary, module layout, re-export posture
   - the `SemanticManifest` struct: top-level field roster, `#[non_exhaustive]` status, serde/persistence posture
@@ -8,7 +7,7 @@ authoritative-for:
   - `ResolvedJoinset` / `ResolvedUnionset` carriage of `origin: Origin` per `16 §5.6`; `Grainset` is always `Origin::Explicit`
   - `Origin` / `ImplicitId` — re-exported from `semstrait-core::composition` per `16 §5.6` / `§5.7`; carry the explicit-vs-implicit axis for compositions
   - `ResolvedBinding` / `ResolvedPhysicalSource` / `ResolvedColumnMapping` SemanticManifest-layer shape (refines `15 §9`)
-  - `ResolvedExprTable` SemanticManifest-facing surface (`lookup`, `lookup_all`, `iter`; the map is owned here, shape in `14b §2`)
+  - `ResolvedExprTable` SemanticManifest-facing surface (`lookup`, `lookup_all`, `iter`; the map is owned here, shape in `19 §3.2`)
   - `ResolvedRelationship` SemanticManifest-layer shape (refines `16 §3` for the compiled form)
   - `CoverageIndex` and `CompositionIndex` — planner lookup indices materialized at compile time, including `CompositionIndex.by_constituent_set` and `by_canonical` per `16 §10` (uniform explicit + implicit lookup)
   - `SemanticManifestMetadata` — compile timestamp, source-hash, schema version, SemanticManifest format version
@@ -31,6 +30,7 @@ refined-by:
   - 37 (`semstrait-catalog` — authoritative for `CatalogProvider` / `FileSystem` trait surfaces; `33` only names them)
   - 38 (`semstrait-api` — orchestrates `compile` and exposes `SemanticManifest` through the unified entry)
   - 40 (`implementation/40_refactor_plan.md` — current-vs-target delta for `crates/semstrait-manifest/src/`)
+---
 
 # 33. semstrait-manifest
 
@@ -51,13 +51,13 @@ Persistence (`Repository` trait + two bundled impls, `InMemoryRepository` and `F
 
 `33` ratifies the public-crate surface (§2), the `SemanticManifest` struct and its `Resolved`* family (§3–§8), the `compile` signature (§9), the `CompileErrorKind` typed-kind enum and its `Diagnose` impl (§10), the `Repository` trait + `RepositoryErrorKind` (§11), the I11b gate for `CatalogProvider::check_schema_drift` (§12), determinism discipline (§13), serde / persistence-format policy (§14), per-leaf stability (§15), and crate boundaries (§16). Round-1 open items are parked per §17.
 
-`33` does NOT ratify: per-variant authoring YAML (→ `32` via `20`–`24`); expression resolution algorithm (→ `14b`); binding resolution algorithm (→ `15 §10`); composition resolution algorithm (→ `16`); per-variant planner strategy (→ `20 §5`, `21`–`24`); `CatalogProvider` / `FileSystem` method rosters (→ `37`); `Repository` byte-level encoding (the shape-stable contract is §14; encoders are caller-chosen); planner entry types (→ `34` / `35`); deprecated symbols (→ `41`).
+`33` does NOT ratify: per-variant authoring YAML (→ `32` via `20`–`24`); expression resolution algorithm (→ `19 §3`); binding resolution algorithm (→ `15 §10`); composition resolution algorithm (→ `16`); per-variant planner strategy (→ `20 §5`, `21`–`24`); `CatalogProvider` / `FileSystem` method rosters (→ `37`); `Repository` byte-level encoding (the shape-stable contract is §14; encoders are caller-chosen); planner entry types (→ `34` / `35`); deprecated symbols (→ `41`).
 
 ### 1.3 Design posture — sealed artifact, gated I/O
 
 - **The `SemanticManifest` is a sealed artifact.** Once `compile` returns `Ok(SemanticManifest)`, every field is immutable through `&self` accessors. There is no `insert` / `remove` / `set`. Mutation on a loaded SemanticManifest is a `Repository`-level operation (delete-then-save) and produces a fresh SemanticManifest.
 - **Async is confined to `compile` and `Repository`.** Per I11a, `compile` is `async` solely because it awaits `CatalogProvider` and `FileSystem` I/O. Per I11b, `Repository::{save, load, list, delete}` are `async` because restoration may fetch from remote object stores. Every other public function on the SemanticManifest surface is **synchronous**.
-- **Post-compile consumption is synchronous.** `plan` / `optimize` / `adapt` consume the `SemanticManifest` through `&` references; `Arc<SemanticManifest>` is the conventional carrier inside `semstrait-api`. Re-entrant lookup is O(log n) per `14b §2.3`.
+- **Post-compile consumption is synchronous.** `plan` / `optimize` / `adapt` consume the `SemanticManifest` through `&` references; `Arc<SemanticManifest>` is the conventional carrier inside `semstrait-api`. Re-entrant lookup is O(log n) per `19 §3.2.3`.
 - **Determinism is cross-cutting.** Every ordered map in the SemanticManifest is a `BTreeMap`; every serialized output is byte-stable given the same input bytes. §13 ratifies the testing discipline.
 
 Per I7, the crate's workspace dependencies are exactly three: `semstrait-core`, `semstrait-model`, `semstrait-catalog`. No dep on `semstrait-planner`, `semstrait-ir`, or any adapter / engine crate. A SemanticManifest artifact flows downward; the manifest crate never reaches back up.
@@ -68,7 +68,7 @@ Per I7, the crate's workspace dependencies are exactly three: `semstrait-core`, 
 | Invariant                                          | Where `33` keeps it                                                                                                                                                                                                                                                          |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **I4** — SemanticManifests are deterministic       | `§13` ratifies the testing discipline. Every ordered container is a `BTreeMap`; every index is populated in a deterministic iteration order; serde encoders MUST preserve iteration order.                                                                                   |
-| **I5** — resolution completes at compile time      | Every `EntityRef` is substituted away in `ResolvedExprTable` per `14b §3`; every `Binding` is fully resolved into `ResolvedBinding` per `15 §10`; no post-compile stage triggers resolution.                                                                                 |
+| **I5** — resolution completes at compile time      | Every `EntityRef` is substituted away in `ResolvedExprTable` per `19 §3.3`; every `Binding` is fully resolved into `ResolvedBinding` per `15 §10`; no post-compile stage triggers resolution.                                                                                 |
 | **I6** — plan-time is synchronous                  | No public method on `SemanticManifest` or its `Resolved`* substructures is `async`. `Repository::load` and `compile` are the only `async fn` on this crate's surface.                                                                                                        |
 | **I8** — SemanticManifests are planner-complete    | `§3`'s six-field roster covers every lookup the planner requires: resolved data kinds, resolved relationships, expression table, coverage index, composition index, metadata. Nothing is deferred to a post-compile fetch.                                                   |
 | **I10** — public sum types are `#[non_exhaustive]` | `SemanticManifest`, every `Resolved`* struct and enum, `CompileErrorKind`, `RepositoryErrorKind`, `CoverageIndex` entry variants — all `#[non_exhaustive]`. The roster is §15's.                                                                                             |
@@ -119,7 +119,7 @@ semstrait-manifest
 | `ResolvedComposedSemanticInterface`                                                 | `manifest::composition`    | SemanticManifest-layer composed interface                                                                                           |
 | `CompositionIndex`                                                                  | `manifest::composition`    | planner lookup index per `16 §8`                                                                                                    |
 | `CoverageIndex`                                                                     | `manifest::coverage`       | planner lookup index per `15 §6`                                                                                                    |
-| `ResolvedExprTable`                                                                 | `semstrait-core` re-export | expression table (owned by SemanticManifest; shape in `14b §2`)                                                                     |
+| `ResolvedExprTable`                                                                 | `semstrait-core` re-export | expression table (owned by SemanticManifest; shape in `19 §3.2`)                                                                     |
 | `compile`                                                                           | `compile`                  | the async compile entry point                                                                                                       |
 | `CompileErrorKind`                                                                  | `error`                    | typed-kind enum (extends `semstrait-core::CompileErrorKind` variant roster); implements `Diagnose`                                  |
 | `Repository`                                                                        | `repository`               | persistence trait                                                                                                                   |
@@ -156,7 +156,7 @@ Per `00 §4.1` (SemanticManifest row) and `10 §3.3` (compile contract). `#[non_
 
 - Every `BindingId` referenced from `expr_table` / `coverage_index` / `composition_index` appears in exactly one `ResolvedSimpleDataKind` under `resolved_datakinds`.
 - Every `RelationshipId` referenced from `expr_table`'s `PathSignature` entries appears in `resolved_relationships`.
-- Every `SemanticsName` that any `ResolvedDataKind` exposes has at least one `(name, binding_id)` entry in `expr_table` (I8 / `14b §2.3`'s completeness guarantee).
+- Every `SemanticsName` that any `ResolvedDataKind` exposes has at least one `(name, binding_id)` entry in `expr_table` (I8 / `19 §3.2.3`'s completeness guarantee).
 - **Composition completeness** (per `16 §10`). `resolved_datakinds` contains every author-declared composition (`origin: Origin::Explicit`) plus every implicit composition enumerated within the depth/count caps (`Origin::Implicit { id }`). The two populations are disjoint by canonical form per `16 §10.6` — the implicit-explicit clash check guarantees no two `Origin::Implicit { id: a }` and `Origin::Explicit` shadows share an `ImplicitId`.
 - **Composition-index uniformity.** `composition_index.by_canonical` is populated for every composition with a canonical form (Joinsets and Unionsets, both explicit and implicit); `composition_index.by_constituent_set` covers all of them. Plan-time lookup never distinguishes explicit from implicit per `34 §7`.
 - **Implicit-cap discipline.** Total `Origin::Implicit` compositions across `resolved_datakinds` ≤ `MAX_IMPLICIT_ENUMERATION_COUNT = 2000`. Exceeding the cap fails compile with `CompileErrorKind::ImplicitEnumerationExploded` (`§10.1`); a sealed SemanticManifest never observes the breach.
@@ -360,7 +360,7 @@ pub use semstrait_core::composition::{Origin, ImplicitId};
 // pub struct ImplicitId(pub [u8; 32]);
 ```
 
-`Origin::Explicit` for author-declared compositions; `Origin::Implicit { id }` for compile-enumerated compositions. `ImplicitId` is the BLAKE3-256 canonical-form hash per `16 §5.7`. SemanticManifest-stable but not stable across recompiles (`RelationshipId` instability per `14b OQ-7`).
+`Origin::Explicit` for author-declared compositions; `Origin::Implicit { id }` for compile-enumerated compositions. `ImplicitId` is the BLAKE3-256 canonical-form hash per `16 §5.7`. SemanticManifest-stable but not stable across recompiles (`RelationshipId` instability per `15 §2.2`).
 
 **Synthetic name pattern.** Implicit compositions are indexed under `DataKindName` of the form `__implicit_{joinset|unionset}_{first-8-hex-of-id}` per `16 §5.7`. The `__` prefix is informally reserved per `11 §X` (current rule: authors SHOULD avoid; `validate` does not currently reject); collisions on the 8-hex prefix are extremely rare at v1 scale. If a collision occurs at compile, `33`'s indexing extends the suffix to the full 64-hex `ImplicitId` to disambiguate.
 
@@ -370,7 +370,7 @@ pub use semstrait_core::composition::{Origin, ImplicitId};
 
 ### 5.1 `ResolvedBinding`
 
-SemanticManifest-layer counterpart to `Binding` from `15 §2`. The key differences: `binding_id` is assigned at compile-time (per `14b §2.1` Q2), `sources` are resolved against the catalog, and `column_mapping` is flattened into an O(1)-lookup shape (§5.3).
+SemanticManifest-layer counterpart to `Binding` from `15 §2`. The key differences: `binding_id` is assigned at compile-time (per `19 §3.2.1` Q2), `sources` are resolved against the catalog, and `column_mapping` is flattened into an O(1)-lookup shape (§5.3).
 
 ```rust
 /// A compiled `Binding` — links a `SimpleDataKind`'s
@@ -378,7 +378,7 @@ SemanticManifest-layer counterpart to `Binding` from `15 §2`. The key differenc
 /// a pre-indexed `ResolvedColumnMapping`. Per `15 §9`.
 ///
 /// Every `BindingId` in a `SemanticManifest` is unique to that SemanticManifest. IDs
-/// are not stable across recompiles (per `14b §2.1` Q2).
+/// are not stable across recompiles (per `19 §3.2.1` Q2).
 ///
 /// `#[non_exhaustive]` per I10.
 #[non_exhaustive]
@@ -397,7 +397,7 @@ pub struct ResolvedBinding {
 }
 ```
 
-`BindingId` is re-exported from `semstrait-core` (ratified in `14b §2.1`):
+`BindingId` is re-exported from `semstrait-core` (ratified in `19 §3.2.1`):
 
 ```rust
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -489,7 +489,7 @@ pub enum CoverageVariant {
 }
 ```
 
-Every `SemanticsName` on the owning DataKind's `SemanticInterface` appears in exactly one of the first four maps. `columns` carries simple references (`expr: column_name`); `literals` carries literal slots; `computed` carries fully-resolved `PhysicalExpr` from `14b §3` (duplicated here in addition to `ResolvedExprTable` so binding-local planner passes can avoid iterating the whole table); `metadata` carries the per-Binding metadata-extraction recipe per `15 §5.5` / `18 §10.4` (`MetadataDimensionRecipe` shape, recipe global to the Binding; per-source resolved `LiteralValue`s live on each `ResolvedPhysicalSource.metadata_values` — §5.2); `source_coverage` is populated from the compile-derived `Coverage` per `15 §6`.
+Every `SemanticsName` on the owning DataKind's `SemanticInterface` appears in exactly one of the first four maps. `columns` carries simple references (`expr: column_name`); `literals` carries literal slots; `computed` carries fully-resolved `PhysicalExpr` from `19 §3.3` (duplicated here in addition to `ResolvedExprTable` so binding-local planner passes can avoid iterating the whole table); `metadata` carries the per-Binding metadata-extraction recipe per `15 §5.5` / `18 §10.4` (`MetadataDimensionRecipe` shape, recipe global to the Binding; per-source resolved `LiteralValue`s live on each `ResolvedPhysicalSource.metadata_values` — §5.2); `source_coverage` is populated from the compile-derived `Coverage` per `15 §6`.
 
 `CoverageKey.source_index` is per-source within a binding (not `BindingId`); the planner needs that granularity when materializing multi-source bindings per `23 §6`. The SemanticManifest-level `CoverageIndex` (§7) adds the `BindingId` dimension. `CoverageVariant` distinguishes Semantics native to the source (`Native`), projected via `NULL`-padding (`NullFill`), produced via the `computed` map (`Derived`), or read from the source's per-source `metadata_values` map for metadata-bound Semantics (`Metadata`, per `15 §6.1` 4-variant roster).
 
@@ -501,7 +501,7 @@ Every `SemanticsName` on the owning DataKind's `SemanticInterface` appears in ex
 
 ### 6.1 Placement and ownership
 
-The `ResolvedExprTable` shape is authoritative in `14b §2`. `33`'s role is to document ownership and access at the SemanticManifest layer; all shape details are cross-referenced.
+The `ResolvedExprTable` shape is authoritative in `19 §3.2`. `33`'s role is to document ownership and access at the SemanticManifest layer; all shape details are cross-referenced.
 
 ```rust
 pub use semstrait_core::expr::{
@@ -516,7 +516,7 @@ pub use semstrait_core::expr::{
 
 ### 6.2 Keying
 
-Per `14b §2.1`, every entry is keyed by `(SemanticsName, BindingId)`:
+Per `19 §3.2.1`, every entry is keyed by `(SemanticsName, BindingId)`:
 
 ```rust
 pub struct ResolvedExprKey {
@@ -525,27 +525,51 @@ pub struct ResolvedExprKey {
 }
 ```
 
-The two-dimensional key is the minimal faithful encoding — a single Semantics can resolve against multiple Bindings when a `ComplexDataKind` composes sources (rationale in `14b §2.5`). `BindingId` values are SemanticManifest-unique (per `14b §2.1` Q2), so `(SemanticsName, BindingId)` pairs are globally unique within a SemanticManifest.
+The two-dimensional key is the minimal faithful encoding — a single Semantics can resolve against multiple Bindings when a `ComplexDataKind` composes sources (rationale in `19 §3.2.5`). `BindingId` values are SemanticManifest-unique (per `19 §3.2.1` Q2), so `(SemanticsName, BindingId)` pairs are globally unique within a SemanticManifest.
 
 ### 6.3 Entry shape
 
-Per `14b §2.1`:
+Per `19 §3.2.1`:
 
 ```rust
 pub struct ResolvedExprEntry {
-    pub physical_expr: PhysicalExpr,
-    pub inferred_type: DataType,
+    pub physical_expr:      PhysicalExpr,
+    pub inferred_type:      DataType,
     pub referenced_columns: Vec<String>,
-    pub path_signature: Option<PathSignature>,
-    pub provenance: Provenance,
+    pub path_signature:     Option<PathSignature>,
+    pub provenance:         Provenance,
 }
 ```
 
-`physical_expr` is `EntityRef`-free (per `14 §3.6`) and fully type-inferred (per `14b §6`); `inferred_type` is the root type pre-computed for O(1) lookup; `referenced_columns` is the lex-ordered column-name union per `14b §3.8`–`§3.9` (consumed by adapter column-projection per `14b §10`); `path_signature` is `Some` iff a cross-DataKind `EntityRef` was encountered (per `14b §4`); `provenance` is diagnostic-only per `14b §2.6`.
+`physical_expr` carries no semantic-leaf variants per `[14 §3.7](../foundations/14_expressions.md)` and is fully type-inferred per `[19 §3.6](../foundations/19_expression_flow.md)`; `inferred_type` is the root type pre-computed for O(1) lookup; `referenced_columns` is the deduplicated column-name list per `[19 §3.10](../foundations/19_expression_flow.md)` (consumed by adapter column-projection); `path_signature` is `Some` iff a cross-DataKind reference was traversed per `[19 §3.4](../foundations/19_expression_flow.md)`.
+
+#### 6.3.1 `Provenance` (diagnostic-only)
+
+Per-entry source-provenance carrier populated by `compile`. **Never leaves the manifest** — no plan-time or adapt-time consumer reads it. Used by the diagnostic reporter to quote every author `Location` that contributed material to an entry, so a `CompileErrorKind` fired against an entry can point finger without re-walking the parse tree.
+
+```rust
+pub struct Provenance {
+    pub declared_at:              Vec<Location>,        // non-empty
+    pub contributing_occurrences: Vec<OccurrenceRef>,   // per 11 §6.3 Tier-1/Tier-2 merge
+    pub resolved_from_variant:    Option<OccurrenceRef>,// Some when a local variant overrode the Tier-1 default
+}
+
+pub struct OccurrenceRef {
+    pub data_kind:       DataKindName,
+    pub occurrence_role: OccurrenceRole,
+}
+
+#[non_exhaustive]
+pub enum OccurrenceRole {
+    Tier1Default,
+    LocalVariant,
+    NestedKindLocal,
+}
+```
 
 ### 6.4 Lookup contract
 
-`SemanticManifest::expr_table()` returns `&ResolvedExprTable`; callers use the table's own methods per `14b §2.3`:
+`SemanticManifest::expr_table()` returns `&ResolvedExprTable`; callers use the table's own methods per `19 §3.2.3`:
 
 ```rust
 impl ResolvedExprTable {
@@ -560,17 +584,17 @@ impl ResolvedExprTable {
 
 - `**lookup` — O(log n)**. Returns `None` only for pairs compile's completeness check did not populate; `14 §6.3` guarantees `Some` for every `(name, binding_id)` the planner can reach.
 - `**lookup_all` — O(log n + k)** where `k` is the number of Bindings sourcing the Semantics. Used by planner source-selection over `ComplexDataKind`.
-- `**iter` — O(n)** in `(name, binding_id)` lex order. Used by `Repository::save`, adapter column-projection audit (`14b §10`), and debug tooling.
+- `**iter` — O(n)** in `(name, binding_id)` lex order. Used by `Repository::save`, adapter column-projection audit (`19 §3.10`), and debug tooling.
 
 ### 6.5 Immutability
 
-Per `14b §2.3`: no `insert` / `remove` / `update` on the public surface. Construction happens inside compile; the table arrives at the SemanticManifest layer sealed. `expr_table()` returns `&` only.
+Per `19 §3.2.3`: no `insert` / `remove` / `update` on the public surface. Construction happens inside compile; the table arrives at the SemanticManifest layer sealed. `expr_table()` returns `&` only.
 
 ### 6.6 Relationship to `ResolvedColumnMapping.computed`
 
 Per §5.3, `ResolvedBinding.column_mapping.computed` is a subset of `expr_table.iter()` filtered to binding-local Semantics. Compile keeps both in sync: every binding-side `expr` resolution is stored both in `computed` (for fast binding-local access) and in `expr_table` (for per-`(name, binding_id)` lookup).
 
-Storing the same `PhysicalExpr` in two places is intentional; the SemanticManifest is a read-many artifact and both access patterns are hot on the planner / adapter side. `14b §2.4`'s "no interning" choice keeps the duplication at the tree level (`PhysicalExpr` is not interned into a pool), and the serialization cost is small because most computed exprs are short.
+Storing the same `PhysicalExpr` in two places is intentional; the SemanticManifest is a read-many artifact and both access patterns are hot on the planner / adapter side. `19 §3.2.4`'s "no interning" choice keeps the duplication at the tree level (`PhysicalExpr` is not interned into a pool), and the serialization cost is small because most computed exprs are short.
 
 ---
 
@@ -696,11 +720,11 @@ pub struct ResolvedRelationship {
 // with `#[non_exhaustive]` + `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]`.
 ```
 
-Every `RelationshipId` is SemanticManifest-unique; IDs are not stable across recompiles (same rationale as `BindingId`, per `14b §4.2` Q6). `JoinKeyExprPair`, `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, and (derived) `JoinType` are ratified in `18 §2` and re-exported via `manifest::relationship`. **Note:** `optional` and `cross_filter` on the manifest layer are non-optional (`Optional`, `CrossFilter`) — the Model-layer `Option<Optional>` / `Option<CrossFilter>` are resolved to concrete values at compile per `18 §2.7`'s defaults matrix (or per author declaration for `OneToOne` / `ManyToMany`). The Model-layer authored `directionality:` field is retired (2026-05-12); every relationship is bidirectional at the manifest layer by construction. (Historical note: the Model-layer `KeyPair` name is retired in favor of `JoinKeyExprPair` per `18 §2.8`.)
+Every `RelationshipId` is SemanticManifest-unique; IDs are not stable across recompiles (same rationale as `BindingId`, per `19 §3.4.2` Q6). `JoinKeyExprPair`, `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, and (derived) `JoinType` are ratified in `18 §2` and re-exported via `manifest::relationship`. **Note:** `optional` and `cross_filter` on the manifest layer are non-optional (`Optional`, `CrossFilter`) — the Model-layer `Option<Optional>` / `Option<CrossFilter>` are resolved to concrete values at compile per `18 §2.7`'s defaults matrix (or per author declaration for `OneToOne` / `ManyToMany`). The Model-layer authored `directionality:` field is retired (2026-05-12); every relationship is bidirectional at the manifest layer by construction. (Historical note: the Model-layer `KeyPair` name is retired in favor of `JoinKeyExprPair` per `18 §2.8`.)
 
 ### 8.2 `ResolvedRelationshipGraph`
 
-The relationship graph used by `14b`'s cross-kind path resolution is retained in the SemanticManifest so plan-time code does not rebuild it:
+The relationship graph used by `19 §3.4`'s cross-kind path resolution is retained in the SemanticManifest so plan-time code does not rebuild it:
 
 ```rust
 #[non_exhaustive]
@@ -726,7 +750,7 @@ impl SemanticManifest {
 }
 ```
 
-`incident_relationships` is sorted by ascending `RelationshipId` per `14b §4.2`'s deterministic-neighbor-iteration discipline. The graph is held as a `pub(crate)` field on `SemanticManifest` (not a §3 public field) and surfaced through the accessor so MINOR additions (e.g. a transitive-closure cache) don't churn the field-level stability surface.
+`incident_relationships` is sorted by ascending `RelationshipId` per `19 §3.4.2`'s deterministic-neighbor-iteration discipline. The graph is held as a `pub(crate)` field on `SemanticManifest` (not a §3 public field) and surfaced through the accessor so MINOR additions (e.g. a transitive-closure cache) don't churn the field-level stability surface.
 
 ---
 
@@ -749,7 +773,7 @@ pub async fn compile(
 
 Compile a validated `SemanticModel` into a sealed `SemanticManifest`. Fail-fast stage per `30 §7.1`: the success arm carries the `SemanticManifest` plus any warnings emitted during compile; the failure arm carries the single fatal `Diagnostic<CompileErrorKind>` plus all warnings observed before that point. This is the only stage in the `semstrait-*` pipeline where async I/O is permitted (per I11a). The async boundary exists solely to await catalog / filesystem trait methods at compile time; post-compile consumption is strictly synchronous.
 
-Sub-passes run in the order ratified in `14b §9`: (1) reference-graph build + cycle detection; (2) catalog snapshot (schema fetch for every `PhysicalSource`); (3) binding resolution (`15 §10`); (4) relationship graph build (`14b §4.2`); (5) per-`(SemanticsName, BindingId)` expression resolution building `ResolvedExprTable` (`14b §3`); (6) **explicit-composition materialization** (`16 §10.1`) — `ResolvedJoinset` / `ResolvedUnionset` / `ResolvedGrainset` for author-declared compositions, with `origin: Origin::Explicit`; (7) **implicit-composition enumeration** (`16 §10.4` Joinsets, `§10.5` Unionsets) — bounded by `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` and `MAX_IMPLICIT_ENUMERATION_COUNT = 2000`; emits `COMP_E_0409 ImplicitEnumerationExploded` if the count cap is exceeded; (8) **implicit-explicit clash check** (`16 §10.6`) — fails compile with `COMP_E_0414 ExplicitImplicitCompositionClash` when an explicit Joinset's canonical form (`16 §5.7`) hashes to an `ImplicitId` already populated by step 7; (9) coverage / composition index materialization (`15 §6`, `16 §8`) — populates `CompositionIndex.entries` + `by_constituent_set` + `by_canonical` over the unified explicit + implicit population; (10) metadata finalization.
+Sub-passes run in the order ratified in `19 §3.9`: (1) reference-graph build + cycle detection; (2) catalog snapshot (schema fetch for every `PhysicalSource`); (3) binding resolution (`15 §10`); (4) relationship graph build (`19 §3.4.2`); (5) per-`(SemanticsName, BindingId)` expression resolution building `ResolvedExprTable` (`19 §3.3`); (6) **explicit-composition materialization** (`16 §10.1`) — `ResolvedJoinset` / `ResolvedUnionset` / `ResolvedGrainset` for author-declared compositions, with `origin: Origin::Explicit`; (7) **implicit-composition enumeration** (`16 §10.4` Joinsets, `§10.5` Unionsets) — bounded by `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` and `MAX_IMPLICIT_ENUMERATION_COUNT = 2000`; emits `COMP_E_0409 ImplicitEnumerationExploded` if the count cap is exceeded; (8) **implicit-explicit clash check** (`16 §10.6`) — fails compile with `COMP_E_0414 ExplicitImplicitCompositionClash` when an explicit Joinset's canonical form (`16 §5.7`) hashes to an `ImplicitId` already populated by step 7; (9) coverage / composition index materialization (`15 §6`, `16 §8`) — populates `CompositionIndex.entries` + `by_constituent_set` + `by_canonical` over the unified explicit + implicit population; (10) metadata finalization.
 
 ### 9.2 Argument discipline
 
@@ -763,7 +787,7 @@ The signature above matches the fail-fast row in `30 §7.1`'s per-stage table: t
 
 ### 9.4 Async boundary (I11a)
 
-`compile` is `async fn` for exactly one reason: it awaits `CatalogProvider::fetch_schema`, `CatalogProvider::list_objects`, `FileSystem::{list, read, exists}`. These are the only `.await` points in the function body. Sub-passes (reference graph, cycle detection, binding resolution, expression resolution, index build) are all synchronous per `14b §1`'s I6 framing. Awaits happen once at the top during catalog snapshot; after that, compile runs to completion without yielding. This lets compile run on any runtime (`tokio`, `async-std`, `smol`) without pinning one.
+`compile` is `async fn` for exactly one reason: it awaits `CatalogProvider::fetch_schema`, `CatalogProvider::list_objects`, `FileSystem::{list, read, exists}`. These are the only `.await` points in the function body. Sub-passes (reference graph, cycle detection, binding resolution, expression resolution, index build) are all synchronous per `19 §3`'s I6 framing. Awaits happen once at the top during catalog snapshot; after that, compile runs to completion without yielding. This lets compile run on any runtime (`tokio`, `async-std`, `smol`) without pinning one.
 
 ### 9.5 Single-shot vs streaming
 
@@ -1018,7 +1042,7 @@ Per `00 §9 I4`: byte-identical SemanticManifests for byte-identical inputs. Eve
 - `SemanticManifest.resolved_datakinds` / `resolved_relationships`.
 - `CoverageIndex.entries` / `CompositionIndex.{entries, by_constituent_set, by_canonical}`.
 - `ResolvedColumnMapping.{columns, literals, computed, metadata, source_coverage}`.
-- `ResolvedExprTable.entries` (per `14b §2.1`).
+- `ResolvedExprTable.entries` (per `19 §3.2.1`).
 - `ResolvedRelationshipGraph.{kinds, by_kind}`.
 
 `BTreeMap` ordering is a pure function of the keys' `Ord` impls — no insertion-order dependence. `IndexMap` would force sub-passes to produce specific insertion sequences; `BTreeMap` absorbs the ordering at the container level. Ordered `Vec` fields (e.g. `ResolvedBinding.sources`, `ResolvedUnionset.branches`) preserve author-declared order, deterministic per the Model's parse order (`11 §11.3`).

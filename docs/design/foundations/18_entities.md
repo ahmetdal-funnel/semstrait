@@ -1,5 +1,5 @@
 ---
-prereqs: [00, 10, 11, 13, 14, 14b]
+prereqs: [00, 10, 11, 13, 14, 19]
 authoritative-for:
   - the shared Semantics pools (`dimensions:`, `measures:`, `metrics:`) at the root level and their per-DataKind reference / override grammar
   - the `Relationship` struct and its companion `RelationshipId` newtype — unified shape used at both root `relationships:` and `JoinsetBody.relationships`
@@ -187,7 +187,7 @@ Companion identity newtype — stable `u32` handle used by SemanticManifest indi
 pub struct RelationshipId(pub u32);
 ```
 
-`RelationshipId` is allocated at `compile` in declaration order over the root-level `relationships:` list. It is the key type for the `SemanticManifest.relationship_index`, for `RelationshipGraph` traversal in `14b`, and for `RelationshipPath` in `16 §6`. `PartialOrd` / `Ord` are derived so downstream code (`14b`'s BFS neighbor iteration, `SemanticManifest` indices keyed by `(DataKindId, RelationshipId)`) can rely on natural `u32` ordering without unwrapping the newtype. Its one-copy-only home is this doc; `14b`, `16`, and `33` all reference it from here.
+`RelationshipId` is allocated at `compile` in declaration order over the root-level `relationships:` list. It is the key type for the `SemanticManifest.relationship_index`, for `RelationshipGraph` traversal in `19 §3.4.2`, and for `RelationshipPath` in `16 §6`. `PartialOrd` / `Ord` are derived so downstream code (`19 §3.4.3`'s BFS neighbor iteration, `SemanticManifest` indices keyed by `(DataKindId, RelationshipId)`) can rely on natural `u32` ordering without unwrapping the newtype. Its one-copy-only home is this doc; `19`, `16`, and `33` all reference it from here.
 
 **Authored vs derived.** `JoinType` is **not** an authoring-layer field. It is derived at compile from `optional` per `§2.9` and carried on the manifest-layer `ResolvedRelationship` (`33 §8.1`). This is a deliberate semantic-first stance: the relationship's shape is the contract; the SQL-level join kind is a consequence.
 
@@ -719,6 +719,8 @@ pub enum AggregationType {
 
 ### 5.2 `AdditivityType` roster
 
+**Two-source SoC.** This is the **model-level** Additivity declaration carried per-Measure / per-Metric. The function-level Additivity (carried on the canonical aggregate function itself) lives on `FunctionSpec.additivity` per `[14a §3.6](14a_function_catalog.md)`. The composition rule that turns the two sources into an **effective** additivity consumed by the planner is owned by `[19 §6.5](19_expression_flow.md)`. Variants map 1:1 to the unified shape in `14a §3.6` (`Full → Additive`, `Semi(SemiAdditivity) → SemiAdditive { axes }`, `Non → NonAdditive`); the rename to the canonical names is flagged under `[implementation/41_deprecations.md](../implementation/41_deprecations.md)` for landing during the planner-doc rebase. The model-level form retains the per-Semantics-name `axes` precision (a Measure can declare semi-additivity against a specific Dimension like `snapshotted_at`) plus the `strategy` field below — both are extensions beyond the function-level form.
+
 ```rust
 #[non_exhaustive]
 pub enum AdditivityType {
@@ -1194,7 +1196,7 @@ SR-E-* numbering is append-only; adding a rule is MINOR per `30 §2`.
 - `11` — name / scope rules for Semantics.
 - `13` — `DataType`, `Grain`, `DimensionType` vocabulary this doc embeds.
 - `14` — `SemanticExpr` / `PhysicalExpr` grammar for every `expr:` field here.
-- `14b` — compile-time resolution of `SemanticExpr` at `Ref` sites + override merging.
+- `19 §3` — compile-time resolution of `SemanticExpr` at `Ref` sites + override merging.
 - `15` — `Binding` process that consumes `semantic_mapping` + the entities ratified here.
 - `16` — `Relationship` graph consumption; `Joinset` path synthesis.
 - `17` — planner-level `TemporalShape` semantics and rollup matrices.

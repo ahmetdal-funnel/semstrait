@@ -1,37 +1,26 @@
 ---
-
 prereqs: [00, 10, 11, 12, 13, 14, 14a, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 30, 31, 31b]
 authoritative-for:
-
-- the root YAML shape for a `semstrait` model — `semantic_model:` wrapper, per-variant plural arrays, shared Semantics pools, `relationships:`
-- the in-memory `SemanticModel` root type — per-variant typed maps, shared pools as `BTreeMap`, `relationships` as `Vec`
-- the DataKind type hierarchy — `DataKindBase<E>` common-fields struct generic over the per-axis extras flavor, per-variant `*Body` structs, `Public*` / `Nested*` concrete types, sealed `DataKind` trait hierarchy on structural + behavioral axes, and view enums for heterogeneous iteration
-- the per-axis extras shapes — `LeafExtras` (full set) and `ComplexExtras` (`temporal:` only)
-- structural rules (SR-*) that govern a valid root-level document
-- the `parse` and `validate` free-function signatures, the `ParseErrorKind` and `ValidateErrorKind` rosters (per `30 §5`), and their `Diagnose` impls
-- the `semstrait-model::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` wrappers, `DumpMode`, and the load / dump error rosters (composes `31b` transport)
-- deterministic-ordering guarantees at the root level (I4)
-- crate boundaries for `semstrait-model`
+  - the root YAML shape for a `semstrait` model — `semantic_model:` wrapper, per-variant plural arrays, shared Semantics pools, `relationships:`
+  - the in-memory `SemanticModel` root type — per-variant typed maps, shared pools as `BTreeMap`, `relationships` as `Vec`
+  - the DataKind type hierarchy — `DataKindBase<E>` common-fields struct generic over the per-axis extras flavor, per-variant `*Body` structs, `Public*` / `Nested*` concrete types, sealed `DataKind` trait hierarchy on structural + behavioral axes, and view enums for heterogeneous iteration
+  - the per-axis extras shapes — `LeafExtras` (full set) and `ComplexExtras` (`temporal:` only)
+  - structural rules (SR-*) that govern a valid root-level document
+  - the `parse` and `validate` free-function signatures, the `ParseErrorKind` and `ValidateErrorKind` rosters (per `30 §5`), and their `Diagnose` impls
+  - the `semstrait-model::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` wrappers, `DumpMode`, and the load / dump error rosters (composes `31b` transport)
+  - deterministic-ordering guarantees at the root level (I4)
+  - crate boundaries for `semstrait-model`
 refined-by:
-- 32b (`apis/32b_catalogs_yaml.md` — catalog YAML grammar and reference syntax)
-- 33 (`apis/33_semstrait_manifest.md` — how the `SemanticModel` tree lowers to a `SemanticManifest`)
-
+  - 32b (`apis/32b_catalogs_yaml.md` — catalog YAML grammar and reference syntax)
+  - 33 (`apis/33_semstrait_manifest.md` — how the `SemanticModel` tree lowers to a `SemanticManifest`)
 # Upstream cross-references (see `prereqs:` above and §11 "Pointers to Child Docs"
-
 # for full context): 18 (entity struct shapes), 15 (SemanticMapping compile
-
 # semantics), 16 (composition), 17 (temporal-shape planner semantics), 21-24
-
 # (per-DataKind YAML), 26 (nesting matrix), 31b (I/O transport). Per 00 §8
-
 # directionality rule, those are prerequisites rather than downstream refinements;
-
 # they are deliberately omitted from `refined-by:` to keep the field semantically
-
 # pure. Section 11 of this doc is the authoritative human-facing navigation aid
-
 # for the full cross-reference web.
-
 ---
 
 # 32. `semstrait-model` — Root YAML Contract

@@ -217,7 +217,7 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 **Refs.**
 - `10 §5` — per-stage error-emission policy.
 - `33 §10.4` — current fail-fast rationale.
-- `14b §5` — cycle-detection-first pre-pass (a related pragmatic exception).
+- `19 §3.5` — cycle-detection-first pre-pass (a related pragmatic exception).
 
 **Arguments pro narrow exception.**
 - Catalog errors don't cascade into downstream-expression pseudo-errors (they're pre-expression-resolution). Accumulating them gives the author a complete picture of every missing source in one compile.

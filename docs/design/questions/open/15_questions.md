@@ -6,7 +6,7 @@ depends-on:
   - foundations/15_mapping_and_binding.md
   - foundations/13_types_and_grain.md
   - foundations/14_expressions.md
-  - foundations/14b_expression_resolution.md
+  - foundations/19_expression_flow.md
   - apis/30_api_contracts.md
   - apis/33_semstrait_manifest.md
   - apis/37_semstrait_catalog.md
@@ -22,20 +22,20 @@ depends-on:
 
 ## Q-MAP-001 — `BindingId` uniqueness: per-SemanticManifest or cross-SemanticManifest?
 
-> **Cross-link (2026-04-28).** This entry is the **authoritative home** for the `BindingId` scope-and-stability decision (per `15`'s `authoritative-for: BindingId` claim). The 14b consumer-side restatement [`OQ-7`](14b_questions.md) tracks the same surface; both retire together when this entry resolves.
+> **Cross-link (2026-04-28).** This entry is the **authoritative home** for the `BindingId` scope-and-stability decision (per `15`'s `authoritative-for: BindingId` claim). The former `14b` consumer-side restatement (`OQ-7`) is settled by `[19 §3.2.1](../../foundations/19_expression_flow.md)`'s `BindingId` keying; this entry remains the open ratification of the scope question.
 
 **Question.** `15 §2.2` ratifies `BindingId(pub u32)` as unique **within a SemanticManifest** (per-compile counter; identical Models produce identical IDs IF the compile driver's iteration order is deterministic; recompile of a modified Model shifts IDs). Should `BindingId` instead carry a cross-SemanticManifest identity — e.g. by including the SemanticManifest's content hash into the ID? That would let two SemanticManifests be compared on a per-Binding basis without ambiguity.
 
 **Refs.**
 
 - `15 §2.2` — per-SemanticManifest scope.
-- `14b §2` — `ResolvedExprKey { semantics_name, binding_id }`; assumes `binding_id` is valid within the SemanticManifest it came from.
+- `19 §3.2` — `ResolvedExprKey { semantics_name, binding_id }`; assumes `binding_id` is valid within the SemanticManifest it came from.
 - `00 §4.1` (`BindingId` row) — not explicitly defined; inherits from `15`.
 - `33` (pending) — SemanticManifest persistence and cross-SemanticManifest comparability.
 
 **Arguments for per-SemanticManifest (current Round-1 default).**
 
-- `u32` shape is simple, small, cheap. Matches `14b`'s keying shape.
+- `u32` shape is simple, small, cheap. Matches `19 §3.2.1`'s `BindingId` keying shape.
 - Two SemanticManifests are distinct artifacts; the DataKind identity (`DataKindId` per `11`) already provides cross-SemanticManifest comparability for what matters — "is this the same kind?". `BindingId` per-SemanticManifest is the Resolved-layer analogue of "the N-th Binding I built this time."
 - Re-`compile` of a modified Model SHOULD be expected to produce a different SemanticManifest; ID drift is not a leak.
 
@@ -44,7 +44,7 @@ depends-on:
 - Enables differential tooling: "diff SemanticManifest A vs B, show which Bindings changed." Per-SemanticManifest IDs make this hard (IDs shift for unrelated reasons).
 - Content-hash-derived IDs auto-invalidate consumers holding stale IDs.
 
-**Current position in `15`.** Per-SemanticManifest. A future `33` ratification can override by redefining `BindingId` to include a SemanticManifest hash; `14b` would follow.
+**Current position in `15`.** Per-SemanticManifest. A future `33` ratification can override by redefining `BindingId` to include a SemanticManifest hash; `19 §3.2` would follow.
 
 **Next step.** Revisit at `33` drafting time. If `33` ratifies a cross-SemanticManifest diff operator, the ID shape may tighten.
 
@@ -78,11 +78,11 @@ depends-on:
 
 ## Q-MAP-006 — `ResolvedColumnMapping.computed` storage: duplicate or alias?
 
-**Question.** `14b §4`'s `ResolvedExprTable` is a global `(SemanticsName, BindingId) → PhysicalExpr` map. `15 §7.5`'s per-Binding `computed: HashMap<SemanticsName, PhysicalExpr>` serves the same data for per-Binding lookup. Does the SemanticManifest store the `PhysicalExpr` twice (duplicated), or do the per-Binding values alias into the global table?
+**Question.** `19 §3.4`'s `ResolvedExprTable` is a global `(SemanticsName, BindingId) → PhysicalExpr` map. `15 §7.5`'s per-Binding `computed: HashMap<SemanticsName, PhysicalExpr>` serves the same data for per-Binding lookup. Does the SemanticManifest store the `PhysicalExpr` twice (duplicated), or do the per-Binding values alias into the global table?
 
 **Refs.**
 
-- `14b §4` — global `ResolvedExprTable`.
+- `19 §3.4` — global `ResolvedExprTable`.
 - `15 §7.5` — per-Binding denormalization.
 - `33` (pending) — SemanticManifest storage strategy.
 

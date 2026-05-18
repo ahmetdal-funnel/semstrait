@@ -1,55 +1,86 @@
 ---
-prereqs: [00, 10, 11, 12, 13, 14, 14a, 14b, 15, 17, 18]
+prereqs: [00, 10, 11, 12, 13, 14, 14a, 15, 17, 18]
 authoritative-for:
-  - the two-phase expression pipeline (Phase A resolution → Phase B placement) and the SoC between `SemanticExpr`, `PhysicalExpr`, and `PlanNode`
-  - the type-architectural form of `SemanticExpr` and `PhysicalExpr` (two distinct enums linked by a shared `Expr` trait; supersedes `14 §2`'s newtype-wrapper shape)
-  - the public `SemanticExpr::resolve` entry point and the internal substep order (eliminate sugar → fold + partial eval → translate)
-  - the sugar contract — Family A (constant folding / partial evaluation / case-when fold-to-scan) and Family B (entity-derived expressions via `Access` with per-entity-typed `Accessor`)
-  - the per-entity `Accessor` enums (`MeasureAccessor`, `DimensionAccessor`, `MetricAccessor`)
-  - the `Parameter` placeholder mechanism (compile-emitted, plan-bound)
+  - the two-phase expression pipeline (Phase A — compile-time resolution; Phase B — plan-time placement) and the SoC between `SemanticExpr`, `PhysicalExpr`, and `PlanNode`
+  - the public `SemanticExpr::resolve` entry point and its internal substep order (auto-mapping synthesis → eliminate sugar accessors → substitute typed leaves → fold + partial-eval → translate → reconcile)
+  - the `ResolvedExprTable` data structure — keying, entry shape, ordering, serialization posture
+  - the compile-time per-leaf-kind substitution algorithm over the typed-leaf `SemanticLeaf` set from `14 §3.5`
+  - cross-DataKind path resolution — BFS over the `Relationship` graph, shortest-path semantics, ambiguity detection, `PathSignature` construction
+  - reference-graph cycle detection (Tarjan SCC over the transitive typed-semantic-leaf closure)
+  - bottom-up type inference driving `inferred_type` annotation on every resolved node
+  - Semantics-boundary reconciliation (declared-`data_type` vs. inferred-type `Cast` emission)
+  - per-Binding table keying (`Dataset` 1:1; `Unionset` / `Grainset` / `Joinset` one-per-constituent-binding)
+  - the ordering of resolution sub-passes inside `compile`
+  - referenced-column harvesting algorithm
+  - the auto-mapping synthesis pre-step and the `Column`-under-manual-mapping rejection rule
+  - the sugar contract — Family A (constant folding / partial evaluation) and Family B (per-kind typed-leaf accessor sugar)
   - per-site `expr:` shape gates (scalar / Boolean / aggregate admission)
   - Phase B placement rules — filter, `group_by` handoff, computed-Dimension placement, Metric lowering, function-tag axis (`Additivity`), advisory channel
   - request-layer dimension-variation carrier (`RequestDimensionRef { name, variation }`) and `DimensionVariation` enum
   - unified `Additivity` enum and its two-source SoC (function-level in `14a §3.1` vs model-level in `18 §5.2`)
   - typed `Diagnostics<PlanErrorKind>` advisory channel and the unified `PLAN_W_2101 LossyReaggregation` cross-DataKind code
+  - the compile-stage `CompileErrorKind` surface for expression resolution (`EXPR_E_02xx` sub-range)
 refined-by:
   - 22 / 23 / 24 (cross-grain advisories; per-DataKind cross-references)
   - 30 (typed-diagnostics framing; project-wide encoding convention)
+  - 33 (manifest — on-disk serialization shape of `ResolvedExprTable`)
   - 34 (`Strategy` consumes `PhysicalExpr`; performs `Aggregate` lift, `Parameter` binding, and `PLAN_W_*` emission)
   - 36 (adapter `FILTER (WHERE)` ↔ `CASE WHEN` rewrite, engine-specific function mapping)
   - 38 (orchestration API context; no CLI syntax ownership)
+  - 15 (binding — `SemanticMapping` `Expr`-variant values are resolved through this algorithm before they land in a `ResolvedExprEntry`)
+  - 16 (composition — `PathSignature` is the input to plan-time join-subgraph materialization)
+  - 20–25 (per-DataKind plan-time consumption of `ResolvedExprTable` lookups)
   - registry/functions_mapping.md (per-engine canonical-function mapping)
 ---
 
-# 19. Expression Flow
+# 19. Expression Flow — Compile Pipeline
 
-> **Code samples in this document are illustrative.** Exact field names, method signatures, and the choice of enum-vs-struct shape may be refined during implementation. The spec asserts the architectural design (two type-system-distinct forms, conversion direction, substep ordering, placement contracts), not the precise Rust spelling.
+> **Status:** ratified (merged compile-pipeline document; 2026-05-18 per `STATUS.md` item N). Vocabulary throughout is the typed-leaf model ratified in `[14](14_expressions.md)`'s second refinement.
+>
+> **Code samples are illustrative.** Exact field names, method signatures, and enum-vs-struct shape may be refined during implementation. The spec asserts the architectural design (two-phase boundary, conversion direction, substep ordering, placement contracts), not the precise Rust spelling.
+
+---
 
 ## 1. Purpose and Scope
 
-`19` ratifies the **flow** of expressions through `semstrait` — from authored YAML through compile-time resolution, through plan-time placement, to the canonical engine-portable form an adapter consumes. `14` ratifies the bare expression model (AST, wrappers, YAML authoring surface); `14a` ratifies function identity; `14b` ratifies the resolution algorithm. `19` layers on top:
+`19` ratifies the **end-to-end compile pipeline for expressions** in semstrait — from authored `SemanticExpr` through compile-time resolution into canonical `PhysicalExpr`, into the planner's `Strategy` for placement into a `PlanNode` tree, up to the canonical engine-portable form an adapter consumes. `14` ratifies the bare type architecture (`Expr<L>`, leaf sets, type aliases, sugar accessors); `14a` ratifies function identity; this chapter layers the pipeline mechanics on top.
 
-Ratified surfaces are listed in this file's `authoritative-for` front matter. This chapter specifies their interaction boundaries (`resolve` substeps, shape gates, and Phase-B placement) without redefining upstream owner docs.
+**What `19` ratifies:**
+
+- The **two-phase pipeline** (`14 §2.2`'s pipeline diagram refined): Phase A is compile-time, `Request`-free, synchronous and produces `PhysicalExpr` modulo `Parameter` placeholders; Phase B is plan-time, `Request`-bound, synchronous (per `00 §5` hot-path rule) and produces a `PlanNode` tree (§2).
+- The **Phase A algorithm** (§3) — `resolve` entry point and substep order (§3.1); `ResolvedExprTable` data shape (§3.2); per-leaf-kind substitution rules (§3.3); cross-DataKind path resolution (§3.4); cycle detection (§3.5); type inference (§3.6); Semantics-boundary reconciliation (§3.7); per-Binding keying (§3.8); ordering of sub-passes inside `compile` (§3.9); referenced-column harvesting (§3.10); auto-mapping synthesis pre-step (§3.11).
+- The **sugar contract** (§4) — Family A (constant folding / partial evaluation, no AST variant); Family B (per-kind typed-leaf accessor sugar, eliminated by lowering to `Window`-rooted subtrees).
+- **Per-site shape gates** (§5) governing which authoring sites admit which expression shapes.
+- The **Phase B placement contract** (§6) — filter placement (§6.1); `group_by` handoff (§6.2); computed-Dimension placement (§6.3); Metric semantics (§6.4); function-tag axis `Additivity` (§6.5); advisory channel (§6.6).
+- The **aggregation handling** at the Phase A/B boundary (§7) — `Aggregate` admission, `Avg` posture, structural-vs-aggregate-site separation.
+- The **error model** (§8) — `CompileErrorKind` variants and the `EXPR_E_02xx` sub-range.
 
 **What `19` does NOT ratify** (forward-refs):
 
-- The bare `Expr` AST variant taxonomy, YAML grammar, identifier resolution per parse site — `14`.
-- Canonical function identity, `FunctionRegistry`, `FnSignature` polymorphism — `14a`.
-- `ResolvedExprTable`, cross-DataKind path resolution, cycle detection algorithm — `14b`.
-- `Binding` / `SemanticMapping` construction — `15`.
-- Cross-DataKind advisory specialisation roots (e.g. Unionset's `MissingMetadataDisjointnessProof`) — owning chapter (`23`).
-- The `Strategy` algorithm bodies that consume `PhysicalExpr` — `34`.
-- Engine-specific function and operator rewrites — `36`, `registry/functions_mapping.md`.
+- The bare `Expr<L>` AST, `SemanticLeaf` / `PhysicalLeaf` shapes, `ExprSource` YAML grammar — `[14](14_expressions.md)`.
+- Canonical function identity, `FunctionRegistry`, `FnSignature` polymorphism — `[14a](14a_function_catalog.md)`.
+- `SemanticMapping` shape and the binding algorithm — `[15](15_mapping_and_binding.md)` + `[18 §10](18_entities.md)`.
+- The `Relationship` shape itself (this chapter consumes it for path resolution) — `[18 §2](18_entities.md)`.
+- Cross-DataKind advisory specialisation roots (e.g. Unionset's `MissingMetadataDisjointnessProof`) — owning chapter (`[23](../data-kinds/23_unionset.md)`).
+- The `Strategy` algorithm bodies that consume `PhysicalExpr` for actual plan construction — `[34](../apis/34_semstrait_planner.md)`.
+- Engine-specific function and operator rewrites — `[36](../apis/36_semstrait_adapter.md)`, `registry/functions_mapping.md`.
+- The on-disk serialization format of the `SemanticManifest` — `[33](../apis/33_semstrait_manifest.md)`.
 
-**Key invariants from earlier docs that `19` upholds:**
+**Key invariants from `00 §9` that `19` directly upholds:**
 
-- **I1 / I2 / I3** (`00 §9`) — canonical layers carry no raw SQL, physical types, or engine branching; `PhysicalExpr` is engine-neutral.
-- **I5** (`00 §9`) — name resolution at compile time only; `Parameter` placeholders carry typed-key identity, never engine literals.
-- **I12** (`00 §9`) — typed diagnostics by stage; numeric codes serve as spec-cross-reference indices, never as canonical runtime data.
+- **I1 / I2 / I3** — canonical layers carry no raw SQL, physical types, or engine branching; `PhysicalExpr` is engine-neutral; `FunctionCall` references `CanonicalFn` identities.
+- **I4** — deterministic `SemanticManifest`. `ResolvedExprTable` uses an ordered map keyed by `(SemanticsName, BindingId)`; substitution is pure; path ambiguity resolves by hard error rather than tie-break (§3.4.3).
+- **I5** — name resolution at compile time only. Every typed semantic leaf is substituted away at compile time; `PhysicalExpr` values stored in `ResolvedExprTable` carry no `Field` / `Dimension` / `Measure` / `Metric` / `Key` by `14 §3.7`'s structural invariant; plan-time lookups are O(log n) map accesses.
+- **I6** — sync hot path. Phase A resolution is a pure, sync transformation over already-loaded inputs; `plan → optimize → adapt` is synchronous and free of hidden I/O.
+- **I8** — planner-complete `SemanticManifest`. After `compile` seals, every `(name, binding_id)` combination the planner might demand is already in the `ResolvedExprTable`.
+- **I10** — non-exhaustive public sum types.
+- **I12** — first-class typed diagnostics by stage; numeric codes serve as spec-cross-reference indices, never as canonical runtime data.
+
+---
 
 ## 2. Two-Phase Pipeline
 
-Slices the canonical pipeline (`00 §5`) into the two expression-relevant phases. Phase A spans `parse → validate → compile`; Phase B spans `plan → optimize → adapt`. The `SemanticManifest` carries `PhysicalExpr` (modulo `Parameter`) across the phase boundary.
+Slices the canonical pipeline (`[00 §5](../00_overview.md)`) into the two expression-relevant phases. Phase A spans `parse → validate → compile`; Phase B spans `plan → optimize → adapt`. The `SemanticManifest` carries `PhysicalExpr` (modulo `Parameter`) across the phase boundary.
 
 ```mermaid
 flowchart LR
@@ -71,246 +102,524 @@ flowchart LR
     A --> EA[EngineArtifact]
 ```
 
-Phase A is **compile-time, synchronous, Request-free**: `SemanticExpr::resolve` runs inside `compile`, consumes authored `SemanticExpr`, and emits `PhysicalExpr` carrying `Parameter(...)` leaves wherever a value must defer to the `Request`. The resulting `PhysicalExpr` is persisted in the `SemanticManifest`. Phase B is **plan-time, Request-bound**: `Strategy` (`34 §<Strategy>`) runs inside `plan`, binds `Parameter` leaves against the `Request`, lifts `Aggregate` nodes into `PlanNode::Aggregate`, and places the residual `PhysicalExpr` into the plan tree. The `plan → optimize → adapt` hot path is synchronous and free of hidden I/O per `00 §5`.
+Phase A is **compile-time, synchronous, `Request`-free**: `SemanticExpr::resolve` runs inside `compile`, consumes authored `SemanticExpr`, and emits `PhysicalExpr` carrying `Parameter(...)` leaves wherever a value must defer to the `Request`. The resulting `PhysicalExpr` is persisted in the `SemanticManifest`'s `ResolvedExprTable` per-`(Semantics, Binding)` pair.
 
-### 2.1 Phase A — Resolution
+Phase B is **plan-time, `Request`-bound**: `Strategy` (`[34](../apis/34_semstrait_planner.md)`) runs inside `plan`, binds `Parameter` leaves against the `Request`, lifts `Aggregate` nodes into `PlanNode::Aggregate`, and places the residual `PhysicalExpr` into the plan tree.
 
-A single public entry point converts `SemanticExpr` to `PhysicalExpr`:
+The `plan → optimize → adapt` hot path is synchronous and free of hidden I/O per `[00 §5](../00_overview.md)`.
 
-```rust
-pub fn resolve(self, ctx: &LoweringCtx) -> Result<PhysicalExpr, CompileError>;
-```
+### 2.1 Phase boundary contract
 
-Phase A is **compile-time**, **synchronous**, **Request-free**, and **per-`Binding`** — every `(Semantics, Binding)` pair resolves once. The output `PhysicalExpr` is fully resolved **modulo `Parameter` placeholders** (§3.4); the original `14b §1` "fully resolved" wording softens accordingly.
-
-### 2.2 Internal substep order
-
-`resolve` is one public method; its three substeps are internal:
-
-1. **Eliminate `Access` nodes** (Family B sugar). Expand entity-derived expressions (e.g. `measure.previous`) into canonical `Window` shapes parameterised by `Parameter::RequestDimensionsMinusTemporal` / `RequestTemporalAxis`. Runs to **fixpoint** so sugar-on-sugar shapes (e.g. `Delta` lowering to `op - op.Previous`) collapse fully before the next substep.
-2. **Fold + partial-eval** (Family A sugar). Substitute metadata `EntityRef` to its `Binding`-resolved `Literal`; collapse foldable subtrees per the §5.1 fold language. Operates on `SemanticExpr` so collapsed branches never reach `PhysicalExpr` construction.
-3. **Translate** surviving operands to `PhysicalExpr`. `EntityRef` becomes `Column` or a `Literal` (the latter only when Phase A already substituted it). Structural variants (`BinaryOp`, `Case`, etc.) and `Aggregate` walk with operand recursion.
-
-The order is load-bearing: metadata-driven branch elimination (Family A) collapses per-Binding subtrees *before* any `PhysicalExpr` is constructed, so the resulting per-Binding plans diverge as expected (§5.3 worked example).
-
-### 2.3 Phase B — Placement
-
-The planner's `Strategy` consumes `PhysicalExpr` and produces a `PlanNode` tree (`34 §<Strategy>`). Phase B does two things `19` does not:
-
-- **`Aggregate` lift.** `Aggregate` nodes in `PhysicalExpr` are extracted into `PlanNode::Aggregate` slots; the residual `PhysicalExpr` substitutes column refs to the lifted slots (§6).
-- **`Parameter` binding.** Compile-emitted `Parameter` leaves are substituted with concrete values from the `Request` (§3.4).
-
-A `Parameter` reaching the adapter is a hard error per `34 §<Strategy>` postcondition.
-
-## 3. Type Architecture
-
-`SemanticExpr` and `PhysicalExpr` are two **distinct enums** linked by a shared `Expr` trait. Type-level separation prevents pattern-matching a `Column` against a Semantic context or an `EntityRef` against a Physical context at construction.
-
-> **Scoped extension.** This supersedes `14 §2`'s newtype-wrapper shape (`pub struct SemanticExpr(Expr)`) for the canonical form. `14`'s authoring-site semantics (which `expr:` lives in which wrapper) remain unchanged; only the underlying type-architectural form is refined here.
-
-### 3.1 Trait surface
+A single public Phase A entry point converts `SemanticExpr` to `PhysicalExpr`:
 
 ```rust
-pub trait Expr: Sized {
-    fn children(&self) -> Box<dyn Iterator<Item = &Self> + '_>;
-    fn with_new_children(self, new_children: Vec<Self>) -> Result<Self, ValidateError>;
-    fn inferred_type(&self) -> Option<&DataType>;
-
-    fn apply<V: Visitor<Self>>(&self, v: &mut V) -> V::Output { /* default */ }
-    fn transform<F>(self, f: F) -> Result<Self, CompileError>
-    where F: FnMut(Self) -> Result<Self, CompileError> { /* default */ }
-}
-
-pub trait Foldable: Expr {
-    fn fold(self, ctx: &FoldCtx) -> Result<Self, CompileError>;
-}
-
-pub trait Sugarful: Expr {
-    fn eliminate_sugar(self, ctx: &LoweringCtx) -> Result<Self, CompileError>;
-}
-
-pub trait LowersTo<T> {
-    fn resolve(self, ctx: &LoweringCtx) -> Result<T, CompileError>;
-}
-
-impl Expr      for SemanticExpr { /* */ }
-impl Expr      for PhysicalExpr { /* */ }
-
-impl Foldable  for SemanticExpr { /* substep 2 — load-bearing for Family A */ }
-impl Foldable  for PhysicalExpr { /* v1 no-op default */ }
-
-impl Sugarful  for SemanticExpr { /* eliminate Access */ }
-// no impl for PhysicalExpr — by design
-
-impl LowersTo<PhysicalExpr> for SemanticExpr { /* §2.2 substep orchestration */ }
-```
-
-### 3.2 Enum shape
-
-```rust
-pub enum SemanticExpr {
-    BinaryOp { op: BinaryOp, left: Box<Self>, right: Box<Self> },
-    UnaryOp  { op: UnaryOp,  operand: Box<Self> },
-    FunctionCall { name: CanonicalFn, args: Vec<Self> },
-    Cast    { input: Box<Self>, target: DataType, on_failure: CastFailure },
-    Case    { whens: Vec<(Self, Self)>, else_: Option<Box<Self>> },
-    InList  { value: Box<Self>, list: Vec<Self> },
-    Between { value: Box<Self>, low: Box<Self>, high: Box<Self> },
-    Like    { value: Box<Self>, pattern: Box<Self>, kind: LikeKind },
-    IsNull(Box<Self>),
-
-    Literal(Literal),
-    EntityRef(EntityRef),
-    Aggregate { op: AggregationOp, args: Vec<Box<Self>>, distinct: bool, filter: Option<Box<Self>> },
-    Access { entity: EntityRef, accessor: Accessor },
-}
-
-pub enum PhysicalExpr {
-    BinaryOp { op: BinaryOp, left: Box<Self>, right: Box<Self> },
-    UnaryOp  { op: UnaryOp,  operand: Box<Self> },
-    FunctionCall { name: CanonicalFn, args: Vec<Self> },
-    Cast    { input: Box<Self>, target: DataType, on_failure: CastFailure },
-    Case    { whens: Vec<(Self, Self)>, else_: Option<Box<Self>> },
-    InList  { value: Box<Self>, list: Vec<Self> },
-    Between { value: Box<Self>, low: Box<Self>, high: Box<Self> },
-    Like    { value: Box<Self>, pattern: Box<Self>, kind: LikeKind },
-    IsNull(Box<Self>),
-
-    Literal(Literal),
-    Column(ColumnRef),
-    Aggregate { op: AggregationOp, args: Vec<Box<Self>>, distinct: bool, filter: Option<Box<Self>> },
-    Window(Window),
-    Parameter(Parameter),
+impl SemanticExpr {
+    /// Compile-time lowering. Synchronous, pure, Request-free.
+    /// Runs once per `(Semantics, Binding)` pair during `compile`.
+    pub fn resolve(self, ctx: &LoweringCtx<'_>) -> Result<ResolvedExprEntry, CompileErrorKind>;
 }
 ```
 
-**Forbidden in `PhysicalExpr` by construction:**
+The output `PhysicalExpr` is fully resolved **modulo `Parameter` placeholders** (`14 §5`); Phase B substitutes those against the `Request`. Detailed substep mechanics live in §3.
 
-- `EntityRef` — every entity reference must be substituted at Phase A.
-- `Access` — every `Access` node must be eliminated at Phase A.
+Phase B does two things Phase A does not:
 
-Structural variants (`BinaryOp`, `Case`, `FunctionCall`, etc.) are independently maintained per enum; adding a variant to one does not affect the other.
+- **`Aggregate` lift.** `Aggregate` nodes in `PhysicalExpr` are extracted into `PlanNode::Aggregate` slots; the residual `PhysicalExpr` substitutes column refs to the lifted slots (§7).
+- **`Parameter` binding.** Compile-emitted `Parameter` leaves are substituted with concrete values from the `Request` per `[14 §5.3](14_expressions.md)`. A `Parameter` reaching the adapter is a hard error per `[34 §<Strategy>](../apis/34_semstrait_planner.md)` postcondition.
 
-### 3.3 `Accessor` — per-entity-typed
+---
+
+## 3. Phase A — Compile-Time Resolution
+
+Phase A is the compile-time, synchronous, `Request`-free pass that turns every author-declared `SemanticExpr` into a fully substituted, type-annotated `PhysicalExpr` stored in the `SemanticManifest`'s `ResolvedExprTable`. It finalizes every forward reference from `[14](14_expressions.md)` that points at "compile-time resolution", "the `ResolvedExprTable`", "substitution algorithm", "cross-DataKind path resolution", "cycle detection", or "semantics-boundary reconciliation" (cf. `14 §3.7`, `§4.2`, `§5.3`, `§7.5`, `§8`).
+
+Per `[00 §5](../00_overview.md)`, this work lives inside `compile`. Per `[00 §9](../00_overview.md)`'s **I5** and **I6** invariants, the entire substitution and lookup work completes **before** any plan is built, so that `plan` (and every stage downstream) can consume a single `ResolvedExprTable::lookup(name, binding_id)` in O(log n) per reference. Phase A is the algorithm that says exactly **what that lookup returns** and **how the compile stage populated it**.
+
+The Phase A pass is built on the layered expression model ratified in `[14 §3](14_expressions.md)`:
+
+- The structural skeleton (`Expr<L>` per `14 §3.3`) is shared between `SemanticExpr = Expr<SemanticLeaf>` and `PhysicalExpr = Expr<PhysicalLeaf>`.
+- The semantic leaf set carries **per-kind typed leaves** (`Literal`, `Column`, `Field`, `Dimension`, `Measure`, `Metric`, `Key`) per `14 §3.5`, with per-kind accessor enums (`DimensionAccessor`, `MeasureAccessor`, `MetricAccessor`, `KeyAccessor`) sitting as `Option<…>` fields on the typed leaves per `14 §4.1`.
+- The physical leaf set carries `Column`, `Literal`, and the compile-emitted `Parameter` placeholder per `14 §3.4`.
+
+The transformation is therefore a leaf-rewrite, not a structural rewrite: every structural variant of `Expr<L>` (`BinaryOp`, `Case`, `FunctionCall`, `Aggregate`, `Window`, …) passes through with its children recursively transformed, while each `SemanticLeaf` variant carries its own per-kind rule (§3.3). Sugar accessors carried on typed leaves lower to canonical `Window`-rooted subtrees per `14 §4.2`. The output `PhysicalExpr` is fully resolved modulo `Parameter` placeholders that Phase B binds against the `Request`.
+
+### 3.1 Top-level contract: the `resolve` entry point and substep order
+
+Phase A is one public entry point with internal substeps:
 
 ```rust
-pub enum Accessor {
-    Measure(MeasureAccessor),
-    Dimension(DimensionAccessor),
-    Metric(MetricAccessor),
-    Key(KeyAccessor),
-}
-
-pub enum MeasureAccessor {
-    Previous, Next, Lag(u32), Lead(u32), Delta, PercentChange,
-}
-
-pub enum DimensionAccessor {
-    First, Last, Lag(u32), Lead(u32),
-}
-
-pub enum MetricAccessor {
-    Previous, Next, Lag(u32), Lead(u32), Delta, PercentChange,
-}
-
-pub enum KeyAccessor {
-    First, Last, Lag(u32), Lead(u32),
+impl SemanticExpr {
+    /// Compile-time lowering from `SemanticExpr` to `PhysicalExpr`.
+    ///
+    /// Synchronous, pure, Request-free. Runs once per `(Semantics, Binding)` pair
+    /// during `compile`. Returns `PhysicalExpr` modulo `Parameter` placeholders
+    /// bound at Phase B (§2.1).
+    pub fn resolve(
+        self,
+        ctx: &LoweringCtx<'_>,
+    ) -> Result<ResolvedExprEntry, CompileErrorKind>;
 }
 ```
 
-Two structural pairings emerge from the v1 surface:
-
-- `MetricAccessor` mirrors `MeasureAccessor` 1:1 — a `Metric` is a per-group already-aggregated value at access time, structurally identical to a `Measure` at the output projection stage.
-- `KeyAccessor` mirrors `DimensionAccessor` 1:1 — a `Key` is a special Dimension type for sugar purposes; the windowed accessor surface is symmetric.
-
-Same variant names across paired enums; the type system disambiguates from the entity tag.
-
-Construction enforces operand × accessor tag agreement: `Access { entity: EntityRef::Measure(_), accessor: Accessor::Measure(_) }` is valid; `Access { entity: EntityRef::Measure(_), accessor: Accessor::Dimension(_) }` is rejected. Adding new variants to any `*Accessor` enum is a MINOR change per `30 §6.3`.
-
-### 3.4 `Parameter` — compile-emitted, plan-bound
+`LoweringCtx` carries the read-only inputs the substeps need plus the bookkeeping a single `resolve` call mutates:
 
 ```rust
-pub struct Parameter {
-    pub key: ParameterKey,
-    pub data_type: DataType,
-}
-
-pub enum ParameterKey {
-    RequestDimensionsMinusTemporal,
-    RequestTemporalAxis,
+pub(crate) struct LoweringCtx<'a> {
+    pub registry:           &'static FunctionRegistry,
+    pub relationship_graph: &'a RelationshipGraph,
+    pub scope_chain:        &'a ScopeChain,
+    pub all_semantics:      &'a SemanticsIndex,
+    pub all_bindings:       &'a BindingIndex,
+    pub schemas:            &'a SchemaIndex,
+    pub semantic_mapping:   &'a SemanticMapping,        // for the current binding
+    pub recursion:          &'a mut RecursionState,
 }
 ```
 
-`Parameter` carries a **typed** key (not a stringly identifier) and a **mandatory** `data_type` at compile. The closed parameter set is internal — adding members is a MINOR change per `30 §6.3` and is not author-extensible.
+All fields are read-only at the input-model sense except `recursion`, which carries the DFS visited-set used by §3.5's cycle detection. The function is **pure**: no I/O, no time dependence, no RNG; the only mutation is bookkeeping for cycle detection, scoped to a single `resolve` invocation tree.
 
-## 4. Per-Site `expr:` Shape
+The substep order is load-bearing:
 
-`14 §2` defines which sites carry `SemanticExpr` versus `PhysicalExpr`. `19` ratifies the **shape gate** — what each site requires of `resolve`'s output:
+```mermaid
+flowchart LR
+    SE["SemanticExpr"]
+    S0["0. Auto-mapping synthesis /<br/>manual-mapping Column<br/>validation (§3.11)"]
+    S1["1. Eliminate sugar accessors<br/>to fixpoint (§3.3, 14 §4.2)"]
+    S2["2. Substitute typed semantic leaves<br/>via SemanticMapping (§3.3)"]
+    S3["3. Fold + partial-eval<br/>over Binding metadata"]
+    S4["4. Semantics-boundary<br/>reconciliation (§3.7)"]
+    PE["PhysicalExpr (modulo Parameter)"]
+    SE --> S0 --> S1 --> S2 --> S3 --> S4 --> PE
+```
 
-| `expr:` site                       | Required result | Aggregate-function-call syntax in `expr:` |
-|------------------------------------|-----------------|--------------------------------------------|
-| `measures.<m>.expr`                | scalar          | no — aggregation is carried by the separate `agg:` tag (`18 §5.2`) |
-| `measures.<m>.filters[].expr`      | Boolean         | no — scalar predicate; conditional aggregation per §7.1 |
-| `metrics.<m>.expr`                 | scalar          | no — `agg:` (optional) at top-level; `expr:` is a scalar formula over already-aggregated Measure / Metric refs |
-| `metrics.<m>.filters[].expr`       | Boolean         | no (compile-split per §7.1) |
-| `dimensions.<d>.expr` (computed)   | scalar          | no |
-| `filters.<f>.expr`                 | Boolean         | yes — HAVING-style predicates may reference aggregated Measure / Metric values |
-| `keys` members                     | n/a in v1       | no per-member `expr:` authoring slot is ratified (`18 §9`) |
-| `extras.semantic_mapping.<semantic>.expr` | scalar  | no (parses to `PhysicalExpr`) |
+**Why this order.**
 
-**Structural shape.** `expr:` admits transforms (`Case`, `Cast`, scalar `FunctionCall`), `EntityRef`, and `Literal`. Author-written `Aggregate { ... }` syntax inside `expr:` is **rejected at all sites except `filters.<f>.expr`**. Aggregation is carried by the structurally separate `agg:` tag on Measures and Metrics; a Measure `agg: sum, expr: amount` resolves to `Aggregate { op: Sum, args: [Column("amount")], ... }` at Phase A, where the `Aggregate` node is *synthesised* by `agg:` and `expr:` together, not by author-written aggregate-function call syntax.
+- Sugar elimination **before** substitution — a typed leaf with `accessor: Some(_)` lowers to a `Window` whose `args` still reference the original entity; substitution must see the lowered shape, not the sugared leaf.
+- Sugar elimination **to fixpoint** — `Delta` / `PercentChange` lower into compositions containing more accessor-bearing typed leaves; iteration converges.
+- Substitution **before** fold — metadata-static branches the fold collapses (per-Binding source markers in a `Case`) only become visible after `SemanticMapping` substitutes the gating typed leaves.
+- Reconciliation **last** — the root's `inferred_type` is only stable after substitution and folding settle.
 
-**Implicit gate.** Sugar's lowered shape is the gate — no separate per-sugar allow-list is maintained. A sugar whose lowered category is `Aggregate` / `Window` is rejected at compile for sites whose required result is scalar/Boolean and not aggregate-admitting.
+Compile orchestrates `resolve` per `(Semantics, Binding)` pair during the per-binding resolution sub-pass (§3.9 step 6). Authors and adapters never call it directly.
 
-**Per-element filter slots.** `filters[].expr` is admitted on `measures.<m>` and `metrics.<m>` only. There is no `keys` member-level filter slot, and `dimensions.<d>.filter` is structurally rejected. DataKind-level filters use the `filters:` block per §7.1.
+### 3.2 The `ResolvedExprTable`
 
-## 5. Sugar — Two Families
+#### 3.2.1 Shape
 
-All sugars are `SemanticExpr`-only and desugar to `PhysicalExpr` at compile.
+```rust
+pub struct ResolvedExprTable {
+    entries: BTreeMap<ResolvedExprKey, ResolvedExprEntry>,
+}
 
-### 5.1 Family A — Constant folding / partial evaluation
+pub struct ResolvedExprKey {
+    pub semantics_name: SemanticsName,
+    pub binding_id:     BindingId,
+}
 
-Family A has **no AST variant**. Author writes plain `Case` / `BinaryOp` / `FunctionCall` / `Like`; `resolve`'s fold substep collapses subtrees whose value is fully determined by Manifest-static state (per-`Binding` metadata literals, source-tagged Dimensions). Partial folds leave a residual that translation passes through to `PhysicalExpr`.
+pub struct ResolvedExprEntry {
+    pub physical_expr:      PhysicalExpr,
+    pub inferred_type:      DataType,
+    pub referenced_columns: Vec<String>,
+    pub path_signature:     Option<PathSignature>,
+    pub provenance:         Provenance, // shape owned by 33; see §3.2.5
+}
+```
 
-**Fold language (v1).** Reduction applies to nodes whose operands fold to a foldable value (`Literal` or metadata `EntityRef` substituted in-pass):
+**Why `BTreeMap`.** Deterministic iteration order for `SemanticManifest` serialization and downstream artifacts (adapter column-projection lists); O(log n) lookup is acceptable because the plan-time hot path is dominated by expression-tree traversal, and typical manifests carry `n` in the low thousands.
+
+**`BindingId`** is a `u32` newtype assigned by `compile` in `SemanticManifest`-level DataKind/Binding iteration order. Not stable across Model edits — internal only; author-facing diagnostics quote `DataKind.name / Binding.name`. `BindingName` is not the key: it's unique only within its owning `Dataset`, not globally.
+
+**`SemanticsName`** is the canonical identity newtype from `[11 §4](11_names_and_scopes.md)` — one unified global namespace. The **kind** of a Semantics (Dimension / Measure / Metric / Key) is encoded in the variant tag of the authored `SemanticLeaf` and reconciled against the registry during substitution (§3.3).
+
+#### 3.2.2 Determinism
+
+`BTreeMap<ResolvedExprKey, _>` orders lexicographically by `(semantics_name, binding_id)`. Given frozen inputs, substitution is a pure post-order walk; BFS in §3.4 explores neighbors in deterministic `RelationshipId` order; multiple shortest paths surface as `AmbiguousRelationshipPath` (no tie-break). Identical inputs → byte-identical `ResolvedExprTable` (compile-layer evidence for `00 §9` **I4**).
+
+#### 3.2.3 Lookup contract
+
+```rust
+impl ResolvedExprTable {
+    pub fn lookup(&self, name: &SemanticsName, binding_id: BindingId) -> Option<&ResolvedExprEntry>;
+    pub fn lookup_all(&self, name: &SemanticsName) -> impl Iterator<Item = (BindingId, &ResolvedExprEntry)>;
+    pub fn iter(&self) -> impl Iterator<Item = (&ResolvedExprKey, &ResolvedExprEntry)>;
+}
+```
+
+`lookup` is O(log n); `lookup_all` ranges `BTreeMap` over a single `SemanticsName` (used by `ComplexDataKind` source selection over multiple Bindings). Sealed manifests are `Arc`-wrapped and immutable — no `insert`/`remove`/`update` on the public API.
+
+#### 3.2.4 Serialization posture
+
+Byte-level encoding is owned by `[33](../apis/33_semstrait_manifest.md)`. Shape-level contract: `entries` encodes in `BTreeMap`'s natural iteration order; each entry's `physical_expr` is stored inline (no interning pool in v1 — resolved exprs are small, decode simplicity beats encode-time compaction for write-once-read-many manifests).
+
+#### 3.2.5 `Provenance`
+
+Per-entry diagnostic-reporter carrier (which source `Location`s contributed which occurrences during Tier-1 / Tier-2 merge per `[11 §6.3](11_names_and_scopes.md)`). Never leaves the manifest, never read at plan time or adapt time. **Shape owned by `[33 §<ResolvedExprEntry>](../apis/33_semstrait_manifest.md)`** (it is a manifest-storage concern, not a Phase-A algorithm concern); `19` only requires that `compile` populates it.
+
+### 3.3 The substitution algorithm — per-leaf-kind rules
+
+#### 3.3.1 Overview
+
+For every `(SemanticsName, BindingId)` pair the Model exposes, compile calls `SemanticExpr::resolve` against the Semantics's merged `expr:` tree (the post-Tier-1-merge `SemanticExpr` per `[11 §6.3](11_names_and_scopes.md)`). The implementation is a **post-order walk** over the `Expr<SemanticLeaf>` tree:
+
+1. For each `Expr<L>::Leaf(leaf)` node, dispatch to the per-leaf-kind rule (§3.3.2). The rule returns either a `PhysicalLeaf` (wrapped in `Expr::Leaf`) or a structural subtree (e.g. an accessor-sugared typed leaf lowers to a `Window`-rooted subtree, which then recurses).
+2. For each structural variant of `Expr<L>` (`BinaryOp`, `Case`, `FunctionCall`, `Aggregate`, `Cast`, `InList`, `Between`, `Like`, `IsNull`, `Coalesce`, `NullIf`, `Window`, `UnaryOp`), recurse on the children, then rebuild the same variant with the resolved children. The structural shape passes through unchanged (§3.3.3).
+3. At the root, run Semantics-boundary reconciliation (§3.7) — possibly wrapping the root in a `Cast`.
+4. Emit a `ResolvedExprEntry` with the resolved expression, root `inferred_type`, flat `referenced_columns`, optional `path_signature`, and `provenance`.
+
+```mermaid
+flowchart TD
+  S["SemanticExpr root<br/>(post-merge)"]
+  D{node kind?}
+  L["Leaf(L)"]
+  V["Structural variant<br/>(BinaryOp, Case, Aggregate, …)"]
+  L --> LL{which SemanticLeaf?}
+  LL -->|Literal| R1[PhysicalLeaf::Literal — §3.3.2 a]
+  LL -->|Column| R2[PhysicalLeaf::Column<br/>§3.3.2 b — auto/manual gated]
+  LL -->|Field| R3[kind-resolve via registry<br/>§3.3.2 c — then dispatch as resolved kind]
+  LL -->|Dimension/Measure/Metric/Key| R4{accessor?}
+  R4 -->|None| R4a[splice subtree via SemanticMapping<br/>§3.3.2 d]
+  R4 -->|Some| R4b[lower to Window subtree<br/>per 14 §4.2 — recurse<br/>§3.3.2 e]
+  V --> VV[recurse on children<br/>rebuild with same variant tag — §3.3.3]
+  S --> D
+  D --> L
+  D --> V
+  R1 & R2 & R3 & R4a & R4b & VV --> B[Root resolved PhysicalExpr]
+  B --> C[Semantics-boundary reconcile §3.7]
+  C --> E[ResolvedExprEntry]
+```
+
+#### 3.3.2 Per-leaf-kind rules
+
+##### a. `SemanticLeaf::Literal(lit)`
+
+Trivial:
+
+- Output: `Expr::Leaf(PhysicalLeaf::Literal(lit))`.
+- `inferred_type`: per `14 §3.5` / `[13 §2.1–2.4](13_types_and_grain.md)` — the literal's canonical type. `{literal: {type: T, value: v}}` specifies `T` explicitly; bare forms (`{literal: 42}`, etc.) follow `14 §5.2` defaults (`Integer` / `Double` / `String` / `Boolean`; bare `Null` → `DataType::Unknown` at the node, reconciled at root).
+- `referenced_columns`: empty.
+- `path_signature_contrib`: empty.
+
+**Untyped `Null` handling.** A bare `Null` literal at a node whose type cannot be fixed by context flows as `DataType::Unknown` and either unifies with siblings (in `Case` / `Coalesce` / `BinaryOp` comparisons) or propagates to the root, where §3.7's reconciliation either pins it via the Semantics's declared `data_type:` or raises `CompileErrorKind::TypeInferenceFailure`.
+
+##### b. `SemanticLeaf::Column(name)` — conditionally legal
+
+Per `14 §3.5`, `SemanticLeaf::Column` is **type-admissible** (the parser can construct it) but **context-validated** at compile. Its legality depends on the owning binding's `semantic_mapping` mode:
+
+- **Under `semantic_mapping: auto`** — legal. Step 0 of compile (§3.11) has already synthesized a `SemanticMapping` entry for `name`. The leaf rewrites to `Expr::Leaf(PhysicalLeaf::Column(ColumnRef(name)))`, with `inferred_type` looked up in `binding.source.schema()[name].data_type` mapped to canonical `DataType` via `[13 §2](13_types_and_grain.md)`.
+- **Under manual `semantic_mapping`** — rejected. Per §3.11, step 0 has already raised `CompileErrorKind::ColumnInSemanticExprUnderManualMapping { binding, location }` and resolution never reaches this leaf. If it does (compile bug, test fixture), an `unreachable!` assertion fires.
+
+If the physical column does not exist in the binding's `PhysicalSource` schema under `auto`: `CompileErrorKind::UnresolvedColumn { name, binding }`.
+
+- `referenced_columns`: one-element vector `[name]`.
+- `path_signature_contrib`: empty.
+
+##### c. `SemanticLeaf::Field(name)` — kind-resolved untyped fallback
+
+Per `14 §3.5`, `Field` is the untyped semantic reference whose kind is resolved at compile by registry lookup. The dispatcher:
+
+1. Looks up `name` in `ctx.all_semantics` to determine its declared kind (`Dimension` / `Measure` / `Metric` / `Key`).
+2. If `name` does not resolve in any visible scope per `[11 §11.1](11_names_and_scopes.md)`, raises `CompileErrorKind::UnknownReference { name, scope: Scope::of(site) }`.
+3. If `name` resolves to a kind, **re-dispatch** the leaf as if the author had written the corresponding typed leaf (`Dimension { name, accessor: None }`, `Measure { name, accessor: None }`, etc.). The substitution then proceeds per §3.3.2.d.
+4. Under `semantic_mapping: auto`, name lookup may resolve to a physical column rather than a declared semantic. In that case the leaf re-dispatches as `Column(name)` per §3.3.2.b. The §3.11 step 0 has already synthesized the appropriate `SemanticMapping` entry.
+
+The `Field` variant therefore does not survive into `PhysicalExpr` by construction — it is always either a `Column` (under auto, when the name maps to a physical column) or a substituted typed-semantic subtree.
+
+##### d. `SemanticLeaf::Dimension { name, accessor: None }` (and `Measure / Metric / Key` analogous)
+
+The core compile-time substitution site for kind-pinned typed leaves. Steps:
+
+1. **Resolve `name`** via the binding's `SemanticMapping` per `[15](15_mapping_and_binding.md)` and the visible scope chain per `[11 §11.1](11_names_and_scopes.md)`. The lookup yields the registered Semantics for `name`.
+2. **Kind-check.** If the registered Semantics's declared kind differs from the leaf's variant tag (e.g. `Dimension { name: "x" }` but `x` is registered as a Measure), raise `CompileErrorKind::SemanticKindMismatch { authored_kind, registered_kind, name, location }`. The leaf was authored with a specific kind contract (`dim("x")` vs `measure("x")` etc.); a registry disagreement is an author error.
+3. **Same-DataKind vs cross-DataKind.** If the target Semantics's owning DataKind is the same as the current Binding's owning DataKind, recurse into the target's merged `expr:` using the current Binding. Splice the resolved `PhysicalExpr` subtree in-place. No `path_signature_contrib`. If different, trigger cross-DataKind path resolution per §3.4. The target's `expr:` is resolved against one of its own Bindings (picked per §3.4.4). The resolved subtree is spliced in, and the path is appended to `path_signature_contrib`.
+4. **Cycle bookkeeping.** Mark `name` as visited in the DFS recursion state (§3.5) for the duration of the recursive call; unmark after return. Cycles surface as `CompileErrorKind::CyclicReference` before any expression rewriting happens.
+5. **`inferred_type`** of the substituted subtree is the root `inferred_type` of the target's resolved entry (per §3.6's bottom-up rule; the topological order from §3.5 ensures the target is already resolved).
+6. **`referenced_columns`** contribute the target's columns, prefixed by join-key columns required to traverse each hop in any cross-DataKind path (§3.10).
+
+The typed-semantic leaves are **not** present in the output `PhysicalExpr` per `14 §3.7`: `PhysicalLeaf` has no `Field` / `Dimension` / `Measure` / `Metric` / `Key` variants. The substitution algorithm therefore cannot leave one behind — it rewrites the leaf into the target's resolved expression.
+
+##### e. `SemanticLeaf::{Dimension | Measure | Metric | Key} { name, accessor: Some(acc) }` — sugar elimination
+
+A typed leaf carrying `accessor: Some(acc)` is sugar that lowers at compile to a canonical `Expr::Window`-rooted subtree per `14 §4.2`:
+
+```text
+SemanticLeaf::Measure { name: "revenue", accessor: Some(MeasureAccessor::Previous) }
+  ─→ Expr::Window {
+       function:     <derived from accessor — e.g. Lag(1) for Previous>,
+       args:         [Expr::Leaf(SemanticLeaf::Measure { name: "revenue", accessor: None })],
+       partition_by: [Expr::Leaf(PhysicalLeaf::Parameter(Parameter {
+                       key:       ParameterKey::RequestDimensionsMinusTemporal,
+                       data_type: DataType::Unknown, // late-bound by Phase B
+                     }))],
+       order_by:     [Expr::Leaf(PhysicalLeaf::Parameter(Parameter {
+                       key:       ParameterKey::RequestTemporalAxis,
+                       data_type: DataType::Unknown,
+                     }))],
+       frame:        Some(<derived from accessor>),
+     }
+```
+
+After lowering, the inner `Expr::Leaf(SemanticLeaf::Measure { accessor: None })` recurses through §3.3.2.d.
+
+**Fixpoint behaviour.** Some accessors (`Delta`, `PercentChange` on `MeasureAccessor` / `MetricAccessor`) lower to compositions that still contain typed leaves with `accessor: Some(_)`. For example, `Measure { accessor: Some(Delta) }` lowers to `op - op.Previous`, where `op.Previous` is itself a typed leaf with `Some(Previous)`. The Phase A sugar-elimination substep runs to fixpoint so every typed leaf with a non-`None` accessor is eliminated before the substitution substep begins.
+
+The per-kind accessor enums (`DimensionAccessor`, `MeasureAccessor`, `MetricAccessor`, `KeyAccessor`) define a closed set of lowerings; the per-kind mapping table lives in `14 §4` and is not re-ratified here.
+
+#### 3.3.3 Structural variants — recurse and rebuild
+
+For every non-`Leaf` variant of `Expr<L>` (per `14 §3.3`), the algorithm recurses on the children, then rebuilds the same variant tag with resolved children. Variant tag and non-child fields are preserved verbatim (this is the `Tree::with_new_children` contract from `[31 §3.2](../apis/31_semstrait_core.md)`).
+
+**Three structural notes:**
+
+- **`Aggregate` passes through.** `Expr::Aggregate { op, args, distinct, filter }` is a structural variant in both `SemanticExpr` and `PhysicalExpr` per `14 §3.3`; the typed-leaf model leaves it intact. Aggregate-specific metadata (grain, additivity) stays on the Semantics per `[18 §5.2](18_entities.md)`, never inside the expression node.
+- **`Window` is compile-emitted only.** Author-facing parsers reject window syntax (`14 §6.4.1`); `Window` nodes enter exclusively via sugar elimination (§3.3.2.e). The algorithm constructs them, never receives them from authors, then recurses into their child slots.
+- **`FunctionCall` triggers registry lookup.** Per `[14a §3](14a_function_catalog.md)`, unknown name → `UnknownFunction`; bad arity → `FunctionArityMismatch`; no matching signature → `NoMatchingSignature`; return type computed by `ReturnTypeRule`. Consumed read-only.
+
+#### 3.3.4 Scope and identifier resolution at the walk
+
+Phase A does not re-derive name-resolution rules — it consumes `[11 §11.1](11_names_and_scopes.md)`'s lookup algorithm verbatim. At every leaf that carries an identifier (`Field`, `Dimension`, `Measure`, `Metric`, `Key`, or — under auto-mapping — `Column`):
+
+- Build a scope chain for the current resolution site (Root, owning DataKind, nested-kind if any, current Binding).
+- Walk the chain from innermost outward: `Binding → Nested-kind (if applicable) → Kind → Root` (global Semantics registry).
+- Success: identifier resolves to a Semantics slot (typed leaves dispatch to §3.3.2.c–e), to a Binding column (auto-mapping `Column` per §3.3.2.b), or to nothing (`UnknownReference`).
+- Failure: `CompileErrorKind::UnknownReference { name, scope }` where `scope` is the innermost scope where the walk started.
+
+#### 3.3.5 Per-leaf-kind summary table
+
+| `SemanticLeaf` variant | Output | `inferred_type` | Recurses into | Notes |
+|---|---|---|---|---|
+| `Literal(lit)` | `Expr::Leaf(PhysicalLeaf::Literal(lit))` | literal's canonical type | — | bare `Null` flows as `DataType::Unknown` until reconciliation |
+| `Column(name)` (auto mapping) | `Expr::Leaf(PhysicalLeaf::Column(ColumnRef(name)))` | schema lookup | — | conditionally legal — see §3.11 |
+| `Column(name)` (manual mapping) | rejected | — | — | `ColumnInSemanticExprUnderManualMapping` (§3.11) |
+| `Field(name)` | re-dispatch as resolved kind | resolved kind's `inferred_type` | target's `SemanticExpr` (or `Column` under auto) | registry kind-resolve, then per §3.3.2.d |
+| `Dimension { name, accessor: None }` | splice resolved subtree | target's root `inferred_type` | target's `SemanticExpr` | `SemanticKindMismatch` if registry kind differs |
+| `Measure { name, accessor: None }` | splice resolved subtree | target's root `inferred_type` | target's `SemanticExpr` | as above |
+| `Metric { name, accessor: None }` | splice resolved subtree | target's root `inferred_type` | target's `SemanticExpr` | as above |
+| `Key { name, accessor: None }` | splice resolved subtree | target's root `inferred_type` | target's `SemanticExpr` | as above |
+| `{Dimension|Measure|Metric|Key} { name, accessor: Some(acc) }` | lower to `Expr::Window`-rooted subtree | `Window`'s `inferred_type` | recursively (fixpoint) | per `14 §4.2` |
+| structural variant (`BinaryOp`, `Case`, `Aggregate`, `Window`, `FunctionCall`, `Cast`, …) | same variant tag, resolved children | per §3.6 | each child | shape shared between `SemanticExpr` and `PhysicalExpr` per `14 §3.3` |
+
+### 3.4 Cross-DataKind path resolution
+
+#### 3.4.1 The contract
+
+When a typed semantic leaf (`Dimension` / `Measure` / `Metric` / `Key` with `accessor: None`, or a `Field` that resolves to one of those kinds) targets a Semantics whose owning DataKind differs from the current Binding's owning DataKind, Phase A's substitution substep triggers **cross-DataKind path resolution**: a BFS over the `Relationship` graph from the current Binding's DataKind to the target's DataKind.
+
+The path is recorded in the entry's `PathSignature` for plan-time join-subgraph materialization (`[16 §4](16_composition.md)`).
+
+#### 3.4.2 The `RelationshipGraph`
+
+Built once at `compile` time after `validate` (so endpoints are known-valid):
+
+```rust
+pub struct RelationshipGraph {
+    kinds:         BTreeMap<DataKindName, DataKindNode>,
+    relationships: Vec<Relationship>,
+    by_kind:       BTreeMap<DataKindName, Vec<RelationshipId>>, // ascending RelationshipId
+}
+```
+
+`RelationshipId` is the `u32` newtype from `[18 §2.1](18_entities.md)`. Stable within a compile; not stable across edits (same rationale as `BindingId`).
+
+#### 3.4.3 The BFS algorithm
+
+Shortest-path BFS over the `RelationshipGraph` from `from_kind` to `to_kind`. Returns the path's `Vec<RelationshipId>` on a unique hit. The walk records the shortest depth `d` on first reach, then exhausts every path of depth `d`; deeper paths are ignored.
+
+- 0 hits → `CompileErrorKind::NoRelationshipPath { from, to }`.
+- 1 hit  → success.
+- ≥ 2 hits at depth `d` → `CompileErrorKind::AmbiguousRelationshipPath { from, to, paths }` (hard error; no tie-break).
+
+**Why shortest-path + hard ambiguity, not tie-break.** A tie-break (declaration order, lex order) would silently pick one path when the Model expressed two equally-valid intentions; that violates `00 §9` **I4** (determinism) and surprises authors. Ambiguity is an authoring defect that demands explicit relationship-graph disambiguation. Neighbor iteration uses ascending `RelationshipId` to keep the `paths` vector content stable across compiles. Termination follows from the visited-depth map and the bounded `|kinds|` frontier.
+
+#### 3.4.4 Binding selection for the spliced subtree
+
+The target Semantics is resolved against **every** available Binding on the target DataKind, producing one `ResolvedExprEntry` per target binding (stored separately under `(target_name, target_binding_id)`). When the current expression substitutes a typed semantic leaf, it splices in the target's `PhysicalExpr` from one specific target binding selected by the enclosing Binding's composition context (§3.8).
+
+#### 3.4.5 `PathSignature`
+
+```rust
+pub struct PathSignature {
+    pub paths: BTreeSet<RelationshipPath>,
+}
+
+pub struct RelationshipPath(pub Vec<RelationshipId>);
+```
+
+`paths` is a `BTreeSet` so identical relationship chains contributed by multiple leaf sites dedupe deterministically. `path_signature` is `None` when no cross-kind walk occurred (every typed semantic leaf resolved within the current DataKind; no plan-time join needed); `Some(ps)` carries one or more distinct paths whose union the planner materializes as the join subgraph per `[16 §4](16_composition.md)`. Phase A only populates the structure.
+
+When a single expression contains multiple typed leaves with different paths (e.g. one to `customer` via `order`, another directly to `order`), all paths are recorded; whether the planner intersects paths sharing intermediate relationships or keeps them distinct is the planner's join-subgraph canonicalization concern per `[16 §4.2](16_composition.md)`.
+
+### 3.5 Cycle detection
+
+#### 3.5.1 The reference DAG
+
+Built after `validate` (structural preconditions) and after Tier-1 / Tier-2 occurrence merge (`[11 §6.3](11_names_and_scopes.md)`), but **before** `resolve` is called for any Semantics. Compile walks every Semantics's merged `SemanticExpr` tree and collects every typed semantic leaf reference and every `Field` reference (at any depth in the tree). For `Field` leaves whose kind resolves to a column (under auto-mapping), the leaf is a terminal — no outbound edge in the reference graph. For all other typed leaves, the edge points to the referenced Semantics.
+
+This yields a directed graph:
+
+- **Nodes**: `SemanticsName` (global — per `[11 §4](11_names_and_scopes.md)`).
+- **Edges**: `A → B` if `A`'s `expr:` contains any typed semantic leaf (or kind-resolved `Field`) targeting `B`, anywhere in the tree.
+
+Sugar accessors do not change the graph: a typed leaf with `accessor: Some(_)` still references the same name, just with a wrapped lowering. The cycle detector treats sugar and non-sugar references uniformly.
+
+#### 3.5.2 Algorithm — Tarjan SCC
+
+Tarjan SCC over the reference graph; on success returns a topological sort (Semantics in dependency order); on first SCC of size > 1 (or self-loop) returns `CompileErrorKind::CyclicReference { cycle }` with members in lexicographic order.
+
+**Why Tarjan + topological sort.** Single pass detects every cycle; the topological order is a free side-product reused by §3.6's bottom-up type-inference pass (no fixpoint needed); stable order is easy to pin down per `00 §9` **I4**.
+
+**Single-cycle reporting.** Phase A reports the first cycle (lexicographically smallest SCC name) per `00 §9` **I12** fail-fast posture; batch-diagnostic mode is a future extension.
+
+#### 3.5.3 Cross-kind cycles + self-loops
+
+Cycles span the global Semantics namespace — not restricted to one DataKind. A Measure on `orders` referencing one on `customers` that references back is detected by the same pass. A trivial self-loop (`measure a` whose `expr` references `measure a`) yields `a → a` in the graph; detected as the SCC `{a}` with a self-loop.
+
+### 3.6 Type inference
+
+#### 3.6.1 Ordering
+
+Strictly bottom-up over the reference DAG: process Semantics in §3.5.2's topological order; for each, walk its `SemanticExpr` post-order; typed-leaf children look up the already-resolved target's `inferred_type`; reconcile the root with any declared `data_type:` per §3.7. No fixpoint — cycles are rejected upstream.
+
+#### 3.6.2 Per-variant rules
+
+- **Leaves.** `Literal` → literal's canonical type per `[13 §2.1–2.4](13_types_and_grain.md)` (bare `Null` → `DataType::Unknown`, reconciled at boundary). `Column` (under auto) → schema lookup; missing → `UnresolvedColumn`. `Field` → §3.3.2.c kind-resolve then re-dispatch. `{Dim|Measure|Metric|Key} { accessor: None }` → target's root `inferred_type` (already populated by topological order). `{…} { accessor: Some(_) }` → eliminated to `Window` before type inference reaches it.
+- **`FunctionCall`** → `ReturnTypeRule` per `[14a §3.4](14a_function_catalog.md)`. **`Aggregate`** → registry-driven return type for the canonical five (`Sum`/`Avg`/`Count`/`Min`/`Max`) per `[14a §4.7](14a_function_catalog.md)` + SQL:2016 promotion. **`Window`** → window function's return type per `14a`.
+- **`BinaryOp`** → arithmetic: `SameAs(0)` (left operand's type, per `14 §5.6` pass-through); comparison: `Boolean` regardless of operand types; logical (`And`/`Or`): both operands `Boolean`, returns `Boolean` else `TypeInferenceFailure`.
+- **`UnaryOp`** → `Negate` preserves operand type; `Not` requires + returns `Boolean`.
+- **`Cast { target, … }`** → `target`. No compile-time compatibility check; adapter may reject at render.
+- **`Case` / `Coalesce`** → unified type across branches; each `Case.when` must be `Boolean`.
+- **`NullIf`** → left operand's type.
+- **`InList` / `Between` / `Like` / `IsNull`** → `Boolean`.
+
+#### 3.6.3 Unification
+
+Minimal: two types unify iff (a) identical (including `Decimal` precision/scale) or (b) one is `DataType::Unknown` (untyped `Null`) and the other is concrete (unifies to the concrete). Otherwise `CompileErrorKind::TypeInferenceFailure { node, reason }`. **No implicit promotion at unification** — `Integer` and `Long` do not auto-unify; authors write explicit `Cast`. This matches `14 §5.6`'s non-coercion posture and keeps inference deterministic.
+
+#### 3.6.4 The annotation contract
+
+Every leaf carries `ExprLeaf::inferred_type() -> Option<&DataType>` per `[14 §3.2](14_expressions.md)`; structural nodes derive type from children per §3.6.2. The entry-level `inferred_type: DataType` duplicates the root for O(1) plan-time access without tree traversal.
+
+### 3.7 Semantics-boundary reconciliation
+
+When a Semantics declares `data_type: T` explicitly and the resolved root's `inferred_type` differs, compile wraps the root in `Expr::Cast { target: T, on_failure: Error }` before storing. The author's declared type is authoritative at the boundary.
+
+- **Widening** (`Integer → Long`, `Integer → Double`, `Decimal(10,2) → Decimal(18,2)`, …, per `[13 §2.6](13_types_and_grain.md)`) — silent.
+- **Narrowing** (`Long → Integer`, `Double → Integer`, …) — emits `CompileWarningKind::NarrowingCast { inferred, declared }`; compile succeeds.
+- **Orthogonal** (`String → Integer`, …) — treated as narrowing for diagnostic purposes; adapter may reject at render time.
+
+**Interaction with shape inference.** `[11 §6.3](11_names_and_scopes.md)` runs upstream and pins a single `data_type:` across multi-DataKind Semantics occurrences (or raises `ShapeInferenceConflict`). Phase A reads the pinned value.
+
+**Untyped `Null` at boundary.** `inferred_type: DataType::Unknown` with no declared `data_type:` → `CompileErrorKind::TypeInferenceFailure`. With a declared `data_type: T` → wrap `Null` in `Cast(T)`, no diagnostic.
+
+**Author-written outer `Cast`.** When `expr:` already roots in `Cast(T_outer)` and declares `data_type: T_decl`: same `T` → no extra cast; different `T` → emit an additional outer `Cast(T_decl)` and apply the narrowing-diagnostic rule against it.
+
+### 3.8 Per-Binding keying
+
+The `ResolvedExprTable` carries one entry per `(SemanticsName, BindingId)` pair the Model exposes:
+
+| DataKind shape | # entries per Semantics name | Notes |
+|---|---|---|
+| `Dataset` | 1 | single Binding per Dataset (`[11 §2](11_names_and_scopes.md)`, `[15](15_mapping_and_binding.md)`) |
+| `Unionset` over N members | 1 per constituent Binding exposing the Semantics | source-selection rule per `[23 §3](../data-kinds/23_unionset.md)` |
+| `Grainset` over N members | 1 per constituent Binding at its grain | cross-grain references trigger §3.4 BFS; path signature records the chain |
+| `Joinset` over N members | 1 per constituent Binding exposing the Semantics | plan-time join graph from `path_signature` + the Joinset's declared chain (`[24](../data-kinds/24_joinset.md)`) |
+| Nested kind inside outer kind | 1 per nested-kind Binding + 1 per outer-kind Binding re-exposing it (`[12](12_nesting_policy.md)`) | scope-chain resolution per §3.3.4 |
+
+Total bound: `Σ (# bindings per DataKind) × (# Semantics exposed per binding)` — typically 10³–10⁴ entries for realistic Models.
+
+### 3.9 Ordering of sub-passes inside `compile`
+
+```mermaid
+flowchart TD
+  A["Entry: validated SemanticModel"]
+  B[1. Fetch catalog info<br/>per-source schemas]
+  C[2. Build RelationshipGraph §3.4.2]
+  D[3. Build SemanticsIndex<br/>Tier-1 merge, 11 §6.3]
+  E0["0. Per-Binding<br/>auto-mapping synthesis /<br/>manual-mapping Column<br/>validation §3.11"]
+  E[4. Reference-graph build<br/>+ cycle detection §3.5]
+  F[5. Topological sort §3.5.2]
+  G["6. Per-(Semantics, Binding)<br/>resolve §3.1 / §3.3 / §3.6"]
+  H[7. Boundary reconciliation §3.7]
+  I[8. Populate ResolvedExprTable §3.2]
+  J[9. Seal SemanticManifest]
+
+  A --> B --> C --> D --> E0 --> E --> F --> G --> H --> I --> J
+```
+
+- **Step 1 is the only I/O step** inside `compile`. Steps 0 and 2–9 are pure in-memory transformations forming a contiguous sync block (`compile` is `async` only because of step 1, per `[10 §3.3](10_resolution_pipeline.md)`).
+- **Step 0 runs between `SemanticsIndex` build and reference-graph build** so the cycle detector sees the post-auto-mapping state. Mechanics: §3.11.
+- **`validate` preconditions** (unique DataKind names, valid Relationship endpoints, valid `PhysicalSource`, valid `expr:`/column binding per `[10 §3.2](10_resolution_pipeline.md)`) are presumed; structural leakage past `validate` is `unreachable!`.
+- **Sealed registry** (`[14a §2.1](14a_function_catalog.md)`) consulted read-only in step 6.
+- **Shape inference** from `[11 §6.3](11_names_and_scopes.md)` runs in step 3 and pins the `data_type:` value step 7 reconciles against.
+- **No re-entry.** Topological sort from step 5 guarantees each `(SemanticsName, BindingId)` is resolved exactly once.
+
+### 3.10 Referenced-column harvesting
+
+Each `ResolvedExprEntry.referenced_columns: Vec<String>` is the flat, de-duplicated list of physical columns the resolved `PhysicalExpr` reads. Consumers: binding validation (missing column → `UnresolvedColumn`), plan-time column projection, adapter `SELECT` rendering, predicate / projection pushdown.
+
+**Collection during post-order walk.**
+
+- `Column(name)` (auto) and `Field(name)` resolving to a column (auto) contribute `[name]`.
+- `{Dim|Measure|Metric|Key} { accessor: None }` same-DataKind → contributes target's `referenced_columns` (already computed via topological order). Cross-kind → also contributes the join-key columns on both endpoints of every Relationship hop traversed.
+- `{…} { accessor: Some(_) }` → after sugar elimination, only the lowered subtree's typed-leaf children contribute (`Parameter` leaves contribute nothing — bound at plan time).
+- Structural variants recurse and union.
+
+Output is de-duplicated (via a `BTreeSet<String>` intermediate) but unsorted — the planner sorts as needed. Column names are **binding-native** (no source / schema qualification); qualification is supplied by the binding's `PhysicalSource` at adapt time. Distinct `BindingId`s keep `Unionset`-style name collisions naturally segregated.
+
+### 3.11 Auto-mapping synthesis pre-step
+
+A per-Binding pre-step that handles the conditional legality of `SemanticLeaf::Column` per the binding's `semantic_mapping` mode. **The only place** in Phase A where auto-vs-manual is consulted; after step 0, the rest of the substeps see a uniform normalized state.
+
+**Under `semantic_mapping: auto`** — walk every `SemanticExpr` resolved against this Binding:
+
+- For each `Column(name)` not already in the mapping, synthesize `name → Column(name)` (structurally identical to an authored `<name>: <name>` entry).
+- For each `Field(name)` that doesn't resolve to a declared semantic but does match a `PhysicalSource` schema column, same synthesis (this is the "bare-identifier resolves to physical column under auto" case from `[14 §6.5](14_expressions.md)`).
+- If `name` resolves to neither a declared semantic nor a physical column → `CompileErrorKind::UnknownReference { name, scope: Binding(b) }`.
+
+After synthesis the binding's `SemanticMapping` is indistinguishable from an explicit one; downstream substeps (`15` binding resolution, adapter column projection, …) reuse the same code path for both modes.
+
+**Under manual `semantic_mapping`** (any explicit `semantic_mapping:` block, even empty) — reject every `SemanticLeaf::Column(name)` in the walked `SemanticExpr` with `CompileErrorKind::ColumnInSemanticExprUnderManualMapping { binding, location }`. Manual mapping requires every physical reference to flow through the explicit mapping; inline `col(…)` would bypass that discipline. Remediation: rewrite the leaf as `field(…)`/`measure(…)`/`dim(…)`, add an explicit `SemanticMapping` entry, or switch to `auto`.
+
+**Companion rule — `SemanticKindMismatch`** (fired during §3.3.2.d's kind-check step). A typed semantic leaf with an explicit kind contract (e.g. `measure("x")`) that disagrees with the registry's kind for `name` (e.g. `x` is a Dimension) → `CompileErrorKind::SemanticKindMismatch { authored_kind, registered_kind, name, location }`. `Field` leaves never trigger this — they carry no kind contract.
+
+**Idempotent.** Re-running the pre-step on an already-normalized binding is a no-op (synthesis skips covered columns; rejection already terminated). Simplifies test fixtures and `--explain` re-tracing.
+
+---
+
+## 4. Sugar Contract
+
+All sugars are `SemanticExpr`-only and desugar at compile time. The pipeline distinguishes two sugar families.
+
+### 4.1 Family A — Constant folding / partial evaluation
+
+Family A has **no AST variant**. Author writes plain `Case` / `BinaryOp` / `FunctionCall` / `Like`; the fold substep (§3.1 substep 3) collapses subtrees whose value is fully determined by Manifest-static state (per-`Binding` metadata literals, source-tagged Dimensions). Partial folds leave a residual that translation passes through to `PhysicalExpr`.
+
+**Fold language (v1).** Reduction applies to nodes whose operands fold to a foldable value (`Literal` or metadata-substituted typed leaf):
 
 | Class      | Members                       | Folding rule                                                                                |
 |------------|-------------------------------|---------------------------------------------------------------------------------------------|
 | Comparison | `=` `!=` `<` `>` `<=` `>=`    | both sides foldable → `Literal(bool)`                                                       |
 | Logical    | `AND` `OR` `NOT`              | short-circuit; partial residual otherwise                                                   |
-| Null check | `IsNull` `IsNotNull`          | metadata `EntityRef` non-null → `Literal(false)` / `Literal(true)`                          |
+| Null check | `IsNull` `IsNotNull`          | metadata-substituted leaf non-null → `Literal(false)` / `Literal(true)`                     |
 | Arithmetic | `+` `-` `*` `/` `%`           | numeric foldable → `Literal(N)`                                                             |
 | Composite  | `IN` `NOT IN` `BETWEEN`       | desugar to comparison + logical, then fold                                                  |
 | Structural | `Case`                        | short-circuit on first true `when`; drop false-`when` branches                              |
 | Cast       | `Cast(Literal, T)`            | literal cast applied if successful; failures resolve per `on_failure`; column cast deferred |
 | Pattern    | `Like(_, Literal(_))`         | ANSI-strict canonical (`%` zero-or-more, `_` one char, `LikeKind::Escape(c)`); case-sensitive |
 
-**`Like` canonicalisation.** Bracket classes / POSIX classes / `ILike` / `RLike` / regex extensions are **not** in v1 fold scope. Adapters that emit to engines with looser defaults (e.g. MySQL collation-driven case-folding) compensate during `PhysicalExpr` → engine-AST translation.
+**`Like` canonicalisation.** Bracket classes / POSIX classes / `ILike` / `RLike` / regex extensions are **not** in v1 fold scope. Adapters emitting to engines with looser defaults (e.g. MySQL collation-driven case-folding) compensate during `PhysicalExpr` → engine-AST translation.
 
 **Out of v1 fold scope.** `FunctionCall` (no purity flag in `14a §3.1` yet); regex operators; user-defined functions.
 
 **Per-`Binding` materialisation.** Each `Binding`'s `PhysicalExpr` is independently folded against its own metadata literals; multi-source Datasets produce per-`Binding` distinct results.
 
-### 5.2 Family B — Entity-derived expressions
+### 4.2 Family B — Per-kind typed-leaf accessor sugar
 
-AST variant: `SemanticExpr::Access { entity: EntityRef, accessor: Accessor }`. `Access` lowers to a canonical `Window` node with `PARTITION BY $RequestDimensionsMinusTemporal ORDER BY $RequestTemporalAxis`; `Parameter` substitution happens at Phase B.
+A typed leaf with `accessor: Some(_)` lowers at compile to a canonical `Window`-rooted subtree per `[14 §4.2](14_expressions.md)`; the lowering shape and elimination semantics are defined there. Phase A's substep 1 runs the lowering to fixpoint over the whole `SemanticExpr` so every accessor-bearing leaf is eliminated before substitution begins (§3.1 / §3.3.2.e). Sugar-on-sugar cases (`Delta` lowers into `op - op.Previous`, where `op.Previous` is itself a sugared leaf) converge naturally — no nesting depth limit on the author surface.
 
-```text
-Access { entity, accessor }
-  -> Window(...)
-  -> OVER (
-       PARTITION BY $RequestDimensionsMinusTemporal,
-       ORDER BY    $RequestTemporalAxis
-     )
-```
+Kind agreement between leaf and accessor is type-enforced at construction per `[14 §4.1](14_expressions.md)`; the algorithm here never has to validate it.
 
-When paired entity types share a lowering shape (`Measure` / `Metric`, `Dimension` / `Key`), the parser disambiguates from the entity tag and constructs the matching `Accessor::X(_)` variant; mismatches are rejected at construction.
+### 4.3 Worked example — metadata fold
 
-**Sugar-on-sugar.** `Delta` lowers to `operand - operand.Previous`; the residual still contains an `Access` node. Substep 1 runs Family B to fixpoint so every `Access` reachable from the AST is eliminated before substep 2 starts. No nesting depth is imposed on author surface; the implementation is iterative.
-
-### 5.3 Worked example — metadata fold
-
-Given a Dataset with two source bindings (per `15 §10` / `21 §10`) and one filter:
+Given a Dataset with two source bindings (per `[15 §10](15_mapping_and_binding.md)` / `[21 §10](../data-kinds/21_dataset.md)`) and one filter:
 
 ```yaml
 filters:
@@ -322,7 +631,7 @@ filters:
       end
 ```
 
-At `resolve`, substep 1 is identity (no `Access`). Substep 2 substitutes/folds `year_dir` per binding:
+At `resolve`, substep 1 is identity (no typed leaves with `accessor: Some(_)`). Substep 2 substitutes `year_dir` and `ordered_at` per binding. Substep 3 folds the resulting `Case` per binding's metadata:
 
 | Binding | `PhysicalExpr`                                                     |
 |---------|--------------------------------------------------------------------|
@@ -331,201 +640,208 @@ At `resolve`, substep 1 is identity (no `Access`). Substep 2 substitutes/folds `
 
 Phase-B observable: Strategy places B₁'s filter; B₂'s `Literal(true)` is a no-op and its `Filter` is elided. This is the canonical per-binding divergence pattern.
 
-## 6. Aggregation
+---
 
-Both `SemanticExpr` and `PhysicalExpr` admit an `Aggregate { op, args, distinct, filter }` variant. The recursive operand type differs by phase (`SemanticExpr` operand may be `EntityRef` / `Access` / etc.; `PhysicalExpr` operand is `Column` / canonical `FunctionCall` / etc.).
+## 5. Per-Site `expr:` Shape Gates
 
-`resolve` translates operands structurally (`Box<SemanticExpr>` → `Box<PhysicalExpr>`) but keeps the `Aggregate` node intact. Phase B extracts these aggregate calls into `PlanNode::Aggregate` and replaces them with output-slot column refs in the residual; the lift lives in `34 §<Strategy>`, not in `resolve`.
+`14 §7` defines which sites carry `SemanticExpr` versus `PhysicalExpr`. This chapter ratifies the **shape gate** — what each site requires of `resolve`'s output:
 
-**Validation.** An `Aggregate` node may only appear in aggregate-admitting sites (Measure / Metric / `filters.<f>.expr`). Outside those sites, presence of `Aggregate` is a `ValidateError::AggregateInScalarContext` regardless of phase.
+| `expr:` site                       | Required result | Aggregate-function-call syntax in `expr:` |
+|------------------------------------|-----------------|--------------------------------------------|
+| `measures.<m>.expr`                | scalar          | no — aggregation is carried by the separate `agg:` tag (`18 §5.2`) |
+| `measures.<m>.filters[].expr`      | Boolean         | no — scalar predicate; conditional aggregation per §6.1 |
+| `metrics.<m>.expr`                 | scalar          | no — `agg:` (optional) at top-level; `expr:` is a scalar formula over already-aggregated values |
+| `metrics.<m>.filters[].expr`       | Boolean         | no (compile-split per §6.1) |
+| `dimensions.<d>.expr` (computed)   | scalar          | no |
+| `filters.<f>.expr`                 | Boolean         | yes — HAVING-style predicates may reference aggregated values |
+| `keys` members                     | n/a in v1       | no per-member `expr:` authoring slot is ratified (`18 §9`) |
+| `extras.semantic_mapping.<x>.expr` | scalar          | no (parses to `PhysicalExpr`) |
 
-**`Avg` posture.** `Avg` is a canonical `AggregationOp` per `14a` — not sugar. `semstrait` performs no internal rewrite to `Sum / Count`. Whatever the engine evaluates at the level the planner places `Avg` is what authors see; lossy combinations under cross-grain plans surface as advisories per §7.6, not refusals.
+**Structural shape gates** enforced at parse / construction time:
 
-## 7. Phase B Placement
+- Author-written `Aggregate { ... }` syntax inside `expr:` is **rejected at all sites except `filters.<f>.expr`**. Aggregation is carried by the structurally separate `agg:` tag on Measures and Metrics per `[18 §5.2](18_entities.md)`. A Measure `agg: sum, expr: amount` resolves to `Aggregate { op: Sum, args: [Column("amount")], ... }` at Phase A, where the `Aggregate` node is *synthesised* by `agg:` and `expr:` together, not by author-written aggregate-function call syntax.
+- A typed leaf carrying `accessor: Some(_)` whose lowered shape contains `Aggregate` or `Window` is gated against sites whose required result is scalar/Boolean and not aggregate-admitting. The check is on the *lowered* shape, not on syntactic surface — sugars carry their own admissibility metadata.
+- `filters[].expr` is admitted only on `measures.<m>` and `metrics.<m>`. No `keys` member-level filter slot. No `dimensions.<d>.filter` — DataKind-level filtering uses the `filters:` block per §6.1.
 
-Phase B is the contract between `resolve`'s output (per-`Binding` `PhysicalExpr`) and the planner's `Strategy` (placement of `PhysicalExpr` into the `PlanNode` tree).
+---
 
-### 7.1 Filter placement
+## 6. Phase B — Placement
 
-Placement is determined by **where the filter is authored**, then by **what the predicate references** for filters that admit mixed-scope predicates.
+Phase B is the contract between Phase A's output (per-`Binding` `PhysicalExpr` persisted in the `SemanticManifest`) and the planner's `Strategy` (placement of `PhysicalExpr` into the `PlanNode` tree). By the time Phase B begins, the typed semantic leaves of `[14 §3.5](14_expressions.md)` have been eliminated — typed leaves carrying `accessor: Some(_)` have lowered to `Window`-rooted subtrees per `[14 §4.2](14_expressions.md)`, and `Field` / `Dimension` / `Measure` / `Metric` / `Key` leaves have substituted to their resolved expressions per §3. Only `PhysicalLeaf`-shaped operands remain (modulo compile-emitted `Parameter` placeholders bound during placement). The placement rules in this section specify where each authored expression *lands* in the `PlanNode` tree — filter scope, `GROUP BY` axis, aggregate slot, output projection — together with the two-source `Additivity` axis that drives lossy-reaggregation advisories.
+
+Phase B does two things Phase A does not:
+
+- **`Aggregate` lift.** `Aggregate` nodes embedded in `PhysicalExpr` are extracted into `PlanNode::Aggregate` slots; the residual `PhysicalExpr` substitutes `Column` refs to the lifted slots (§7).
+- **`Parameter` binding.** Compile-emitted `Parameter` leaves are substituted with concrete values from the `Request` per `[14 §5.3](14_expressions.md)`. A `Parameter` reaching the adapter is a hard error owned by the planner.
+
+### 6.1 Filter placement
+
+Placement is determined by **where the filter is authored**, then by **what the predicate references** for filters that admit mixed-scope predicates. References inside the authored `SemanticExpr` are characterised by their resolved kind — a typed `Dimension` / `Key` leaf (or a `Field` leaf whose name resolves to a Dimension / Key in the registry) is a *grouping-key reference*; a typed `Measure` / `Metric` leaf (or a `Field` leaf resolving to a Measure / Metric) is an *aggregated reference*. Phase A resolution preserves this distinction in the lowered `PhysicalExpr` shape — grouping-key references lower to `Column` leaves over the grouping axis; aggregated references lower to subtrees containing `Aggregate` nodes.
 
 | Authoring site                       | Placement contract |
 |--------------------------------------|--------------------|
-| `measures.<m>.filters[].expr`        | Inlined into the aggregate via canonical `Aggregate { filter: Some(p), ... }`; emits `agg(expr) FILTER (WHERE p)` on engines with native `FILTER`; adapter rewrites to `agg(CASE WHEN p THEN expr END)` on engines without native `FILTER`. |
-| `metrics.<m>.filters[].expr`         | Compile-split by reference type. Dim / Key refs → pushed into every constituent's `Aggregate.filter` (per measure rule above). Constituent Measure / Metric refs → HAVING-like `Filter` node above the Metric's output `Project`. Non-constituent Measure / Metric refs → compile error `EXPR_E_xxxx MetricFilterReferencesNonConstituent`. |
-| `filters.<f>.expr` (DataKind-level)  | Compile-split by reference type. Dim / Key refs → WHERE-scope (`Filter` below `Agg`). Measure / Metric refs → HAVING-scope (`Filter` above `Agg`). AND-decomposable mixed-scope: split transparently. Non-AND-decomposable mixed-scope (`OR` / `NOT` across scopes): compile error `COMP_E_xxxx MixedScopeFilterUndecomposable`. |
+| `measures.<m>.filters[].expr`        | Inlined into the aggregate via the canonical `Aggregate { filter: Some(p), ... }` form; emits `agg(expr) FILTER (WHERE p)` on engines with native `FILTER`; adapter rewrites to `agg(CASE WHEN p THEN expr END)` on engines without native `FILTER`. |
+| `metrics.<m>.filters[].expr`         | Compile-split by reference kind. Dimension / Key references → pushed into every constituent's `Aggregate.filter` (per the measure rule above). Constituent Measure / Metric references → HAVING-like `Filter` node above the Metric's output `Project`. Non-constituent Measure / Metric references → compile error `EXPR_E_xxxx MetricFilterReferencesNonConstituent`. |
+| `filters.<f>.expr` (DataKind-level)  | Compile-split by reference kind. Dimension / Key references → WHERE-scope (`Filter` below `Agg`). Measure / Metric references → HAVING-scope (`Filter` above `Agg`). AND-decomposable mixed-scope: split transparently. Non-AND-decomposable mixed-scope (`OR` / `NOT` across scopes): compile error `COMP_E_xxxx MixedScopeFilterUndecomposable`. |
 | `keys` members                       | **Structurally rejected.** No grouping-member filter slot. |
-| `dimensions.<d>.filter`              | **Structurally rejected.** Use `filters:` block. |
+| `dimensions.<d>.filter`              | **Structurally rejected.** Use the `filters:` block. |
 
-**Canonical form.** `Aggregate.filter` is the canonical PhysicalExpr representation; adapters compensate for engines lacking native `FILTER (WHERE)` via `CASE WHEN` rewrite (`36 §<rewrite>`).
+**Canonical form.** `Aggregate.filter` is the canonical `PhysicalExpr` representation; adapters compensate for engines lacking native `FILTER (WHERE)` via `CASE WHEN` rewrite (`[36 §<rewrite>](../apis/36_semstrait_adapter.md)`). The canonical IR carries the predicate in its original Boolean shape; engine compensation never leaks back into the manifest.
 
-### 7.2 `group_by` Handoff
+**Reference-kind classification.** The split between WHERE-scope and HAVING-scope is decided at compile time by inspecting the resolved kinds of the leaves reachable from the predicate. A `SemanticLeaf::Field` whose name is registered as a Dimension classifies the same as a `SemanticLeaf::Dimension` leaf at the same site — kind, not authoring vocabulary, is what placement consults.
 
-`GROUP BY` is built from `Request` context per uniform rule:
+### 6.2 `group_by` Handoff
 
-| Request element  | Plan position                       |
-|------------------|-------------------------------------|
-| Dimensions       | `GROUP BY` key (with optional per-Dim variation, per below) |
-| Keys             | `GROUP BY` key                      |
-| Measures         | aggregate (no grouping)             |
-| Metrics          | aggregate composition (no grouping) |
+`GROUP BY` is built from `Request` context — no `group_by:` author surface:
 
-No `group_by:` author surface in `Request` — auto-derived.
+| Request element | Plan position |
+|---|---|
+| Dimensions      | `GROUP BY` key (with optional per-Dimension variation) |
+| Keys            | `GROUP BY` key |
+| Measures        | aggregate (no grouping) |
+| Metrics         | aggregate composition (no grouping) |
 
-**Current planner surface vs this chapter.** `34 §3.1` currently ratifies `Request.dimensions: Vec<SemanticsName>`. The structured carrier below is a scoped expression-flow contract for rollup-aware request normalization at the boundary before planner execution.
+**Rollup-aware Dimension carrier.** When a Dimension in the Request needs a temporal-rollup wrap (`DATE_TRUNC(grain, axis)` at the `GROUP BY` axis), the planner consumes a structured `RequestDimensionRef { name, variation }` shape per `[34 §<Request>](../apis/34_semstrait_planner.md)`. `DimensionVariation::Temporal { grain }` on a temporal Dimension wraps with `DATE_TRUNC`; `None` is the default identity projection. Type mismatch (non-temporal Dimension with `Temporal` variation) surfaces as a `PlanErrorKind` at the planner boundary. Embedder-level surface (e.g. CLI `name.grain` tokens) is not ratified here.
 
-**Dimension request shape (scoped extension).**
+Computed Dimensions whose `expr` is scalar participate in `GROUP BY` as their materialised column; variation does not apply to computed Dimensions in v1.
 
-```rust
-pub struct RequestDimensionRef {
-    pub name: DimensionName,
-    pub variation: DimensionVariation,
-}
+### 6.3 Computed Dimension placement
 
-pub enum DimensionVariation {
-    None,
-    Temporal { grain: Grain },
-}
+Inline pre-aggregation at the source projection layer. The computed Dimension's `expr` resolves at Phase A to a scalar `PhysicalExpr` over `Column` leaves; Phase B materialises it as a projected column participating in `GROUP BY` like any native-binding Dimension. Aggregate-shaped `expr` is rejected at compile per §5 (per-site shape gates). Any placement question that depends on aggregation behaviour delegates to §6.5 (function-tag axis).
 
-```
+### 6.4 Metric semantics
 
-Behaviour:
+Metric `expr` references other Semantics via typed leaves (`measure(name)`, `metric(name)`, `dim(name)`, or untyped `field(name)` kind-resolved per §3.3.2.c). Metric elements do **not** bind via `semantic_mapping`; a `SemanticLeaf::Column` reached from a Metric `expr` is `CompileErrorKind::MetricExprBindsRawColumn`. Metric is "sugar over Measures" — every reference must traverse another declared Semantic.
 
-- `DimensionVariation::None` → native model projection (no transform wrap; default).
-- `DimensionVariation::Temporal { grain }` on a temporal Dim → `DATE_TRUNC(grain, axis)` wrap at `GROUP BY`.
-- Variation must match Dim `data_type` — `Temporal` on a non-temporal Dim is `PLAN_E_xxxx DimensionVariationTypeMismatch`.
-- Non-temporal Dims admit only `DimensionVariation::None` in v1; future variations (string-cased, numeric-bucketed) are forward-extensible.
-- Multi-axis rollup is natural — multiple `RequestDimensionRef`s, each with its own `Temporal { grain }`.
-- `RequestDimensionRef` is request-layer only and distinct from `18 §1.2`'s `DimensionRef` (which is a Semantics ref/override carrier).
+Measure / Metric `(agg:, expr:)` shape is owned by `[18 §5.2](18_entities.md)`; per-site shape gates by §5. A Measure with `agg: sum, expr: amount` resolves at Phase A to `Aggregate { op: Sum, args: [<resolved amount>], distinct: false, filter: None }`. A Metric without `agg:` remains a scalar formula over already-aggregated constituent outputs.
 
-**Embedder sugar (non-normative).** A CLI or other front-end MAY accept tokens such as `name.grain` and desugar them to `RequestDimensionRef { name, variation: Temporal { grain } }` before constructing the planner input.
+**Lowering.** Phase B's Metric decomposer walks the Metric `expr`, lifts every constituent Measure / Metric reference into the plan's `Aggregate` layer (dedup by canonical Semantic name; one aggregate slot per name), and emits the residual scalar `post_agg_expr` into a final `Project`. Because `expr:` syntax never contains inline aggregates (per §5's shape gates), every constituent is a named Semantic — there are no anonymous slots to name.
 
-`semstrait-api` (`38`) is a library surface and does not ratify CLI flag syntax. The `name.grain` token form is therefore an embedder-level convention, not a crate contract.
+**`dim` / `field`-resolving-to-Dimension in Metric `expr`.** Evaluates as the **per-group value** (post-aggregate context). Compile emits an advisory listing required Dimensions; plan-time rejects requests omitting them — `PlanErrorKind::MetricRequiresDimensionInRequest { metric, missing_dimension }`.
 
-Computed Dimensions whose `expr` is scalar participate in `GROUP BY` as their materialised column; variation does not apply to computed Dims in v1.
+**Metric → Metric chains.** Unbounded depth, DAG semantics. Compile DFS detects cycles → `CompileErrorKind::MetricCycle { path }`. Cycle check runs after kind resolution so `metric("a")` and `field("a")`-resolving-to-Metric-`a` are detected uniformly.
 
-### 7.3 Computed Dimension placement
+**`agg:` over Dimension- / Key-typed `expr:`.** Admitted aggregations: `min` / `max` / `count` / `count_distinct` / `first` / `last`. Authoring `sum` / `avg` / `median` / `percentile` over a Dimension / Key is rejected by `[14a §3](14a_function_catalog.md)`'s signature lookup. Windowed access uses typed `Dimension` / `Key` leaves with `accessor: Some(…)` per `[14 §4.1](14_expressions.md)` — symmetric with the Measure / Metric accessor surfaces.
 
-Inline pre-aggregation at the source projection layer. Aggregate-shaped `expr` is rejected at compile per §4. Any placement question that depends on aggregation behaviour delegates to §7.5 (function-tag axis).
+### 6.5 Function-tag axis — `Additivity`
 
-### 7.4 Metric semantics
+Placement decisions that depend on aggregation behaviour are driven by `Additivity` with a **two-source separation of concerns** — the two sources are distinct inputs to Strategy and never conflated:
 
-Metric `expr` references **only other Semantics** (Measures / Metrics / Dimensions per `18 §5.2`). Metric elements do NOT bind via `semantic_mapping`; raw column refs in Metric `expr` are a **compile error** `EXPR_E_xxxx MetricExprBindsRawColumn`.
+- **Function-level** — `FunctionSpec.additivity` carried on the canonical function per `[14a §3.6](14a_function_catalog.md)`. Mathematical additivity of the aggregate itself (`SUM` is `Additive`, `AVG` is `NonAdditive`). Not author-declarable in v1.
+- **Model-level** — `Measure.additivity` / `Metric.additivity` per `[18 §5.2](18_entities.md)`. Author's semantic declaration that *this specific* Measure / Metric is narrower than its underlying function (e.g. `sum` over snapshot data, semantically non-additive across snapshot points). Author-declarable in YAML.
 
-Metric is "sugar over Measures"; to use anything in a Metric `expr`, it must first be exposed via another Semantic.
+Both enums share the unified shape `Additive | SemiAdditive { axes } | NonAdditive` ratified in `[14a §3.6](14a_function_catalog.md)`. Phase B Strategy reads both sources, then composes the **effective additivity** by restriction:
 
-Measure/Metric `(agg:, expr:)` shape is owned by `18 §5.2`; this chapter's §4 owns expression-site gates. In Phase A, a Measure with `agg: sum, expr: amount` resolves to `Aggregate { op: Sum, ... }`. A Metric without `agg:` remains a scalar expression over already-aggregated constituent outputs.
+| Function-level     | Model-level         | Effective                    |
+|--------------------|---------------------|------------------------------|
+| `Additive`         | unset               | `Additive`                   |
+| `Additive`         | `Semi { axes }`     | `Semi { axes }`              |
+| `Additive`         | `Non`               | `Non`                        |
+| `Semi { axes_fn }` | `Semi { axes_md }`  | `Semi { axes_fn ∩ axes_md }` |
+| `Non`              | (any)               | `Non`                        |
 
-**Lowering shape.**
+Rule: function-level `Non` is dominant; model-level may narrow `Additive`; `Semi`-with-`Semi` intersects the axis sets. Model cannot relax math the function disallows.
 
-- **Multi-step at IR.** The Metric decomposer walks the Metric `expr`, collects constituent Measure / Metric references into the plan's `Aggregate` layer (each constituent's `(agg:, expr:)` body becomes one aggregate slot, deduplicated by Measure / Metric name), returns the residual scalar `post_agg_expr`.
-- **Inline at output `Project`.** The residual `post_agg_expr` evaluates over already-aggregated columns (named per constituent) in a final `Project`.
+**Strategy behaviour per effective additivity:**
 
-**Dimension refs in Metric `expr`.** Admitted per `18 §5.2`. A Dim reference inside Metric `expr` evaluates as the **per-group value** (post-aggregate context). Compile-time emits an informational advisory listing the Dims a Metric references; **plan-time** validation rejects requests using the Metric without those Dims in `request.dimensions` — `PLAN_E_xxxx MetricRequiresDimensionInRequest { metric, missing_dimension }`.
+| Effective              | Multi-source branch | Cross-grain JOIN / rollup | Model-level consequence (per `17` / `18`) |
+|------------------------|---|---|---|
+| `Additive`             | pre-aggregate per branch + re-aggregate final | safe | none |
+| `SemiAdditive { axes }`| pre-aggregate per branch when `axes` preserved | advisory if `axes` crossed | may require auto-`FIRST` / `LAST` projection if request rolls up across `axes` |
+| `NonAdditive`          | no pre-aggregate; single full-input aggregate | engine-defined; advisory emitted | may require temporal-shape filter to disambiguate snapshot timing |
 
-**Constituent column naming.** Constituents in the plan's `Aggregate` layer are named by their authored Measure / Metric name (canonical). Since `expr:` syntax never contains inline aggregates, every constituent **is** an authored Semantic with a name — there are no anonymous aggregates to synthesise names for. Dedup uses Measure / Metric name as key. Adapter contract: aggregate output columns carry author-visible names.
+Auto-projection and snapshot-timing-filter mechanics live in `17` / `18` / `34`; this chapter declares the composition contract and consumes the result.
 
-**Metric → Metric chains.** Unbounded depth admitted; DAG semantics enforced. The decomposer walks the Metric-reference graph transitively; DFS at compile detects cycles and rejects with `EXPR_E_xxxx MetricCycle { path }`.
+### 6.6 Advisory channel
 
-**Valid `agg:` operations on Dimension- / Key-typed `expr:`.** When an authored Measure has `agg:` × `expr:` whose resolved type is Dimension- or Key-shaped, only the following aggregations are admitted — `min`, `max`, `count`, `count_distinct`, `first`, `last`. Authoring `agg: sum` / `avg` / `median` / `percentile` against a Dimension / Key is a type-check error owned by `14a §3.2`'s `FunctionSpec` signature lookup. Windowed access over Dimensions / Keys (`Lag` / `Lead` / `First` / `Last` over the temporal axis) is admitted via Family B sugar (§3.3 `DimensionAccessor`) — symmetric with `MeasureAccessor`.
+Semantic advisories use typed `Diagnostics<PlanErrorKind>` per `[30 §6](../apis/30_api_contracts.md)`; the `tracing` channel is reserved for system-level observability and is orthogonal (configured independently by embedders).
 
-### 7.5 Function-tag axis — `Additivity`
+**Emission rule.** When Strategy detects a known-lossy combination from the **effective** additivity (§6.5), emit a `PLAN_W_*` advisory and proceed (warn, not refuse). The unified cross-DataKind variant is `PlanErrorKind::LossyReaggregation { data_kind, … }` (`PLAN_W_2101`); examples include `NonAdditive Avg` under cross-grain JOIN and `SemiAdditive` axis crossed by request rollup. DataKind-specific advisories remain only when the root cause is structurally distinct and owned by that chapter (e.g. Unionset's `MissingMetadataDisjointnessProof` per `[23](../data-kinds/23_unionset.md)`).
 
-Placement decisions that depend on aggregation behaviour are driven by a canonical `Additivity` attribute. The shape is unified across function-level (canonical function attribute in `14a §3.1`) and model-level (per-element author declaration in `18 §5.2`); the two are **distinct inputs to Strategy** and never conflated.
+**Rust encoding convention.** `PLAN_W_*` / `COMP_E_*` / `EXPR_E_*` numeric codes are **spec cross-reference indices** for grep-ability; the runtime API surfaces typed enum variants only. The numeric code appears as a comment adjacent to the variant declaration, never as a runtime field. Project-wide convention codified in `[30 §6](../apis/30_api_contracts.md)`.
 
-```rust
-pub enum Additivity {
-    Additive,                                  // SUM, COUNT, MIN, MAX
-    SemiAdditive { axes: Vec<DimensionAxis> }, // FIRST, LAST (temporal axis); model-declared per axis list
-    NonAdditive,                               // AVG, COUNT_DISTINCT, MEDIAN, PERCENTILE
-}
+---
 
-pub enum DimensionAxis {
-    Temporal,
-}
-```
+## 7. Aggregation handling
 
-#### 7.5.1 Two sources of `Additivity`
+`Expr::Aggregate { op, args, distinct, filter }` is a structural variant shared by `SemanticExpr` and `PhysicalExpr` per `[14 §3.3](14_expressions.md)`. Phase A's substitution preserves the variant tag, translating operands structurally (§3.3.3). Phase B's Strategy lifts `Aggregate` nodes into `PlanNode::Aggregate` slots and substitutes column refs to the lifted slots in the residual `PhysicalExpr` — lift mechanics in `[34](../apis/34_semstrait_planner.md)`, not in `resolve`.
 
-| Source              | Site                                                       | Carries                                                                                                                                | Authoring posture                                                                       |
-|---------------------|------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
-| **Function-level**  | `FunctionSpec.additivity: Option<Additivity>` (`14a §3.1`) | Canonical mathematical additivity of the aggregate function itself (`SUM` is additive; `AVG` is not). Independent of any Measure / Metric declaration. | Not author-declarable in v1 — hardcoded in `14a` per built-in aggregate function.       |
-| **Model-level**     | `Measure.additivity: Option<AdditivityType>` (`18 §5.2`); analogous on `Metric` | Author's semantic declaration that *this specific* Measure / Metric carries narrower additivity than its underlying function — e.g. `sum` over snapshot data is semantically non-additive across snapshot points. Drives `FIRST` / `LAST` default-projection insertion and temporal-axis filter requirements per `17`. | Author-declarable — YAML `additivity:` block per `18 §5.2`.                              |
+`Aggregate` is admitted only at aggregate-admitting sites (Measure / Metric `expr:`, `filters.<f>.expr`). Outside those sites: `ValidateErrorKind::AggregateInScalarContext`.
 
-Phase B Strategy reads **both** sources independently. The **effective additivity** composes by restriction: model-level declarations may narrow function-level behavior, function-level `Non` is dominant, and when both sources are `Semi` the effective axes are the intersection:
+**`Avg` posture.** Canonical `AggregationOp`, not sugar — no internal `Sum`/`Count` rewrite. Lossy combinations under cross-grain surface as `LossyReaggregation` advisories per §6.6, never refusals.
 
-| Function-level     | Model-level         | Effective                  | Rationale                                                                  |
-|--------------------|---------------------|----------------------------|----------------------------------------------------------------------------|
-| `Additive`         | unset               | `Additive`                 | function default                                                           |
-| `Additive`         | `Semi { axes }`     | `Semi { axes }`            | model narrows (e.g. snapshot semantics)                                    |
-| `Additive`         | `Non`               | `Non`                      | model narrows                                                              |
-| `Semi { axes_fn }` | `Semi { axes_md }`  | `Semi { axes_fn ∩ axes_md }` | intersection — both axes constraints apply                                 |
-| `Non`              | (any)               | `Non`                      | function-level non-additive dominates; model declaration cannot relax math |
+---
 
-#### 7.5.2 Strategy behaviour per effective `Additivity`
+## 8. Error Model
 
-| Effective              | Unionset / multi-source branch                 | Cross-grain JOIN / rollup        | Model-level consequence (per `17` / `18`)                                                  |
-|------------------------|------------------------------------------------|----------------------------------|--------------------------------------------------------------------------------------------|
-| `Additive`             | pre-aggregate per branch + re-aggregate final  | safe                             | none                                                                                       |
-| `SemiAdditive { axes }`| pre-aggregate per branch when `axes` preserved | advisory if `axes` crossed       | may require auto-`FIRST` / `LAST` projection over `axes` if request rolls up across them   |
-| `NonAdditive`          | no pre-aggregate; aggregate once over full input | engine-defined; advisory emitted | model-declared `Non` may require a temporal-shape filter to disambiguate snapshot timing  |
+All expression compile-pipeline errors surface as `Diagnostic<CompileErrorKind>` per `[10 §5](10_resolution_pipeline.md)` and `[30 §5](../apis/30_api_contracts.md)`. Numeric codes are spec cross-reference indices; runtime identification is by variant identity.
 
-The "auto-`FIRST` / `LAST` projection" and "snapshot-timing filter requirement" rows are model-level mechanics; their full mechanics live in `17` / `18` / `34` — `19` declares the `Additivity` contract and SoC, consumes the result.
+### 8.1 Resolution-stage errors
 
-### 7.6 Advisory channel
+| Variant | Code | When |
+|---|---|---|
+| `UnknownReference { name, scope }` | `EXPR_E_0201` | Identifier at a typed-semantic-leaf or `Field` site does not resolve in any visible scope per `[11 §11.1](11_names_and_scopes.md)`. |
+| `NoRelationshipPath { from, to }` | `EXPR_E_0202` | Cross-DataKind BFS exhausted without reaching the target (§3.4.3). |
+| `CyclicReference { cycle }` | `EXPR_E_0203` | Reference-graph Tarjan SCC detected a cycle (size > 1 or self-loop) (§3.5). |
+| `UnresolvedColumn { name, binding }` | `EXPR_E_0204` | `Column(name)` references a name not in the binding's `PhysicalSource` schema (§3.3.2.b). |
+| `AmbiguousRelationshipPath { from, to, paths }` | `EXPR_E_0205` | BFS found two or more shortest-length paths (§3.4.3). |
+| `TypeInferenceFailure { node, reason }` | `EXPR_E_0206` | Per-node rule could not derive a concrete type (untyped `Null` at boundary, mismatched `Case` / `Coalesce` branches, non-`Boolean` logical operand). |
+| `ColumnInSemanticExprUnderManualMapping { binding, location }` | `EXPR_E_0207` | `SemanticLeaf::Column` authored under manual `semantic_mapping` (§3.11). |
+| `SemanticKindMismatch { authored_kind, registered_kind, name, location }` | `EXPR_E_0208` | Typed leaf's variant tag disagrees with the registry's kind for `name` (§3.11). |
 
-Semantic advisories use structured `Diagnostics<PlanErrorKind>` emitting `PLAN_W_*` codes per `30 §6`. The `tracing` channel is reserved for system-level observability (build progress, source counts); user-facing semantic warnings carry typed diagnostic identity.
+### 8.2 Function-resolution errors
 
-**Emission rule.** When Strategy detects a known-lossy combination from the **effective** `Additivity` (per §7.5.1 composition — function-level intersected with model-level), emit `PLAN_W_*` advisory; query **proceeds** (warn, not refuse).
+Delegated to `[14a §8](14a_function_catalog.md)`: `UnknownFunction`, `FunctionArityMismatch`, `NoMatchingSignature`, `ReservedTagCollision`.
 
-Examples:
+### 8.3 Boundary-reconciliation warning
 
-- `NonAdditive` `Avg` under cross-grain JOIN → `PLAN_W_2101 LossyReaggregation { data_kind, .. }`.
-- `SemiAdditive` axis crossed by request rollup → `PLAN_W_2101 LossyReaggregation { data_kind, .. }`.
+`CompileWarningKind::NarrowingCast { inferred, declared }` (`EXPR_W_0201`) — emitted by §3.7 when boundary reconciliation wraps the root in a narrowing `Cast`. Compile succeeds.
 
-**Cross-DataKind unification.** `PLAN_W_2101 LossyReaggregation { data_kind, .. }` is the shared advisory for additivity-driven lossy reaggregation surfaces. DataKind-specific advisories remain only when the root cause is structurally different and owned by that DataKind chapter.
+### 8.4 Fail-fast policy
 
-**Rust encoding convention.** `PLAN_W_*` / `COMP_E_*` / `EXPR_E_*` numeric codes serve as **spec cross-reference indices** for discoverability and grep-ability; the runtime Rust API surfaces only typed enum variants. The numeric code appears as a comment adjacent to the variant declaration, never as a runtime data field:
+Phase A is fail-fast per `[00 §9](../00_overview.md)` **I12**: the first error terminates `compile`. Warnings (`EXPR_W_*`) accumulate alongside errors in the `Diagnostic` stream per `[10 §5](10_resolution_pipeline.md)` without aborting.
 
-```rust
-pub enum PlanErrorKind {
-    // PLAN_W_2101
-    LossyReaggregation { data_kind: DataKind, /* further fields per 34 */ },
-    // ... others
-}
-```
+---
 
-This convention applies project-wide; the encoding contract is codified in `30 §6`.
+## 9. Naming Discipline
 
-## 8. Naming Discipline
-
-- New enum coinages avoid the `Kind` suffix when a lighter spelling works (e.g. `Accessor`, not `AccessorKind`; `Parameter`, not `ParameterKind`).
+- New enum coinages avoid the `Kind` suffix when a lighter spelling works (e.g. `Accessor`, not `AccessorKind`; `Parameter`, not `ParameterKey`).
 - Established `*Kind` names (`DataKind`, `CompositionKind`, `*ErrorKind`) stay — `*ErrorKind` follows the `std::io::ErrorKind` convention.
 - `FunctionCategory` (existing in `14a §3.2`) is the canonical category-axis name; reuse, do not parallel-coin.
 
-## 9. Out of Scope for v1
+---
+
+## 10. Out of Scope for v1
 
 - Runtime `evaluate(&RecordBatch) -> ColumnarValue` expression machinery (DataFusion-style) — `semstrait` is compile-time, not runtime.
-- Subquery / Lambda / MaskExpression expression forms — correlated needs ride `EntityRef` + `Relationship` (`16 §2`).
-- Stringly-typed parameter IDs (`"$1"` style) — superseded by typed `ParameterKey` (§3.4).
+- Subquery / Lambda / MaskExpression expression forms — correlated needs ride per-kind typed semantic leaves + `Relationship` (`16 §2`).
+- Stringly-typed parameter IDs (`"$1"` style) — superseded by typed `ParameterKey` (`14 §5.2`).
 - Substrait (or other canonical-consumer) wire-portable plan emission — architecturally reserved as a capability-driven adapter path owned by `30` / `36` (`[TD-30-ADAPTER-CAPABILITY]`); no concrete canonical-consumer adapter ships in v1.
 - UDF surface for author-declarable function-level `Additivity` — function-level `Additivity` is hardcoded in `14a §3.1` per built-in aggregate in v1.
+- Per-DataKind advisory specialisation beyond `PLAN_W_2101 LossyReaggregation` — see `[TD-19-ADVISORY-SPECIALISATION]`.
 
-## 10. Cross-References
+---
+
+## 11. Cross-References
 
 Upstream:
 
-- `[14_expressions.md](14_expressions.md)` — bare `Expr` AST, `ExprSource` YAML grammar, authoring-site dispatch.
-- `[14a_function_catalog.md](14a_function_catalog.md)` — `FunctionRegistry`, `FunctionSpec.additivity`, signature lookup.
-- `[14b_expression_resolution.md](14b_expression_resolution.md)` — `ResolvedExprTable`, substitution algorithm, cycle detection.
-- `[15_mapping_and_binding.md](15_mapping_and_binding.md)` — `Binding` metadata literals consumed by §5.1 fold.
-- `[17_temporal_shape.md](17_temporal_shape.md)` — temporal-axis semantics consumed by §3.4 `Parameter::RequestTemporalAxis` and §7.5 `DimensionAxis::Temporal`.
-- `[18_entities.md](18_entities.md)` — canonical entity types and `(agg:, expr:)` shape on Measure / Metric.
+- `[00_overview.md](../00_overview.md)` — canonical pipeline (§5), design invariants I1–I12 (§9).
+- `[10_resolution_pipeline.md](10_resolution_pipeline.md)` — stage contracts, `Diagnostic` stream.
+- `[11_names_and_scopes.md](11_names_and_scopes.md)` — name resolution algorithm, Tier-1 / Tier-2 occurrence merge, shape inference.
+- `[13_types_and_grain.md](13_types_and_grain.md)` — canonical `DataType` set, widening / narrowing lattice.
+- `[14_expressions.md](14_expressions.md)` — `Expr<L>` AST, leaf sets, per-kind typed `SemanticLeaf`, sugar accessors, `Parameter`, `ExprSource`, per-site shape gates, crate placement.
+- `[14a_function_catalog.md](14a_function_catalog.md)` — `CanonicalFn`, `FunctionRegistry`, `FunctionSpec.additivity`, signature polymorphism, return-type rules, function-resolution error variants.
+- `[15_mapping_and_binding.md](15_mapping_and_binding.md)` — `SemanticMapping` and the `Binding` process consumed at compile.
+- `[16_composition.md](16_composition.md)` — `Relationship` graph; plan-time join-subgraph materialization consuming `PathSignature`.
+- `[17_temporal_shape.md](17_temporal_shape.md)` — temporal-axis semantics consumed by `Parameter::RequestTemporalAxis` and `DimensionAxis::Temporal`.
+- `[18_entities.md](18_entities.md)` — canonical entity types, `Measure` / `Metric` `(agg:, expr:)` pairing, `SemanticMapping` value shape.
 
 Downstream:
 
-- `[../data-kinds/21_dataset.md](../data-kinds/21_dataset.md)`, `[../data-kinds/22_grainset.md](../data-kinds/22_grainset.md)`, `[../data-kinds/23_unionset.md](../data-kinds/23_unionset.md)`, `[../data-kinds/24_joinset.md](../data-kinds/24_joinset.md)` — consume `expr:` shape rules from §4 and advisory cross-refs from §7.6.
-- `[../apis/30_api_contracts.md](../apis/30_api_contracts.md)` — codifies the Rust encoding convention for numeric diagnostic codes (§7.6); owns the `Adapter` capability surface that drives canonical-plan-to-canonical (Path A) vs canonical-plan-to-engine (Path B) dispatch (`[TD-30-ADAPTER-CAPABILITY]`).
-- `[../apis/34_semstrait_planner.md](../apis/34_semstrait_planner.md)` — `Strategy` consumes `PhysicalExpr`; performs `Aggregate` lift, `Parameter` binding, and `PLAN_W_*` emission per §2.3 and §7.6.
+- `[../data-kinds/21_dataset.md](../data-kinds/21_dataset.md)`, `[../data-kinds/22_grainset.md](../data-kinds/22_grainset.md)`, `[../data-kinds/23_unionset.md](../data-kinds/23_unionset.md)`, `[../data-kinds/24_joinset.md](../data-kinds/24_joinset.md)` — consume per-site `expr:` shape rules and advisory cross-refs from §6.6.
+- `[../apis/30_api_contracts.md](../apis/30_api_contracts.md)` — codifies the Rust encoding convention for numeric diagnostic codes (§6.6); owns the `Adapter` capability surface that drives canonical-plan-to-canonical (Path A) vs canonical-plan-to-engine (Path B) dispatch (`[TD-30-ADAPTER-CAPABILITY]`).
+- `[../apis/33_semstrait_manifest.md](../apis/33_semstrait_manifest.md)` — on-disk serialization shape of `ResolvedExprTable` (§3.2.4).
+- `[../apis/34_semstrait_planner.md](../apis/34_semstrait_planner.md)` — `Strategy` consumes `PhysicalExpr`; performs `Aggregate` lift, `Parameter` binding, and `PLAN_W_*` emission per §2.1 and §6.6.
 - `[../apis/36_semstrait_adapter.md](../apis/36_semstrait_adapter.md)` — engine-specific `FILTER (WHERE)` ↔ `CASE WHEN` rewrites, function mapping, and adapter mechanics for both dispatch paths (`[TD-30-ADAPTER-CAPABILITY]`).
-- `[../apis/38_semstrait_api.md](../apis/38_semstrait_api.md)` — orchestration/API layer context; CLI syntax remains embedder-owned (§7.2).
+- `[../apis/38_semstrait_api.md](../apis/38_semstrait_api.md)` — orchestration/API layer context; CLI syntax remains embedder-owned (§6.2).

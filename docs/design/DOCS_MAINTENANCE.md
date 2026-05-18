@@ -115,3 +115,43 @@ At session end, propose updates to `STATUS.md`:
 - what moved between open/closed/deferred,
 - what was deferred newly,
 - where next session should start.
+
+---
+
+## 11) Frontmatter convention
+
+Every design doc except the four roots (`00_overview.md`, `STATUS.md`, `INDEX.md`, this file) opens with a YAML-style frontmatter block. Use the canonical shape below; mismatches are doc defects.
+
+Canonical shape:
+
+```
+---
+prereqs: [13, 14, 16, 17]
+authoritative-for:
+  - the `X` public-API surface (types, traits, free functions)
+  - …
+refined-by:
+  - 14 (…)
+  - 36 (…)
+---
+
+# N. Title
+```
+
+Rules:
+
+1. Opening `---` on line 1; the first key follows on line 2 (no blank line between).
+2. List items under list-valued keys (`authoritative-for:`, `refined-by:`, `depends-on:`, `references:`, …) are indented exactly **2 spaces**; nested sub-items add 2 more spaces per level.
+3. No blank lines inside the frontmatter block. Blank lines between keys break some YAML parsers and obscure the boundary.
+4. Closing `---` on the line immediately after the last value, followed by exactly one blank line, then the `# H1` title.
+5. Never prefix a frontmatter key with markdown heading syntax (`## prereqs:` is broken — drop the `## `).
+
+Key roster by doc kind:
+
+- Foundations / data-kinds / APIs: `prereqs:` + `authoritative-for:` + `refined-by:`.
+- Question sidecars: `doc:` + `status:` + `purpose:` + optional `depends-on:`.
+- Registry catalogs: `doc:` + `status:` + `purpose:` + `prereqs:` + `authoritative-for:` + `depends-on:`.
+- Drafts / transitional sidecars: `status:` + `purpose:` + `extracted-from:` + `destination:`.
+- Retired stubs: `status:` + `forwards-to:` + `retired-on:`.
+
+Well-formed exemplars: `apis/30_api_contracts.md`, `apis/35_semstrait_ir.md`, `apis/36_semstrait_adapter.md`, `foundations/14_expressions.md`, `foundations/16_composition.md`, `data-kinds/25_applicability_matrix.md`, `questions/closed/34_questions.md`.

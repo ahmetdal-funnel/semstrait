@@ -1,29 +1,26 @@
 ---
-
 prereqs: [20, 11, 13, 14, 15, 16, 17]
 authoritative-for:
-
-- `Joinset` canonical ComplexDataKind shape (`JoinsetDataKind` struct sketch, `DataKind::Joinset` variant)
-- anchor specification — mandatory single root child, "FROM-clause" semantics, fan-out reference frame
-- explicit join-path specification (`ExplicitPath`, `JoinHop`, per-hop `RelationshipRef` citation)
-- implicit join-path selection rules (anchor-biased specialization of `16 §11`'s field-first algorithm)
-- `JoinsetStrategy` — the planner contract that lowers a resolved `Joinset` into `PlanNode::Join` sequences
-- per-hop `Cardinality` propagation, fan-out accumulation, and multi-fanout advisory emission
-- as-of activation rules — temporal-shape-gated `JoinType::AsOf` consumption (forward-ref `17 §5`)
-- v1 binary-arity restatement (per `12 §5.2`), `TD-JOINSET-NARY` tech-debt marker
-- validate / compile / plan error rosters:
-  - `VALID_E_2400`–`2499` — structural validate-stage `Joinset` failures
-  - `COMP_E_2400`–`2499` — compile-stage path-resolution failures
-  - `PLAN_E_2400`–`2499` — plan-stage `Joinset` usage failures
-  - `PLAN_W_2400`–`2499` — plan-stage `Joinset` advisories
-  refined-by:
-- 17 (`foundations/17_temporal_shape.md` — `TemporalShape`, as-of activation matrix for `JoinType::AsOf`)
-- 25 (cross-kind strategy catalog — Joinset × Grainset, Joinset × Unionset composition rules)
-- 32 (`apis/32_semstrait_model.md` — YAML surface for the `joinsets:` top-level block and `path:` sub-block)
-- 33 (`apis/33_semstrait_manifest.md` — `ResolvedJoinset`, the SemanticManifest entry carrying the materialized `ComposedSemanticInterface`)
-- 34 (`apis/34_semstrait_planner.md` — `JoinsetStrategy` implementation, path-resolve entry points)
-- 35 (`PlanNode::Join` consumption of `Joinset`-derived join sequences; `JoinNode.from_relationship` + `from_joinset` tagging)
-
+  - `Joinset` canonical ComplexDataKind shape (`JoinsetDataKind` struct sketch, `DataKind::Joinset` variant)
+  - anchor specification — mandatory single root child, "FROM-clause" semantics, fan-out reference frame
+  - explicit join-path specification (`ExplicitPath`, `JoinHop`, per-hop `RelationshipRef` citation)
+  - implicit join-path selection rules (anchor-biased specialization of `16 §11`'s field-first algorithm)
+  - `JoinsetStrategy` — the planner contract that lowers a resolved `Joinset` into `PlanNode::Join` sequences
+  - per-hop `Cardinality` propagation, fan-out accumulation, and multi-fanout advisory emission
+  - as-of activation rules — temporal-shape-gated `JoinType::AsOf` consumption (forward-ref `17 §5`)
+  - v1 binary-arity restatement (per `12 §5.2`), `TD-JOINSET-NARY` tech-debt marker
+  - validate / compile / plan error rosters:
+    - `VALID_E_2400`–`2499` — structural validate-stage `Joinset` failures
+    - `COMP_E_2400`–`2499` — compile-stage path-resolution failures
+    - `PLAN_E_2400`–`2499` — plan-stage `Joinset` usage failures
+    - `PLAN_W_2400`–`2499` — plan-stage `Joinset` advisories
+refined-by:
+  - 17 (`foundations/17_temporal_shape.md` — `TemporalShape`, as-of activation matrix for `JoinType::AsOf`)
+  - 25 (cross-kind strategy catalog — Joinset × Grainset, Joinset × Unionset composition rules)
+  - 32 (`apis/32_semstrait_model.md` — YAML surface for the `joinsets:` top-level block and `path:` sub-block)
+  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedJoinset`, the SemanticManifest entry carrying the materialized `ComposedSemanticInterface`)
+  - 34 (`apis/34_semstrait_planner.md` — `JoinsetStrategy` implementation, path-resolve entry points)
+  - 35 (`PlanNode::Join` consumption of `Joinset`-derived join sequences; `JoinNode.from_relationship` + `from_joinset` tagging)
 ---
 
 # 24. Joinset
@@ -448,7 +445,7 @@ Project <unified surface>
          from_joinset: Some(DataKindName("orders_with_customers")),
          keys: [KeyPair { left: "customer_id" (on orders), right: "customer_id" (on customers) }],
          left: Scan(orders) {
-             <push-down projection / filters per 14b and 34>
+             <push-down projection / filters per 19 §3 and 34>
          },
          right: Scan(customers) {
              <same>
@@ -552,7 +549,7 @@ The final plan-tree shape for a binary Joinset with anchor `A`, member `B`:
               └── Scan(B) with per-member pushdown
 ```
 
-Exact pushdown semantics (predicate pushdown, projection pruning) are `14b` / `25` / `34`'s concern.
+Exact pushdown semantics (predicate pushdown, projection pruning) are `19 §3` / `25` / `34`'s concern.
 
 ## 6. Interaction with `Relationship`
 
@@ -783,7 +780,7 @@ All `PLAN_E_24xx` are `Severity::Error`; they fail plan. All `PLAN_W_24xx` are `
 - `11 §2, §3, §6.5, §9, §10.3` — scope chain, global identity, `Constraint::Key`, cross-kind references, structural labels used by `12 §5.1`'s YAML path shape.
 - `12 §2, §5` — nesting matrix (Joinset ⊄ Joinset, member kinds); binary-v1 arity; YAML-level path shape (`path.on.left` / `path.on.right`).
 - `13 §5` — `DataType` compatibility, consumed by `KeyPair` type-agreement checks `16 §12.2`.
-- `14 §N` — expression grammar used by Joinset-level derived dimensions / filters; `14b §4.5` — `PathSignature` subsumption interaction (§11's `PLAN_E_0509` remains the canonical code for Request-path / expression-path mismatches, even on Joinset surfaces).
+- `14 §N` — expression grammar used by Joinset-level derived dimensions / filters; `19 §3.4.5` — `PathSignature` subsumption interaction (§11's `PLAN_E_0509` remains the canonical code for Request-path / expression-path mismatches, even on Joinset surfaces).
 - `15 §4, §6` — `Binding`, `ColumnMapping`, `Coverage`; consumed when `JoinsetStrategy` resolves per-hop `KeyPair`s to physical columns.
 - `16 §§2–14` — `Relationship`, `Cardinality`, `JoinType`, `ComposedSemanticInterface`, `UnifiedSemantics`, `FieldProvenance`, `CompositionCoverage`, implicit composition algorithm, composition error codes. `24` cites; `24` does NOT redefine any of `16`'s canonical types.
 - `17 §5` (pending) — `TemporalShape` activation matrix for `JoinType::AsOf`.

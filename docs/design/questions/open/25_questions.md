@@ -12,7 +12,7 @@ depends-on:
   - foundations/13_types_and_grain.md
   - foundations/14_expressions.md
   - foundations/14a_function_catalog.md
-  - foundations/14b_expression_resolution.md
+  - foundations/19_expression_flow.md
   - foundations/16_composition.md
   - foundations/17_temporal_shape.md
   - apis/30_api_contracts.md

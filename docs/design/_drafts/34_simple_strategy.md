@@ -1,5 +1,4 @@
 ---
-
 status: Pending relocation
 purpose: Transitional sidecar holding the `SimpleStrategy` L1–L5 algorithm body extracted from `data-kinds/21_dataset.md §4` during the post-thirteenth-pass cascade rebase (2026-04-30). Pending integration into `apis/34_semstrait_planner.md §<SimpleStrategy>` when the planner doc opens its Strategy chapter.
 extracted-from: data-kinds/21_dataset.md §4 (pre-rebase, lines 239–420)
@@ -23,7 +22,7 @@ L5  Project          Final output shape; skipped when identity with L4.
 L4  Aggregate        GROUP BY semantic Dimensions + declarative Measure
                      decomposition; skipped when Request has no aggregation.
 L3  Expression       Computed Dimension / Measure evaluation (SemanticExpr
-                     substituted per 14b); skipped when no computed fields.
+                     substituted per 19 §3.3); skipped when no computed fields.
 L2  Rename           Physical -> semantic rename, literal / metadata
                      injection, boundary CAST per 14 §6.4 / 15 §9.1.
 L1  Scan             Physical column scan(s) from `extras.storage.paths:` /
@@ -112,7 +111,7 @@ This is the one place in `SimpleStrategy` where per-source divergence bleeds int
 
 ## 4. L3 — Expression (Project)
 
-**Role.** Materialize computed Dimensions and computed Measure-base expressions; `SemanticExpr` substitution has already happened at compile (`14b`), so L3 projects already-resolved `PhysicalExpr` trees.
+**Role.** Materialize computed Dimensions and computed Measure-base expressions; `SemanticExpr` substitution has already happened at compile (`19 §3.3`), so L3 projects already-resolved `PhysicalExpr` trees.
 
 **Inputs.**
 
@@ -121,12 +120,12 @@ This is the one place in `SimpleStrategy` where per-source divergence bleeds int
 
 **Algorithm.** For every requested Semantics that maps to `SemanticMappingValue::Computed`:
 
-1. Look up its `PhysicalExpr` in `rb.semantic_mapping.computed[name]` (per `15 §7.4`). The expression is `EntityRef`-free (14b has substituted every `EntityRef` during compile) and `inferred_type`-annotated.
+1. Look up its `PhysicalExpr` in `rb.semantic_mapping.computed[name]` (per `15 §7.4`). The expression carries only `PhysicalLeaf` variants (`19 §3` has substituted every typed semantic leaf during compile per the `14 §3.7` postcondition) and `inferred_type`-annotated.
 2. Emit a `PlanNode::Project` entry `(name_semantic, expr)` alongside pass-through of every L2-produced column that downstream layers (L4 / L5 / filters) need.
 
 The resulting `Project` has the shape `(all_pass_through_columns ++ computed_columns)`.
 
-**Cross-reference to `14b`.** `14b §3` specifies the substitution algorithm; this sidecar reads the output. The `PhysicalExpr` stored in `rb.semantic_mapping.computed[name]` is semantically equivalent to "inline the computation as of the SemanticInterface's definition at the time of `compile`." No plan-time recomputation.
+**Cross-reference to `19 §3.3`.** The substitution algorithm is specified there; this sidecar reads the output. The `PhysicalExpr` stored in `rb.semantic_mapping.computed[name]` is semantically equivalent to "inline the computation as of the SemanticInterface's definition at the time of `compile`." No plan-time recomputation.
 
 **Skip rule.** If the Request references no computed Semantics on this Dataset, L3 is elided. See §7.
 

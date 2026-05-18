@@ -6,7 +6,7 @@ depends-on:
   - foundations/16_composition.md
   - foundations/11_names_and_scopes.md
   - foundations/12_nesting_policy.md
-  - foundations/14b_expression_resolution.md
+  - foundations/19_expression_flow.md
   - foundations/15_mapping_and_binding.md
   - foundations/17_temporal_shape.md
   - data-kinds/23_joinset.md

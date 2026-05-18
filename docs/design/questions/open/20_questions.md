@@ -1,6 +1,5 @@
 ---
-
-## doc: design/questions/open/20_questions
+doc: design/questions/open/20_questions
 status: Living
 purpose: Parked unresolved questions surfaced while drafting `data-kinds/20_taxonomy.md`
 depends-on:
@@ -13,6 +12,7 @@ depends-on:
   - foundations/17_temporal_shape.md
   - apis/30_api_contracts.md
   - apis/34_semstrait_planner.md
+---
 
 # Open Questions — `data-kinds/20_taxonomy.md`
 

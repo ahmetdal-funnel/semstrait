@@ -1,5 +1,5 @@
 ---
-prereqs: [00, 10, 11, 12, 13, 14, 14a, 14b, 15, 18]
+prereqs: [00, 10, 11, 12, 13, 14, 14a, 15, 18, 19]
 authoritative-for:
   - `Relationship` **composition semantics** — placement (global top-level), scope visibility, traversal rules, per-variant fanout analysis (struct shape owned by `18 §2`)
   - `ComposedSemanticInterface` — the unified queryable surface presented to the planner
@@ -230,9 +230,9 @@ namespaced name within the composed surface (e.g.
 Fields:
 
 - `id: RelationshipId` — assigned at `compile` in declared-iteration order,
-  `u32` shape, SemanticManifest-wide unique (`14b §4.2` owns the assignment). The
+  `u32` shape, SemanticManifest-wide unique (`19 §3.4.2` owns the assignment). The
   ID is internal to one SemanticManifest; not stable across recompiles (see
-  `14b_questions OQ-7`).
+  `15 §2.2`'s `BindingId` discussion — same stability rationale applies to `RelationshipId`).
 - `from: DataKindRef`, `to: DataKindRef` — named references to top-level
   `DataKind`s. `DataKindRef` is defined in `11 §4` as a newtype over
   `DataKindName`.
@@ -267,7 +267,7 @@ but the convention aids readability and drives `Cardinality`'s
 per-variant naming (`ManyToOne` reads naturally as `from → to`).
 
 **Stable identity.** `RelationshipId` is the primary key every downstream
-layer uses: `14b §4.5`'s `PathSignature` carries `Vec<RelationshipId>`,
+layer uses: `19 §3.4.5`'s `PathSignature` carries `Vec<RelationshipId>`,
 `PlanNode::Join` (per `35`) carries a `RelationshipId` as metadata, and
 diagnostics reference `relationship_id` for precise blame. Names
 (`from.to` style) are not used as identity — two `Relationship`s between
@@ -315,20 +315,20 @@ Relationship {
 ```
 
 Ordering is significant only for `PathSignature` canonicalization
-(`14b §4.5`); the join condition itself is commutative (`A AND B == B AND A`).
+(`19 §3.4.5`); the join condition itself is commutative (`A AND B == B AND A`).
 `32`'s YAML surface emits `keys:` as a list of `{left, right}` pairs.
 Positional vs single-entry `Vec<SemanticsName>` is tracked as
 `Q-COMP-009`; Round 1 ratifies positional pairs.
 
-**Type agreement.** Both sides' inferred `DataType` (per `14b`'s type
-inference over the `Binding`'s `ColumnMapping` and any `Declarative`
+**Type agreement.** Both sides' inferred `DataType` (per `[19 §3.6](19_expression_flow.md)`'s type
+inference over the `Binding`'s `SemanticMapping` and any `Declarative`
 expression) must be compatible under `13 §4`'s type-compatibility
 relation. Numeric sides widen per `13 §5`'s widening rules; string sides
 require exact match; temporal sides require equal precision and
 nullability compatibility. Mismatch triggers
 `CompileError::RelationshipKeyTypeMismatch` (§14.1). The check runs at
 `compile`, not `validate`, because inferring the physical type requires
-`14b`'s resolution.
+the `19 §3` resolution pass.
 
 **Nullability.** `semstrait` does not propagate NOT NULL as a relationship
 precondition. If a `KeyPair.left` resolves to a nullable semantics,
@@ -357,7 +357,7 @@ in `§10.4` normalizes direction at walk time: given a `current_node`
 and an unvisited neighbour `target_node`, the step is flagged
 `reverse: true` when `current_node == Relationship.to && target_node
 == Relationship.from`, and `reverse: false` otherwise. The
-`PathSignature` (`14b §4.5`) records the `RelationshipId` alone; the
+`PathSignature` (`19 §3.4.5`) records the `RelationshipId` alone; the
 direction is reconstructed at plan time by matching `current_node`
 against the stored `from` / `to`.
 
@@ -663,7 +663,7 @@ reconciled under `UnifiedSemantics`, with per-field ownership
 
 ### 5.2 `traversed_paths`
 
-The `RelationshipPath` struct is owned by [`14b §4.5`](./14b_expression_resolution.md#45-pathsignature) — a `#[derive(Ord, PartialOrd, Eq, PartialEq)]` newtype over `Vec<RelationshipId>`. `16` consumes that shape; it does not redefine it.
+The `RelationshipPath` struct is owned by [`19 §3.4.5`](./19_expression_flow.md#345-pathsignature) — a `#[derive(Ord, PartialOrd, Eq, PartialEq)]` newtype over `Vec<RelationshipId>`. `16` consumes that shape; it does not redefine it.
 
 For `CompositionKind::Joinset` (regardless of `Origin`), this records
 the `RelationshipId` chain that produced the composition. Shape is
@@ -679,7 +679,7 @@ its equi-join structure, not declared `Relationship`s. The per-pair
 JOIN-key index, the chosen driver, and the attached unit list live on
 `ResolvedGrainset` per `33 §<ResolvedGrainset>` (forthcoming).
 
-`traversed_paths` is consistent with `14b §4.5`'s `PathSignature`: for a
+`traversed_paths` is consistent with `19 §3.4.5`'s `PathSignature`: for a
 cross-kind reference inside a composed Request, the per-expression
 `PathSignature` is a subset of the composition's `traversed_paths`.
 
@@ -891,8 +891,8 @@ internals); public surface is the 32-byte tag and round-trip equality.
 - **`Joinset`.** Sorted `Vec<(RelationshipId, Direction)>` — the
   set of `Relationship` traversals, each tagged with its direction
   (forward / reverse). `RelationshipId` is the SemanticManifest-unique
-  ID assigned at compile (per `14b §4.2`, stable within one
-  SemanticManifest, not across recompiles per `14b OQ-7`). Sort key:
+  ID assigned at compile (per `19 §3.4.2`, stable within one
+  SemanticManifest, not across recompiles — same rationale as `BindingId` per `15 §2.2`). Sort key:
   `(RelationshipId.0, Direction::Forward < Direction::Reverse)`.
 - **`Unionset`.** Sorted `Vec<DataKindRef>` — the set of constituent
   top-level kinds covered by the implicit Unionset, each represented
@@ -905,7 +905,7 @@ internals); public surface is the 32-byte tag and round-trip equality.
 - **Within one SemanticManifest.** `ImplicitId` is fully stable —
   identical canonical forms always hash to identical bytes.
 - **Across recompiles.** `ImplicitId` is **not** stable across
-  recompiles, because `RelationshipId` is not stable (per `14b OQ-7`).
+  recompiles, because `RelationshipId` is not stable (per `15 §2.2`).
   A model that adds a new `Relationship` will renumber existing
   `RelationshipId`s, which changes every `ImplicitId` derived from
   them. This is acceptable — `ImplicitId` is a SemanticManifest-internal
@@ -1037,7 +1037,7 @@ straightforward join when the `Additivity × TemporalShape` interaction
 
 **Metrics.** Aggregation-function conflicts are rejected by the same
 rules as Measures. Metrics that reference other Measures / Metrics via
-`expr:` are resolved per `14b §6.4`'s compile-time reference-DAG
+`expr:` are resolved per `19 §3.6.4`'s compile-time reference-DAG
 traversal; if the references span constituents, the implicit
 composition's `PathSignature` is recorded on the ResolvedExprEntry for
 the Metric and the planner consumes it at plan time.
@@ -1132,7 +1132,7 @@ rejected by §6.3.
 `revenue`; `customers` does not. `FieldOwnership::Native("orders")`.
 
 **Planner lowering.** The field's `PhysicalExpr` (from the constituent's
-`ResolvedExprTable`, per `14b §2`) is retrieved; the Scan node for the
+`ResolvedExprTable`, per `19 §3.2`) is retrieved; the Scan node for the
 constituent includes the necessary physical columns.
 
 #### 7.3.2 `Shared(Vec<DataKindRef>)`
@@ -1462,7 +1462,7 @@ At `compile`, after explicit compositions are materialized:
 ### 10.4 Implicit-`Joinset` enumeration
 
 Algorithm at `compile`, run after `RelationshipGraph` construction
-(`14b §4.2`) and after explicit compositions are materialized (§10.1):
+(`19 §3.4.2`) and after explicit compositions are materialized (§10.1):
 
 ```text
 enumerate_implicit_joinsets(graph, explicit_canonical_forms) -> Vec<ResolvedJoinset>
@@ -1772,9 +1772,9 @@ addressable but unstable across recompiles (per §5.7) — we recommend
 authors who want a stable name declare an explicit `Joinset` with at
 least one differentiator.
 
-### 11.7 Interaction with `14b`'s cross-kind path resolution
+### 11.7 Interaction with `19`'s cross-kind path resolution
 
-`14b §4`'s BFS runs at `compile` time to produce `PathSignature`
+`19 §3.4`'s BFS runs at `compile` time to produce `PathSignature`
 entries on the `ResolvedExprTable` — one per cross-kind reference
 inside any declared `expr:`. The implicit-Joinset enumeration in
 §10.4 is structurally similar (same `RelationshipGraph`, same
@@ -1816,10 +1816,10 @@ unique.
 
 ### 12.2 `KeyPair` type agreement — `CompileError::RelationshipKeyTypeMismatch`
 
-At `compile` (after `14b`'s type inference), for each `KeyPair { left,
+At `compile` (after `19 §3.6`'s type inference), for each `KeyPair { left,
 right }` in each `Relationship`:
 
-1. Resolve `left`'s inferred `DataType` by consulting `14b`'s
+1. Resolve `left`'s inferred `DataType` by consulting `19 §3.2`'s
    `ResolvedExprTable` for the `Relationship.from` binding (or each
    binding of a multi-source constituent).
 2. Resolve `right`'s similarly.
@@ -2052,7 +2052,7 @@ All variants are `#[non_exhaustive]` per I10 on the parent enum.
 
 | Variant | Code | When |
 |---|---|---|
-| `RelationshipKeyTypeMismatch { relationship_id, key_pair_index, left_type, right_type }` | `COMP_E_0401` | `§12.2` — `KeyPair` sides have incompatible `DataType`s after `14b` inference. |
+| `RelationshipKeyTypeMismatch { relationship_id, key_pair_index, left_type, right_type }` | `COMP_E_0401` | `§12.2` — `KeyPair` sides have incompatible `DataType`s after `19 §3.6` inference. |
 | `RelationshipSelfReference { relationship_id, kind }` | `COMP_E_0402` | `§12.3` — `Relationship.from == Relationship.to` (self-join, deferred). |
 | `RelationshipKeyNotJoinable { relationship_id, key_pair_index, side, role }` | `COMP_E_0403` | `§2.3` — `KeyPair` references a `Measure` / `Metric` / `Filter` rather than `Key` / `Dimension`. |
 | `CompositionRoleConflict { composition_name, name, roles }` | `COMP_E_0404` | `§6.2` — constituents declare same name with different roles (Dimension vs Measure). |
@@ -2167,23 +2167,23 @@ composition-specific code ranges with headroom for future additions.
 
 `16`'s ratifications feed and consume several neighbours:
 
-### 15.1 `14b` — path signatures
+### 15.1 `19` — path signatures
 
-`14b §4.2`'s `RelationshipGraph` is the shared infrastructure both
-documents consume at compile: `14b` for expression cross-kind
+`19 §3.4.2`'s `RelationshipGraph` is the shared infrastructure both
+documents consume at compile: `19 §3.4` for expression cross-kind
 resolution, `16 §10.4 / §10.5` for implicit-composition enumeration.
-`14b §4.5`'s `PathSignature` (`Vec<RelationshipId>`) is
+`19 §3.4.5`'s `PathSignature` (`Vec<RelationshipId>`) is
 subset-consistent with `16`'s `traversed_paths` on a composed surface
 — for every `PathSignature` entry inside an expression on a composed
 Request, the path is covered by the composition's `traversed_paths`.
 
-Plan-time, `14b` consumers and `16`'s field-first resolver (§11)
+Plan-time, `19` consumers and `16`'s field-first resolver (§11)
 both read pre-built indices from the SemanticManifest — no graph
 traversal at plan.
 
-`16` ratifies what a `Relationship` **is**; `14b`'s `PathSignature`
+`16` ratifies what a `Relationship` **is**; `19 §3.4.5`'s `PathSignature`
 `Vec<RelationshipId>` is meaningful against that ratification. Changes
-to `Relationship`'s shape in `16` propagate to `14b`'s path semantics.
+to `Relationship`'s shape in `16` propagate to `19`'s path semantics.
 
 ### 15.2 `15` — coverage extension
 
