@@ -3,10 +3,11 @@
 use crate::entities::ai::AiContext;
 use crate::error::build::ModelBuildErrorKind;
 use crate::error::validate::ValidateErrorKind;
-use crate::expr_ast::ExprSource;
+use crate::expr_source::ExprSource;
 use crate::types::DataKindName;
 use bon::Builder;
 use semstrait_core::diagnostic::Diagnostic;
+use semstrait_ir::SemanticLeaf;
 use serde::{Deserialize, Serialize};
 
 /// Unified `Relationship` struct shared between the root-level
@@ -36,10 +37,11 @@ pub struct Relationship {
     pub to: DataKindName,
 
     /// Optional residual predicate evaluated against the joined
-    /// rowset. `None` means equi-join only per `keys`.
+    /// rowset. `None` means equi-join only per `keys`. Per `14 §7`,
+    /// Relationship `filter:` parses to `SemanticExpr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[builder(into)]
-    pub filter: Option<ExprSource>,
+    pub filter: Option<ExprSource<SemanticLeaf>>,
 
     /// REQUIRED at every authoring site (SR-E-4).
     pub cardinality: Cardinality,
@@ -221,12 +223,13 @@ pub enum CrossFilter {
 #[builder(start_fn = builder, finish_fn = build)]
 pub struct JoinKeyExprPair {
     /// SemanticExpr on the `from` side. In the simplest case, a bare
-    /// Semantic name.
+    /// Semantic name. Per `14 §7`, join-key expressions are
+    /// `SemanticExpr`.
     #[builder(into)]
-    pub from: ExprSource,
+    pub from: ExprSource<SemanticLeaf>,
     /// SemanticExpr on the `to` side. Symmetric.
     #[builder(into)]
-    pub to: ExprSource,
+    pub to: ExprSource<SemanticLeaf>,
 }
 
 impl JoinKeyExprPair {

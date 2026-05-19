@@ -27,9 +27,6 @@ pub enum CoreError {
     #[error("Invalid data type: {0}")]
     InvalidDataType(String),
 
-    #[error("Invalid expression: {0}")]
-    InvalidExpression(String),
-
     #[error("Serialization error: {0}")]
     Serialization(String),
 }

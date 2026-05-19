@@ -2,11 +2,12 @@
 //! `18 §1.2`, `18 §4`.
 
 use crate::entities::ai::AiContext;
-use crate::expr_ast::ExprSource;
+use crate::expr_source::ExprSource;
 use crate::types::SemanticsName;
 use crate::yaml::tagged::single_key_map;
 use bon::Builder;
 use semstrait_core::{DataType, Grain};
+use semstrait_ir::SemanticLeaf;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_yaml::Value;
 
@@ -40,10 +41,11 @@ pub struct Dimension {
     pub dim_type: DimensionType,
 
     /// Optional derivation expression. `None` means the Dimension is
-    /// bound directly from `semantic_mapping`.
+    /// bound directly from `semantic_mapping`. Per `14 §7`, computed
+    /// Dimensions parse to `SemanticExpr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[builder(into)]
-    pub expr: Option<ExprSource>,
+    pub expr: Option<ExprSource<SemanticLeaf>>,
 }
 
 /// `DimensionType` — six-variant roster (`18 §4.1`). Categorical,
@@ -372,7 +374,7 @@ impl DimensionEntry {
         })
     }
 
-    pub fn ref_with_expr(name: impl Into<SemanticsName>, expr: ExprSource) -> Self {
+    pub fn ref_with_expr(name: impl Into<SemanticsName>, expr: ExprSource<SemanticLeaf>) -> Self {
         Self::Ref(DimensionRef {
             name: name.into(),
             expr: Some(expr),
@@ -417,5 +419,5 @@ pub struct DimensionRef {
     /// Local override of the root-pool expression. The other root-pool
     /// fields are immutable per SR-E-1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expr: Option<ExprSource>,
+    pub expr: Option<ExprSource<SemanticLeaf>>,
 }

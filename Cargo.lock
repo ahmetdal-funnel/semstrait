@@ -2885,6 +2885,7 @@ dependencies = [
  "indexmap",
  "jsonschema",
  "semstrait-core",
+ "semstrait-ir",
  "serde",
  "serde_json",
  "serde_yaml",
