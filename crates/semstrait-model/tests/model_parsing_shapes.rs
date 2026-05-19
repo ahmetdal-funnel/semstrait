@@ -1,15 +1,15 @@
-//! End-to-end parse + build over the spec-aligned alpinestars v3 fixture.
+//! End-to-end parse + build smoke test over a YAML model fixture.
 //!
-//! Exercises every author-facing shape introduced by Phase 8's parser
-//! refactor: closed sugar roster (`concat:` / `upper:` / `eq:` / `in:` /
+//! Exercises every author-facing shape produced by the parser:
+//! the closed sugar roster (`concat:` / `upper:` / `eq:` / `in:` /
 //! `regexp_match:` / `regexp_extract:` / `case:`); the unified `lit:`
 //! literal keyword across both expression bodies and
 //! `semantic_mapping:`; bare-scalar = column rule for mapping values;
-//! `Inline(_)` arm for unresolved DSL strings (cpc / cpm / …); the
-//! flattened `extras.temporal:` shape; `keys:` with `KeyDecl` wrapper.
+//! `Inline(_)` arm for unresolved DSL strings; the flattened
+//! `extras.temporal:` shape; `keys:` with `KeyDecl` wrapper.
 //!
-//! Also serves as the user-readable canonical example of the v3 surface
-//! per `32 §10` — keep the fixture path stable.
+//! Paired with the deep-equality test in `model_parsing.rs`. This file
+//! is the fast shape-tag sanity check; the deep test asserts exact IR.
 
 use semstrait_ir::{AggregationOp, BinaryOpKind, CanonicalFn, Expr, Literal, SemanticLeaf};
 use semstrait_model::{parse, DimensionEntry, ExprSource, SemanticMappingValue};
@@ -64,14 +64,14 @@ fn shape_tags(expr: &Expr<SemanticLeaf>) -> Vec<String> {
 }
 
 #[test]
-fn alpinestars_v3_parses_to_builder() {
+fn model_parsing_produces_expected_shapes() {
     let builder = match parse(FIXTURE) {
         Ok(b) => b,
         Err(diags) => {
             for d in &diags {
                 eprintln!("PARSE: {:?}", d);
             }
-            panic!("alpinestars v3 fixture failed to parse");
+            panic!("model fixture failed to parse");
         }
     };
     let (model, build_diags) = match builder.build() {
@@ -80,7 +80,7 @@ fn alpinestars_v3_parses_to_builder() {
             for d in &diags {
                 eprintln!("BUILD: {:?}", d);
             }
-            panic!("alpinestars v3 fixture failed to build");
+            panic!("model fixture failed to build");
         }
     };
     for d in &build_diags {
