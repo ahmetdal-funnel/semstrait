@@ -25,14 +25,6 @@ Current default: not exposed in core public primitive surface.
 
 ---
 
-## Q4 — `ExprBlock` exposure boundary
-
-Should `ExprBlock` stay public in core, or become parser-internal to model layer with conversion-only exposure?
-
-Current default: public placeholder pending model-layer ratification.
-
----
-
 ## Q6 — `SourceId` opacity surface (`as_str` / `Display`)
 
 Should both `as_str()` and `Display` remain, or should one be removed for stricter opacity?

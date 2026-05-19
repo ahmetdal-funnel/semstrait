@@ -2,13 +2,17 @@
 prereqs: [13, 14, 14a, 16, 17]
 authoritative-for:
   - the `semstrait-ir` public-API surface (types, traits, free functions)
+  - the universal-traversal trait family — `Tree`, `Visitor<N>`, `Rewriter<N>`, `ExprLeaf` (variant ratified by `14 §3.1 / §3.2`; `35` is the crate-level home post-second-cascade)
   - the `Expr<L>` structural enum implementation (variant catalog ratified by `14 §3.3`; `35` carries the crate-level home)
+  - the structural-variant support enums shared by every leaf set — `BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `WindowFrameKind`, `WindowBound`, `Literal` (rosters ratified by `14 §3.3`; `35` is the crate-level home post-second-cascade)
+  - the shared identifier carriers `ColumnRef` and `SemanticsName` (consumed by both leaf sets per `14 §3.4 / §3.5`; `35` is the crate-level home post-second-cascade)
   - the `PhysicalLeaf` and `SemanticLeaf` enums — canonical-IR leaf set and per-kind typed semantic leaf set per `14 §3.4 / §3.5`
   - the `PhysicalExpr = Expr<PhysicalLeaf>` and `SemanticExpr = Expr<SemanticLeaf>` type aliases per `14 §3.6`
   - the per-kind accessor enums (`DimensionAccessor`, `MeasureAccessor`, `MetricAccessor`, `KeyAccessor`) carried as `Option<…>` fields on the typed semantic leaves per `14 §4.1`
   - the `Parameter` placeholder struct and the closed `ParameterKey` enum per `14 §5`
   - the authoring-surface DSL — the `expr_fn` module with `col`, `field`, `dim`, `measure`, `metric`, `key` free constructors; `std::ops` impls on `SemanticExpr` and `PhysicalExpr`; the `ExprFunctionExt` extension trait — per `14 §9.2`
   - the `CanonicalFn` newtype and the `FunctionRegistry` / `FunctionSpec` / `FnSignature` / `ParamType` / `ReturnTypeRule` / `FunctionCategory` / `RegistryExtension` / `function_registry()` surface, moved from `semstrait-core` per `14a §2`
+  - the narrow ir-emitted error kinds — `ValidateError` (raised by `Tree::with_new_children` and `Rewriter<N>::f_*`) and `CompileError` (raised by `ReturnTypeRule::Custom` callbacks wired into `FunctionSpec`); each implements `Diagnose` per `30 §5`. Downstream stages embed via D.ii kind-nesting (`30 §7.4`)
   - `SemanticPlan` — the canonical, engine-agnostic query plan tree
   - `PlanNode` sum type — variant roster (`Scan`, `Filter`, `Project`, `Agg`, `Join`, `Union`, `Sort`, `Fetch`) and per-variant shape
   - `EngineArtifact` / `EnginePlan` / `SqlArtifact` adapter-consumable output types (structural shape owned here; emission semantics in `36`)
@@ -19,7 +23,7 @@ authoritative-for:
   - serde posture for `SemanticPlan`, `Expr<L>`, and the Substrait mapping table (conversion is `36`'s concern; mapping declared here)
   - on-wire shape of `Cardinality` / `JoinType` when they appear on a `PlanNode::Join` (vocabulary ratified in `16 §5`)
 refined-by:
-  - 14 (`Expr<L>`, leaf-set catalogs, accessor catalogs, `Parameter` shape, DSL constructor list — the type-architecture contract `35` implements)
+  - 14 (`Expr<L>`, leaf-set catalogs, accessor catalogs, `Parameter` shape, DSL constructor list, trait scaffolding, support-enum rosters — the type-architecture contract `35` implements)
   - 14a (`CanonicalFn` semantics, signature polymorphism, return-type rules, registry sealing protocol)
   - 19 (compile-pipeline — Phase A `SemanticExpr::resolve` produces the `PhysicalExpr`s `35` stores in `PlanNode`s; Phase B placement consumes them)
   - 34 (`semstrait-planner` produces `SemanticPlan` values; consumes `PhysicalExpr` and the sealed `FunctionRegistry`)
@@ -29,7 +33,7 @@ refined-by:
 
 # 35. semstrait-ir
 
-> **Status:** rebase landing (2026-05-18). Cascade absorption of `[14](../foundations/14_expressions.md)`'s second-refinement landing: `semstrait-ir` now also OWNS the canonical-IR expression types (`Expr<L>`, `PhysicalLeaf`, `SemanticLeaf`, type aliases, per-kind accessor enums, `Parameter`), the authoring-surface DSL constructors (`expr_fn`, `std::ops` impls, `ExprFunctionExt`), and the `CanonicalFn` / `FunctionRegistry` previously held by `semstrait-core`. Every variant catalog and type-architecture invariant exposed here is ratified upstream in `14`, `14a`, or `16`; `35` adds no new rosters or structural rules — it implements / re-exports the shapes those chapters own. It ratifies the **plan-tree shape**, the **expression-type ownership at the crate level**, the **adapter-artifact shape**, and the **well-formedness invariants** the planner guarantees and the adapter relies on.
+> **Status:** second cascade landing (2026-05-19). Full expression-vocabulary absorption per the Option A direction (`STATUS.md` item Q): in addition to the first-cascade items already absorbed (`Expr<L>`, leaf sets, accessor enums, `Parameter`, `expr_fn` DSL, `CanonicalFn` / `FunctionRegistry`), `semstrait-ir` now also OWNS the **trait scaffolding** (`Tree`, `Visitor<N>`, `Rewriter<N>`, `ExprLeaf`), the **structural-variant support enums** (`BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `WindowFrameKind`, `WindowBound`, `Literal`), the **identifier carriers** (`ColumnRef`, `SemanticsName`), and the **narrow ir-emitted error kinds** (`ValidateError`, `CompileError`) previously held by `semstrait-core`. Every variant catalog and type-architecture invariant exposed here is ratified upstream in `14`, `14a`, or `16`; `35` adds no new rosters or structural rules — it implements the shapes those chapters own. It ratifies the **plan-tree shape**, the **expression-type ownership at the crate level**, the **adapter-artifact shape**, and the **well-formedness invariants** the planner guarantees and the adapter relies on.
 
 ## 1. Purpose and Scope
 
@@ -37,13 +41,18 @@ refined-by:
 
 ### 1.1 What `semstrait-ir` OWNS
 
+- The **universal-traversal trait family** (§3.2): the `Tree` trait — implemented here by `Expr<L>` (§3.3) and `PlanNode` (§9) — and its `Visitor<N>` / `Rewriter<N>` / `ExprLeaf` companions. Per `[14 §3.1](../foundations/14_expressions.md)` / `[§3.2](../foundations/14_expressions.md)`. Moved from `semstrait-core` at the second cascade (`STATUS.md` item Q).
 - The canonical-IR **expression types** (§3–§5): the `Expr<L>` structural enum implementation, the `PhysicalLeaf` and `SemanticLeaf` enums, the `PhysicalExpr` / `SemanticExpr` type aliases, the per-kind accessor enums (`DimensionAccessor`, `MeasureAccessor`, `MetricAccessor`, `KeyAccessor`), and the `Parameter` placeholder + `ParameterKey` closed enum. The variant catalogs and structural invariants are ratified by `[14 §3](../foundations/14_expressions.md)` and `[14 §4](../foundations/14_expressions.md)`; `35` is the *crate* that holds the implementation.
+- The **structural-variant support enums** shared by every `Expr<L>` instantiation (§3.4): `BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `WindowFrameKind`, `WindowBound`. Rosters per `[14 §3.3](../foundations/14_expressions.md)`. Moved from `semstrait-core` at the second cascade.
+- The **typed-literal carrier** `Literal` (§3.4) — single value type shared by `PhysicalLeaf::Literal` and `SemanticLeaf::Literal`. Per `[14 §3.3](../foundations/14_expressions.md)`. Moved from `semstrait-core` at the second cascade.
+- The **shared identifier carriers** referenced by both leaf sets (§3.4): `ColumnRef` and `SemanticsName`. Moved from `semstrait-core` at the second cascade.
 - The **authoring-surface DSL** (§6): the `expr_fn` module with the six canonical free-function constructors (`col`, `field`, `dim`, `measure`, `metric`, `key`), `std::ops` impls on `SemanticExpr` and `PhysicalExpr` for operator overloading, and the `ExprFunctionExt` extension trait for comparison / predicate / aggregate / accessor builder methods. Per `[14 §9.2](../foundations/14_expressions.md)`.
-- The **`CanonicalFn` newtype** and the **`FunctionRegistry` surface** (§7): `FunctionRegistry`, `FunctionSpec`, `FnSignature`, `ParamType`, `ReturnTypeRule`, `FunctionCategory`, `RegistryExtension` trait, `function_registry()` accessor. Moved from `semstrait-core` per `[14a §2](../foundations/14a_function_catalog.md)` and the `[14 §9.2](../foundations/14_expressions.md)` placement contract; `35` is now the registry's owning crate.
+- The **`CanonicalFn` newtype** and the **`FunctionRegistry` surface** (§7): `FunctionRegistry`, `FunctionSpec`, `FnSignature`, `ParamType`, `ReturnTypeRule`, `FunctionCategory`, `RegistryExtension` trait, `function_registry()` accessor. Per `[14a §2](../foundations/14a_function_catalog.md)` and the `[14 §9.2](../foundations/14_expressions.md)` placement contract; `35` is the registry's owning crate.
+- The **narrow ir-emitted error kinds** (§15): `ValidateError` (raised by `Tree::with_new_children` and `Rewriter<N>::f_*`) and `CompileError` (raised by `ReturnTypeRule::Custom` callbacks wired into `FunctionSpec`). Each implements `Diagnose` per `[30 §5](30_api_contracts.md)`; downstream stages MAY embed via D.ii kind-nesting (`[30 §7.4](30_api_contracts.md)`). Moved from `semstrait-core` at the second cascade. **Naming note:** the `Kind` suffix is dropped per the scoped error-naming cleanup tied to this move (`STATUS.md` item Q); broader `*ErrorKind` rename remains deferred.
 - The `SemanticPlan` root type (§8) and the `PlanNode` sum type (§9) — every variant, its fields, and the well-formedness invariants its children must satisfy (§12).
 - Plan-level primitive types (§10): `SourceRef`, `ResolvedColumn`, `Name`, `KeyPair`, `SortDir`, `NullOrdering`, `AggregateExpr`, `NodeMeta`.
 - The adapter-consumable output family (§11): `EngineArtifact`, `EnginePlan`, `SqlArtifact`, `DialectId`, `Dialect`. `36` refines *emission* (how an adapter fills them in); `35` ratifies their *shape*.
-- The visitor / traversal API over `PlanNode` trees (§13). The same `Tree` / `Visitor` / `Rewriter` traits from `semstrait-core` drive both `Expr<L>` and `PlanNode` traversal; `35` exposes one unified trait surface across both shapes (§3.2 / §13.1).
+- The visitor / traversal API over `PlanNode` trees (§13). The same `Tree` / `Visitor` / `Rewriter` traits owned here (§3.2) drive both `Expr<L>` and `PlanNode` traversal; `35` exposes one unified trait surface across both shapes (§3.2 / §13.1).
 - Serde derivations for `SemanticPlan`, `Expr<L>`, and every public IR type (§14).
 - The `IrErrorKind` typed-kind enum and its `Diagnose` impl (§15).
 - The Substrait-mapping **table** (§14.2) — declarative correspondence between each `PlanNode` variant and the `substrait::proto::Rel` kind an adapter emits. The conversion *code* lives in `36`.
@@ -66,9 +75,9 @@ refined-by:
 - **Zero I/O surface.** Concrete I11 guarantee (per `30 §9`).
 - **Zero async.** Every method on every public type is synchronous; `SemanticPlan` is built, walked, rewritten, and serialized on the caller's thread. `Expr<L>` traversal is synchronous. I6 guarantee.
 - **Zero engine identity.** No `datafusion::*`, no `arrow::*`, no `spark::*`, no `duckdb::*` types are visible on any `semstrait-ir` public surface. `DialectId` is an opaque newtype; `substrait::proto::Plan` is the one exception and appears only inside `EnginePlan::Substrait(_)` (§11.2) as the adapter-consumable payload.
-- **Single upstream dependency.** `semstrait-ir` depends on `semstrait-core` only — for the `Tree` / `Visitor` / `Rewriter` / `ExprLeaf` trait surface (re-exported here per §3.2), the cross-cutting diagnostic primitives (`Diagnostic<K>`, `Diagnose`, `Severity`, `Location`, `Span`, `SourceId`), and the shared support enums (`DataType`, `Grain`, `Literal`, `BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `ColumnRef`, `SemanticsName`). Every other workspace crate depends on `semstrait-ir` directly (model, manifest, planner, adapter) or transitively (façade). `Cargo.toml` audit per §17.2 enforces this.
+- **Single upstream dependency.** `semstrait-ir` depends on `semstrait-core` only — for the canonical logical-type vocabulary (`DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn`) per `[13](../foundations/13_types_and_grain.md)`, the cross-cutting diagnostic primitives (`Diagnostic<K>`, `Diagnose`, `Severity`, `Location`, `Span`, `SourceId`), and the constraint-DSL toolkit referenced by some `FunctionSpec`-adjacent diagnostics. The trait surface (`Tree` / `Visitor` / `Rewriter` / `ExprLeaf`), the structural-variant support enums (`BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `Literal`), the identifier carriers (`ColumnRef`, `SemanticsName`), and the narrow ir-emitted error kinds (`ValidateError`, `CompileError`) are owned here, not in core. Every other workspace crate depends on `semstrait-ir` directly (model, manifest, planner, adapter) or transitively (façade). `Cargo.toml` audit per §17.2 enforces this.
 
-Following the `[14](../foundations/14_expressions.md)` second-refinement landing, this crate is also the home of the canonical-IR expression types, the authoring-surface DSL, and the `FunctionRegistry`. Every downstream crate — `semstrait-model` (parse-site dispatch produces these types per `[14 §9.3](../foundations/14_expressions.md)`), `semstrait-manifest` (`compile` transforms `SemanticExpr` into `PhysicalExpr` per `[19 §3](../foundations/19_expression_flow.md)`), `semstrait-planner` (Phase B consumes `PhysicalExpr` and the sealed `FunctionRegistry` per `[19 §6](../foundations/19_expression_flow.md)`), and `semstrait-adapter` (renders `PhysicalExpr` to engine artifacts) — consumes these types from here.
+Following the second cascade (`STATUS.md` item Q, 2026-05-19), this crate is the **complete expression-vocabulary home**: trait scaffolding, structural-variant support enums, leaf carriers, expression types, accessor enums, `Parameter`, authoring-surface DSL, `FunctionRegistry`, and the two narrow error kinds emitted by the trait / registry machinery. Every downstream crate — `semstrait-model` (parse-site dispatch produces `Expr<SemanticLeaf>` values per `[14 §9.3](../foundations/14_expressions.md)`), `semstrait-manifest` (`compile` transforms `SemanticExpr` into `PhysicalExpr` per `[19 §3](../foundations/19_expression_flow.md)`; its wider `CompileError` embeds `Ir(ir::CompileError)` via D.ii), `semstrait-planner` (Phase B consumes `PhysicalExpr` and the sealed `FunctionRegistry` per `[19 §6](../foundations/19_expression_flow.md)`), and `semstrait-adapter` (renders `PhysicalExpr` to engine artifacts) — consumes these types from here.
 
 ### 1.4 Engine-IR concept inspiration
 
@@ -85,6 +94,11 @@ Top-level `pub mod` structure. One module per cohesive concept.
 
 ```
 semstrait-ir
+├── tree                 // Tree trait + Visitor<N> / Rewriter<N> / ExprLeaf companions (14 §3.1 / §3.2)
+├── expr_kinds           // Structural-variant support enums: BinaryOpKind, UnaryOpKind,
+│                        //   AggregationOp, LikeKind, CastFailure, WindowFn, WindowFrame,
+│                        //   WindowFrameKind, WindowBound, Literal (14 §3.3); plus the
+│                        //   shared identifier carriers ColumnRef, SemanticsName
 ├── expr                 // Expr<L>, leaf sets, type aliases, accessor enums, Parameter, DSL
 │   ├── tree             //   Expr<L> structural enum (variant catalog owned by 14 §3.3)
 │   ├── leaves           //   PhysicalLeaf, SemanticLeaf, PhysicalExpr, SemanticExpr (14 §3.4–§3.6)
@@ -101,19 +115,22 @@ semstrait-ir
 ├── primitives           // SourceRef, ResolvedColumn, Name, KeyPair, SortDir,
 │                        //   NullOrdering, AggregateExpr
 ├── artifact             // EngineArtifact, EnginePlan, SqlArtifact, DialectId, Dialect
-├── error                // IrErrorKind (35-owned typed-kind enum)
+├── error                // ValidateError (raised by Tree::with_new_children + Rewriter<N>::f_*);
+│                        //   CompileError (raised by ReturnTypeRule::Custom callbacks);
+│                        //   IrErrorKind (plan-shape diagnostics)
 └── substrait_map        // Substrait mapping TABLE only (no conversion code)
 ```
 
 **Split rationale:**
 
+- `tree` vs `expr_kinds` — the trait surface (`Tree`, `Visitor`, `Rewriter`, `ExprLeaf`) is conceptually independent of the support-enum roster: `Tree` works for `PlanNode` (which never references `BinaryOpKind`) just as well as for `Expr<L>`. Both modules moved from `semstrait-core` at the second cascade; isolating them limits the I10 blast radius when a support-enum variant lands.
 - `expr` vs everything else — the canonical-IR expression types are referenced by `plan` (`PlanNode` variants carry `PhysicalExpr` on predicate / projection / aggregate slots) but not vice-versa; isolating the expression module lets downstream consumers that only need expressions (parse-site code, registry-lookup tooling) skip the plan-tree surface entirely.
 - Inside `expr`: `tree` / `leaves` / `accessor` / `parameter` split per-type-family for `cargo public-api` audit clarity and so a future doctool can list each family in isolation; `expr_fn` isolates the DSL so the structural types compile without the authoring vocabulary present.
-- `functions` — moved from `semstrait-core` per the `[14 §9.2](../foundations/14_expressions.md)` placement contract: every consumer of `Expr<L>::FunctionCall { name: CanonicalFn, ... }` needs the registry to resolve `name` to a `FunctionSpec`; placing the registry adjacent to `expr` keeps the dependency direction natural and removes the cross-crate hop downstream consumers previously paid.
+- `functions` — every consumer of `Expr<L>::FunctionCall { name: CanonicalFn, ... }` needs the registry to resolve `name` to a `FunctionSpec`; placing the registry adjacent to `expr` keeps the dependency direction natural and removes the cross-crate hop downstream consumers previously paid.
 - `plan` vs `primitives` — `PlanNode` references every primitive type, but not vice-versa. Keeping primitives alphabetically separate lets future crates (e.g. a plan-diff tool) depend only on `primitives` without linking the full `PlanNode` surface.
 - `plan::node` vs `plan::traversal` — the traversal API's method count scales with the `PlanNode` variant count; isolating it limits I10 blast radius when a new variant lands.
 - `artifact` as a separate module — `EngineArtifact` is the *output* shape. It is naturally decoupled from the *input* shape (`SemanticPlan`) and is consumed by the engine layer above `semstrait-adapter` (executors, wrappers, CLI); isolating it keeps the import graph clean.
-- `error` is its own module mirroring the `semstrait-core` split (`31 §2`).
+- `error` — three kinds co-located: the narrow `ValidateError` and `CompileError` emitted by the trait / registry machinery (also moved from `semstrait-core` at the second cascade), plus the plan-shape `IrErrorKind`. Distinct from manifest's wider `CompileError` (resolution-stage errors per `33 §10`), which embeds `Ir(ir::CompileError)` via D.ii.
 - `substrait_map` exists as a table reference, not a conversion module. The actual conversion code lives in `36` (which owns the substrait-proto emission and consumption logic).
 
 **Re-exports.** The crate root re-exports a curated surface (§19). Non-root re-exports of internal helpers are forbidden.
@@ -130,15 +147,47 @@ The structural shape of canonical-IR expressions is ratified by `[14 §3](../fou
 
 `35` is the **crate** that holds the implementation of `Expr<L>`. Per `[14 §9.2](../foundations/14_expressions.md)`, this ownership moved from `semstrait-core` to `semstrait-ir` at the `14` second-refinement landing. `35` does not re-ratify the variant catalog; the catalog is `[14 §3.3](../foundations/14_expressions.md)`'s contract and any change to it lands in `14` first, then cascades here.
 
-### 3.2 Trait re-exports from `semstrait-core`
+### 3.2 The `Tree` / `Visitor` / `Rewriter` / `ExprLeaf` trait surface — owned here
 
-The `Tree` / `Visitor` / `Rewriter` / `ExprLeaf` trait surfaces live in `semstrait-core` (one stage-agnostic dependency, used here for both `Expr<L>` and — via the same trait surface — for `PlanNode` per §13). `35` re-exports them at the crate root for ergonomic consumer access:
+Per `[14 §3.1](../foundations/14_expressions.md)` / `[§3.2](../foundations/14_expressions.md)` and the second-cascade placement in `[14 §9.2](../foundations/14_expressions.md)`, the universal-traversal trait family is owned by `semstrait-ir`. Both `Expr<L>` (§3.3) and `PlanNode` (§9) implement these traits; the natural home is alongside their producers, not upstream in core.
 
 ```rust
-pub use semstrait_core::{Tree, Visitor, Rewriter, ExprLeaf, ValidateErrorKind};
+/// Universal traversal contract. Implemented by Expr<L> (§3.3) and PlanNode (§9).
+/// Stage-agnostic. Per `14 §3.1`.
+pub trait Tree: Sized {
+    fn children(&self) -> Vec<&Self>;
+    fn with_new_children(self, new_children: Vec<Self>) -> Result<Self, ValidateError>;
+}
+
+impl<T: Tree> T {
+    pub fn apply<V: Visitor<Self>>(&self, v: &mut V) -> V::Output { /* default body */ }
+    pub fn transform<F>(self, f: F) -> Result<Self, ValidateError>
+    where F: FnMut(Self) -> Result<Self, ValidateError> { /* default body */ }
+}
+
+/// Per `14 §3.1`.
+pub trait Visitor<N> {
+    type Output;
+    fn f_down(&mut self, node: &N) -> ControlFlow<Self::Output>;
+    fn f_up(&mut self,   node: &N) -> ControlFlow<Self::Output>;
+}
+
+/// Per `14 §3.1`.
+pub trait Rewriter<N> {
+    fn f_down(&mut self, node: N) -> Result<N, ValidateError>;
+    fn f_up(&mut self,   node: N) -> Result<N, ValidateError>;
+}
+
+/// Per-leaf-set metadata contract. Implemented by PhysicalLeaf and SemanticLeaf (§4).
+/// Per `14 §3.2`.
+pub trait ExprLeaf: Sized + Clone + Debug {
+    fn inferred_type(&self) -> Option<&DataType>;
+}
 ```
 
-Consumers write `use semstrait_ir::Tree` rather than dual-importing from core. This single trait surface is what lets one generic algorithm operate on both expression trees and plan trees (e.g. the optimizer can apply the same `transform` helper to predicates inside `FilterNode` and to subtrees rooted at `FilterNode` itself).
+Consumers write `use semstrait_ir::Tree` (no cross-crate hop to core). The single trait surface lets one generic algorithm operate on both expression trees and plan trees — e.g. the optimizer applies the same `transform` helper to predicates inside `FilterNode` and to subtrees rooted at `FilterNode` itself.
+
+`ValidateError` is owned by `semstrait-ir` (§15) since it is raised entirely by `Tree::with_new_children` and the `Rewriter<N>::f_*` callbacks defined here.
 
 ### 3.3 The `Expr<L>` definition
 
@@ -171,7 +220,7 @@ pub enum Expr<L: ExprLeaf> {
 
 impl<L: ExprLeaf> Tree for Expr<L> {
     fn children(&self) -> Vec<&Self> { /* per-variant */ }
-    fn with_new_children(self, new_children: Vec<Self>) -> Result<Self, ValidateErrorKind> { /* per-variant */ }
+    fn with_new_children(self, new_children: Vec<Self>) -> Result<Self, ValidateError> { /* per-variant */ }
 }
 ```
 
@@ -181,26 +230,94 @@ Per `[14 §3.3](../foundations/14_expressions.md)`'s notes:
 - Engine-specific operators do not add `Expr<L>` variants. They land as `FunctionCall` entries via `FunctionRegistry` extensions per `[14a §7](../foundations/14a_function_catalog.md)`.
 - `Aggregate`'s `filter` carries the canonical `agg(expr) FILTER (WHERE p)` shape; adapter compensation for engines without native `FILTER` is the adapter's concern (`36`), not part of the canonical IR.
 
-### 3.4 Re-exports of structural-variant support types
+### 3.4 Structural-variant support enums + identifier carriers — owned here
 
-`Expr<L>`'s structural variants carry support enums that live in `semstrait-core` per `[14 §9.1](../foundations/14_expressions.md)`. `35` re-exports them at the crate root so consumers see one import surface:
+`Expr<L>`'s structural variants reference a small set of support enums and identifier carriers. Per `[14 §9.2](../foundations/14_expressions.md)` (second cascade), these live in `semstrait-ir` alongside `Expr<L>` itself. Rosters per `[14 §3.3](../foundations/14_expressions.md)`.
 
 ```rust
-pub use semstrait_core::{
-    BinaryOpKind, UnaryOpKind,
-    AggregationOp, LikeKind, CastFailure,
-    WindowFn, WindowFrame,
-    DataType, Grain, Literal,
-    ColumnRef, SemanticsName,
-};
+// Operator discriminators carried by Expr<L>::BinaryOp / UnaryOp.
+#[non_exhaustive]
+pub enum BinaryOpKind {
+    Add, Subtract, Multiply, Divide, SafeDivide, Mod,
+    Eq, NotEq, Lt, LtEq, Gt, GtEq,
+    And, Or,
+}
+
+#[non_exhaustive]
+pub enum UnaryOpKind { Negate, Not }
+
+// Aggregation tag carried by Expr<L>::Aggregate. CountDistinct is encoded as
+// Aggregate { op: Count, distinct: true, ... }.
+#[non_exhaustive]
+pub enum AggregationOp { Sum, Avg, Count, Min, Max }
+
+// Like operator variant — case-sensitivity and negation profile.
+#[non_exhaustive]
+pub enum LikeKind { Like, NotLike, ILike, NotILike }
+
+// Cast failure-mode discriminator. Adapters MAY emit different SQL forms per variant.
+#[non_exhaustive]
+pub enum CastFailure {
+    /// Raise an engine-level error on cast failure.
+    Error,
+    /// Return NULL on cast failure (TRY_CAST semantics).
+    Null,
+}
+
+// Window function identity + frame spec, carried by Expr<L>::Window.
+// Window nodes are compile-emitted only via sugar-accessor elimination (14 §4.2).
+#[non_exhaustive]
+pub enum WindowFn { Lag, Lead, FirstValue, LastValue, RowNumber, Rank, DenseRank }
+
+#[non_exhaustive]
+pub struct WindowFrame { pub kind: WindowFrameKind, pub start: WindowBound, pub end: WindowBound }
+
+#[non_exhaustive]
+pub enum WindowFrameKind { Rows, Range, Groups }
+
+#[non_exhaustive]
+pub enum WindowBound {
+    UnboundedPreceding, Preceding(u64), CurrentRow, Following(u64), UnboundedFollowing,
+}
+
+// Typed literal value — single carrier shared by PhysicalLeaf::Literal and
+// SemanticLeaf::Literal. Variant list aligns 1:1 with DataType (13) plus Null.
+#[non_exhaustive]
+pub enum Literal {
+    Boolean(bool),
+    Integer(i64),
+    Float(f64),
+    Decimal  { value: String, precision: u8, scale: i8 },
+    String(String),
+    Date(String),
+    Time     { value: String, precision: u8 },
+    Timestamp{ value: String, precision: u8 },
+    Interval(String),
+    Binary(Vec<u8>),
+    Null,
+}
+
+// Shared identifier carriers. Newtype-over-stable per 30 §4.3
+// (no #[non_exhaustive]; .0 access is intentional).
+pub struct ColumnRef(pub String);
+pub struct SemanticsName(pub String);
 ```
 
-`DataType` / `Literal` flow through both the structural variants (`Cast::target: DataType`) and the leaves (`PhysicalLeaf::Literal(Literal)`); re-exporting them at the crate root keeps `use semstrait_ir::*` sufficient for almost every consumer.
+`DataType` / `Grain` / `Schema` / `SchemaColumn` are re-exported from `semstrait-core` (they remain there as shared logical-type vocabulary used by model / manifest / planner / adapter outside of expression contexts):
+
+```rust
+pub use semstrait_core::{DataType, Grain, TypeClass, Schema, SchemaColumn};
+```
+
+`DataType` flows through both the structural variants (`Cast::target: DataType`) and the support enums (`Literal::Decimal { precision, scale }` aligns with `DataType::Decimal`); keeping the re-export at the crate root means `use semstrait_ir::*` is sufficient for almost every consumer.
+
+**Why `Vec<String>` matters here:** `Literal` parses bare YAML scalars into typed shape at parse time per `[32 §...](../apis/32_semstrait_model.md)`; `semstrait-ir` validates `Decimal { precision, scale }` range at construction.
 
 ### 3.5 What `35` does NOT re-ratify
 
 - The structural-variant catalog of `Expr<L>` — owned by `[14 §3.3](../foundations/14_expressions.md)`.
-- The `Tree` / `Visitor` / `Rewriter` / `ExprLeaf` trait surfaces — owned by `[14 §3.1](../foundations/14_expressions.md)` / `[§3.2](../foundations/14_expressions.md)` and implemented in `semstrait-core`. `35` is the consumer-side re-exporter.
+- The trait-family contract (`Tree`, `Visitor`, `Rewriter`, `ExprLeaf` signatures and semantics) — owned by `[14 §3.1](../foundations/14_expressions.md)` / `[§3.2](../foundations/14_expressions.md)`. `35` carries the implementation per §3.2.
+- The support-enum variant rosters — owned by `[14 §3.3](../foundations/14_expressions.md)`. `35` carries the implementation per §3.4.
 - The traversal-helper semantics (`apply`, `transform` default bodies) — owned by `[14 §3.1](../foundations/14_expressions.md)`.
 
 ## 4. Leaf Sets — `PhysicalLeaf` and `SemanticLeaf`
@@ -275,7 +392,7 @@ Notable properties per `[14 §3.5](../foundations/14_expressions.md)`:
 
 - **No `EntityRef` wrapper, no `Access` wrapper, no outer `Accessor` enum.** Every semantic reference is a typed leaf whose variant tag already encodes the entity kind. The per-kind accessor enums (§5.1) sit as `Option<…>` fields on the typed leaves. This shape replaces the earlier-draft `EntityRef` / `Access` / wrapping `Accessor` design at the `14` second-refinement landing.
 - **`Field` is the untyped fallback.** When the author writes a bare identifier (at a semantic site) or explicit `field(name)`, the leaf carries no kind hint; compile resolves the kind by registry lookup.
-- **`Dimension` / `Measure` / `Metric` / `Key` are kind-pinned.** Compile fails fast if the registered semantic at `name` has a different kind than the authored leaf variant — `CompileErrorKind::SemanticKindMismatch` per `[14 §8](../foundations/14_expressions.md)`.
+- **`Dimension` / `Measure` / `Metric` / `Key` are kind-pinned.** Compile fails fast if the registered semantic at `name` has a different kind than the authored leaf variant — `manifest::CompileError::SemanticKindMismatch` per `[14 §8](../foundations/14_expressions.md)`.
 - **`Column` is conditionally legal.** Type-admissible (the parser can construct it), but compile rejects it under manual mapping per `[14 §8](../foundations/14_expressions.md)`. Under `semantic_mapping: auto`, compile synthesizes `SemanticMapping` entries for `Column` leaves and the rest of resolution proceeds as with manual mapping.
 - **No `Parameter`.** Parameters are exclusively compile-emitted and live only in `PhysicalLeaf`.
 
@@ -482,7 +599,7 @@ Sugar accessors lower to `Window`-rooted subtrees during compile per `[14 §4.2]
 
 ### 6.4 What `35` does NOT own
 
-- The YAML authoring surface (`ExprSource`, `ExprBlock`, parse-site dispatch) — lives in `semstrait-model` per `[14 §9.3](../foundations/14_expressions.md)` and `[32](32_semstrait_model.md)`.
+- The YAML authoring surface (`ExprSource` enum with `Inline(String)` and `Block(Expr<L>)` variants, parse-site dispatch) — lives in `semstrait-model` per `[14 §9.3](../foundations/14_expressions.md)` and `[32](32_semstrait_model.md)`. The `Block(Expr<L>)` variant carries `Expr<SemanticLeaf>` (semantic sites) or `Expr<PhysicalLeaf>` (physical-mapping sites) directly via the serde derives on `Expr<L>` (`§14.1`); there is no separate `ExprBlock` type.
 - Per-site shape gates governing which authoring sites admit which expression shapes (scalar / Boolean / aggregate-admitting) — `[14 §7](../foundations/14_expressions.md)`.
 - Bare-identifier resolution rules (semantic site defaults to `field`, physical-mapping site defaults to `col`) — `[14 §6.5](../foundations/14_expressions.md)`.
 
@@ -504,7 +621,7 @@ This ownership moved from `semstrait-core` to `semstrait-ir` at the `14` second-
 pub struct CanonicalFn(/* crate-private: normalized interned name */);
 
 impl CanonicalFn {
-    pub fn new(name: impl Into<String>) -> Result<Self, ValidateErrorKind>;
+    pub fn new(name: impl Into<String>) -> Result<Self, ValidateError>;
     pub fn as_str(&self) -> &str;
 }
 
@@ -560,7 +677,7 @@ pub enum ReturnTypeRule {
     Fixed(DataType),
     SameAsFirstArg,
     SameAsArg(u32),
-    Custom(fn(&[DataType]) -> Result<DataType, CompileErrorKind>),
+    Custom(fn(&[DataType]) -> Result<DataType, CompileError>),
 }
 
 /// Function-category axis (scalar / aggregate / window). Per `14a §3.4`.
@@ -577,11 +694,11 @@ pub enum FunctionCategory {
 /// own overloads at registry build time.
 pub trait RegistryExtension {
     fn extend(&self, registry: &mut FunctionRegistryBuilder)
-        -> Result<(), CompileErrorKind>;
+        -> Result<(), CompileError>;
 }
 ```
 
-`CompileErrorKind` and `ValidateErrorKind` are re-exported from `semstrait-core::error` (no new error-kind enums declared here for the registry surface; `35`'s own typed-kind enum is `IrErrorKind` per §15, scoped to plan-tree concerns).
+`CompileError` and `ValidateError` are owned here in `semstrait-ir::error` (§15) — they are raised by the registry callbacks (`ReturnTypeRule::Custom`) and the trait machinery (`Tree::with_new_children`, `Rewriter<N>::f_*`) respectively. The plan-shape `IrErrorKind` (§15.3) is the third enum exposed by this crate, scoped to plan-tree concerns.
 
 ### 7.3 What `35` does NOT own
 
@@ -1416,8 +1533,60 @@ The adapter is free to emit Substrait proto plans with extra hints (capacity, pa
 ## 15. Error Types
 
 > **Migration note.** Body sections `§9`–`§13` retain references to legacy `IR_E_*` codes (e.g. `IR_E_3502 UnresolvedType`). Those codes are **retired** per `30 §5`; the public-API surface identifies errors by `IrErrorKind` variant identity. The legacy code prefixes remain in body prose during the migration as cross-reference anchors and will be stripped in a follow-up doc pass. Read `IR_E_NNNN VariantName` in the body as shorthand for `IrErrorKind::VariantName`.
+>
+> **Naming.** This crate exposes three error enums: the two narrow ir-emitted kinds (`ValidateError`, `CompileError`) and the plan-shape `IrErrorKind`. The first two carry no `Kind` suffix per the scoped cleanup tied to the second-cascade landing (`STATUS.md` item Q); the rest of the workspace's `*ErrorKind` enums (`IrErrorKind` here, `PlanErrorKind`, `AdaptErrorKind`, `ParseErrorKind`, …) keep the suffix until a future global rename pass.
 
-### 15.1 `IrErrorKind`
+### 15.1 `ValidateError` — raised by trait machinery
+
+```rust
+/// Construction-time invariants raised by `Tree::with_new_children`
+/// and `Rewriter<N>::f_down` / `f_up` callbacks. Per `14 §3.1`.
+///
+/// Identification is by variant identity per `30 §5.4`.
+#[non_exhaustive]
+pub enum ValidateError {
+    /// `with_new_children` received an arity that does not match the
+    /// node's variant tag (e.g. a `BinaryOp` reconstructed with three
+    /// children, an `Aggregate` reconstructed with zero args).
+    StructuralArityMismatch { node_kind: &'static str, expected: ArityRange, got: usize },
+
+    /// `Aggregate` authored outside an aggregate-admitting site
+    /// per `[14 §7](../foundations/14_expressions.md)`.
+    AggregateInScalarContext { location: Location },
+
+    /// A rewriter callback produced a structurally invalid subtree.
+    RewriteInvariantViolated { reason: String },
+}
+
+impl Diagnose for ValidateError { /* per-variant message / severity */ }
+```
+
+`ValidateError` is the construction-boundary diagnostic. Downstream stages embed via D.ii kind-nesting (`[30 §7.4](30_api_contracts.md)`): `model::ValidateError` carries an `Ir(ir::ValidateError)` variant for invariants raised during parse-time tree construction; the equivalent re-emission boundary is per `[32 §9.5](32_semstrait_model.md)`.
+
+### 15.2 `CompileError` — raised by `FunctionSpec` machinery
+
+```rust
+/// Function-resolution diagnostic raised by `ReturnTypeRule::Custom`
+/// callbacks wired into `FunctionSpec` (§7). Per `14a §3.5`.
+///
+/// Identification is by variant identity per `30 §5.4`.
+#[non_exhaustive]
+pub enum CompileError {
+    /// `ReturnTypeRule::Custom` callback declined to produce a return
+    /// type for the supplied argument types.
+    CustomRuleRejected { fn_name: CanonicalFn, args: Vec<DataType>, reason: String },
+
+    /// A registered `FunctionSpec` failed its own internal consistency
+    /// check (e.g. signature overlaps another in the same registry).
+    SpecInconsistent   { fn_name: CanonicalFn, reason: String },
+}
+
+impl Diagnose for CompileError { /* per-variant message / severity */ }
+```
+
+`CompileError` is the narrow function-resolution diagnostic. The wider compile-stage error surface (unknown references, ambiguous paths, cycles, type-inference failures, …) lives in `semstrait-manifest::CompileError` per `[33 §10](33_semstrait_manifest.md)` and embeds `Ir(ir::CompileError)` via D.ii kind-nesting (`[30 §7.4](30_api_contracts.md)`).
+
+### 15.3 `IrErrorKind`
 
 ```rust
 /// Typed-kind enum for `semstrait-ir`'s own operations: plan-tree
@@ -1489,15 +1658,13 @@ impl Diagnose for IrErrorKind {
 }
 ```
 
-`IrErrorKind` is owned by `semstrait-ir`. It is not a re-export of `CompileErrorKind` or `PlanErrorKind` — those typed-kind enums have different production sites and different lifecycles. A planner-side failure producing a malformed `SemanticPlan` is a `PlanErrorKind` (`34`); that same malformed plan caught by `SemanticPlan::validate()` on the consumer side becomes an `IrErrorKind`. Both surface as `Diagnostic<K>` envelopes for the appropriate `K` per `30 §5.1`.
+`IrErrorKind` is owned by `semstrait-ir`. It is distinct from `ir::CompileError` (§15.2, raised by `FunctionSpec` machinery), `ir::ValidateError` (§15.1, raised by trait machinery), and the downstream `manifest::CompileError` / `PlanErrorKind` / `AdaptErrorKind` — each has a different production site and a different lifecycle. A planner-side failure producing a malformed `SemanticPlan` is a `PlanErrorKind` (`34`); that same malformed plan caught by `SemanticPlan::validate()` on the consumer side becomes an `IrErrorKind`. All four surface as `Diagnostic<K>` envelopes for the appropriate `K` per `30 §5.1`.
 
-The registry-side error surface (`CompileErrorKind` raised by `ReturnTypeRule::Custom` callbacks, `ValidateErrorKind` raised by `CanonicalFn::new` / `Expr<L>` constructor invariant checks) is re-exported from `semstrait-core::error`; `35` does not declare its own analogues for those concerns.
+### 15.4 Variant identity, not codes
 
-### 15.2 Variant identity, not codes
+The retired `IR_E_*` numeric range from earlier drafts is gone. Identification is by variant identity per `30 §5.4`; renaming or removing a variant is MAJOR per `30 §2.1`; adding a variant inside `#[non_exhaustive]` is MINOR per `30 §2.2`. The §2 module layout allocates a dedicated `error` module that co-locates `ValidateError`, `CompileError`, and `IrErrorKind` next to their production sites.
 
-The retired `IR_E_*` numeric range from earlier drafts is gone. Identification is by variant identity per `30 §5.4`; renaming or removing a variant is MAJOR per `30 §2.1`; adding a variant inside `#[non_exhaustive]` is MINOR per `30 §2.2`. The §2 module layout still allocates a dedicated `error` module so the kind enum lives next to its production sites (plan-tree construction, validation, artifact serialization).
-
-### 15.3 Warning posture
+### 15.5 Warning posture
 
 `semstrait-ir` itself, being pure data + validation, has no warning-emitting operation in v1. Warnings surfaced by planner or optimizer ride `PlanErrorKind` / `OptimizeErrorKind` envelopes per `34`; adapter warnings ride `AdaptErrorKind` per `36`. If a future v2 walker emits `Severity::Warning` `Diagnostic<IrErrorKind>` (e.g. an "unused PlanNode" advisory), it lands additively under `#[non_exhaustive]` per `30 §2.2`.
 
@@ -1591,7 +1758,7 @@ serde   = ["dep:serde", "semstrait-core/serde"]
 | **I7** — strict DAG | `Cargo.toml` lists `semstrait-core` as the only internal workspace dependency. CI check greps for any other `semstrait-*` entry. The expression types + registry absorbed from `semstrait-core` at the `14` second-refinement landing do not change the DAG — `semstrait-core` remains the workspace leaf carrying primitives + trait scaffolding + support enums. |
 | **I10** — extensibility | Every `pub enum` and `pub struct` carries `#[non_exhaustive]` except the newtype-over-stable set: `Name`, `SourceRef`, `DialectId`, `NodeId`, `CanonicalFn`. An `integration-test` over `cargo public-api` enforces the rule. |
 | **I11** — no downward I/O surprises | No `std::fs`, no `std::net`, no `tokio`, no `reqwest` anywhere in the crate. `substrait`'s `prost` dependency is bytes-encoding only, not I/O. |
-| **I12** — first-class diagnostics | `Diagnose` implemented on `IrErrorKind` per `30 §5.4`; identification is by variant identity. The blanket `Display` and `std::error::Error` impls on `Diagnostic<K>` (per `30 §5.5`) make `Diagnostic<IrErrorKind>` directly usable as a `std::error::Error` value. Registry-side construction-time errors flow through `semstrait-core`'s `ValidateErrorKind` / `CompileErrorKind` re-exports. |
+| **I12** — first-class diagnostics | `Diagnose` implemented on `IrErrorKind`, `ValidateError`, and `CompileError` per `30 §5.4`; identification is by variant identity. The blanket `Display` and `std::error::Error` impls on `Diagnostic<K>` (per `30 §5.5`) make `Diagnostic<IrErrorKind>` directly usable as a `std::error::Error` value. Registry-side construction-time errors raised by trait / `FunctionSpec` machinery flow through `ir::ValidateError` / `ir::CompileError` (§15.1 / §15.2). |
 
 ## 19. Public API Surface Sketch
 
@@ -1699,7 +1866,11 @@ pub enum   Capability                                    // #[non_exhaustive]; r
 ### 19.7 `error`
 
 ```
-pub enum   IrErrorKind                                   // 14 variants in v1; identification by variant identity per `30 §5`
+pub enum   ValidateError                                 // raised by Tree::with_new_children + Rewriter<N>::f_*
+pub enum   CompileError                                  // raised by ReturnTypeRule::Custom callbacks
+pub enum   IrErrorKind                                   // plan-shape diagnostics; 14 variants in v1
+impl       semstrait_core::diagnostic::Diagnose for ValidateError
+impl       semstrait_core::diagnostic::Diagnose for CompileError
 impl       semstrait_core::diagnostic::Diagnose for IrErrorKind
 ```
 
@@ -1708,7 +1879,7 @@ impl       semstrait_core::diagnostic::Diagnose for IrErrorKind
 ```
 impl<L: ExprLeaf> Tree for Expr<L> {
     fn children(&self) -> Vec<&Self>;
-    fn with_new_children(self, new_children: Vec<Self>) -> Result<Self, ValidateErrorKind>;
+    fn with_new_children(self, new_children: Vec<Self>) -> Result<Self, ValidateError>;
 }
 
 impl PlanNode {
@@ -1765,15 +1936,17 @@ pub use crate::primitives::{
 pub use crate::artifact::{
     EngineArtifact, EnginePlan, SqlArtifact, DialectId, Dialect, Capability,
 };
-pub use crate::error::IrErrorKind;
+pub use crate::error::{IrErrorKind, ValidateError, CompileError};
+pub use crate::tree::{Tree, Visitor, Rewriter, ExprLeaf};
+pub use crate::expr_kinds::{
+    BinaryOpKind, UnaryOpKind, AggregationOp, LikeKind, CastFailure,
+    WindowFn, WindowFrame, WindowFrameKind, WindowBound,
+    Literal, ColumnRef, SemanticsName,
+};
 
 // Re-exports from semstrait-core that `35`-authoritative surfaces rely on:
 pub use semstrait_core::{
-    Tree, Visitor, Rewriter, ExprLeaf, ValidateErrorKind,
-    BinaryOpKind, UnaryOpKind, AggregationOp, LikeKind, CastFailure,
-    WindowFn, WindowFrame,
-    DataType, Grain, Literal,
-    ColumnRef, SemanticsName,
+    DataType, Grain, TypeClass, Schema, SchemaColumn,
     Cardinality, JoinType,
 };
 ```

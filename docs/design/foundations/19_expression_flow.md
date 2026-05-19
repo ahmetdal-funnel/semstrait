@@ -19,7 +19,7 @@ authoritative-for:
   - request-layer dimension-variation carrier (`RequestDimensionRef { name, variation }`) and `DimensionVariation` enum
   - unified `Additivity` enum and its two-source SoC (function-level in `14a §3.6` vs model-level in `18 §5.2`)
   - typed `Diagnostics<PlanErrorKind>` advisory channel and the unified `PLAN_W_2101 LossyReaggregation` cross-DataKind code
-  - the compile-stage `CompileErrorKind` surface for expression resolution (`EXPR_E_02xx` sub-range)
+  - the compile-stage `CompileError` surface for expression resolution (`EXPR_E_02xx` sub-range)
 refined-by:
   - 22 / 23 / 24 (cross-grain advisories; per-DataKind cross-references)
   - 30 (typed-diagnostics framing; project-wide encoding convention)
@@ -53,7 +53,7 @@ refined-by:
 - **Per-site shape gates** (§5) governing which authoring sites admit which expression shapes.
 - The **Phase B placement contract** (§6) — filter placement (§6.1); `group_by` handoff (§6.2); computed-Dimension placement (§6.3); Metric semantics (§6.4); function-tag axis `Additivity` (§6.5); advisory channel (§6.6).
 - The **aggregation handling** at the Phase A/B boundary (§7) — `Aggregate` admission, `Avg` posture, structural-vs-aggregate-site separation.
-- The **error model** (§8) — `CompileErrorKind` variants and the `EXPR_E_02xx` sub-range.
+- The **error model** (§8) — `CompileError` variants and the `EXPR_E_02xx` sub-range.
 
 **What `19` does NOT ratify** (forward-refs):
 
@@ -116,7 +116,7 @@ A single public Phase A entry point converts `SemanticExpr` to `PhysicalExpr`:
 impl SemanticExpr {
     /// Compile-time lowering. Synchronous, pure, Request-free.
     /// Runs once per `(Semantics, Binding)` pair during `compile`.
-    pub fn resolve(self, ctx: &LoweringCtx<'_>) -> Result<ResolvedExprEntry, CompileErrorKind>;
+    pub fn resolve(self, ctx: &LoweringCtx<'_>) -> Result<ResolvedExprEntry, CompileError>;
 }
 ```
 
@@ -157,7 +157,7 @@ impl SemanticExpr {
     pub fn resolve(
         self,
         ctx: &LoweringCtx<'_>,
-    ) -> Result<ResolvedExprEntry, CompileErrorKind>;
+    ) -> Result<ResolvedExprEntry, CompileError>;
 }
 ```
 
@@ -300,16 +300,16 @@ Trivial:
 - `referenced_columns`: empty.
 - `path_signature_contrib`: empty.
 
-**Untyped `Null` handling.** A bare `Null` literal at a node whose type cannot be fixed by context flows as `DataType::Unknown` and either unifies with siblings (in `Case` / `Coalesce` / `BinaryOp` comparisons) or propagates to the root, where §3.7's reconciliation either pins it via the Semantics's declared `data_type:` or raises `CompileErrorKind::TypeInferenceFailure`.
+**Untyped `Null` handling.** A bare `Null` literal at a node whose type cannot be fixed by context flows as `DataType::Unknown` and either unifies with siblings (in `Case` / `Coalesce` / `BinaryOp` comparisons) or propagates to the root, where §3.7's reconciliation either pins it via the Semantics's declared `data_type:` or raises `CompileError::TypeInferenceFailure`.
 
 ##### b. `SemanticLeaf::Column(name)` — conditionally legal
 
 Per `14 §3.5`, `SemanticLeaf::Column` is **type-admissible** (the parser can construct it) but **context-validated** at compile. Its legality depends on the owning binding's `semantic_mapping` mode:
 
 - **Under `semantic_mapping: auto`** — legal. Step 0 of compile (§3.11) has already synthesized a `SemanticMapping` entry for `name`. The leaf rewrites to `Expr::Leaf(PhysicalLeaf::Column(ColumnRef(name)))`, with `inferred_type` looked up in `binding.source.schema()[name].data_type` mapped to canonical `DataType` via `[13 §2](13_types_and_grain.md)`.
-- **Under manual `semantic_mapping`** — rejected. Per §3.11, step 0 has already raised `CompileErrorKind::ColumnInSemanticExprUnderManualMapping { binding, location }` and resolution never reaches this leaf. If it does (compile bug, test fixture), an `unreachable!` assertion fires.
+- **Under manual `semantic_mapping`** — rejected. Per §3.11, step 0 has already raised `CompileError::ColumnInSemanticExprUnderManualMapping { binding, location }` and resolution never reaches this leaf. If it does (compile bug, test fixture), an `unreachable!` assertion fires.
 
-If the physical column does not exist in the binding's `PhysicalSource` schema under `auto`: `CompileErrorKind::UnresolvedColumn { name, binding }`.
+If the physical column does not exist in the binding's `PhysicalSource` schema under `auto`: `CompileError::UnresolvedColumn { name, binding }`.
 
 - `referenced_columns`: one-element vector `[name]`.
 - `path_signature_contrib`: empty.
@@ -319,7 +319,7 @@ If the physical column does not exist in the binding's `PhysicalSource` schema u
 Per `14 §3.5`, `Field` is the untyped semantic reference whose kind is resolved at compile by registry lookup. The dispatcher:
 
 1. Looks up `name` in `ctx.all_semantics` to determine its declared kind (`Dimension` / `Measure` / `Metric` / `Key`).
-2. If `name` does not resolve in any visible scope per `[11 §11.1](11_names_and_scopes.md)`, raises `CompileErrorKind::UnknownReference { name, scope: Scope::of(site) }`.
+2. If `name` does not resolve in any visible scope per `[11 §11.1](11_names_and_scopes.md)`, raises `CompileError::UnknownReference { name, scope: Scope::of(site) }`.
 3. If `name` resolves to a kind, **re-dispatch** the leaf as if the author had written the corresponding typed leaf (`Dimension { name, accessor: None }`, `Measure { name, accessor: None }`, etc.). The substitution then proceeds per §3.3.2.d.
 4. Under `semantic_mapping: auto`, name lookup may resolve to a physical column rather than a declared semantic. In that case the leaf re-dispatches as `Column(name)` per §3.3.2.b. The §3.11 step 0 has already synthesized the appropriate `SemanticMapping` entry.
 
@@ -330,9 +330,9 @@ The `Field` variant therefore does not survive into `PhysicalExpr` by constructi
 The core compile-time substitution site for kind-pinned typed leaves. Steps:
 
 1. **Resolve `name`** via the binding's `SemanticMapping` per `[15](15_mapping_and_binding.md)` and the visible scope chain per `[11 §11.1](11_names_and_scopes.md)`. The lookup yields the registered Semantics for `name`.
-2. **Kind-check.** If the registered Semantics's declared kind differs from the leaf's variant tag (e.g. `Dimension { name: "x" }` but `x` is registered as a Measure), raise `CompileErrorKind::SemanticKindMismatch { authored_kind, registered_kind, name, location }`. The leaf was authored with a specific kind contract (`dim("x")` vs `measure("x")` etc.); a registry disagreement is an author error.
+2. **Kind-check.** If the registered Semantics's declared kind differs from the leaf's variant tag (e.g. `Dimension { name: "x" }` but `x` is registered as a Measure), raise `CompileError::SemanticKindMismatch { authored_kind, registered_kind, name, location }`. The leaf was authored with a specific kind contract (`dim("x")` vs `measure("x")` etc.); a registry disagreement is an author error.
 3. **Same-DataKind vs cross-DataKind.** If the target Semantics's owning DataKind is the same as the current Binding's owning DataKind, recurse into the target's merged `expr:` using the current Binding. Splice the resolved `PhysicalExpr` subtree in-place. No `path_signature_contrib`. If different, trigger cross-DataKind path resolution per §3.4. The target's `expr:` is resolved against one of its own Bindings (picked per §3.4.4). The resolved subtree is spliced in, and the path is appended to `path_signature_contrib`.
-4. **Cycle bookkeeping.** Mark `name` as visited in the DFS recursion state (§3.5) for the duration of the recursive call; unmark after return. Cycles surface as `CompileErrorKind::CyclicReference` before any expression rewriting happens.
+4. **Cycle bookkeeping.** Mark `name` as visited in the DFS recursion state (§3.5) for the duration of the recursive call; unmark after return. Cycles surface as `CompileError::CyclicReference` before any expression rewriting happens.
 5. **`inferred_type`** of the substituted subtree is the root `inferred_type` of the target's resolved entry (per §3.6's bottom-up rule; the topological order from §3.5 ensures the target is already resolved).
 6. **`referenced_columns`** contribute the target's columns, prefixed by join-key columns required to traverse each hop in any cross-DataKind path (§3.10).
 
@@ -382,7 +382,7 @@ Phase A does not re-derive name-resolution rules — it consumes `[11 §11.1](11
 - Build a scope chain for the current resolution site (Root, owning DataKind, nested-kind if any, current Binding).
 - Walk the chain from innermost outward: `Binding → Nested-kind (if applicable) → Kind → Root` (global Semantics registry).
 - Success: identifier resolves to a Semantics slot (typed leaves dispatch to §3.3.2.c–e), to a Binding column (auto-mapping `Column` per §3.3.2.b), or to nothing (`UnknownReference`).
-- Failure: `CompileErrorKind::UnknownReference { name, scope }` where `scope` is the innermost scope where the walk started.
+- Failure: `CompileError::UnknownReference { name, scope }` where `scope` is the innermost scope where the walk started.
 
 #### 3.3.5 Per-leaf-kind summary table
 
@@ -425,9 +425,9 @@ pub struct RelationshipGraph {
 
 Shortest-path BFS over the `RelationshipGraph` from `from_kind` to `to_kind`. Returns the path's `Vec<RelationshipId>` on a unique hit. The walk records the shortest depth `d` on first reach, then exhausts every path of depth `d`; deeper paths are ignored.
 
-- 0 hits → `CompileErrorKind::NoRelationshipPath { from, to }`.
+- 0 hits → `CompileError::NoRelationshipPath { from, to }`.
 - 1 hit  → success.
-- ≥ 2 hits at depth `d` → `CompileErrorKind::AmbiguousRelationshipPath { from, to, paths }` (hard error; no tie-break).
+- ≥ 2 hits at depth `d` → `CompileError::AmbiguousRelationshipPath { from, to, paths }` (hard error; no tie-break).
 
 **Why shortest-path + hard ambiguity, not tie-break.** A tie-break (declaration order, lex order) would silently pick one path when the Model expressed two equally-valid intentions; that violates `00 §9` **I4** (determinism) and surprises authors. Ambiguity is an authoring defect that demands explicit relationship-graph disambiguation. Neighbor iteration uses ascending `RelationshipId` to keep the `paths` vector content stable across compiles. Termination follows from the visited-depth map and the bounded `|kinds|` frontier.
 
@@ -464,7 +464,7 @@ Sugar accessors do not change the graph: a typed leaf with `accessor: Some(_)` s
 
 #### 3.5.2 Algorithm — Tarjan SCC
 
-Tarjan SCC over the reference graph; on success returns a topological sort (Semantics in dependency order); on first SCC of size > 1 (or self-loop) returns `CompileErrorKind::CyclicReference { cycle }` with members in lexicographic order.
+Tarjan SCC over the reference graph; on success returns a topological sort (Semantics in dependency order); on first SCC of size > 1 (or self-loop) returns `CompileError::CyclicReference { cycle }` with members in lexicographic order.
 
 **Why Tarjan + topological sort.** Single pass detects every cycle; the topological order is a free side-product reused by §3.6's bottom-up type-inference pass (no fixpoint needed); stable order is easy to pin down per `00 §9` **I4**.
 
@@ -493,7 +493,7 @@ Strictly bottom-up over the reference DAG: process Semantics in §3.5.2's topolo
 
 #### 3.6.3 Unification
 
-Minimal: two types unify iff (a) identical (including `Decimal` precision/scale) or (b) one is `DataType::Unknown` (untyped `Null`) and the other is concrete (unifies to the concrete). Otherwise `CompileErrorKind::TypeInferenceFailure { node, reason }`. **No implicit promotion at unification** — `Integer` and `Long` do not auto-unify; authors write explicit `Cast`. This matches `14 §5.4`'s non-coercion posture and keeps inference deterministic.
+Minimal: two types unify iff (a) identical (including `Decimal` precision/scale) or (b) one is `DataType::Unknown` (untyped `Null`) and the other is concrete (unifies to the concrete). Otherwise `CompileError::TypeInferenceFailure { node, reason }`. **No implicit promotion at unification** — `Integer` and `Long` do not auto-unify; authors write explicit `Cast`. This matches `14 §5.4`'s non-coercion posture and keeps inference deterministic.
 
 #### 3.6.4 The annotation contract
 
@@ -504,12 +504,12 @@ Every leaf carries `ExprLeaf::inferred_type() -> Option<&DataType>` per `[14 §3
 When a Semantics declares `data_type: T` explicitly and the resolved root's `inferred_type` differs, compile wraps the root in `Expr::Cast { target: T, on_failure: Error }` before storing. The author's declared type is authoritative at the boundary.
 
 - **Widening** (`Integer → Long`, `Integer → Double`, `Decimal(10,2) → Decimal(18,2)`, …, per `[13 §2.6](13_types_and_grain.md)`) — silent.
-- **Narrowing** (`Long → Integer`, `Double → Integer`, …) — emits `CompileWarningKind::NarrowingCast { inferred, declared }`; compile succeeds.
+- **Narrowing** (`Long → Integer`, `Double → Integer`, …) — emits `CompileWarning::NarrowingCast { inferred, declared }`; compile succeeds.
 - **Orthogonal** (`String → Integer`, …) — treated as narrowing for diagnostic purposes; adapter may reject at render time.
 
 **Interaction with shape inference.** `[11 §6.3](11_names_and_scopes.md)` runs upstream and pins a single `data_type:` across multi-DataKind Semantics occurrences (or raises `ShapeInferenceConflict`). Phase A reads the pinned value.
 
-**Untyped `Null` at boundary.** `inferred_type: DataType::Unknown` with no declared `data_type:` → `CompileErrorKind::TypeInferenceFailure`. With a declared `data_type: T` → wrap `Null` in `Cast(T)`, no diagnostic.
+**Untyped `Null` at boundary.** `inferred_type: DataType::Unknown` with no declared `data_type:` → `CompileError::TypeInferenceFailure`. With a declared `data_type: T` → wrap `Null` in `Cast(T)`, no diagnostic.
 
 **Author-written outer `Cast`.** When `expr:` already roots in `Cast(T_outer)` and declares `data_type: T_decl`: same `T` → no extra cast; different `T` → emit an additional outer `Cast(T_decl)` and apply the narrowing-diagnostic rule against it.
 
@@ -574,13 +574,13 @@ A per-Binding pre-step that handles the conditional legality of `SemanticLeaf::C
 
 - For each `Column(name)` not already in the mapping, synthesize `name → Column(name)` (structurally identical to an authored `<name>: <name>` entry).
 - For each `Field(name)` that doesn't resolve to a declared semantic but does match a `PhysicalSource` schema column, same synthesis (this is the "bare-identifier resolves to physical column under auto" case from `[14 §6.5](14_expressions.md)`).
-- If `name` resolves to neither a declared semantic nor a physical column → `CompileErrorKind::UnknownReference { name, scope: Binding(b) }`.
+- If `name` resolves to neither a declared semantic nor a physical column → `CompileError::UnknownReference { name, scope: Binding(b) }`.
 
 After synthesis the binding's `SemanticMapping` is indistinguishable from an explicit one; downstream substeps (`15` binding resolution, adapter column projection, …) reuse the same code path for both modes.
 
-**Under manual `semantic_mapping`** (any explicit `semantic_mapping:` block, even empty) — reject every `SemanticLeaf::Column(name)` in the walked `SemanticExpr` with `CompileErrorKind::ColumnInSemanticExprUnderManualMapping { binding, location }`. Manual mapping requires every physical reference to flow through the explicit mapping; inline `col(…)` would bypass that discipline. Remediation: rewrite the leaf as `field(…)`/`measure(…)`/`dim(…)`, add an explicit `SemanticMapping` entry, or switch to `auto`.
+**Under manual `semantic_mapping`** (any explicit `semantic_mapping:` block, even empty) — reject every `SemanticLeaf::Column(name)` in the walked `SemanticExpr` with `CompileError::ColumnInSemanticExprUnderManualMapping { binding, location }`. Manual mapping requires every physical reference to flow through the explicit mapping; inline `col(…)` would bypass that discipline. Remediation: rewrite the leaf as `field(…)`/`measure(…)`/`dim(…)`, add an explicit `SemanticMapping` entry, or switch to `auto`.
 
-**Companion rule — `SemanticKindMismatch`** (fired during §3.3.2.d's kind-check step). A typed semantic leaf with an explicit kind contract (e.g. `measure("x")`) that disagrees with the registry's kind for `name` (e.g. `x` is a Dimension) → `CompileErrorKind::SemanticKindMismatch { authored_kind, registered_kind, name, location }`. `Field` leaves never trigger this — they carry no kind contract.
+**Companion rule — `SemanticKindMismatch`** (fired during §3.3.2.d's kind-check step). A typed semantic leaf with an explicit kind contract (e.g. `measure("x")`) that disagrees with the registry's kind for `name` (e.g. `x` is a Dimension) → `CompileError::SemanticKindMismatch { authored_kind, registered_kind, name, location }`. `Field` leaves never trigger this — they carry no kind contract.
 
 **Idempotent.** Re-running the pre-step on an already-normalized binding is a no-op (synthesis skips covered columns; rejection already terminated). Simplifies test fixtures and `--explain` re-tracing.
 
@@ -605,7 +605,7 @@ Family A has **no AST variant**. Author writes plain `Case` / `BinaryOp` / `Func
 | Composite  | `IN` `NOT IN` `BETWEEN`       | desugar to comparison + logical, then fold                                                  |
 | Structural | `Case`                        | short-circuit on first true `when`; drop false-`when` branches                              |
 | Cast       | `Cast(Literal, T)`            | literal cast applied if successful; failures resolve per `on_failure`; column cast deferred |
-| Pattern    | `Like(_, Literal(_))`         | ANSI-strict canonical (`%` zero-or-more, `_` one char, `LikeKind::Escape(c)`); case-sensitive |
+| Pattern    | `Like(_, Literal(_))`         | ANSI-strict canonical (`%` zero-or-more, `_` one char); `LikeKind` is the operator discriminator `{ Like, NotLike, ILike, NotILike }` per `35 §3.4`; case-sensitive for `Like` / `NotLike` |
 
 **`Like` canonicalisation.** Bracket classes / POSIX classes / `ILike` / `RLike` / regex extensions are **not** in v1 fold scope. Adapters emitting to engines with looser defaults (e.g. MySQL collation-driven case-folding) compensate during `PhysicalExpr` → engine-AST translation.
 
@@ -713,7 +713,7 @@ Inline pre-aggregation at the source projection layer. The computed Dimension's 
 
 ### 6.4 Metric semantics
 
-Metric `expr` references other Semantics via typed leaves (`measure(name)`, `metric(name)`, `dim(name)`, or untyped `field(name)` kind-resolved per §3.3.2.c). Metric elements do **not** bind via `semantic_mapping`; a `SemanticLeaf::Column` reached from a Metric `expr` is `CompileErrorKind::MetricExprBindsRawColumn`. Metric is "sugar over Measures" — every reference must traverse another declared Semantic.
+Metric `expr` references other Semantics via typed leaves (`measure(name)`, `metric(name)`, `dim(name)`, or untyped `field(name)` kind-resolved per §3.3.2.c). Metric elements do **not** bind via `semantic_mapping`; a `SemanticLeaf::Column` reached from a Metric `expr` is `CompileError::MetricExprBindsRawColumn`. Metric is "sugar over Measures" — every reference must traverse another declared Semantic.
 
 Measure / Metric `(agg:, expr:)` shape is owned by `[18 §5.2](18_entities.md)`; per-site shape gates by §5. A Measure with `agg: sum, expr: amount` resolves at Phase A to `Aggregate { op: Sum, args: [<resolved amount>], distinct: false, filter: None }`. A Metric without `agg:` remains a scalar formula over already-aggregated constituent outputs.
 
@@ -721,7 +721,7 @@ Measure / Metric `(agg:, expr:)` shape is owned by `[18 §5.2](18_entities.md)`;
 
 **`dim` / `field`-resolving-to-Dimension in Metric `expr`.** Evaluates as the **per-group value** (post-aggregate context). Compile emits an advisory listing required Dimensions; plan-time rejects requests omitting them — `PlanErrorKind::MetricRequiresDimensionInRequest { metric, missing_dimension }`.
 
-**Metric → Metric chains.** Unbounded depth, DAG semantics. Compile DFS detects cycles → `CompileErrorKind::MetricCycle { path }`. Cycle check runs after kind resolution so `metric("a")` and `field("a")`-resolving-to-Metric-`a` are detected uniformly.
+**Metric → Metric chains.** Unbounded depth, DAG semantics. Compile DFS detects cycles → `CompileError::MetricCycle { path }`. Cycle check runs after kind resolution so `metric("a")` and `field("a")`-resolving-to-Metric-`a` are detected uniformly.
 
 **`agg:` over Dimension- / Key-typed `expr:`.** Admitted aggregations: `min` / `max` / `count` / `count_distinct` / `first` / `last`. Authoring `sum` / `avg` / `median` / `percentile` over a Dimension / Key is rejected by `[14a §3](14a_function_catalog.md)`'s signature lookup. Windowed access uses typed `Dimension` / `Key` leaves with `accessor: Some(…)` per `[14 §4.1](14_expressions.md)` — symmetric with the Measure / Metric accessor surfaces.
 
@@ -768,7 +768,7 @@ Semantic advisories use typed `Diagnostics<PlanErrorKind>` per `[30 §6](../apis
 
 `Expr::Aggregate { op, args, distinct, filter }` is a structural variant shared by `SemanticExpr` and `PhysicalExpr` per `[14 §3.3](14_expressions.md)`. Phase A's substitution preserves the variant tag, translating operands structurally (§3.3.3). Phase B's Strategy lifts `Aggregate` nodes into `PlanNode::Aggregate` slots and substitutes column refs to the lifted slots in the residual `PhysicalExpr` — lift mechanics in `[34](../apis/34_semstrait_planner.md)`, not in `resolve`.
 
-`Aggregate` is admitted only at aggregate-admitting sites (Measure / Metric `expr:`, `filters.<f>.expr`). Outside those sites: `ValidateErrorKind::AggregateInScalarContext`.
+`Aggregate` is admitted only at aggregate-admitting sites (Measure / Metric `expr:`, `filters.<f>.expr`). Outside those sites: `ValidateError::AggregateInScalarContext`.
 
 **`Avg` posture.** Canonical `AggregationOp`, not sugar — no internal `Sum`/`Count` rewrite. Lossy combinations under cross-grain surface as `LossyReaggregation` advisories per §6.6, never refusals.
 
@@ -776,7 +776,7 @@ Semantic advisories use typed `Diagnostics<PlanErrorKind>` per `[30 §6](../apis
 
 ## 8. Error Model
 
-All expression compile-pipeline errors surface as `Diagnostic<CompileErrorKind>` per `[10 §5](10_resolution_pipeline.md)` and `[30 §5](../apis/30_api_contracts.md)`. Numeric codes are spec cross-reference indices; runtime identification is by variant identity.
+All expression compile-pipeline errors surface as `Diagnostic<CompileError>` per `[10 §5](10_resolution_pipeline.md)` and `[30 §5](../apis/30_api_contracts.md)`. Numeric codes are spec cross-reference indices; runtime identification is by variant identity.
 
 ### 8.1 Resolution-stage errors
 
@@ -797,7 +797,7 @@ Delegated to `[14a §8](14a_function_catalog.md)`: `UnknownFunction`, `FunctionA
 
 ### 8.3 Boundary-reconciliation warning
 
-`CompileWarningKind::NarrowingCast { inferred, declared }` (`EXPR_W_0201`) — emitted by §3.7 when boundary reconciliation wraps the root in a narrowing `Cast`. Compile succeeds.
+`CompileWarning::NarrowingCast { inferred, declared }` (`EXPR_W_0201`) — emitted by §3.7 when boundary reconciliation wraps the root in a narrowing `Cast`. Compile succeeds.
 
 ### 8.4 Fail-fast policy
 

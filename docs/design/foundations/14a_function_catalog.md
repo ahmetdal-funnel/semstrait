@@ -108,7 +108,7 @@ pub enum ReturnTypeRule {
     /// Common-supertype promotion of the listed arg indices per `13 §2.6`.
     Promoted(&'static [usize]),
     /// Escape hatch for width-sensitive / literal-driven rules (e.g. `cast(x, T) -> T`).
-    Custom(fn(&[DataType]) -> Result<DataType, CompileErrorKind>),
+    Custom(fn(&[DataType]) -> Result<DataType, CompileError>),
 }
 ```
 
@@ -225,12 +225,12 @@ Function-resolution errors feed `[19 §8.2](19_expression_flow.md)`'s error rost
 
 | Variant | When |
 |---|---|
-| `CompileErrorKind::UnknownFunction { name }` | `FunctionCall.name` not in the sealed registry. |
-| `CompileErrorKind::FunctionArityMismatch { name, expected, got }` | Call-site arity outside the spec's declared range. |
-| `CompileErrorKind::NoMatchingSignature { name, arg_types, tried_signatures }` | No overload matches; per `14 §5.4` no implicit coercion — author must `CAST` explicitly. |
-| `CompileErrorKind::ReservedTagCollision { tag, source }` | Adapter registration shadows a `14 §6.4.1` reserved AST tag. |
-| `CompileErrorKind::AdapterFunctionShadowsCore { name, adapter }` | Adapter registered a name already in §4. Surfaces as panic at `function_registry()` initialization. |
-| `CompileErrorKind::AdapterFunctionCollision { name, adapters }` | Two adapters registered the same name. Same surfacing. |
+| `CompileError::UnknownFunction { name }` | `FunctionCall.name` not in the sealed registry. |
+| `CompileError::FunctionArityMismatch { name, expected, got }` | Call-site arity outside the spec's declared range. |
+| `CompileError::NoMatchingSignature { name, arg_types, tried_signatures }` | No overload matches; per `14 §5.4` no implicit coercion — author must `CAST` explicitly. |
+| `CompileError::ReservedTagCollision { tag, source }` | Adapter registration shadows a `14 §6.4.1` reserved AST tag. |
+| `CompileError::AdapterFunctionShadowsCore { name, adapter }` | Adapter registered a name already in §4. Surfaces as panic at `function_registry()` initialization. |
+| `CompileError::AdapterFunctionCollision { name, adapters }` | Two adapters registered the same name. Same surfacing. |
 | `AdaptErrorKind::UnsupportedFunction { name, engine }` | Adapter cannot render a registered function for its target engine. |
 
 ## 9. Cross-References

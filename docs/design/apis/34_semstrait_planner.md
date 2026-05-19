@@ -782,7 +782,7 @@ pub const MAX_IMPLICIT_COMPOSITION_DEPTH: usize = 4;
 
 Per `16 §10.4` (Q-COMP-001 closed 2026-04-28). The constant is exported from `semstrait-manifest` (`33 §9.1` step 7) and re-exported here for cross-doc readability and for the §10.2 step-4 error-hint rendering. Plan-time does not enforce the bound — enforcement is a compile-time invariant per `33 §3.1` ("Implicit-cap discipline"). A Request that hits the depth bound at compile produces no entry in `composition_index.by_constituent_set`, and §10.2 step-4 surfaces `PLAN_E_0502` accordingly.
 
-The companion cap `MAX_IMPLICIT_ENUMERATION_COUNT = 2000` (Q-COMP-005 closed 2026-04-29; `16 §10.4`) is also compile-side; if exceeded, compile fails with `CompileErrorKind::ImplicitEnumerationExploded` (`33 §10.1`) and no SemanticManifest is produced — plan-time never observes the breach.
+The companion cap `MAX_IMPLICIT_ENUMERATION_COUNT = 2000` (Q-COMP-005 closed 2026-04-29; `16 §10.4`) is also compile-side; if exceeded, compile fails with `CompileError::ImplicitEnumerationExploded` (`33 §10.1`) and no SemanticManifest is produced — plan-time never observes the breach.
 
 ### 10.5 Interaction with Joinsets and `19 §3.4` path resolution
 

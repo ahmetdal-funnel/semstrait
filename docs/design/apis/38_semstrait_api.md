@@ -101,8 +101,8 @@ Plus the re-exports (`§2.2`).
 The minimum set of types a caller needs to drive the pipeline end-to-end:
 
 - From `31`: `Diagnostic` (i.e. `Diagnostic<K>`), `Diagnostics<K>`, `Diagnose`, `Severity`, `Request`, `SessionContext`.
-- From `32`: `SemanticModel`, `ParseErrorKind`, `ValidateErrorKind`, `ModelBuildErrorKind`.
-- From `33`: `SemanticManifest`, `SemanticManifestId`, `SemanticManifestMetadata`, `CompileErrorKind`, `Repository`, `RepositoryErrorKind`, `SemanticManifestLoadErrorKind`, `SemanticManifestDumpErrorKind`.
+- From `32`: `SemanticModel`, `ParseErrorKind`, `ValidateError`, `ModelBuildErrorKind`.
+- From `33`: `SemanticManifest`, `SemanticManifestId`, `SemanticManifestMetadata`, `CompileError`, `Repository`, `RepositoryErrorKind`, `SemanticManifestLoadErrorKind`, `SemanticManifestDumpErrorKind`.
 - From `34`: `PlanErrorKind`, `OptimizeErrorKind`.
 - From `35`: `SemanticPlan`, `EngineArtifact`, `SqlArtifact`, `EnginePlan`, `IrErrorKind`.
 - From `36`: `EngineAdapter`, `AdapterId`, `AdaptErrorKind`.
@@ -128,11 +128,11 @@ pub use semstrait_core::{
     Severity, Request, SessionContext,
 };
 pub use semstrait_model::{
-    SemanticModel, ParseErrorKind, ValidateErrorKind, ModelBuildErrorKind,
+    SemanticModel, ParseErrorKind, ValidateError, ModelBuildErrorKind,
 };
 pub use semstrait_manifest::{
     SemanticManifest, SemanticManifestId, SemanticManifestMetadata,
-    CompileErrorKind, Repository, RepositoryErrorKind,
+    CompileError, Repository, RepositoryErrorKind,
 };
 pub use semstrait_planner::{PlanErrorKind, OptimizeErrorKind};
 pub use semstrait_ir::{SemanticPlan, EngineArtifact, SqlArtifact, EnginePlan, IrErrorKind};
@@ -182,7 +182,7 @@ impl SemStrait {
     //     RETURN `SemStraitErrorKind` — the unified kind whose variants wrap the
     //     upstream `*ErrorKind`s via `From` impls (§6.3).
     // Callers that prefer the underlying surface for a multi-stage method
-    // destructure `SemStraitErrorKind::Compile(CompileErrorKind::…)` etc.
+    // destructure `SemStraitErrorKind::Compile(CompileError::…)` etc.
 
     pub async fn compile_from_yaml(&self, yaml: &str)               // multi-stage: parse + validate + compile
         -> Result<
@@ -246,7 +246,7 @@ impl SemStrait {
 
 ### 3.4 Method contracts
 
-- **`compile_from_yaml`** — `parse` (`32 §9.1`) → `validate` (`32 §9.4`) → `compile` (`33 §9`). Errors short-circuit per `30 §7`. Each per-stage failure is wrapped into `SemStraitErrorKind` via the `From<ParseErrorKind> | From<ValidateErrorKind> | From<CompileErrorKind>` impls in §6.3, preserving the inner `*ErrorKind` variant verbatim. Stage-internal warnings are re-keyed via the same `From` impls and accumulated in source-stage order. The first stage to fail short-circuits the chain; warnings observed up to that point ride alongside the fatal in the `Err((fatal, warnings))` tuple.
+- **`compile_from_yaml`** — `parse` (`32 §9.1`) → `validate` (`32 §9.4`) → `compile` (`33 §9`). Errors short-circuit per `30 §7`. Each per-stage failure is wrapped into `SemStraitErrorKind` via the `From<ParseErrorKind> | From<ValidateError> | From<CompileError>` impls in §6.3, preserving the inner `*ErrorKind` variant verbatim. Stage-internal warnings are re-keyed via the same `From` impls and accumulated in source-stage order. The first stage to fail short-circuits the chain; warnings observed up to that point ride alongside the fatal in the `Err((fatal, warnings))` tuple.
 - **`compile_from_model`** — Skips parse; still runs validate + compile. For callers that synthesize `SemanticModel`s (or apply custom post-parse transforms) and want the API crate to perform validation before compile. Same wrapping discipline as `compile_from_yaml`, minus the `Parse(...)` variant.
 - **`plan`** — Runs `semstrait_planner::plan(&SemanticManifest, Request)` (canonical 2-arg signature per `34 §6.1`), then applies optimization via `34 §12.5`'s `OptimizerBuilder` (`OptimizerBuilder::new().with(self.optimizer_passes.clone()).build().apply(...)` when the builder slot is non-empty; otherwise `Optimizer::with_v1_passes()` per `34 §11.2`). The function-registry handle is consumed by the planner via the process-global `function_registry()` (`31 §5.2`) — not threaded as a per-call argument. `self.warning_policy` is applied to the returned warnings on success. `PlanErrorKind` and `OptimizeErrorKind` are wrapped into `SemStraitErrorKind` via `From` impls (§6.3); the optimizer pass that produced an `OptimizeErrorKind` is identifiable via the inner kind's payload.
 - **`adapt`** — Single-stage delegate over `adapter.adapt(plan, manifest)` (`36 §3.1`). Returns `Diagnostic<AdaptErrorKind>` directly — same surface a caller would observe using `semstrait-adapter` as a free crate. The fused helper (§7) re-wraps via `From<AdaptErrorKind> for SemStraitErrorKind` (§6.3) when needed.
@@ -262,7 +262,7 @@ impl SemStrait {
 | I7  | Depends on `31`–`37`; depended on by `39`. No cycles. |
 | I10 | `WarningPolicy`, `SemStraitErrorKind`, `StageOrigin`, `PipelineOutcome` are `#[non_exhaustive]`. |
 | I11 | `compile_*` is async (I11a); `save_manifest`, `load_manifest`, `validate_manifest` are async (I11b); no other method is async. |
-| I12 | Errors are typed-kind enums per `30 §5` / `31 §3` (`ParseErrorKind`, `ValidateErrorKind`, `CompileErrorKind`, `PlanErrorKind`, `OptimizeErrorKind`, `AdaptErrorKind`, `RepositoryErrorKind`, `CatalogProviderErrorKind`, `FileSystemErrorKind`, `IrErrorKind`). The fused helper unifies these via `From` impls into `SemStraitErrorKind`; no numeric subsystem prefix exists in v1. Per-stage observability flows through `tracing` per `30 §6`; library code never writes to stdout/stderr. |
+| I12 | Errors are typed-kind enums per `30 §5` / `31 §3` (`ParseErrorKind`, `ValidateError`, `CompileError`, `PlanErrorKind`, `OptimizeErrorKind`, `AdaptErrorKind`, `RepositoryErrorKind`, `CatalogProviderErrorKind`, `FileSystemErrorKind`, `IrErrorKind`). The fused helper unifies these via `From` impls into `SemStraitErrorKind`; no numeric subsystem prefix exists in v1. Per-stage observability flows through `tracing` per `30 §6`; library code never writes to stdout/stderr. |
 
 ### 3.6 Observability via `tracing`
 
@@ -432,7 +432,7 @@ In the fused helper (`§7`), `WarningPolicy` applies at every stage boundary. If
 
 ### 5.6 Invariants
 
-No policy changes a diagnostic's kind variant, severity, or rendered message. `FailOnWarning` escalating a `CompileErrorKind::SchemaInferenceClamped` (Severity::Warning) into the fail-fast `fatal` slot keeps the `kind` variant unchanged; the only difference is the slot it occupies in the `Result` tuple. Pattern-matching on the underlying `*ErrorKind` variant remains a stable predicate for distinguishing escalated warnings from intrinsic errors — consumers may additionally inspect `Diagnose::severity()` to confirm the original severity was Warning.
+No policy changes a diagnostic's kind variant, severity, or rendered message. `FailOnWarning` escalating a `CompileError::SchemaInferenceClamped` (Severity::Warning) into the fail-fast `fatal` slot keeps the `kind` variant unchanged; the only difference is the slot it occupies in the `Result` tuple. Pattern-matching on the underlying `*ErrorKind` variant remains a stable predicate for distinguishing escalated warnings from intrinsic errors — consumers may additionally inspect `Diagnose::severity()` to confirm the original severity was Warning.
 
 ---
 
@@ -479,8 +479,8 @@ adds a sum on top.
 pub enum SemStraitErrorKind {
     // -- Stage kinds (wrappers over upstream *ErrorKind) --
     Parse              (ParseErrorKind),
-    Validate           (ValidateErrorKind),
-    Compile            (CompileErrorKind),
+    Validate           (ValidateError),
+    Compile            (CompileError),
     Plan               (PlanErrorKind),
     Optimize           (OptimizeErrorKind),
     Adapt              (AdaptErrorKind),
@@ -544,8 +544,8 @@ impl semstrait_core::diagnostic::Diagnose for SemStraitErrorKind {
 
 ```rust
 impl From<ParseErrorKind>            for SemStraitErrorKind { /* Parse(k)            */ }
-impl From<ValidateErrorKind>         for SemStraitErrorKind { /* Validate(k)         */ }
-impl From<CompileErrorKind>          for SemStraitErrorKind { /* Compile(k)          */ }
+impl From<ValidateError>         for SemStraitErrorKind { /* Validate(k)         */ }
+impl From<CompileError>          for SemStraitErrorKind { /* Compile(k)          */ }
 impl From<PlanErrorKind>             for SemStraitErrorKind { /* Plan(k)             */ }
 impl From<OptimizeErrorKind>         for SemStraitErrorKind { /* Optimize(k)         */ }
 impl From<AdaptErrorKind>            for SemStraitErrorKind { /* Adapt(k)            */ }
@@ -558,15 +558,15 @@ The fused helper relies on these impls so per-stage `?`-propagation lands
 on the right `SemStraitErrorKind` variant without explicit conversion at
 each call site. Each `From` is **lossless**: variant identity of the inner
 kind is preserved; consumers that need the inner kind for fine-grained
-matching destructure `SemStraitErrorKind::Compile(CompileErrorKind::…)`.
+matching destructure `SemStraitErrorKind::Compile(CompileError::…)`.
 
 ### 6.4 Variant-to-origin map
 
 | Variant                  | Origin doc | Inner `*ErrorKind`            | Notes |
 |--------------------------|------------|-------------------------------|-------|
 | `Parse`                  | `32`       | `ParseErrorKind`              | YAML / expression-DSL parse errors |
-| `Validate`               | `32`       | `ValidateErrorKind`           | structural-preconditions failures |
-| `Compile`                | `33`       | `CompileErrorKind`            | name / catalog / schema / binding resolution |
+| `Validate`               | `32`       | `ValidateError`           | structural-preconditions failures |
+| `Compile`                | `33`       | `CompileError`            | name / catalog / schema / binding resolution |
 | `Plan`                   | `34`       | `PlanErrorKind`               | planner failures |
 | `Optimize`               | `34`       | `OptimizeErrorKind`           | optimizer-pass failures |
 | `Adapt`                  | `36`       | `AdaptErrorKind`              | adapter / emission failures |
@@ -841,7 +841,7 @@ The rightmost "YES" row is narrow: orchestration, warning policy, builder, unifi
 - API contracts: `30 §4 (non-exhaustive policy)`, `30 §5–§6 (Diagnostic + error codes)`, `30 §7 (stage return shapes)`, `30 §8 (trait rules)`, `30 §9 (per-crate async matrix)`, `30 §10 (feature-flag policy)`, `30 §13 (stability tiers)`.
 - Shared primitives: `31 §5 (FunctionRegistry)`, `31 §7 (Diagnostic)`, `31 §14 (Request / SessionContext)`.
 - Parse / validate: `32 §9 (parse signature)`, `32 §11 (validate signature)`.
-- Compile: `33 §9 (compile signature)`, `33 §10 (CompileErrorKind / RepositoryErrorKind)`, `33 §11 (Repository)`, `33 §12 (I11b drift-check caller)`.
+- Compile: `33 §9 (compile signature)`, `33 §10 (CompileError / RepositoryErrorKind)`, `33 §11 (Repository)`, `33 §12 (I11b drift-check caller)`.
 - Plan / optimize: `34 §10 (PlanErrorKind / OptimizeErrorKind)`.
 - IR types: `35 §3 (SemanticPlan)`, `35 §5 (EngineArtifact)`, `35 §10 (IrErrorKind)`.
 - Adapt: `36 §3 (EngineAdapter::adapt)`, `36 §9 (EngineArtifact / SqlArtifact shape)`, `36 §10 (AdaptErrorKind)`.

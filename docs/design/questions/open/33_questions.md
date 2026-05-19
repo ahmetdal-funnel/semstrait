@@ -36,21 +36,22 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 
 ## Q2 — `CompileError` as unified enum vs split
 
-**Question.** `33 §10.1`'s `CompileError` extends `semstrait-core::CompileError` by re-exporting core variants and adding SemanticManifest-layer variants. Should this remain a single enum, or should `33` expose a split `CoreCompileError` + `SemanticManifestCompileError` pair?
+**Question.** `33 §10.1`'s `manifest::CompileError` carries the wider resolution-stage roster and embeds the narrow `ir::CompileError` (`35 §15.2`) via D.ii kind-nesting (single `Ir(ir::CompileError)` variant). Should this remain a single enum with one D.ii embed, or should `33` expose a split `IrCompileError` + `ManifestCompileError` pair without embedding?
 
 **Refs.**
-- `31 §8.3` — `semstrait-core::CompileError` variant roster.
-- `33 §10.1` — unified-enum posture.
-- `30 §5` — typed-error-carrier discipline.
+- `35 §15.2` — narrow `ir::CompileError` variant roster (`ReturnTypeRule::Custom` failures).
+- `33 §10.1` — wider `manifest::CompileError` roster + `Ir(ir::CompileError)` embed.
+- `30 §5` / `§7.4` — typed-error-carrier discipline + D.ii kind-nesting pattern.
 
-**Arguments pro unified.**
+**Arguments pro unified (D.ii embed).**
 - Callers pattern-match on one enum. Simpler.
 - Stable-code discipline is preserved regardless of enum layout.
+- D.ii is the spec's standard cross-crate kind-nesting pattern (`30 §7.4`).
 
 **Arguments pro split.**
-- Clearer crate-boundary semantics: core-layer concerns stay in core; SemanticManifest-layer concerns stay in `33`.
+- Clearer crate-boundary semantics: ir-layer concerns stay in `35`; manifest-layer concerns stay in `33`.
 - Easier to audit what each crate contributes.
-- A core-variant change is guaranteed not to touch the SemanticManifest-layer enum.
+- An ir-variant change is guaranteed not to touch the manifest-layer enum.
 
 **Current position in `33`.** Unified per `33 §10.1`. Tracked as `[TD-33-ERROR-UNIFY]`.
 

@@ -1,5 +1,5 @@
 ---
-prereqs: [10, 11, 13, 14, 14a, 15, 16, 17, 18, 19, 20, 30, 31, 31b]
+prereqs: [10, 11, 13, 14, 14a, 15, 16, 17, 18, 19, 20, 30, 31, 31b, 35]
 authoritative-for:
   - the `semstrait-manifest` public-API surface — crate boundary, module layout, re-export posture
   - the `SemanticManifest` struct: top-level field roster, `#[non_exhaustive]` status, serde/persistence posture
@@ -11,8 +11,8 @@ authoritative-for:
   - `ResolvedRelationship` SemanticManifest-layer shape (refines `16 §3` for the compiled form)
   - `CoverageIndex` and `CompositionIndex` — planner lookup indices materialized at compile time, including `CompositionIndex.by_constituent_set` and `by_canonical` per `16 §10` (uniform explicit + implicit lookup)
   - `SemanticManifestMetadata` — compile timestamp, source-hash, schema version, SemanticManifest format version
-  - the `compile` function signature — `pub async fn compile(...) -> Result<(SemanticManifest, Diagnostics<CompileErrorKind>), (Diagnostic<CompileErrorKind>, Diagnostics<CompileErrorKind>)>`; the async boundary is I11a
-  - `CompileErrorKind` — typed-kind enum for the compile stage per `30 §5`; implements `Diagnose`; identification by variant identity (no string-code surface)
+  - the `compile` function signature — `pub async fn compile(...) -> Result<(SemanticManifest, Diagnostics<CompileError>), (Diagnostic<CompileError>, Diagnostics<CompileError>)>`; the async boundary is I11a
+  - `CompileError` — typed-kind enum for the compile stage per `30 §5`; implements `Diagnose`; identification by variant identity (no string-code surface)
   - `Repository` trait — persistence surface (`save` / `load` / `list`); `async fn load` is the I11b gated entry
   - `InMemoryRepository`, `FileSystemRepository` — the two bundled impls
   - `CatalogProvider::check_schema_drift` — the I11b gated entry for drift validation (pointer forward to `37`)
@@ -25,11 +25,16 @@ authoritative-for:
 refined-by:
   - 31b (`semstrait-core::io` — transport vocabulary used by §16.5 and future `Repository` impls)
   - 34 (`semstrait-planner` — consumes `SemanticManifest` synchronously at plan time; never re-resolves)
-  - 35 (`semstrait-ir` — consumes `ResolvedExprTable` entries while lowering to `PlanNode`s)
   - 36 (`semstrait-adapter` — consumes `PhysicalExpr` from `ResolvedExprTable` entries at `adapt`)
   - 37 (`semstrait-catalog` — authoritative for `CatalogProvider` / `FileSystem` trait surfaces; `33` only names them)
   - 38 (`semstrait-api` — orchestrates `compile` and exposes `SemanticManifest` through the unified entry)
   - 40 (`implementation/40_refactor_plan.md` — current-vs-target delta for `crates/semstrait-manifest/src/`)
+# Note: `35` (`semstrait-ir`) is now a **prerequisite** (above), not a refinement,
+# under the second-cascade landing (`STATUS.md` item Q): manifest depends on ir
+# for `Expr<L>`, `PhysicalExpr`, `FunctionRegistry`, `CanonicalFn`, and the
+# `ir::CompileError` narrow kind. The planner — not ir — consumes
+# `ResolvedExprTable` entries when lowering to `PlanNode`s (the `PlanNode`
+# container itself is defined in ir but populated by planner).
 ---
 
 # 33. semstrait-manifest
@@ -40,7 +45,7 @@ refined-by:
 
 ### 1.1 Crate responsibility
 
-`semstrait-manifest` sits one layer above `semstrait-core` / `semstrait-model` in the workspace DAG (`30 §13`; I7). It owns exactly two things:
+`semstrait-manifest` sits above `semstrait-core`, `semstrait-ir`, and `semstrait-model` in the workspace DAG (`30 §13`; I7) — post-second-cascade landing (`STATUS.md` item Q) the manifest crate depends on `semstrait-ir` for the full expression vocabulary (`Expr<L>`, `PhysicalExpr`, `FunctionRegistry`, `CanonicalFn`, `ir::CompileError` per `35`). It owns exactly two things:
 
 1. The `**compile` stage** — the `SemanticModel + Catalog → SemanticManifest` transformation ratified in `10 §3.3`. This is the only stage in the `semstrait-*` pipeline where async I/O is permitted (per I11a).
 2. The `**SemanticManifest`** — the sealed, planner-complete, engine-agnostic artifact that `compile` produces and that every stage from `plan` onward consumes synchronously (per I8 / I6).
@@ -49,7 +54,7 @@ Persistence (`Repository` trait + two bundled impls, `InMemoryRepository` and `F
 
 ### 1.2 Scope
 
-`33` ratifies the public-crate surface (§2), the `SemanticManifest` struct and its `Resolved`* family (§3–§8), the `compile` signature (§9), the `CompileErrorKind` typed-kind enum and its `Diagnose` impl (§10), the `Repository` trait + `RepositoryErrorKind` (§11), the I11b gate for `CatalogProvider::check_schema_drift` (§12), determinism discipline (§13), serde / persistence-format policy (§14), per-leaf stability (§15), and crate boundaries (§16). Round-1 open items are parked per §17.
+`33` ratifies the public-crate surface (§2), the `SemanticManifest` struct and its `Resolved`* family (§3–§8), the `compile` signature (§9), the `CompileError` typed-kind enum and its `Diagnose` impl (§10), the `Repository` trait + `RepositoryErrorKind` (§11), the I11b gate for `CatalogProvider::check_schema_drift` (§12), determinism discipline (§13), serde / persistence-format policy (§14), per-leaf stability (§15), and crate boundaries (§16). Round-1 open items are parked per §17.
 
 `33` does NOT ratify: per-variant authoring YAML (→ `32` via `20`–`24`); expression resolution algorithm (→ `19 §3`); binding resolution algorithm (→ `15 §10`); composition resolution algorithm (→ `16`); per-variant planner strategy (→ `20 §5`, `21`–`24`); `CatalogProvider` / `FileSystem` method rosters (→ `37`); `Repository` byte-level encoding (the shape-stable contract is §14; encoders are caller-chosen); planner entry types (→ `34` / `35`); deprecated symbols (→ `41`).
 
@@ -60,7 +65,7 @@ Persistence (`Repository` trait + two bundled impls, `InMemoryRepository` and `F
 - **Post-compile consumption is synchronous.** `plan` / `optimize` / `adapt` consume the `SemanticManifest` through `&` references; `Arc<SemanticManifest>` is the conventional carrier inside `semstrait-api`. Re-entrant lookup is O(log n) per `19 §3.2.3`.
 - **Determinism is cross-cutting.** Every ordered map in the SemanticManifest is a `BTreeMap`; every serialized output is byte-stable given the same input bytes. §13 ratifies the testing discipline.
 
-Per I7, the crate's workspace dependencies are exactly three: `semstrait-core`, `semstrait-model`, `semstrait-catalog`. No dep on `semstrait-planner`, `semstrait-ir`, or any adapter / engine crate. A SemanticManifest artifact flows downward; the manifest crate never reaches back up.
+Per I7, the crate's workspace dependencies are exactly four: `semstrait-core`, `semstrait-ir`, `semstrait-model`, `semstrait-catalog`. No dep on `semstrait-planner`, `semstrait-adapter`, or any engine crate. A SemanticManifest artifact flows downward; the manifest crate never reaches back up. The `semstrait-ir` dep is the canonical-IR layer producing `Expr<L>`, `PhysicalExpr`, `FunctionRegistry`, and the narrow `ir::CompileError` that `compile` embeds via D.ii nesting (§10).
 
 ### 1.4 Guardrails — how `33` upholds `00 §9` invariants
 
@@ -71,9 +76,9 @@ Per I7, the crate's workspace dependencies are exactly three: `semstrait-core`, 
 | **I5** — resolution completes at compile time      | Every `EntityRef` is substituted away in `ResolvedExprTable` per `19 §3.3`; every `Binding` is fully resolved into `ResolvedBinding` per `15 §10`; no post-compile stage triggers resolution.                                                                                 |
 | **I6** — plan-time is synchronous                  | No public method on `SemanticManifest` or its `Resolved`* substructures is `async`. `Repository::load` and `compile` are the only `async fn` on this crate's surface.                                                                                                        |
 | **I8** — SemanticManifests are planner-complete    | `§3`'s six-field roster covers every lookup the planner requires: resolved data kinds, resolved relationships, expression table, coverage index, composition index, metadata. Nothing is deferred to a post-compile fetch.                                                   |
-| **I10** — public sum types are `#[non_exhaustive]` | `SemanticManifest`, every `Resolved`* struct and enum, `CompileErrorKind`, `RepositoryErrorKind`, `CoverageIndex` entry variants — all `#[non_exhaustive]`. The roster is §15's.                                                                                             |
+| **I10** — public sum types are `#[non_exhaustive]` | `SemanticManifest`, every `Resolved`* struct and enum, `CompileError`, `RepositoryErrorKind`, `CoverageIndex` entry variants — all `#[non_exhaustive]`. The roster is §15's.                                                                                             |
 | **I11** — I/O is gated                             | I11a: `compile` is the only place I/O fires during the main pipeline. I11b: `Repository::load` and `CatalogProvider::check_schema_drift` are the two out-of-band entries. No other public function touches I/O.                                                              |
-| **I12** — diagnostics are first-class              | `CompileErrorKind` and `RepositoryErrorKind` implement `Diagnose` per `31 §10`; identification is by variant identity per `30 §5.4` (no string codes). Every public stage entry-point carries `#[tracing::instrument]` per `30 §6.2` for the parallel observability channel. |
+| **I12** — diagnostics are first-class              | `CompileError` and `RepositoryErrorKind` implement `Diagnose` per `31 §10`; identification is by variant identity per `30 §5.4` (no string codes). Every public stage entry-point carries `#[tracing::instrument]` per `30 §6.2` for the parallel observability channel. |
 
 
 I1 / I2 / I3 / I7 / I9 apply transitively — `33`'s surface exposes no raw SQL, no physical types beyond the engine-agnostic `DataType` / `PhysicalSource` carriers, no engine identity, no upward deps, no `Compiled`* prefixed types (per `00 §4.3`).
@@ -92,9 +97,9 @@ semstrait-manifest
 │   ├── relationship      // ResolvedRelationship, ResolvedRelationshipGraph
 │   ├── composition       // ResolvedComposedSemanticInterface, CompositionIndex
 │   ├── coverage          // CoverageIndex, CompositionCoverageIndex
-│   └── expr              // re-exports `ResolvedExprTable` from `semstrait-core`
+│   └── expr              // owns `ResolvedExprTable` (`PhysicalExpr` entries from `semstrait-ir`)
 ├── compile               // compile fn, CompileCtx, sub-pass drivers (pub(crate) below the fn)
-├── error                 // CompileErrorKind (extends `semstrait-core::CompileErrorKind`); Diagnose impl
+├── error                 // CompileError (embeds `ir::CompileError` via D.ii); Diagnose impl
 └── repository            // Repository trait, RepositoryErrorKind, InMemoryRepository,
                           //   FileSystemRepository, SemanticManifestFormatVersion
 ```
@@ -119,9 +124,9 @@ semstrait-manifest
 | `ResolvedComposedSemanticInterface`                                                 | `manifest::composition`    | SemanticManifest-layer composed interface                                                                                           |
 | `CompositionIndex`                                                                  | `manifest::composition`    | planner lookup index per `16 §8`                                                                                                    |
 | `CoverageIndex`                                                                     | `manifest::coverage`       | planner lookup index per `15 §6`                                                                                                    |
-| `ResolvedExprTable`                                                                 | `semstrait-core` re-export | expression table (owned by SemanticManifest; shape in `19 §3.2`)                                                                     |
+| `ResolvedExprTable`                                                                 | `manifest::expr`           | expression table owned by SemanticManifest; entries carry `PhysicalExpr` from `semstrait-ir` (shape in `19 §3.2`)                    |
 | `compile`                                                                           | `compile`                  | the async compile entry point                                                                                                       |
-| `CompileErrorKind`                                                                  | `error`                    | typed-kind enum (extends `semstrait-core::CompileErrorKind` variant roster); implements `Diagnose`                                  |
+| `CompileError`                                                                      | `error`                    | typed-kind enum for the manifest compile stage; embeds `Ir(ir::CompileError)` for narrow function-return-rule failures raised by `semstrait-ir` (D.ii kind-nesting per `30 §7.4`); implements `Diagnose` |
 | `Repository`                                                                        | `repository`               | persistence trait                                                                                                                   |
 | `RepositoryErrorKind`                                                               | `repository`               | typed-kind enum for repository errors; implements `Diagnose`                                                                        |
 | `InMemoryRepository`                                                                | `repository`               | HashMap-backed impl                                                                                                                 |
@@ -159,7 +164,7 @@ Per `00 §4.1` (SemanticManifest row) and `10 §3.3` (compile contract). `#[non_
 - Every `SemanticsName` that any `ResolvedDataKind` exposes has at least one `(name, binding_id)` entry in `expr_table` (I8 / `19 §3.2.3`'s completeness guarantee).
 - **Composition completeness** (per `16 §10`). `resolved_datakinds` contains every author-declared composition (`origin: Origin::Explicit`) plus every implicit composition enumerated within the depth/count caps (`Origin::Implicit { id }`). The two populations are disjoint by canonical form per `16 §10.6` — the implicit-explicit clash check guarantees no two `Origin::Implicit { id: a }` and `Origin::Explicit` shadows share an `ImplicitId`.
 - **Composition-index uniformity.** `composition_index.by_canonical` is populated for every composition with a canonical form (Joinsets and Unionsets, both explicit and implicit); `composition_index.by_constituent_set` covers all of them. Plan-time lookup never distinguishes explicit from implicit per `34 §7`.
-- **Implicit-cap discipline.** Total `Origin::Implicit` compositions across `resolved_datakinds` ≤ `MAX_IMPLICIT_ENUMERATION_COUNT = 2000`. Exceeding the cap fails compile with `CompileErrorKind::ImplicitEnumerationExploded` (`§10.1`); a sealed SemanticManifest never observes the breach.
+- **Implicit-cap discipline.** Total `Origin::Implicit` compositions across `resolved_datakinds` ≤ `MAX_IMPLICIT_ENUMERATION_COUNT = 2000`. Exceeding the cap fails compile with `CompileError::ImplicitEnumerationExploded` (`§10.1`); a sealed SemanticManifest never observes the breach.
 - The SemanticManifest is byte-deterministic per identical `SemanticModel` + catalog snapshot (§13).
 
 ### 3.2 `SemanticManifestMetadata`
@@ -315,7 +320,7 @@ pub struct ResolvedJoinset {
 
 Per `20 §3` row "Joinset" and `24`. v1 ratifies binary joinsets only (per `12 §5.2`); `path` is the anchor-rooted relationship traversal materialized at compile time per `24 §5`; `constituents` is in `path`-traversal order and includes the anchor at index 0. `as_of_gate` is populated iff any constituent is `AsOf`-gated per `17 §8.2` / `24 §5.4` (shape is deferred to `17 §8.2`).
 
-`**origin` carriage (per `16 §5.6` / `§10.4`).** `Origin::Explicit` for author-declared `joinsets:` blocks; `Origin::Implicit { id: ImplicitId }` for compile-enumerated implicit Joinsets (`16 §10.4`). For `Origin::Implicit`, `name` is a synthetic `__implicit_joinset_<8-hex>` per `16 §5.7`; `anchor` is the first `DataKindName` in the canonical `constituents` order (corresponds to the canonical-form starting node); `path` is the canonically sorted relationship traversal that hashed to the `ImplicitId`. The implicit-explicit clash check (`16 §10.6`) runs at compile before materialization — an explicit `ResolvedJoinset` whose canonical form matches an implicit one is rejected with `COMP_E_0414` per §10's `CompileErrorKind` extensions.
+`**origin` carriage (per `16 §5.6` / `§10.4`).** `Origin::Explicit` for author-declared `joinsets:` blocks; `Origin::Implicit { id: ImplicitId }` for compile-enumerated implicit Joinsets (`16 §10.4`). For `Origin::Implicit`, `name` is a synthetic `__implicit_joinset_<8-hex>` per `16 §5.7`; `anchor` is the first `DataKindName` in the canonical `constituents` order (corresponds to the canonical-form starting node); `path` is the canonically sorted relationship traversal that hashed to the `ImplicitId`. The implicit-explicit clash check (`16 §10.6`) runs at compile before materialization — an explicit `ResolvedJoinset` whose canonical form matches an implicit one is rejected with `COMP_E_0414` per §10's `CompileError` extensions.
 
 ### 4.6 Common accessor — `DataKindOps` at the SemanticManifest layer
 
@@ -493,7 +498,7 @@ Every `SemanticsName` on the owning DataKind's `SemanticInterface` appears in ex
 
 `CoverageKey.source_index` is per-source within a binding (not `BindingId`); the planner needs that granularity when materializing multi-source bindings per `23 §6`. The SemanticManifest-level `CoverageIndex` (§7) adds the `BindingId` dimension. `CoverageVariant` distinguishes Semantics native to the source (`Native`), projected via `NULL`-padding (`NullFill`), produced via the `computed` map (`Derived`), or read from the source's per-source `metadata_values` map for metadata-bound Semantics (`Metadata`, per `15 §6.1` 4-variant roster).
 
-`ResolvedLiteral`, `MetadataDimensionRecipe`, `MetadataExtraction`, `ColumnName`, `PartitionColumn`, `LiteralValue` are re-exported from `semstrait-core` / `semstrait-model`. `PhysicalExpr` is the `semstrait-core` type from `31 §3.3`.
+`ResolvedLiteral`, `MetadataDimensionRecipe`, `MetadataExtraction`, `ColumnName`, `PartitionColumn`, `LiteralValue` are re-exported from `semstrait-core` / `semstrait-model`. `PhysicalExpr` is the `semstrait-ir` type from `35 §3.6` (sourced via `14 §2`).
 
 ---
 
@@ -545,7 +550,7 @@ pub struct ResolvedExprEntry {
 
 #### 6.3.1 `Provenance` (diagnostic-only)
 
-Per-entry source-provenance carrier populated by `compile`. **Never leaves the manifest** — no plan-time or adapt-time consumer reads it. Used by the diagnostic reporter to quote every author `Location` that contributed material to an entry, so a `CompileErrorKind` fired against an entry can point finger without re-walking the parse tree.
+Per-entry source-provenance carrier populated by `compile`. **Never leaves the manifest** — no plan-time or adapt-time consumer reads it. Used by the diagnostic reporter to quote every author `Location` that contributed material to an entry, so a `CompileError` fired against an entry can point finger without re-walking the parse tree.
 
 ```rust
 pub struct Provenance {
@@ -766,12 +771,12 @@ pub async fn compile(
     provider: &dyn CatalogProvider,
     fs: &dyn FileSystem,
 ) -> Result<
-    (SemanticManifest, Diagnostics<CompileErrorKind>),
-    (Diagnostic<CompileErrorKind>, Diagnostics<CompileErrorKind>),
+    (SemanticManifest, Diagnostics<CompileError>),
+    (Diagnostic<CompileError>, Diagnostics<CompileError>),
 >;
 ```
 
-Compile a validated `SemanticModel` into a sealed `SemanticManifest`. Fail-fast stage per `30 §7.1`: the success arm carries the `SemanticManifest` plus any warnings emitted during compile; the failure arm carries the single fatal `Diagnostic<CompileErrorKind>` plus all warnings observed before that point. This is the only stage in the `semstrait-*` pipeline where async I/O is permitted (per I11a). The async boundary exists solely to await catalog / filesystem trait methods at compile time; post-compile consumption is strictly synchronous.
+Compile a validated `SemanticModel` into a sealed `SemanticManifest`. Fail-fast stage per `30 §7.1`: the success arm carries the `SemanticManifest` plus any warnings emitted during compile; the failure arm carries the single fatal `Diagnostic<CompileError>` plus all warnings observed before that point. This is the only stage in the `semstrait-*` pipeline where async I/O is permitted (per I11a). The async boundary exists solely to await catalog / filesystem trait methods at compile time; post-compile consumption is strictly synchronous.
 
 Sub-passes run in the order ratified in `19 §3.9`: (1) reference-graph build + cycle detection; (2) catalog snapshot (schema fetch for every `PhysicalSource`); (3) binding resolution (`15 §10`); (4) relationship graph build (`19 §3.4.2`); (5) per-`(SemanticsName, BindingId)` expression resolution building `ResolvedExprTable` (`19 §3.3`); (6) **explicit-composition materialization** (`16 §10.1`) — `ResolvedJoinset` / `ResolvedUnionset` / `ResolvedGrainset` for author-declared compositions, with `origin: Origin::Explicit`; (7) **implicit-composition enumeration** (`16 §10.4` Joinsets, `§10.5` Unionsets) — bounded by `MAX_IMPLICIT_COMPOSITION_DEPTH = 4` and `MAX_IMPLICIT_ENUMERATION_COUNT = 2000`; emits `COMP_E_0409 ImplicitEnumerationExploded` if the count cap is exceeded; (8) **implicit-explicit clash check** (`16 §10.6`) — fails compile with `COMP_E_0414 ExplicitImplicitCompositionClash` when an explicit Joinset's canonical form (`16 §5.7`) hashes to an `ImplicitId` already populated by step 7; (9) coverage / composition index materialization (`15 §6`, `16 §8`) — populates `CompositionIndex.entries` + `by_constituent_set` + `by_canonical` over the unified explicit + implicit population; (10) metadata finalization.
 
@@ -783,7 +788,7 @@ Sub-passes run in the order ratified in `19 §3.9`: (1) reference-graph build + 
 
 ### 9.3 Return shape
 
-The signature above matches the fail-fast row in `30 §7.1`'s per-stage table: the success arm is `(SemanticManifest, Diagnostics<CompileErrorKind>)` (warnings collected during the pass), the failure arm is `(Diagnostic<CompileErrorKind>, Diagnostics<CompileErrorKind>)` (one fatal kind + warnings preceding it). The `Diagnostic<CompileErrorKind>` envelope carries the `Location` per `30 §5.1`; the kind variant carries semantic payload only. The `SemanticManifest::metadata.warnings` field (`§3.2`) is a content-equivalent copy of the success-arm warnings vector kept on the artifact for callers that drop the warnings tuple after consuming it.
+The signature above matches the fail-fast row in `30 §7.1`'s per-stage table: the success arm is `(SemanticManifest, Diagnostics<CompileError>)` (warnings collected during the pass), the failure arm is `(Diagnostic<CompileError>, Diagnostics<CompileError>)` (one fatal kind + warnings preceding it). The `Diagnostic<CompileError>` envelope carries the `Location` per `30 §5.1`; the kind variant carries semantic payload only. The `SemanticManifest::metadata.warnings` field (`§3.2`) is a content-equivalent copy of the success-arm warnings vector kept on the artifact for callers that drop the warnings tuple after consuming it.
 
 ### 9.4 Async boundary (I11a)
 
@@ -795,7 +800,7 @@ The signature above matches the fail-fast row in `30 §7.1`'s per-stage table: t
 
 ### 9.6 Warning discipline
 
-Parse / validate warnings are not re-surfaced by `compile` — those are the caller's to route. Compile-stage warnings ride on the `Diagnostics<CompileErrorKind>` vector of either return arm (success or failure tuple) per `30 §7.2` and are also retained on `SemanticManifest.metadata.warnings` on success. No warning is silently dropped (per `30 §7.3`).
+Parse / validate warnings are not re-surfaced by `compile` — those are the caller's to route. Compile-stage warnings ride on the `Diagnostics<CompileError>` vector of either return arm (success or failure tuple) per `30 §7.2` and are also retained on `SemanticManifest.metadata.warnings` on success. No warning is silently dropped (per `30 §7.3`).
 
 ### 9.7 Thread safety
 
@@ -803,19 +808,20 @@ Parse / validate warnings are not re-surfaced by `compile` — those are the cal
 
 ---
 
-## 10. `CompileErrorKind`
+## 10. `CompileError`
 
 ### 10.1 Typed-kind enum
 
-The SemanticManifest-layer `CompileErrorKind` **extends** `semstrait-core::CompileErrorKind` (per `31 §8.3`). Per `30 §5`'s typed-kind discipline, the kind enum carries semantic payload only — primary `Location` lives on the wrapping `Diagnostic<CompileErrorKind>` envelope per `30 §5.1`.
+The SemanticManifest-layer `CompileError` **owns** the wider resolution-stage roster (name resolution, catalog resolution, binding resolution, relationship / composition graph, type resolution, function-signature matching) and **embeds** the narrow `ir::CompileError` (`35 §15.2`) via D.ii kind-nesting (`30 §7.4`) for function-return-rule failures raised by `ReturnTypeRule::Custom` callbacks inside `semstrait-ir`'s `FunctionRegistry`. Per `30 §5`'s typed-kind discipline, the kind enum carries semantic payload only — primary `Location` lives on the wrapping `Diagnostic<CompileError>` envelope per `30 §5.1`.
 
 ```rust
 use semstrait_core::diagnostic::{Diagnose, Severity};
 use semstrait_core::{DataType, Location};
+use semstrait_ir as ir;
 
 #[non_exhaustive]
-pub enum CompileErrorKind {
-    // -- name resolution (shared with core per `31 §8.3`)
+pub enum CompileError {
+    // -- name resolution
     UnresolvedEntityRef            { name: String },
     UnreachableSemanticsReference  { name: String, from_kind: String },
     CircularSemanticsReference     { cycle: Vec<String> },
@@ -855,39 +861,51 @@ pub enum CompileErrorKind {
         canonical_id_hex: String,
     },
 
-    // -- function resolution (shared with core per `31 §8.3`)
+    // -- function resolution
     UnknownFunction                { name: String },
     FunctionArityMismatch          { name: String, expected: String, got: usize },
     NoMatchingSignature            { name: String, arg_types: Vec<DataType>, tried_signatures: Vec<String> },
 
-    // -- type resolution (shared with core per `31 §8.3`)
+    // -- semantic-kind mismatch (raised when SemanticLeaf typed leaves disagree on kind)
+    SemanticKindMismatch           { name: String, expected: String, got: String },
+
+    // -- type resolution
     TypeInferenceFailure           { reason: String },
     ComputedTypeUnifyConflict      { name: String, declared: DataType, inferred: DataType },
     LiteralOverflow                { value: String, target: DataType },
     LiteralPrecisionLoss           { value: String, target: DataType },
+
+    // -- IR-emitted function-return-rule failure (D.ii nesting per `30 §7.4`).
+    //    Surfaces `ReturnTypeRule::Custom` callback failures raised inside
+    //    `semstrait-ir`'s `FunctionRegistry` resolution. Defined in `35 §15.2`.
+    Ir(ir::CompileError),
 }
 
-impl Diagnose for CompileErrorKind {
+impl Diagnose for CompileError {
     fn message(&self) -> String { /* per-variant human text */ }
     fn severity_default(&self) -> Severity { Severity::Error }
     fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
+}
+
+impl From<ir::CompileError> for CompileError {
+    fn from(e: ir::CompileError) -> Self { Self::Ir(e) }
 }
 ```
 
 ### 10.2 Variant identity, not codes
 
-Identification of a compile error is by **variant identity** (`matches!(diag.kind, CompileErrorKind::UnresolvedEntityRef { .. })`), not by a string code. The retired `COMP_E_`* / `EXPR_E_*` numeric ranges from earlier drafts of this section are gone — adding a variant inside `#[non_exhaustive]` is MINOR per `30 §2.2`; renaming or removing a variant is MAJOR per `30 §2.1`.
+Identification of a compile error is by **variant identity** (`matches!(diag.kind, CompileError::UnresolvedEntityRef { .. })`), not by a string code. The retired `COMP_E_`* / `EXPR_E_*` numeric ranges from earlier drafts of this section are gone — adding a variant inside `#[non_exhaustive]` is MINOR per `30 §2.2`; renaming or removing a variant is MAJOR per `30 §2.1`.
 
-Shared variants (`UnresolvedEntityRef`, `UnknownFunction`, etc.) are re-exported verbatim from `semstrait-core::CompileErrorKind` with identical fields; `33` adds the catalog / binding / relationship / index variants that depend on SemanticManifest-layer types (`RelationshipId`, `DataType` ranges). Downstream consumers pattern-match on one unified enum. Implementation via `#[non_exhaustive]` re-export is tracked as `[TD-33-ERROR-UNIFY]` (§17).
+The single nested variant `Ir(ir::CompileError)` is the **only** D.ii embed at this layer. Downstream consumers pattern-match on the unified `manifest::CompileError` and either treat the `Ir(_)` arm uniformly (most diagnostic routing) or descend into the inner variant when finer-grained handling is needed.
 
 ### 10.3 Return-shape unification
 
-There is no separate `CompileErrors` struct in the new diagnostic shape. The fail-fast return type defined in `30 §7.2` already carries one fatal `Diagnostic<CompileErrorKind>` plus the preceding warnings:
+There is no separate `CompileErrors` struct in the new diagnostic shape. The fail-fast return type defined in `30 §7.2` already carries one fatal `Diagnostic<CompileError>` plus the preceding warnings:
 
 ```rust
 Result<
-    (SemanticManifest, Diagnostics<CompileErrorKind>),       // Ok: artifact + warnings
-    (Diagnostic<CompileErrorKind>, Diagnostics<CompileErrorKind>),  // Err: fatal + warnings
+    (SemanticManifest, Diagnostics<CompileError>),       // Ok: artifact + warnings
+    (Diagnostic<CompileError>, Diagnostics<CompileError>),  // Err: fatal + warnings
 >
 ```
 
@@ -895,7 +913,7 @@ Callers destructure directly; no helper carrier is needed. The retired `CompileE
 
 ### 10.5 Warnings are never silently dropped
 
-Warnings live on `manifest.metadata.warnings` (success arm) or in the failure tuple's `Diagnostics<CompileErrorKind>` second element (failure arm). Per `30 §7.3`, dropping warnings is an invariant violation, not a caller error.
+Warnings live on `manifest.metadata.warnings` (success arm) or in the failure tuple's `Diagnostics<CompileError>` second element (failure arm). Per `30 §7.3`, dropping warnings is an invariant violation, not a caller error.
 
 ---
 
@@ -1107,7 +1125,7 @@ Public struct layout (field visibility, method signatures, non-serde trait impls
 
 ### 15.1 Crate tier
 
-Per `30 §13`: `semstrait-manifest` is **Stable in v1**. The `SemanticManifest`, `Resolved`* family, `CompileErrorKind`, `Repository` trait, and `RepositoryErrorKind` are all ratified in this document and carry the workspace-wide MAJOR cadence discipline.
+Per `30 §13`: `semstrait-manifest` is **Stable in v1**. The `SemanticManifest`, `Resolved`* family, `CompileError`, `Repository` trait, and `RepositoryErrorKind` are all ratified in this document and carry the workspace-wide MAJOR cadence discipline.
 
 Pre-1.0 rules apply until the synchronized v1.0 cut per `30 §2.3`.
 
@@ -1115,7 +1133,7 @@ Pre-1.0 rules apply until the synchronized v1.0 cut per `30 §2.3`.
 
 Per `30 §2.1`, each of the following is MAJOR:
 
-- Removing a variant from any `ResolvedDataKind::*` / `ResolvedComplexDataKind::*` / `CompileErrorKind::*` / `RepositoryErrorKind::*` enum.
+- Removing a variant from any `ResolvedDataKind::*` / `ResolvedComplexDataKind::*` / `CompileError::*` / `RepositoryErrorKind::*` enum.
 - Renaming a variant of any of those enums (variant identity is the public-API surface per `30 §5.4`).
 - Changing the type or meaning of any existing public field on `SemanticManifest`, `ResolvedSimpleDataKind`, `ResolvedBinding`, `ResolvedColumnMapping`, `ResolvedRelationship`, `CoverageIndex`, `CompositionIndex`, `SemanticManifestMetadata`, or any enum variant.
 - Changing the `compile` function signature (adding a required argument, changing return type).
@@ -1129,7 +1147,7 @@ Per `30 §2.2`, additive changes:
 
 - Adding a new variant to `ResolvedComplexDataKind` (future `Snapshotset`, `Windowset`, etc.) — the outer `ResolvedDataKind` is `#[non_exhaustive]`.
 - Adding a new field to `SemanticManifest` or any `Resolved*` struct (all are `#[non_exhaustive]`).
-- Adding a new variant to `CompileErrorKind` or `RepositoryErrorKind` (e.g. when a new validation category or transport class lands).
+- Adding a new variant to `CompileError` or `RepositoryErrorKind` (e.g. when a new validation category or transport class lands).
 - Adding a new field to `SemanticManifestMetadata` (e.g. a hash of the function-registry extensions).
 - Adding a new `SemanticManifestEncoding` variant.
 - Adding a new method to `Repository` that carries a `provided` default body (e.g. a batch-load variant). Adding a method without a default is MAJOR.
@@ -1154,8 +1172,8 @@ Per `30 §12`: any symbol slated for removal passes through `#[deprecated]` for 
 
 ### 16.1 What `semstrait-manifest` does NOT contain
 
-- **No planner code.** `SemanticPlan`, `PlanNode`, `PlanError`, `Request`, `SessionContext` live in `semstrait-planner` / `semstrait-ir`.
-- **No adapter code.** `EngineAdapter`, `DialectId`, `AdaptError`, `EngineArtifact` live in `semstrait-adapter`. The SemanticManifest carries only engine-agnostic `DataType` and `PhysicalExpr` (`13 §2`, `14 §2`).
+- **No planner code.** `SemanticPlan`, `PlanError`, `Request`, `SessionContext` live in `semstrait-planner`. The `PlanNode` container is **defined** in `semstrait-ir` (`35 §6` / `§7`) but populated by `semstrait-planner` — `33` neither defines it nor builds it.
+- **No adapter code.** `EngineAdapter`, `DialectId`, `AdaptError`, `EngineArtifact` live in `semstrait-adapter`. The SemanticManifest carries only the engine-agnostic `DataType` (from `semstrait-core` per `13 §2`) and `PhysicalExpr` (from `semstrait-ir` per `35 §3.6`, sourced via `14 §2` ratification).
 - **No catalog I/O logic.** Catalog / filesystem trait methods are consumed by `compile` but provided by `semstrait-catalog`. No catalog impl is bundled here.
 - **No raw SQL.** `ResolvedPhysicalSource` is engine-agnostic; dialect rendering is `semstrait-adapter`'s job.
 - **No YAML parser.** `SemanticModel` arrives parsed; parsing lives in `semstrait-model`.
@@ -1163,11 +1181,18 @@ Per `30 §12`: any symbol slated for removal passes through `#[deprecated]` for 
 
 ### 16.2 What `semstrait-manifest` DOES contain
 
-The `compile` function and its sub-passes; the `SemanticManifest` struct and every `Resolved`* type; the `CompileErrorKind` and `RepositoryErrorKind` typed-kind enums (each with `Diagnose` impls); the `Repository` trait and the two bundled impls; the convenience `::io` submodule (§16.5); determinism discipline (BTreeMap everywhere, timestamp canonicalization, `canonical_bytes()`).
+The `compile` function and its sub-passes; the `SemanticManifest` struct and every `Resolved`* type; the `CompileError` and `RepositoryErrorKind` typed-kind enums (each with `Diagnose` impls); the `Repository` trait and the two bundled impls; the convenience `::io` submodule (§16.5); determinism discipline (BTreeMap everywhere, timestamp canonicalization, `canonical_bytes()`).
 
 ### 16.3 Dependency direction
 
-Depends on exactly three workspace crates: `semstrait-core` (for `DataType`, `PhysicalExpr`, `CompileErrorKind` core variants, `Diagnostic<K>` / `Diagnose`, `FunctionRegistry`, `ResolvedExprTable`, `IoErrorKind`, and the `io` transport traits from `31b`); `semstrait-model` (for `SemanticModel` and Model-layer names); `semstrait-catalog` (for the `CatalogProvider` / `FileSystem` trait surfaces and `Schema` / `PartitionColumn`). Per I7, no upward dep on `semstrait-planner`, `-ir`, `-adapter`, `-api`, or `-facade`.
+Depends on exactly four workspace crates per the second-cascade landing (`STATUS.md` item Q):
+
+- `semstrait-core` — for `DataType`, `Schema`, `Diagnostic<K>` / `Diagnose`, the constraint DSL, `IoErrorKind`, and the `io` transport traits from `31b`.
+- `semstrait-ir` — for `Expr<L>`, `PhysicalExpr`, `SemanticExpr`, the trait family (`Tree`, `Visitor`, `Rewriter`, `ExprLeaf`), the structural-variant support enums (`BinaryOpKind`, …), the identifier carriers (`ColumnRef`, `SemanticsName`), `CanonicalFn`, `FunctionRegistry`, `ir::CompileError` (embedded in §10 via D.ii), and the `PlanNode` container that the downstream planner populates.
+- `semstrait-model` — for `SemanticModel`, `ExprSource`, and Model-layer names.
+- `semstrait-catalog` — for the `CatalogProvider` / `FileSystem` trait surfaces and `Schema` / `PartitionColumn`.
+
+Per I7, no upward dep on `semstrait-planner`, `-adapter`, `-api`, or `-facade`.
 
 ### 16.4 Async boundary discipline
 
