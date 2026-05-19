@@ -133,7 +133,7 @@ semantic_model:
           country: ship_country
           # Tagged-form literal — the v1 baseline.
           currency:
-            literal:
+            lit:
               string: USD
           # Bare-scalar literal — author shortcut per `18 §10.2`. The
           # YAML scalar type drives the resulting `LiteralValue` variant
@@ -141,7 +141,7 @@ semantic_model:
           # always require the tagged form because YAML cannot
           # disambiguate them from strings.
           tenant:
-            literal: acme
+            lit: acme
         temporal:
           events:
             event_time: order_ts

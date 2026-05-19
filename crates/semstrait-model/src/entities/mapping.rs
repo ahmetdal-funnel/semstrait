@@ -13,9 +13,12 @@
 //!   Dimension's `type: { metadata: ... }` block (`18 §10`) and has no
 //!   YAML representation under `semantic_mapping:`.
 
+use crate::expr_source::ExprSource;
+use crate::parser::mapping::deserialize_mapping_value;
 use crate::types::SemanticsName;
 use crate::yaml::tagged::single_key_map;
 use indexmap::IndexMap;
+use semstrait_ir::PhysicalLeaf;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_yaml::Value;
 
@@ -84,7 +87,11 @@ impl SemanticMappingBuilder {
     }
 
     /// 1:1 with [`SemanticMappingValue::Expr`].
-    pub fn expr(mut self, semantic: impl Into<SemanticsName>, expr: Value) -> Self {
+    pub fn expr(
+        mut self,
+        semantic: impl Into<SemanticsName>,
+        expr: ExprSource<PhysicalLeaf>,
+    ) -> Self {
         self.entries
             .insert(semantic.into(), SemanticMappingValue::Expr(expr));
         self
@@ -168,9 +175,11 @@ pub enum SemanticMappingValue {
     Column(String),
     /// A literal broadcast over every row.
     Literal(LiteralValue),
-    /// Opaque YAML pass-through pending the `19 §3` / `14 §2`
-    /// reconciliation landing.
-    Expr(Value),
+    /// Author-typed physical-side expression (`{expr: ...}` arm). The
+    /// payload is an [`ExprSource<PhysicalLeaf>`]: at this site the
+    /// deserializer rejects semantic tags (`field` / `dim` / `measure`
+    /// / `metric` / `key`) per `14 §6.4.1`.
+    Expr(ExprSource<PhysicalLeaf>),
     /// Compile-synthesized metadata-extraction recipe. Never authored
     /// under `semantic_mapping:` (per `18 §10.4`).
     Metadata(MetadataDimensionRecipe),
@@ -181,28 +190,11 @@ impl<'de> Deserialize<'de> for SemanticMappingValue {
     where
         D: Deserializer<'de>,
     {
+        // The actual shape-dispatch lives in `parser::mapping` — this
+        // impl is a thin adaptor that materializes the YAML node and
+        // hands it off (Phase 8 Pass B).
         let value = Value::deserialize(deserializer)?;
-        match value {
-            Value::String(s) => Ok(SemanticMappingValue::Column(s)),
-            Value::Mapping(ref map) => {
-                if let Some(lit) = map.get(Value::String("literal".into())) {
-                    let v: LiteralValue =
-                        serde_yaml::from_value(lit.clone()).map_err(serde::de::Error::custom)?;
-                    Ok(SemanticMappingValue::Literal(v))
-                } else if let Some(expr_val) = map.get(Value::String("expr".into())) {
-                    Ok(SemanticMappingValue::Expr(expr_val.clone()))
-                } else {
-                    Err(serde::de::Error::custom(
-                        "semantic_mapping value: expected bare column string or `{literal: ...}` / `{expr: ...}` map"
-                            .to_string(),
-                    ))
-                }
-            }
-            other => Err(serde::de::Error::custom(format!(
-                "semantic_mapping value: unexpected YAML shape {:?}",
-                other
-            ))),
-        }
+        deserialize_mapping_value(&value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -215,8 +207,10 @@ impl Serialize for SemanticMappingValue {
         match self {
             Self::Column(s) => serializer.serialize_str(s),
             Self::Literal(l) => {
+                // Reserved key renamed from `literal` to `lit` (Phase 8)
+                // for symmetry with the inline / block-form `lit:` tag.
                 let mut map = serializer.serialize_map(Some(1))?;
-                map.serialize_entry("literal", l)?;
+                map.serialize_entry("lit", l)?;
                 map.end()
             }
             Self::Expr(e) => {

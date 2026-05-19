@@ -5,12 +5,13 @@
 //! [`ExprSource<L>`] is discriminated by serde shape:
 //!
 //! - `String` value → [`ExprSource::Inline`].
-//! - `Mapping` value → [`ExprSource::Block`], dispatched via the
-//!   reserved-tag catalog (Option γ) implemented in [`deserialize`].
+//! - `Mapping` value → [`ExprSource::Block`], dispatched by the
+//!   reserved-tag catalog implemented in [`crate::parser::block`].
 //!
 //! No separate `ExprBlock` AST per spec item Q (`STATUS.md`): the YAML
-//! shape **is** [`semstrait_ir::Expr<L>`] deserialized via the custom
-//! [`Deserialize`](serde::Deserialize) impl in [`deserialize`].
+//! shape **is** [`semstrait_ir::Expr<L>`] deserialized via the
+//! [`Deserialize`](serde::Deserialize) impl below, which delegates to
+//! [`crate::parser::block::parse_block`].
 //!
 //! # Parse-site dispatch
 //!
@@ -21,18 +22,15 @@
 //!   produces a `PhysicalExpr`. Bare identifiers resolve to
 //!   `Column(name)`. Semantic tags (`field` / `dim` / `measure` /
 //!   `metric` / `key`) are rejected by the deserializer's
-//!   `LeafResolver` impl for `PhysicalLeaf`.
+//!   [`crate::parser::leaf::LeafResolver`] impl for `PhysicalLeaf`.
 
-pub mod deserialize;
-pub mod error;
-
-pub use error::ParseError;
-
-use semstrait_ir::{
-    Expr, ExprLeaf, PhysicalExpr, PhysicalLeaf, SemanticExpr, SemanticLeaf,
-};
+use crate::parser::block::parse_block;
+use crate::parser::error::ParseError;
+use crate::parser::leaf::LeafResolver;
+use semstrait_ir::{Expr, ExprLeaf, PhysicalExpr, PhysicalLeaf, SemanticExpr, SemanticLeaf};
 use serde::ser::SerializeMap;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
+use serde_yaml::Value;
 
 /// YAML-authored expression source per spec `14 §6.1`.
 ///
@@ -43,7 +41,7 @@ use serde::{Serialize, Serializer};
 ///   `parse_physical` raise [`ParseError::InlineDslNotImplemented`]
 ///   when called on `Inline(_)`.
 /// - [`ExprSource::Block`] — structured YAML tree deserialized
-///   directly into [`Expr<L>`] via the custom impl in [`deserialize`].
+///   directly into [`Expr<L>`] via the [`Deserialize`] impl below.
 ///
 /// Generic in the leaf set `L`. The two canonical instantiations are
 /// `ExprSource<SemanticLeaf>` (semantic sites) and
@@ -78,6 +76,21 @@ impl<L: ExprLeaf> ExprSource<L> {
     /// Returns `true` for [`ExprSource::Block`] values.
     pub fn is_block(&self) -> bool {
         matches!(self, ExprSource::Block(_))
+    }
+}
+
+// ── Deserialize: delegates to `parser::block::parse_block` ──────────────
+
+impl<'de, L> Deserialize<'de> for ExprSource<L>
+where
+    L: LeafResolver,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        parse_block::<L>(&value).map_err(|e| serde::de::Error::custom(e.to_string()))
     }
 }
 
