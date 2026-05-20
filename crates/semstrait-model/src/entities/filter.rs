@@ -4,9 +4,10 @@
 //! referencing between the two is rejected at validate (SR-E-11).
 
 use crate::entities::ai::AiContext;
-use crate::expr_ast::ExprSource;
+use crate::expr_source::ExprSource;
 use crate::types::FilterName;
 use bon::Builder;
+use semstrait_ir::SemanticLeaf;
 use serde::{Deserialize, Serialize};
 
 /// DataKind-level filter — narrows the rowset a DataKind exposes.
@@ -27,7 +28,7 @@ pub struct DataKindFilter {
     pub ai_context: Option<AiContext>,
 
     #[builder(into)]
-    pub expr: ExprSource,
+    pub expr: ExprSource<SemanticLeaf>,
 }
 
 /// Measure / Metric-level filter — applies a conditional inside the
@@ -45,5 +46,5 @@ pub struct AggregationFilter {
     pub description: Option<String>,
 
     #[builder(into)]
-    pub expr: ExprSource,
+    pub expr: ExprSource<SemanticLeaf>,
 }

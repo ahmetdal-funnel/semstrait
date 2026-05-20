@@ -60,7 +60,7 @@ depends-on:
 
 ## Q-API-004 — Diagnostic de-duplication policy across stages
 
-**Question.** `38 §10.3` explicitly does NOT de-duplicate diagnostics across stages. A missing column may be reported once at `validate` (with kind `ValidateErrorKind::ColumnNotInBindingSchema`) and again at `compile` (with kind `CompileErrorKind::BindingColumnNotInSchema`) over the same `Span`. Should `semstrait-api` fold these under a `(kind variant + Span)` predicate before returning?
+**Question.** `38 §10.3` explicitly does NOT de-duplicate diagnostics across stages. A missing column may be reported once at `validate` (with kind `ValidateError::ColumnNotInBindingSchema`) and again at `compile` (with kind `CompileError::BindingColumnNotInSchema`) over the same `Span`. Should `semstrait-api` fold these under a `(kind variant + Span)` predicate before returning?
 
 **Refs.**
 - `38 §10.3` — current "no de-duplication" policy.
@@ -74,7 +74,7 @@ depends-on:
 **Arguments against (current Round-1 default).**
 - Duplication across stages is informative: it means the earlier stage's warning was not acted on before the later stage re-encountered the root cause.
 - No agreed-upon equivalence relation: is `(kind variant, Span)` sufficient, or does the rendered `message` matter? Two diagnostics with the same kind variant may carry different per-stage payloads (different field values); structural variant equality alone may collapse meaningfully different diagnostics.
-- Cross-kind equivalence requires an explicit `is_equivalent_to(&CompileErrorKind, &ValidateErrorKind) -> bool` map that has not been ratified anywhere; that would be its own design item.
+- Cross-kind equivalence requires an explicit `is_equivalent_to(&CompileError, &ValidateError) -> bool` map that has not been ratified anywhere; that would be its own design item.
 - De-duplication requires a canonical ordering of which copy to keep — is it the first-observed (stage-earliest) or the most-specific (stage-latest)?
 - Callers with their own preferences apply their own predicate on the returned `Diagnostics<K>`.
 

@@ -1,37 +1,27 @@
 ---
-
-prereqs: [00, 10, 11, 12, 13, 14, 14a, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 30, 31, 31b]
+prereqs: [00, 10, 11, 12, 13, 14, 14a, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 30, 31, 31b, 35]
 authoritative-for:
-
-- the root YAML shape for a `semstrait` model — `semantic_model:` wrapper, per-variant plural arrays, shared Semantics pools, `relationships:`
-- the in-memory `SemanticModel` root type — per-variant typed maps, shared pools as `BTreeMap`, `relationships` as `Vec`
-- the DataKind type hierarchy — `DataKindBase<E>` common-fields struct generic over the per-axis extras flavor, per-variant `*Body` structs, `Public*` / `Nested*` concrete types, sealed `DataKind` trait hierarchy on structural + behavioral axes, and view enums for heterogeneous iteration
-- the per-axis extras shapes — `LeafExtras` (full set) and `ComplexExtras` (`temporal:` only)
-- structural rules (SR-*) that govern a valid root-level document
-- the `parse` and `validate` free-function signatures, the `ParseErrorKind` and `ValidateErrorKind` rosters (per `30 §5`), and their `Diagnose` impls
-- the `semstrait-model::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` wrappers, `DumpMode`, and the load / dump error rosters (composes `31b` transport)
-- deterministic-ordering guarantees at the root level (I4)
-- crate boundaries for `semstrait-model`
+  - the root YAML shape for a `semstrait` model — `semantic_model:` wrapper, per-variant plural arrays, shared Semantics pools, `relationships:`
+  - the in-memory `SemanticModel` root type — per-variant typed maps, shared pools as `BTreeMap`, `relationships` as `Vec`
+  - the DataKind type hierarchy — `DataKindBase<E>` common-fields struct generic over the per-axis extras flavor, per-variant `*Body` structs, `Public*` / `Nested*` concrete types, sealed `DataKind` trait hierarchy on structural + behavioral axes, and view enums for heterogeneous iteration
+  - the per-axis extras shapes — `LeafExtras` (full set) and `ComplexExtras` (`temporal:` only)
+  - structural rules (SR-*) that govern a valid root-level document
+  - the `parse` and `validate` free-function signatures, the `ParseErrorKind` and `ValidateError` rosters (per `30 §5`), and their `Diagnose` impls
+  - the `ExprSource` enum carried at every expression-bearing site — `Inline(String)` / `Block(Expr<L>)` variants per `14 §6.1` — and the parse-site dispatch (`parse_semantic` / `parse_physical`) per `14 §6.2`
+  - the `semstrait-model::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` wrappers, `DumpMode`, and the load / dump error rosters (composes `31b` transport)
+  - deterministic-ordering guarantees at the root level (I4)
+  - crate boundaries for `semstrait-model`
 refined-by:
-- 32b (`apis/32b_catalogs_yaml.md` — catalog YAML grammar and reference syntax)
-- 33 (`apis/33_semstrait_manifest.md` — how the `SemanticModel` tree lowers to a `SemanticManifest`)
-
+  - 32b (`apis/32b_catalogs_yaml.md` — catalog YAML grammar and reference syntax)
+  - 33 (`apis/33_semstrait_manifest.md` — how the `SemanticModel` tree lowers to a `SemanticManifest`)
 # Upstream cross-references (see `prereqs:` above and §11 "Pointers to Child Docs"
-
 # for full context): 18 (entity struct shapes), 15 (SemanticMapping compile
-
 # semantics), 16 (composition), 17 (temporal-shape planner semantics), 21-24
-
 # (per-DataKind YAML), 26 (nesting matrix), 31b (I/O transport). Per 00 §8
-
 # directionality rule, those are prerequisites rather than downstream refinements;
-
 # they are deliberately omitted from `refined-by:` to keep the field semantically
-
 # pure. Section 11 of this doc is the authoritative human-facing navigation aid
-
 # for the full cross-reference web.
-
 ---
 
 # 32. `semstrait-model` — Root YAML Contract
@@ -74,7 +64,7 @@ semantic_model:
       cross_filter: left                # default per 18 §2.7; required on 1:1 / m:m
 ```
 
-Every child block is optional except `name:`. An empty model — `semantic_model: { name: ... }` — parses successfully. A non-empty model with zero data kinds is a `ValidateErrorKind::EmptyModel` at the validate stage (§9.5).
+Every child block is optional except `name:`. An empty model — `semantic_model: { name: ... }` — parses successfully. A non-empty model with zero data kinds is a `ValidateError::EmptyModel` at the validate stage (§9.5).
 
 ### 1.1 Per-variant plural arrays
 
@@ -127,9 +117,9 @@ All fields are `pub` so that consumers can destructure without getter boilerplat
 
 ### 2.1 Global name uniqueness
 
-Data-kind names are globally unique across the four top-level maps: `datasets["sales"]` and `grainsets["sales"]` cannot both exist. Kind: `ValidateErrorKind::DuplicateDataKindName` (SR-3) — fired uniformly over single-source, code-built, and cross-source accumulations at `SemanticModelBuilder::build` time (D-10).
+Data-kind names are globally unique across the four top-level maps: `datasets["sales"]` and `grainsets["sales"]` cannot both exist. Kind: `ValidateError::DuplicateDataKindName` (SR-3) — fired uniformly over single-source, code-built, and cross-source accumulations at `SemanticModelBuilder::build` time (D-10).
 
-Shared pools use their own namespace per carrier: `dimensions["region"]` and `measures["region"]` can coexist. Duplicates within a carrier raise `ValidateErrorKind::DuplicateSharedSemanticsName` via the same `.build()` dedup pass.
+Shared pools use their own namespace per carrier: `dimensions["region"]` and `measures["region"]` can coexist. Duplicates within a carrier raise `ValidateError::DuplicateSharedSemanticsName` via the same `.build()` dedup pass.
 
 Nested data kinds use parent-scoped uniqueness (addressing becomes `grainsets[sales].unionsets[regional]`); see `26 §5`.
 
@@ -573,25 +563,44 @@ Single-string values dispatch to `Column`; mapping values with `literal:` / `exp
 
 See `15` for the full binding algorithm; `33` for where the binding output lives.
 
+### 5.4 Aggregate synthesis from `(agg:, expr:)`
+
+Measures and Metrics carry separate `agg:` and `expr:` fields in YAML. At **parse time**, `semstrait-model` wraps these into a single `Aggregate`-rooted `SemanticExpr`:
+
+```text
+agg: sum
+expr: "revenue * quantity"
+  ─→  SemanticExpr::Aggregate {
+         op:       AggregationOp::Sum,
+         args:     [parse_semantic("revenue * quantity")],
+         distinct: false,  // default; `distinct: true` is an explicit author field
+         filter:   None,   // populated from `filter:` if present
+       }
+```
+
+By the time `[19 §3](../foundations/19_expression_flow.md)`'s `resolve` runs, the `SemanticExpr` already carries the `Aggregate` root if a Measure or Metric authored it. The resolution algorithm does not synthesize `Aggregate` — it only resolves the inner `args` tree.
+
+This is a parse-time structural assembly, not a compile-time transformation. The dual-field `(agg:, expr:)` surface is author ergonomics; the canonical representation is always `Expr<L>::Aggregate`.
+
 ---
 
 ## 6. Structural Rules (SR-*)
 
-Root-level invariants enforced at `parse` and the `validate` stage. Each rule maps to a typed-kind variant in `ParseErrorKind` (§9.2) or `ValidateErrorKind` (§9.5) per `30 §5`.
+Root-level invariants enforced at `parse` and the `validate` stage. Each rule maps to a typed-kind variant in `ParseErrorKind` (§9.2) or `ValidateError` (§9.5) per `30 §5`.
 
 
 | ID        | Rule                                                                                                                                                                                                                                                                                                                                                                                                          | Kind                                                     |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | **SR-1**  | Exactly one `semantic_model:` root key; `deny_unknown_fields` at root.                                                                                                                                                                                                                                                                                                                                        | `ParseErrorKind::UnknownField`                           |
 | **SR-2**  | Nested data kinds MUST NOT carry `description`, `ai_context`, `dimensions`, `measures`, `metrics`, `keys`, `filters`. Enforced at the type level: `Nested`* structs (§3.3) wrap only a `*Body` — they have no `description`, `ai_context`, or `semantic_interface` fields — and implement `NestedDataKind` (§3.4) as the behavioral marker; `deny_unknown_fields` then rejects the Public-only tags at parse. | `ParseErrorKind::UnknownField`                           |
-| **SR-3**  | Names are globally unique across the four top-level data-kind maps (§2.1). Fired at `SemanticModelBuilder::build` (D-10).                                                                                                                                                                                                                                                                                     | `ValidateErrorKind::DuplicateDataKindName`               |
+| **SR-3**  | Names are globally unique across the four top-level data-kind maps (§2.1). Fired at `SemanticModelBuilder::build` (D-10).                                                                                                                                                                                                                                                                                     | `ValidateError::DuplicateDataKindName`               |
 | **SR-4**  | Same-variant self-nesting is forbidden: no grainset inside a grainset, no unionset inside a unionset, no joinset inside a joinset. Dataset leaves do not nest. Enforced at the type level by each `*Body` struct's child-field set (§3.2); `deny_unknown_fields` then rejects same-variant tags at parse.                                                                                                     | `ParseErrorKind::UnknownField`                           |
 | **SR-5**  | `catalog`, `storage`, `semantic_mapping` are leaf-only — they live on `LeafExtras` and have no slot in `ComplexExtras`. Authoring any of them under a Complex variant's `extras:` block is a parse error. Cascade-from-ancestor does not apply to these fields (R-6 / §4.1).                                                                                                                                  | `ParseErrorKind::UnknownField`                           |
 | **SR-6**  | _Retired._ Per-variant required-extras rules live in `21 §7` / `22` / `23` / `24` (each chapter owns its own `VALID_E_2[1-4]xx` code band); the Grainset-child-temporal case is covered end-to-end by SR-E-8 (`18 §11`).                                                                                                                                                                                      | —                                                        |
 | **SR-7**  | `deny_unknown_fields` is applied at every struct parse site (model root, data-kind blocks, extras, relationships, semantic elements).                                                                                                                                                                                                                                                                         | `ParseErrorKind::UnknownField`                           |
 | **SR-8**  | Identifier rules: data-kind names and semantic-element names follow `11 §4`.                                                                                                                                                                                                                                                                                                                                  | `ParseErrorKind::InvalidIdentifier`                      |
 | **SR-9**  | `${VAR}` substitution is applied before YAML decoding; unset variables are fatal parse errors (§8).                                                                                                                                                                                                                                                                                                           | `ParseErrorKind::UnsetEnvVar`                            |
-| **SR-10** | Every `ComplexDataKind` (`Grainset` / `Unionset` / `Joinset`, Public or Nested) MUST have at least **2 children** across its allowed child-variant arrays. A composer with 0 or 1 children is degenerate — 0 collapses to nothing; 1 collapses to the single child's interface and should be authored as that child directly. Enforced at `validate`.                                                         | `ValidateErrorKind::ComplexDataKindInsufficientChildren` |
+| **SR-10** | Every `ComplexDataKind` (`Grainset` / `Unionset` / `Joinset`, Public or Nested) MUST have at least **2 children** across its allowed child-variant arrays. A composer with 0 or 1 children is degenerate — 0 collapses to nothing; 1 collapses to the single child's interface and should be authored as that child directly. Enforced at `validate`.                                                         | `ValidateError::ComplexDataKindInsufficientChildren` |
 
 
 SR-* numbering is append-only. Adding a rule is a MINOR change per `30 §2`.
@@ -647,7 +656,7 @@ Syntax: only `${IDENT}` is recognized. Bare `$VAR` is treated as literal text. I
 
 ## 9. Stage APIs: `parse` and `validate`
 
-The model crate hosts two accumulating stages per `30 §7.1`: `parse` (YAML → `SemanticModel`) and `validate` (structural-precondition pass over a parsed `SemanticModel`). Each owns its own kind enum (`ParseErrorKind`, `ValidateErrorKind`), each implements `Diagnose` per `30 §5.4`, and each uses the accumulating return shape per `30 §7.2`. The fluent loader (§9.6) composes the two behind one async-or-sync entry point.
+The model crate hosts two accumulating stages per `30 §7.1`: `parse` (YAML → `SemanticModel`) and `validate` (structural-precondition pass over a parsed `SemanticModel`). Each owns its own kind enum (`ParseErrorKind`, `ValidateError`), each implements `Diagnose` per `30 §5.4`, and each uses the accumulating return shape per `30 §7.2`. The fluent loader (§9.6) composes the two behind one async-or-sync entry point.
 
 ### 9.1 `parse` signature
 
@@ -702,7 +711,7 @@ impl Diagnose for ParseErrorKind {
 
 SR-1 / SR-2 / SR-4 (root-key, nested-data-kind, self-nesting) collapse into `UnknownField` — each is enforced by the absence of the offending field at the type level plus serde's `deny_unknown_fields`, so the surfaced kind is uniform.
 
-`Duplicate*` variants migrated to `ValidateErrorKind` (§9.5) per D-10 so cross-source accumulations share the single-source enforcement path.
+`Duplicate*` variants migrated to `ValidateError` (§9.5) per D-10 so cross-source accumulations share the single-source enforcement path.
 
 **Per-variant location.** The primary source span of an error lives on the wrapping `Diagnostic<ParseErrorKind>` (`30 §5.1`'s `location: Option<Location>` field), not on the variant. Variants carry payload data only.
 
@@ -727,16 +736,16 @@ SR-1 / SR-2 / SR-4 (root-key, nested-data-kind, self-nesting) collapse into `Unk
 /// warnings vector (no tuple wrapper).
 pub fn validate(
     model: &SemanticModel,
-) -> Result<Diagnostics<ValidateErrorKind>, Diagnostics<ValidateErrorKind>>;
+) -> Result<Diagnostics<ValidateError>, Diagnostics<ValidateError>>;
 ```
 
 `validate` runs the SR-* rules whose enforcement column in §6 reads "Enforced at `validate`" (SR-6, SR-10) plus the entity-level `SR-E-`* invariants from `18 §11`. It does not transform the model; it is a pure precondition checker. Call it as a separate step before `compile` (`33`) when per-stage error routing matters; the fluent loader (§9.6) chains `parse` and `validate` for callers that don't need that granularity.
 
-### 9.5 `ValidateErrorKind` roster
+### 9.5 `ValidateError` roster
 
 ```rust
 #[non_exhaustive]
-pub enum ValidateErrorKind {
+pub enum ValidateError {
     // — Composition shape (SR-10) —
     ComplexDataKindInsufficientChildren { parent: String, child_count: usize },
 
@@ -755,18 +764,30 @@ pub enum ValidateErrorKind {
 
     // — Shadowing warning (`18 §1.5`) —
     SemanticsShadowRootPool          { carrier: String, name: String },
+
+    // — IR-emitted construction-boundary failure (D.ii kind-nesting per `30 §7.4`).
+    //   Surfaces `Tree::with_new_children` / `Rewriter::f_*` failures raised by
+    //   `semstrait-ir`'s `Expr<L>` machinery during the `Block(Expr<L>)` serde
+    //   round-trip in `ExprSource::Block(...)` (`14 §6.1`).
+    Ir(ir::ValidateError),
 }
 
-impl Diagnose for ValidateErrorKind {
+impl Diagnose for ValidateError {
     fn message(&self) -> String { /* per-variant human text */ }
     fn severity_default(&self) -> Severity { Severity::Error }
     fn cause(&self) -> Option<&(dyn std::error::Error + 'static)> { None }
+}
+
+impl From<ir::ValidateError> for ValidateError {
+    fn from(e: ir::ValidateError) -> Self { Self::Ir(e) }
 }
 ```
 
 The `Duplicate*` variants migrated from `ParseErrorKind` per D-10: dedup runs uniformly over `SemanticModelBuilder`'s Vec-backed storage at `.build()` time, so single-source, code-built, and cross-source accumulations all surface the same diagnostic with every occurrence's `Location`.
 
 The `SemanticsShadowRootPool` variant carries `Severity::Warning` (the only warning-class variant in v1) and rides through on the `Ok` arm.
+
+The `Ir(ir::ValidateError)` variant covers the narrow class of construction-boundary failures raised by `semstrait-ir`'s trait-machinery contract (`35 §15.1`): when `ExprSource::Block(Expr<L>)` deserializes a YAML tree, the serde shape *is* `Expr<L>` so any `Tree::with_new_children` violation surfaces as an `ir::ValidateError` value that the model crate wraps via D.ii nesting (`30 §7.4`).
 
 The full `SR-E-*` variant roster is enumerated alongside the entity-level invariants in `18 §11` (the canonical home of SR-E-*); variants here mirror those rules 1-to-1 and land MINOR per `30 §2.2` as new SR-E-* numbers are appended.
 
@@ -841,7 +862,7 @@ impl SemanticModel {
 /// Fused per-stage kind for the loader pipeline. Implements `Diagnose`
 /// by delegating to the wrapped stage kind. Per `30 §5.6` the model crate
 /// owns this fused sum because the loader composes stages whose kinds
-/// live in this same crate (`ParseErrorKind`, `ValidateErrorKind`,
+/// live in this same crate (`ParseErrorKind`, `ValidateError`,
 /// `CatalogsParseErrorKind`) plus loader-internal kinds.
 #[non_exhaustive]
 pub enum ModelBuildErrorKind {
@@ -851,13 +872,13 @@ pub enum ModelBuildErrorKind {
     SourceIo { path: String, error: std::io::ErrorKind },
     Parse(ParseErrorKind),
     CatalogsParse(CatalogsParseErrorKind),
-    Validate(ValidateErrorKind),
+    Validate(ValidateError),
     /// Per-field builder-internal error (e.g. invalid newtype payload).
     BuilderField { struct_name: &'static str, field: &'static str, message: String },
 }
 
 impl From<ParseErrorKind>             for ModelBuildErrorKind { /* … */ }
-impl From<ValidateErrorKind>          for ModelBuildErrorKind { /* … */ }
+impl From<ValidateError>          for ModelBuildErrorKind { /* … */ }
 impl From<CatalogsParseErrorKind>     for ModelBuildErrorKind { /* … */ }
 
 impl Diagnose for ModelBuildErrorKind { /* delegates to wrapped variant */ }
@@ -1055,8 +1076,8 @@ Most field-level required-vs-optional is enforced by `bon` at compile time (miss
 #### 9.7.6 Resulting usage — spec-faithful end-to-end
 
 ```rust
-use semstrait_core::{DataType, Grain, ExprSource};
-use semstrait_model::*;
+use semstrait_core::{DataType, Grain};
+use semstrait_model::{ExprSource, *};
 
 let order_ts = Dimension::builder("order_ts")
     .data_type(DataType::Timestamp)
@@ -1230,17 +1251,21 @@ Adding a facade method is MINOR per `§9.7.8.4`. The roster grows append-only.
 
 ## 10. Crate Boundaries
 
-`semstrait-model` is the thinnest authoring-surface crate. It sits one level above `semstrait-core` in the workspace DAG (I7):
+`semstrait-model` is the thinnest authoring-surface crate. It sits two levels above `semstrait-core` in the workspace DAG (I7), via `semstrait-ir` per the second-cascade landing (`STATUS.md` item Q):
 
 ```
-semstrait-core      (leaf: Expr / DataType / Diagnostic<K> / Diagnose / …)
+semstrait-core      (leaf: DataType / Schema / Diagnostic<K> / Diagnose / constraints / io)
     ↑
-semstrait-model     (parse + validate + SemanticModel + ParseErrorKind + ValidateErrorKind)
+semstrait-ir        (Expr<L> + Tree/Visitor/Rewriter/ExprLeaf + leaves + accessors
+                     + BinaryOpKind/…/Literal + ColumnRef/SemanticsName
+                     + CanonicalFn/FunctionRegistry + ValidateError/CompileError + PlanNode)
+    ↑
+semstrait-model     (parse + validate + SemanticModel + ExprSource + ParseErrorKind + ValidateError)
     ↑
 semstrait-manifest, semstrait-planner, semstrait-adapter, …
 ```
 
-Dependencies: `semstrait-core`, `serde`, `serde_yaml`, `tracing` (`30 §6.2`). No other `semstrait-*` crate. No `async`, no `arrow`, no engine-specific deps.
+Dependencies: `semstrait-core`, `semstrait-ir`, `serde`, `serde_yaml`, `tracing` (`30 §6.2`). No other `semstrait-*` crate. No `async`, no `arrow`, no engine-specific deps. The `semstrait-ir` dep is what allows `ExprSource::Block(...)` to carry `Expr<L>` directly via serde — there is no parallel `ExprBlock` AST owned by this crate (`14 §6.1`).
 
 ### 10.1 No direct I/O in `parse`
 

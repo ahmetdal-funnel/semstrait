@@ -1,5 +1,4 @@
 ---
-
 status: Stub — pending design completion
 purpose: Placeholder for per-version caller-facing migration notes. Authored only after `40_refactor_plan.md` is authored, which itself follows design completion.
 ---

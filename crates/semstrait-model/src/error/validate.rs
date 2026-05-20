@@ -76,6 +76,17 @@ pub enum ValidateErrorKind {
         carrier: String,
         name: String,
     },
+
+    /// Reference-graph cycle among declared semantic entities.
+    /// E.g. `metric A` references `metric B` which references `metric A`.
+    /// Members are listed in the order they appear in the cycle starting
+    /// at the lex-smallest member, for stable diagnostics per `00 §9` I4.
+    /// Per `19 §3.5`'s cycle-detection algorithm; lifted to validate-time
+    /// because cycles can be detected without binding/source resolution.
+    CyclicSemanticsReference {
+        carrier: String,
+        cycle: Vec<String>,
+    },
 }
 
 impl Diagnose for ValidateErrorKind {
@@ -155,6 +166,11 @@ impl Diagnose for ValidateErrorKind {
             SemanticsShadowRootPool { carrier, name } => format!(
                 "{} `{}` shadows root-pool entry; use `ref:` + override instead",
                 carrier, name
+            ),
+            CyclicSemanticsReference { carrier, cycle } => format!(
+                "cycle in `{}` references: {}",
+                carrier,
+                cycle.join(" → ")
             ),
         }
     }

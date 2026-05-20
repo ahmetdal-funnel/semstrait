@@ -28,7 +28,7 @@ purpose: Joinset questions parked for post-v1 ratification
 
 - The struct shape is already N-ary-ready; lifting requires only loosening `12 §5.3`'s arity check and extending the implicit-path BFS to handle N target members (Steiner-tree-style, as `16 §11.4` already sketches).
 - Star-schema authoring is awkward when a single logical surface (`orders with customers, products, dates`) requires three separate binary Joinsets. N-ary removes the awkwardness.
-- `14b §4.5`'s `PathSignature: BTreeSet<RelationshipPath>` already assumes multi-path traversal at the expression layer.
+- `19 §3.4.5`'s `PathSignature: BTreeSet<RelationshipPath>` already assumes multi-path traversal at the expression layer.
 
 **Arguments for further deferral.**
 

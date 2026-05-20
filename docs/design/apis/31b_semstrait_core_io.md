@@ -1,6 +1,5 @@
 ---
-
-## prereqs: [00, 30, 31]
+prereqs: [00, 30, 31]
 authoritative-for:
   - the `semstrait-core::io` module surface: the `Source` / `Sink` async traits, the `FromIoBytes` / `IntoIoBytes` conversion traits, the `Location` polymorphic enum, the `IoErrorKind` typed-kind enum
   - the back-end roster exposed under `semstrait-core::io::backends`: `memory`, `local`, `s3` (feature-gated)
@@ -11,6 +10,7 @@ authoritative-for:
 refined-by:
   - 32 §10.4 (`semstrait-model::io::{load_model, dump_model, load_catalogs, dump_catalogs}` — domain wrappers composing with `core::io`)
   - 33 §16.5 (`semstrait-manifest::io::{load_manifest, dump_manifest}` — manifest-level wrappers)
+---
 
 # 31b. `semstrait-core::io` — Byte-Blob I/O Transport Layer
 

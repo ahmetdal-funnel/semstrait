@@ -415,7 +415,7 @@ Each method returns a **bare** `FileSystemErrorKind` per `31 §3.1`'s
 construction-site convention — `FileSystem` is a transport trait. Consumers
 wrap into their own typed-kind via `From<FileSystemErrorKind>` impls (e.g.
 the `expand_glob` helper in `§7.1` returns `FileSystemErrorKind` directly;
-`33 §16.5` consumers wrap into `CompileErrorKind`).
+`33 §16.5` consumers wrap into `CompileError`).
 
 ### 5.3 Method contracts
 
@@ -599,7 +599,7 @@ Variant identity is the stable contract. Renaming a variant is MAJOR;
 adding a variant is MINOR (`#[non_exhaustive]`); refining
 `Diagnose::message()` text is PATCH. Consumers wrap into their own
 typed-kind via `From<CatalogProviderErrorKind>` (e.g.
-`CompileErrorKind` in `33 §10.1`).
+`CompileError` in `33 §10.1`).
 
 ### 8.2 `FileSystemErrorKind`
 
@@ -666,7 +666,7 @@ refinement PATCH).
 `CatalogProviderErrorKind` and `FileSystemErrorKind` are produced by the
 transport traits. Stage entry-points that consume them wrap into their
 own typed-kinds via `From` impls — for example `33 §10.1`'s
-`CompileErrorKind::CatalogResolutionFailed { source: CatalogProviderErrorKind }`
+`CompileError::CatalogResolutionFailed { source: CatalogProviderErrorKind }`
 and the `FromIoBytes` chain in `31b §5`. The wrap site attaches the
 stage-relevant `Location` to the resulting `Diagnostic<K>` envelope; the
 transport layer carries no `Location` field.
@@ -786,7 +786,7 @@ Every consumer takes `&dyn CatalogProvider` / `&dyn FileSystem` (or `Arc<dyn …
 
 ### 10.4 Error propagation
 
-Callers propagate `CatalogProviderErrorKind` and `FileSystemErrorKind` through `?` into their own typed-kind enums (typically `CompileErrorKind` at compile time per `33 §10.1`; `33 §16.5`'s manifest I/O chain at I11b) via `From` impls. The wrapping site attaches stage-relevant location and emits a `Diagnostic<CompileErrorKind>` (or whatever the consumer's outer kind is). Variant identity remains stable across the wrap.
+Callers propagate `CatalogProviderErrorKind` and `FileSystemErrorKind` through `?` into their own typed-kind enums (typically `CompileError` at compile time per `33 §10.1`; `33 §16.5`'s manifest I/O chain at I11b) via `From` impls. The wrapping site attaches stage-relevant location and emits a `Diagnostic<CompileError>` (or whatever the consumer's outer kind is). Variant identity remains stable across the wrap.
 
 ### 10.5 Async runtime
 
@@ -841,7 +841,7 @@ This procedure is the MINOR-safe path; any growth that cannot be fit into it bec
 | Planning (`SemanticPlan`, `PhysicalPlan`)    | **NO.** `semstrait-catalog` has zero `semstrait-ir` / `semstrait-planner` imports. |
 | SQL emission / engine-specific string gen    | **NO.** Every string produced is a URI, an identifier, or a diagnostic message — never an SQL fragment. |
 | Format-header schema reading                 | **NO.** `FileSystem::read` returns raw `Bytes`. The legacy `StorageProvider::read_schema(path, DataFormat)` path is removed. Schemas come from `CatalogProvider` or from the manifest author. |
-| Expression evaluation                        | **NO.** No `Expr`, no `ExprBlock`, no evaluator. |
+| Expression evaluation                        | **NO.** No `Expr<L>`, no evaluator. Expression vocabulary lives in `semstrait-ir` per `35`; catalog never sees expression trees. |
 | Caching policy                               | **NO.** Callers wrap. |
 | Retry / backoff machinery                    | **NO.** Individual implementations MAY retry internally as a quality-of-implementation detail, but the trait surface exposes no retry knobs. |
 | Transaction scoping                          | **NO.** Each call is independent. |

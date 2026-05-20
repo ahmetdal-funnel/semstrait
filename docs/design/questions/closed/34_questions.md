@@ -21,7 +21,7 @@ purpose: Resolved questions originally raised against `apis/34_semstrait_planner
 - `34 §10.4` — current constant.
 - `16 §9.1` — "depth-limited" rationale.
 - `16` Q-COMP-001 — sibling question in the composition doc.
-- `14b §4` — compile-time cross-kind path resolution (same bound).
+- `19 §3.4` — compile-time cross-kind path resolution (same bound).
 
 **Arguments pro 3.**
 

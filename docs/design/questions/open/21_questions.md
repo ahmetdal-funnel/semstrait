@@ -9,7 +9,7 @@ depends-on:
   - foundations/12_nesting_policy.md
   - foundations/13_types_and_grain.md
   - foundations/14_expressions.md
-  - foundations/14b_expression_resolution.md
+  - foundations/19_expression_flow.md
   - foundations/15_mapping_and_binding.md
   - foundations/17_temporal_shape.md
   - apis/30_api_contracts.md
@@ -24,12 +24,12 @@ depends-on:
 
 ## Q-DS-002 — Wrapper code discipline for re-surfaced errors
 
-**Question.** Compile-time errors raised inside a `SimpleDataKind`'s resolution flow often originate in foundations docs (`14`, `14a`, `14b`, `15`) with their own code ranges. Should `21` wrap every such error under a `COMP_E_21xx` code (adding Simple-level diagnostic context), pass them through unchanged (preserving origin), or wrap selectively?
+**Question.** Compile-time errors raised inside a `SimpleDataKind`'s resolution flow often originate in foundations docs (`14`, `14a`, `19`, `15`) with their own code ranges. Should `21` wrap every such error under a `COMP_E_21xx` code (adding Simple-level diagnostic context), pass them through unchanged (preserving origin), or wrap selectively?
 
 **Refs.**
 - `21 §8` — `COMP_E_2101 SimpleBindingResolutionFailed` (catch-all wrapper), `COMP_E_2102` / `2106` / `2107` (selective wrappers).
-- `15 §11.3` — re-surfaces expression errors from `14` / `14a` / `14b` without re-codification.
-- `14b §11` — `EXPR_E_02xx` range ownership.
+- `15 §11.3` — re-surfaces expression errors from `14` / `14a` / `19` without re-codification.
+- `19 §8.1` — `EXPR_E_02xx` range ownership.
 - `30 §6.2` — code-range governance.
 
 **Options.**
@@ -107,7 +107,7 @@ depends-on:
 
 **Refs.**
 - `_drafts/34_simple_strategy.md §5.1` — re-aggregation-skip predicate (formerly `21 §4.5.1`; relocated per the post-thirteenth-pass cascade rebase, 2026-04-30).
-- `14b §4` — `PhysicalExpr` substitution (per-source literals are substituted per `15 §8`).
+- `19 §3.4` — `PhysicalExpr` substitution (per-source literals are substituted per `15 §8`).
 - `15 §8` — metadata extraction.
 
 **Options.**
@@ -117,7 +117,7 @@ depends-on:
 
 **Arguments for (A).** Simple, provably correct, covers the common case.
 
-**Arguments for (B).** Handles the "I wrapped a metadata Dimension in a `Case`" idiom that authors naturally write. Requires an expression analyzer but `14b`'s column-reference harvesting is nearby infrastructure.
+**Arguments for (B).** Handles the "I wrapped a metadata Dimension in a `Case`" idiom that authors naturally write. Requires an expression analyzer but `19 §3.10`'s column-reference harvesting is nearby infrastructure.
 
 **Arguments for (C).** Covers every expression shape, including `Coalesce` over metadata literals and so on. Evaluating expressions at plan time is a minor complexity addition.
 

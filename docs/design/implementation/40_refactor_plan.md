@@ -1,7 +1,5 @@
 ---
-
 status: Stub — pending design completion
-
 purpose: Placeholder for the refactor plan from current code to the ratified design. Authored only after design ratification across `foundations/`, `data-kinds/`, and `apis/` is complete.
 ---
 

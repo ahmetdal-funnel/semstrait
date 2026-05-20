@@ -1,6 +1,5 @@
 ---
-
-prereqs: [00, 11, 13, 14, 14a, 14b, 18]
+prereqs: [00, 11, 13, 14, 14a, 18, 19]
 authoritative-for:
   - compile-time `Binding` process (one per `Dataset` leaf, `binding_id`, `sources`, compile-resolved `semantic_mapping`, `coverage`) and its identity / uniqueness rules
   - `BindingId` as a `u32` newtype, its allocation discipline, and `(DataKindId, BindingId)` global-uniqueness rule
@@ -11,7 +10,7 @@ authoritative-for:
   - `Coverage` at Binding level (`Native`, `NullFill`, `Derived`, `Metadata`); scope boundary with `16`'s composition-level Coverage
   - the SemanticManifest-layer `ResolvedColumnMapping` shape (pre-split flat maps per value category) and its planner-speed contract — name retained at the SemanticManifest surface per `33 §5.3`
   - `MetadataDimension` extraction semantics — v1 supports **path-token extraction only** (`path.token: N`, 0-indexed scheme-stripped, raw segment); partition extraction described in `13 §4.7` is deferred to v2. Author writes the recipe on the Dimension type (`type: { metadata: { path: { token: N } } }`); compile synthesizes `SemanticMapping.entries[name] = SemanticMappingValue::Metadata(MetadataDimensionRecipe)` (4th variant, owned by `18 §10`); per-source `LiteralValue`s are eagerly resolved at compile via the layer-3 `path_token` mechanic (§8) plus a `Cast` to the declared `data_type`, and stored on each `ResolvedPhysicalSource.metadata_values` (§7.6)
-  - the three-stratum expression model that lives across `14`/`14b`/`15`: `SemanticExpr` (logical, semantic-name-keyed, supports constant folding / partial evaluation), `PhysicalExpr` (lowered SQL-equivalent over canonical types/functions), and the **compile-time-mechanic stratum** (non-expression layer, `15`-owned, e.g. `path_token`); a metadata extraction is layer-3 — not a registry function (`14a`) and not a `PhysicalExpr` variant
+  - the three-stratum expression model that lives across `14`/`19`/`15`: `SemanticExpr` (logical, semantic-name-keyed, supports constant folding / partial evaluation), `PhysicalExpr` (lowered SQL-equivalent over canonical types/functions), and the **compile-time-mechanic stratum** (non-expression layer, `15`-owned, e.g. `path_token`); a metadata extraction is layer-3 — not a registry function (`14a`) and not a `PhysicalExpr` variant
   - schema-reconciliation rules (widening silent; narrowing warns; incompatible errors; cross-source type agreement)
   - the compile-time resolution flow for bindings (the sub-steps inside `compile` that produce a `ResolvedBinding`)
   - error-code allocation `COMP_E_0300–0399` (schema/binding) and `COMP_E_0200–0299` (catalog/source resolution for binding-owned variants)
@@ -37,11 +36,11 @@ refined-by:
 >
 > **Three-stratum expression model.** `15` is the authoritative anchor for the layered model that spans the expression docs:
 >
-> 1. `**SemanticExpr` (layer 1, owned by `14` / `14b`)** — logical expression tree, operates on Semantic names (`@semantics_ref`); supports logical constructs (`CASE WHEN`, etc.) and is the input to **constant folding / partial evaluation** when one or more leaves resolve to compile-time-known values (e.g. metadata literals, declared `Literal`-mapped Semantics).
+> 1. `**SemanticExpr` (layer 1, owned by `14`; resolved by `19 §3`)** — logical expression tree, operates on Semantic names (`@semantics_ref`); supports logical constructs (`CASE WHEN`, etc.) and is the input to **constant folding / partial evaluation** when one or more leaves resolve to compile-time-known values (e.g. metadata literals, declared `Literal`-mapped Semantics).
 > 2. `**PhysicalExpr` (layer 2, owned by `14`)** — lowered SQL-equivalent expression tree over canonical types and functions (`14a`); expression nodes only — no compile-time mechanics, no logical-only constructs that did not survive lowering.
 > 3. **Compile-time mechanics (layer 3, owned by `15`)** — non-expression logic that runs purely during `compile` to produce values for the SemanticManifest. v1 host: `path_token` (§8). Layer-3 outputs feed back into layer-1 / layer-2 as resolved literals (`SemanticMappingValue::Metadata` recipe → eagerly-resolved per-source `LiteralValue` on `ResolvedPhysicalSource.metadata_values`); they are **never** registered as `14a` functions and **never** appear as `PhysicalExpr` variants.
 >
-> The fold from layer 1 to layer 2 is where partial evaluation lands: a `SemanticExpr` whose subtree depends only on layer-3 literals (e.g. `CASE WHEN @dataset_name = 'asd' THEN @col1 ELSE @col2 END` where `@dataset_name` is a metadata-bound Semantic) is rewritten at the lowering boundary into a flat `Column` projection per source, so plan-time scans never need to evaluate the conditional. The exact partial-evaluation algorithm is owned by `14b` (TBD); `15` ratifies the layer-3 inputs that fuel it.
+> The fold from layer 1 to layer 2 is where partial evaluation lands: a `SemanticExpr` whose subtree depends only on layer-3 literals (e.g. `CASE WHEN @dataset_name = 'asd' THEN @col1 ELSE @col2 END` where `@dataset_name` is a metadata-bound Semantic) is rewritten at the lowering boundary into a flat `Column` projection per source, so plan-time scans never need to evaluate the conditional. The fold language is owned by `[19 §4.1](19_expression_flow.md)`; `15` ratifies the layer-3 inputs that fuel it.
 >
 > `**[TD-MAP-METADATA-FOLD]` — RESOLVED (2026-04-27).** The fold of `Metadata` into `Expr` is reversed; `Metadata` is restored as a distinct 4th variant. The author surface is the Dimension's `type: { metadata: { path: { token: N } } }` block (per `13 §4.7` / `18 §4`), and the binding-resolution pass synthesizes `SemanticMappingValue::Metadata(MetadataDimensionRecipe)` before the completeness check. Per-source resolved `LiteralValue`s land on `ResolvedPhysicalSource.metadata_values` (§7.6), not in the recipe. v1 scope is **path-token extraction only**; partition-level extraction (`partition.level: N`) is deferred to v2 — the Dimension-side body grammar in `13 §4.7` retains the partition shape for forward-compatibility, but compile-time recipe synthesis and runtime extraction are wired only for the path arm.
 
@@ -49,7 +48,7 @@ refined-by:
 
 ### 1.1 What `15` ratifies
 
-`15` is the foundations document that closes the loop between the **Semantics-facing** surface of a `SimpleDataKind` (named and shaped by `11`, typed by `13`, expressed by `14` / `14a` / `14b`) and the **physical-facing** surface underneath it: the files, tables, or snapshots that actually hold the data, the schemas those targets expose, and the recipe (direct column / literal / computed / metadata-extraction) that produces each Semantics value from whatever rows the physical target returns.
+`15` is the foundations document that closes the loop between the **Semantics-facing** surface of a `SimpleDataKind` (named and shaped by `11`, typed by `13`, expressed by `14` / `14a`, resolved by `19`) and the **physical-facing** surface underneath it: the files, tables, or snapshots that actually hold the data, the schemas those targets expose, and the recipe (direct column / literal / computed / metadata-extraction) that produces each Semantics value from whatever rows the physical target returns.
 
 Everything that sits **below the `SemanticInterface` boundary for a single `SimpleDataKind`** is authoritative here:
 
@@ -66,7 +65,7 @@ Everything that sits **below the `SemanticInterface` boundary for a single `Simp
 
 - `**ComplexDataKind` composition.** `Unionset`, `Grainset`, and `Joinset` do not carry their own `Binding`s; they aggregate the `Binding`s of their constituent `SimpleDataKind`s. The composition mechanics, `ComposedSemanticInterface` shape, and per-composition `Coverage` (which constituent provides each field on the unified surface) all live in `foundations/16_composition.md`. `15` is explicit about the boundary in §6.4.
 - **DataKind lifecycle.** How `ResolvedBinding`s attach to `ResolvedDataKind`s during `compile`, and the post-compile guarantees about their ordering inside the `SemanticManifest`, are ratified in `foundations/20_taxonomy.md` and the crate contract in `apis/33_semstrait_manifest.md`. `15 §10` enumerates the steps inside `compile` that produce a `ResolvedBinding`; it does not ratify their position in the `compile` driver.
-- **Expression resolution.** `SemanticMappingValue::Expr(PhysicalExpr)` stores a compiled `PhysicalExpr`. The substitution algorithm that produces that `PhysicalExpr` from a `SemanticExpr` (via the `FunctionRegistry` in `14a` and the cross-DataKind walk in `14b`) is owned by `14b`. `15 §5.3` describes only the **storage site** and the **wrapper-invariant contract** the stored `PhysicalExpr` must satisfy.
+- **Expression resolution.** `SemanticMappingValue::Expr(PhysicalExpr)` stores a compiled `PhysicalExpr`. The substitution algorithm that produces that `PhysicalExpr` from a `SemanticExpr` (via the `FunctionRegistry` in `14a` and the cross-DataKind walk) is owned by `[19 §3](19_expression_flow.md)`. `15 §5.3` describes only the **storage site** and the **wrapper-invariant contract** the stored `PhysicalExpr` must satisfy.
 - **Catalog-provider shape.** The `CatalogProvider` trait surface, the `FileSystem` trait surface, their async posture, and their error enums are ratified in `apis/37_semstrait_catalog.md`. `15 §3.2` uses `CatalogRef` as an **opaque handle** into that surface; consumers of `15` never reach into the catalog crate directly.
 - **Per-engine dialect specifics.** Nothing in `15` branches on engine identity (I3). A `PhysicalSource` carries a logical `DataType`-bearing `Schema`; conversion to an engine-specific type is adapter territory (`36`, I2).
 
@@ -84,7 +83,7 @@ The brief is: pick a name for every concept we can't avoid having, and resist im
 
 - **dbt metricflow.** `data_source.sql_table` / `data_source.sql_query` + `identifiers` + `measures` + `dimensions` — a single model-side block that couples a physical table to a set of Semantics. `15`'s `Binding` is the direct analog. metricflow has no analog for `MetadataDimension` (it does not pattern-match on S3 paths); it relies on the upstream warehouse to have the data already in shape. `15` keeps `MetadataDimension` because semstrait compiles over lake-native paths with partition-encoded metadata (`year=.../month=...`).
 - **Cube.js.** `cube.sql_table` / `cube.sql` + `dimensions` + `measures` + `segments` + `pre_aggregations`. The `cube.sql` escape hatch is raw SQL; I1 forbids that here, so `SemanticMappingValue::Expr` carries a typed `PhysicalExpr` instead. Cube's `partition_granularity` is a roll-up concept ratified here by `Grain` + per-source `Coverage`, not by a Binding-level knob.
-- **LookML.** `view.sql_table_name` + `view.derived_table` + per-dimension `sql:`. LookML's `${TABLE}.column` and `${other_view.field}` patterns are what `SemanticExpr` bare identifiers replace (resolved per `14 §4.3` / `14b`). LookML's `sql_trigger` / PDT machinery is outside `15`'s scope entirely.
+- **LookML.** `view.sql_table_name` + `view.derived_table` + per-dimension `sql:`. LookML's `${TABLE}.column` and `${other_view.field}` patterns are what `SemanticExpr` bare identifiers replace (resolved per `[14 §6.5](14_expressions.md)` + `[19 §3](19_expression_flow.md)`). LookML's `sql_trigger` / PDT machinery is outside `15`'s scope entirely.
 - **Iceberg catalog.** The `Snapshot` variant of `PhysicalSource` is directly inspired by Iceberg's snapshot model — `metadata.current-snapshot-id` pins reproducibility (I4) against a moving warehouse state. Iceberg's partition-transform vocabulary (`year`, `month`, `day`, `hour`, `bucket[N]`, `truncate[N]`) informs `PartitionColumn` but is **not** replicated on it — partition-transform awareness is a planner concern (pruning), not a Binding concern.
 
 The peers supply structural precedent and error-case nudges; nothing in the peer set overrides the semstrait vocabulary ratified in `00 §4`.
@@ -94,7 +93,7 @@ The peers supply structural precedent and error-case nudges; nothing in the peer
 
 | Invariant                                       | Where `15` keeps it                                                                                                                                                                                                                                                    |
 | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **I1** — no raw SQL in canonical layer          | `SemanticMappingValue::Expr` carries `PhysicalExpr` (an `Expr` tree), never a string. The YAML surface for computed entries parses through `14 §4` into `SemanticExpr`, then compiles to `PhysicalExpr` per `14b`.                                                     |
+| **I1** — no raw SQL in canonical layer          | `SemanticMappingValue::Expr` carries `PhysicalExpr` (an `Expr` tree), never a string. The YAML surface for computed entries parses through `14 §6` into `SemanticExpr`, then compiles to `PhysicalExpr` per `19 §3`.                                                     |
 | **I2** — physical types via adapters only       | `PhysicalSource.schema.columns[_].data_type` is logical `DataType` (per `13 §2`). The `14a` registry's promotion lattice is what decides widen/narrow; no Arrow/Spark/DuckDB type leaks into the SemanticManifest.                                                     |
 | **I3** — no engine branching in canonical layer | `PhysicalSource` is engine-agnostic. No variant, no field, no error code in `15` names an engine. Adapters read `PhysicalSource` at `adapt` time and decide how to register it with their engine (`36`).                                                               |
 | **I4** — SemanticManifest is deterministic      | Glob expansion sorts by lexical order of resolved absolute identifier (§3.5). Catalog-fetch results are sorted by fully-qualified name before being folded into the SemanticManifest. Ties are impossible by construction.                                             |
@@ -134,7 +133,7 @@ The `#[non_exhaustive]` tag is present to allow a future `post_binding_hook: Opt
 pub struct BindingId(pub u32);
 ```
 
-`BindingId` is the compile-time assigned identifier for a Binding. The canonical definition lives in `14b §2`; `15` ratifies its allocation discipline:
+`BindingId` is the compile-time assigned identifier for a Binding. The canonical definition lives in `19 §3.2`; `15` ratifies its allocation discipline:
 
 - **Allocation site.** Bindings are assigned their ID during the `compile` stage's binding-resolution pass (§10 step 1). The `compile` driver owns a monotonically-increasing `u32` counter, handed out in iteration order over the deterministic `ResolvedDataKind` roster. First ID is `0`; there is no `NULL` / `UNDEFINED` value.
 - **Uniqueness scope.** `BindingId` is **unique within a SemanticManifest**, not within a `DataKind`. The compile stage's counter spans the entire SemanticManifest; every Binding across every `SimpleDataKind` gets a distinct `BindingId`.
@@ -144,9 +143,9 @@ pub struct BindingId(pub u32);
 
 **Proposed (Round 1):** the counter resets to `0` per SemanticManifest (per-compile scope). A cross-SemanticManifest namespace (e.g. embedding the SemanticManifest content hash into the ID) is not adopted; it would break the `u32` shape and have no concrete use case. See `questions/open/15_questions.md` Q-MAP-001.
 
-### 2.3 Cross-reference: `14b`'s `ResolvedExprKey`
+### 2.3 Cross-reference: `19 §3.2`'s `ResolvedExprKey`
 
-`14b §2`'s `ResolvedExprTable` is keyed on `(SemanticsName, BindingId)` precisely because `15` ratifies `BindingId` as the per-Binding identity. `15 §7.2` describes the SemanticManifest's storage split: the `ResolvedExprTable` stores the physical expression bodies; the `ResolvedColumnMapping.computed: HashMap<SemanticsName, PhysicalExpr>` is a **per-Binding denormalization** that copies the `PhysicalExpr` into the Binding's own hashmap for O(1) access without going through the global table. Whether the SemanticManifest stores the `PhysicalExpr` once (in the table) with the `ResolvedColumnMapping.computed` value being a pointer/index, or twice (once in each structure), is an implementation choice ratified in `33`. From the contract surface of `15`, both structures are populated and both are plan-readable.
+`19 §3.2`'s `ResolvedExprTable` is keyed on `(SemanticsName, BindingId)` precisely because `15` ratifies `BindingId` as the per-Binding identity. `15 §7.2` describes the SemanticManifest's storage split: the `ResolvedExprTable` stores the physical expression bodies; the `ResolvedColumnMapping.computed: HashMap<SemanticsName, PhysicalExpr>` is a **per-Binding denormalization** that copies the `PhysicalExpr` into the Binding's own hashmap for O(1) access without going through the global table. Whether the SemanticManifest stores the `PhysicalExpr` once (in the table) with the `ResolvedColumnMapping.computed` value being a pointer/index, or twice (once in each structure), is an implementation choice ratified in `33`. From the contract surface of `15`, both structures are populated and both are plan-readable.
 
 ### 2.4 Cross-reference: Complex composition
 
@@ -405,7 +404,7 @@ pub struct SemanticMapping {
 // SemanticMappingValue: owned by `18 §10`.
 ```
 
-`BTreeMap` keying is deliberate: it gives the Model-layer shape a deterministic iteration order (alphabetical on `SemanticsName`) which feeds straight into the `ResolvedExprTable` ordering ratified by `14b §4`. The SemanticManifest-layer `ResolvedColumnMapping` (§7) splits entries into per-category flat maps for O(1) lookup — the ordering fence is paid at SemanticManifest-construction time, not at plan time.
+`BTreeMap` keying is deliberate: it gives the Model-layer shape a deterministic iteration order (alphabetical on `SemanticsName`) which feeds straight into the `ResolvedExprTable` ordering ratified by `19 §3.4`. The SemanticManifest-layer `ResolvedColumnMapping` (§7) splits entries into per-category flat maps for O(1) lookup — the ordering fence is paid at SemanticManifest-construction time, not at plan time.
 
 ### 5.2 `SemanticMappingValue::Column` — compile semantics
 
@@ -427,7 +426,7 @@ A typed constant per `18 §10.2`. The `LiteralValue` enum carries the type tag i
 
 ### 5.4 `SemanticMappingValue::Expr` — compile semantics
 
-An author-written expression, compiled to `PhysicalExpr` by `14b §3`:
+An author-written expression, compiled to `PhysicalExpr` by `19 §3.3`:
 
 - The wrapped `PhysicalExpr` honors the wrapper invariants from `14 §3.3`: no `EntityRef`, no `Aggregate`, `Column` allowed. Type inference (`14 §5`) has already run; `expr.inferred_type()` is populated.
 - `expr.referenced_columns()` — every column name it reads must exist in every `PhysicalSource` in the Binding whose `Coverage` for this Semantics is `Derived` (§6). Sources with `NullFill` do not require the columns.
@@ -436,13 +435,13 @@ The YAML-to-`PhysicalExpr` compilation pathway for `Expr` entries:
 
 ```
 YAML ExprSource  (14 §4)
-   → SemanticExpr  (authors may write @other_semantics; 14b §3 substitutes them)
+   → SemanticExpr  (authors may write @other_semantics; 19 §3.3 substitutes them)
    → PhysicalExpr  (columns resolved against this Binding's PhysicalSource schemas)
 ```
 
-The compile stage invokes `14b::resolve_to_physical(semantic_expr, binding_context)` per `Expr` entry. `binding_context` supplies (a) the cross-source reconciled schema over which `Column` identifiers resolve, (b) the `FunctionRegistry` (via `14a`), (c) the substitution map for `@entity_ref` identifiers into same-Binding `Expr` / `Column` entries. The output is a `PhysicalExpr` with `inferred_type` set; §9.1 then compares `inferred_type` against the declared Semantics `DataType` and emits a `Cast` at the Semantics boundary if needed.
+The compile stage invokes `SemanticExpr::resolve` per `[19 §3.1](19_expression_flow.md)` per `Expr` entry. The binding context supplies (a) the cross-source reconciled schema over which `Column` identifiers resolve, (b) the `FunctionRegistry` (via `14a`), (c) the substitution map for typed-leaf identifiers into same-Binding `Expr` / `Column` entries. The output is a `PhysicalExpr` with `inferred_type` set; §9.1 then compares `inferred_type` against the declared Semantics `DataType` and emits a `Cast` at the Semantics boundary if needed.
 
-**Cross-reference to `14b §5` cycle detection.** `Expr`-entries within a single `SemanticMapping` can refer to other Semantics via `EntityRef`. The `14b §5` Tarjan-SCC pass runs over the Binding's `Expr` entries and detects same-Binding cycles (`e1 → e2 → e1`). `CompileError::ComputedCycle { binding_id, cycle }` (owned by `14b §8.3`, re-surfaced via `15 §11`) is the failure. (The error name `ComputedCycle` is retained for continuity with `14b`; it covers the `Expr` variant.)
+**Cross-reference to `19 §3.5` cycle detection.** `Expr`-entries within a single `SemanticMapping` can refer to other Semantics via typed semantic leaves. The `19 §3.5` Tarjan-SCC pass runs over the Binding's `Expr` entries and detects same-Binding cycles (`e1 → e2 → e1`); the failure is `CompileError::CyclicReference` per `[19 §8.1](19_expression_flow.md)`.
 
 ### 5.5 `SemanticMappingValue::Metadata` — compile semantics
 
@@ -463,7 +462,7 @@ dimensions:
 
 There is **no author-side `semantic_mapping:` entry** for a metadata Dimension. The binding-resolution pass (`§10.4` step 4.0) detects each Dimension whose `type` is `Metadata(...)`, reads the `MetadataDimensionBody.source` shape (`18 §4`), and synthesizes the corresponding `SemanticMapping.entries[name] = SemanticMappingValue::Metadata(MetadataDimensionRecipe { extraction, data_type })` entry **before the completeness check (§5.6) runs**. A `semantic_mapping:` block that *does* contain an explicit entry for a metadata Dimension is rejected as a `SpuriousBindingEntry`-class error (or, equivalently, an authoring-layer parse error if `32` chooses to catch it earlier).
 
-**Compile-time mechanic, not an expression.** Metadata extraction is layer 3 of the three-stratum model (banner, §1). It is **not** a `PhysicalExpr` variant, **not** a function in the `14a` registry, and **not** subject to `14b`'s substitution / cycle-detection passes. The recipe (`MetadataDimensionRecipe`) is a compile-output struct that pairs the extraction kind with the declared `data_type:`; its evaluation runs inside `compile` to produce the per-source `LiteralValue`s that feed `ResolvedPhysicalSource.metadata_values` (§7.6).
+**Compile-time mechanic, not an expression.** Metadata extraction is layer 3 of the three-stratum model (banner, §1). It is **not** a `PhysicalExpr` variant, **not** a function in the `14a` registry, and **not** subject to `19 §3`'s substitution / cycle-detection passes. The recipe (`MetadataDimensionRecipe`) is a compile-output struct that pairs the extraction kind with the declared `data_type:`; its evaluation runs inside `compile` to produce the per-source `LiteralValue`s that feed `ResolvedPhysicalSource.metadata_values` (§7.6).
 
 **Per-source resolution flow** (one pass per `(source_index, Metadata-bound semantics)` pair, executed during the Coverage-derivation pass §10.5):
 
@@ -476,7 +475,7 @@ There is **no author-side `semantic_mapping:` entry** for a metadata Dimension. 
 
 **Cross-source value divergence is allowed.** The recipe is global to the Binding, but the **values may differ across sources** — that is the whole point of metadata extraction. The SemanticManifest stores one resolved `LiteralValue` per source (per metadata Dim); the planner reads the value for the source it is currently processing.
 
-**Constant folding feed.** Layer-1 (`SemanticExpr`) consumers that reference a metadata-bound Semantic are eligible for partial evaluation at the `SemanticExpr → PhysicalExpr` lowering boundary: the metadata `LiteralValue` is known per source at compile time, so a `CASE WHEN @dataset_name = 'asd' THEN @col1 ELSE @col2 END` can be flattened to a per-source `Column(col1)` / `Column(col2)` projection. The exact partial-evaluation algorithm is owned by `14b` (TBD); `15`'s contract is to make the per-source resolved literals available on `ResolvedPhysicalSource.metadata_values`.
+**Constant folding feed.** Layer-1 (`SemanticExpr`) consumers that reference a metadata-bound Semantic are eligible for partial evaluation at the `SemanticExpr → PhysicalExpr` lowering boundary: the metadata `LiteralValue` is known per source at compile time, so a `CASE WHEN @dataset_name = 'asd' THEN @col1 ELSE @col2 END` can be flattened to a per-source `Column(col1)` / `Column(col2)` projection. The partial-evaluation language is owned by `[19 §4.1](19_expression_flow.md)`; `15`'s contract is to make the per-source resolved literals available on `ResolvedPhysicalSource.metadata_values`.
 
 Detailed runtime mechanics for `path_token`, exhaustively described in §8.1.
 
@@ -494,7 +493,7 @@ Per `11 §6`, a `SimpleDataKind`'s `SemanticInterface` is the complete named sur
 
 **Edge case: `ComputedDimension` (per `14 §1.2`).** These ALWAYS map to `SemanticMappingValue::Expr`; they never have a `Column`-valued entry. The YAML parse enforces this at `32`.
 
-**Edge case: Name case.** `SemanticsName` preserves the author's case (`14 §4.3`); the parser does no case folding. Mapping-key mismatches due to case errors (`"customer_id"` declared, `"CustomerID"` mapped) → `SpuriousBindingEntry` + `MissingBindingEntry` pair.
+**Edge case: Name case.** `SemanticsName` preserves the author's case (`14 §6.5`); the parser does no case folding. Mapping-key mismatches due to case errors (`"customer_id"` declared, `"CustomerID"` mapped) → `SpuriousBindingEntry` + `MissingBindingEntry` pair.
 
 ### 5.7 Shape constraints
 
@@ -643,11 +642,11 @@ fn resolve_semantics<'a>(
 
 Each branch is an O(1) HashMap probe. The metadata branch performs a second O(1) probe into the source's `metadata_values` map. The sum-type match on the Model-layer enum is never paid at plan time.
 
-### 7.5 Relation to `14b`'s `ResolvedExprTable`
+### 7.5 Relation to `19`'s `ResolvedExprTable`
 
-`14b §4`'s `ResolvedExprTable` is a **SemanticManifest-global** map from `(SemanticsName, BindingId)` to `PhysicalExpr`. `ResolvedColumnMapping.computed` is a **per-Binding denormalization** of that table, filtered to the Binding's own entries. Both exist:
+`19 §3.2`'s `ResolvedExprTable` is a **SemanticManifest-global** map from `(SemanticsName, BindingId)` to `PhysicalExpr`. `ResolvedColumnMapping.computed` is a **per-Binding denormalization** of that table, filtered to the Binding's own entries. Both exist:
 
-- The global table supports cross-Binding planner work (e.g. `14b §6.2` Relationship-path composition, where an expression is shared across a Joinset's members).
+- The global table supports cross-Binding planner work (e.g. `19 §3.4.5` Relationship-path composition via `PathSignature`, where an expression is shared across a Joinset's members).
 - The per-Binding HashMap supports single-Binding planner work (per-`Scan` expression lookup) without the extra `BindingId` in the key.
 
 Whether the two share storage (the `ResolvedColumnMapping.computed` values are pointers into the global table) or are duplicated is a `33`-owned implementation choice. From `15`'s contract surface, both are populated and both are plan-readable; `33` will ratify the storage strategy. **Proposed (Round 1):** duplicate storage by default; the memory overhead is a small constant per binding-semantics pair, and the planner is free of aliasing concerns. See `questions/open/15_questions.md` Q-MAP-006.
@@ -907,7 +906,7 @@ Populate `Schema.columns` (logical `DataType`s, nullability).
 3. **Per-entry variant dispatch:**
   - `Column`: validate the column exists on at least one source; if on NO source, `COMP_E_0310`-lite (actually `ColumnMissingOnAllSources { semantics, column }`, COMP_E_0318). Reconcile declared vs physical `DataType` per §9.1; wrap in `Cast` if widening/narrowing. Record cross-source type agreement per §9.3.
   - `Literal`: validate representability (§5.3 error list).
-  - `Computed`: invoke `14b::resolve_to_physical`. Use the cross-source reconciled schema as the column-lookup context. Check `expr.referenced_columns` across sources per §9.3. Reconcile `expr.inferred_type` vs declared Semantics `DataType` per §9.2.
+  - `Computed`: invoke `SemanticExpr::resolve` per `[19 §3.1](19_expression_flow.md)`. Use the cross-source reconciled schema as the column-lookup context. Check `expr.referenced_columns` across sources per §9.3. Reconcile `expr.inferred_type` vs declared Semantics `DataType` per §9.2.
   - `Metadata`: per-source applicability check only — actual value resolution happens in step 5 (Coverage derivation). For `Path { token }` extraction: every source in the Binding must be `PhysicalSource::File` (else `COMP_E_0312 MetadataTokenOnNonFileSource`); the Binding must have ≥1 source. The deeper checks (out-of-range token, empty segment, cast failure) run during the per-source pass in step 5.
 4. **Synthesize compile-derived entries** for Constraints that require a `SemanticMappingValue::Expr` (§5.6 edge case — e.g. `Measure(Count, DerivesFrom(Key))`). These entries are added to the Model-layer `SemanticMapping` struct in-place during the reconciliation pass, then flow through step 4.3's Computed branch.
 
@@ -940,7 +939,7 @@ Wrap each `PhysicalSource` into a `ResolvedPhysicalSource { source, metadata_val
 
 ### 10.7 Step 7 — SemanticManifest-index contribution
 
-The Binding's `ResolvedBinding` is handed off to the SemanticManifest-index-construction stage. The `ResolvedExprTable` (per `14b §4`) absorbs every Computed entry as `(SemanticsName, BindingId) → PhysicalExpr`. The per-DataKind Binding index is populated (`DataKindId → Vec<BindingId>` — vector length 1 for `SimpleDataKind`). These are `33`-owned SemanticManifest structures; `15`'s flow just feeds them.
+The Binding's `ResolvedBinding` is handed off to the SemanticManifest-index-construction stage. The `ResolvedExprTable` (per `19 §3.4`) absorbs every Computed entry as `(SemanticsName, BindingId) → PhysicalExpr`. The per-DataKind Binding index is populated (`DataKindId → Vec<BindingId>` — vector length 1 for `SimpleDataKind`). These are `33`-owned SemanticManifest structures; `15`'s flow just feeds them.
 
 ### 10.8 Error-handling posture
 
@@ -1000,12 +999,12 @@ All compile-time error variants introduced or re-surfaced by `15`, with proposed
 | `COMP_W_0306` | `NullableSourceForNonNullableSemantics { semantics, source_index }` | §9.4 nullability mismatch                                     |
 
 
-### 11.3 Re-surfaced errors from `14` / `14b`
+### 11.3 Re-surfaced errors from `14` / `14a` / `19`
 
-Errors raised by `14` / `14a` / `14b` during Computed-entry compilation pass through `15`'s resolution flow unmodified; `15` does not re-codify them. Examples:
+Errors raised by `14` / `14a` / `19` during Computed-entry compilation pass through `15`'s resolution flow unmodified; `15` does not re-codify them. Examples:
 
-- `EXPR_E_0201 EntityRefNotResolved` (from `14b`'s substitution)
-- `EXPR_E_0206 ComputedCycle` (from `14b §5`'s SCC pass)
+- `EXPR_E_0201 UnknownReference` (from `19 §3.3` substitution)
+- `EXPR_E_0206 ComputedCycle` (from `19 §3.5`'s SCC pass)
 - `EXPR_E_0401 TypeInferenceFailed` (from `14 §7`)
 - `EXPR_E_0301 FunctionArityMismatch` (from `14a §8`)
 
@@ -1029,9 +1028,9 @@ The `CatalogUnavailable (COMP_E_0203)` code sits in the `COMP_E_0200-0299` catal
 
 ## 12. Interaction with Other Documents
 
-### 12.1 `14b §2` — `ResolvedExprTable` keying
+### 12.1 `19 §3.2` — `ResolvedExprTable` keying
 
-`14b §2` keys its global `ResolvedExprTable` on `(SemanticsName, BindingId)`. `15 §2.2` ratifies the `BindingId`'s shape, allocation, and uniqueness; the two docs are tightly coupled and should be read together. Every ratified property of `BindingId` in §2.2 is honored by `14b`'s table construction; conversely, `14b`'s requirement that its table's keys are stable-within-a-SemanticManifest is exactly the allocation discipline `15` ratifies.
+`19 §3.2` keys its global `ResolvedExprTable` on `(SemanticsName, BindingId)`. `15 §2.2` ratifies the `BindingId`'s shape, allocation, and uniqueness; the two docs are tightly coupled and should be read together. Every ratified property of `BindingId` in §2.2 is honored by `19`'s table construction; conversely, `19`'s requirement that its table's keys are stable-within-a-SemanticManifest is exactly the allocation discipline `15` ratifies.
 
 ### 12.2 `16` — Coverage at the `ComposedSemanticInterface` level
 

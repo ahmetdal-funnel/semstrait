@@ -148,7 +148,7 @@ The `11 §5` shape-vs-resolution split (a Semantics shape is locked across occur
 | `11 §5` aspect | `Simple` | `Grainset` | `Unionset` | `Joinset` |
 |---|---|---|---|---|
 | Shape fields (`11 §5.1`) | Locked at the declaration site. | Same — a Grainset's composed-surface shape is locked across children per `11 §5.3`'s worked example. | Same — cross-child shape divergence is a compile error (`23 §9` `COMP_E_2302`). | Same — composed-surface shape locked; per-member differences surfaced via `FieldProvenance` (`16 §7`). |
-| Resolution-variant fields (`11 §5.2`) | Per-Simple `Binding.column_mapping[].expr` may vary. | Per-child resolution varies — each Grainset level has its own `Binding` resolution. | Per-child resolution varies. | Per-member resolution varies; cross-member expressions use `14b §4.5`'s `PathSignature`. |
+| Resolution-variant fields (`11 §5.2`) | Per-Simple `Binding.column_mapping[].expr` may vary. | Per-child resolution varies — each Grainset level has its own `Binding` resolution. | Per-child resolution varies. | Per-member resolution varies; cross-member expressions use `19 §3.4.5`'s `PathSignature`. |
 
 ### 2.4 Nesting Policy — `12`
 
@@ -186,7 +186,7 @@ All variants carry logical types. `Grain` participates in every variant but only
 
 The `13 §7` row in the user's spec ("Joinset column type-compat: only Joinset") maps onto the actual authoritative sites: `13 §2.4` (shape unification) + `16 §12.2` (`KeyPair` type agreement). `Joinset` is where the `Relationship.keys` type agreement bites most often in practice, but the underlying rule is not Joinset-specific — it applies to any consumer of a `Relationship`, including implicit composition (`16 §11`). `25` records both the narrow (Joinset-only) and broad (any `Relationship` consumer) readings; the narrow reading lives in `24 §5.2` step 3, the broad one in `16 §12.2`.
 
-### 2.6 Expressions — `14`, `14a`, `14b`
+### 2.6 Expressions — `14`, `14a`, `19`
 
 All three expression docs apply to every variant. Authoring happens on `Simple`s directly; `Complex` variants inherit the resolved expressions via their constituents.
 
@@ -197,15 +197,15 @@ All three expression docs apply to every variant. Authoring happens on `Simple`s
 | `14 §4` `ExprSource` YAML grammar | `always`. | `always` — only in per-level declarations that live on `Simple` children. | `always` — only in per-branch declarations that live on `Simple` children. | `always` — only in per-member declarations + in Joinset-level derived fields. |
 | `14 §5`–`§6` typing + computed-Dimension `data_type:` inference | `always` — consumed at Computed-Dimension inference per `14 §6.2`. | `via Simple children`. | `via Simple children` + cross-child widening at `UnifiedSemantics` build (`23 §4.4`). | `via Simple children` + `KeyPair` type agreement (`16 §12.2`). |
 | `14a` `FunctionRegistry` / `CanonicalFn` | `always`. | `always`. | `always` — used at cross-child widening LUB (`23 §4.4`). | `always`. |
-| `14b` `ResolvedExprTable` + cross-DataKind path pre-resolution | `always` — per-`(Semantics, Binding)` pre-resolved at compile (`14b §2`). | `via Simple children` + composed-surface lifts where a Grainset-level Semantics refers to a child's field. | `via Simple children` + composed-surface lifts where cross-child shape reconciliation wraps a `Cast` (`23 §4.4`). | `via Simple children` + Joinset-level `Derived` expressions pre-resolved + `PathSignature` (`14b §4.5`) for cross-member expressions. |
+| `19 §3.2` `ResolvedExprTable` + cross-DataKind path pre-resolution | `always` — per-`(Semantics, Binding)` pre-resolved at compile (`19 §3.2`). | `via Simple children` + composed-surface lifts where a Grainset-level Semantics refers to a child's field. | `via Simple children` + composed-surface lifts where cross-child shape reconciliation wraps a `Cast` (`23 §4.4`). | `via Simple children` + Joinset-level `Derived` expressions pre-resolved + `PathSignature` (`19 §3.4.5`) for cross-member expressions. |
 
 Round-1 decision recorded: no `Complex` variant authors `SemanticExpr` / `PhysicalExpr` directly on a `Binding`; every such expression lives on a `Simple` and is composed up. The only Complex-authored expressions are (a) Joinset-level `Derived` fields (`24 §2.6`) and (b) Joinset-level Filter clauses applied post-join (`24 §5.5` step 4).
 
-`14b`'s `PathSignature` (`14b §4.5`) is a `BTreeSet<RelationshipPath>`; only `Joinset` and the implicit-composition consumer in `16 §11` populate it with `len() > 0`. Bare `Simple` and single-constituent Complex composition produce the empty signature.
+`19 §3.4.5`'s `PathSignature` is a `BTreeSet<RelationshipPath>`; only `Joinset` and the implicit-composition consumer in `16 §11` populate it with `len() > 0`. Bare `Simple` and single-constituent Complex composition produce the empty signature.
 
 | `14` axis | Authored where? | Pre-resolved where? |
 |---|---|---|
-| `PhysicalExpr::Column` (ColumnMapping value) | `Simple.binding.column_mapping[].value` (`15 §5`). | `compile`; result keyed by `ResolvedExprKey` (`14b §2.1`). |
+| `PhysicalExpr::Column` (ColumnMapping value) | `Simple.binding.column_mapping[].value` (`15 §5`). | `compile`; result keyed by `ResolvedExprKey` (`19 §3.2.1`). |
 | `PhysicalExpr::Computed` (ColumnMapping value) | `Simple.binding.column_mapping[].value` (`15 §5.4`). | `compile`; types inferred per `14 §6`. |
 | `SemanticExpr` (Computed Dimension / Measure / Metric) | `Simple.semantics.*.expr` (`11 §6`). | `compile`; lifted to the Complex's `ComposedSemanticInterface` unchanged (`16 §5.5`). |
 | Joinset-level `Derived` expression | `Joinset.semantics.*.expr` (`24 §2.6`). | `compile`; `PathSignature` populated if the expression references a non-anchor member. |
@@ -565,7 +565,7 @@ A contrasting "where does this belong?" table to help drafters identify when a c
 - `11 §3, §5, §6, §7, §8` — Semantics identity, shape vs resolution variants, element catalog, `Additivity`, `Constraint`; `§2.3` indexes.
 - `12 §2, §3, §4, §5, §6` — nesting matrix + per-variant block shapes; `§2.4` indexes.
 - `13 §2.4, §3, §4, §5` — `DataType`, `Grain`, `DimensionType`, Keys-vs-Dimensions separation; `§2.5` indexes. `[CROSS-DOC-FIX-NEEDED]` `CDF-23-01` flagged re `13 §7` cast-matrix reference chase (see `§1.3`).
-- `14 §§2–6`, `14a`, `14b §§2, §3, §4.5` — expression model, function registry, `ResolvedExprTable`, `PathSignature`; `§2.6` indexes.
+- `14 §§2–6`, `14a`, `19 §§3.2, §3.3, §3.4.5` — expression model, function registry, `ResolvedExprTable`, `PathSignature`; `§2.6` indexes.
 - `15 §§2, §3, §5, §6, §7` — `Binding`, `PhysicalSource`, `ColumnMapping`, Binding-level `Coverage`; `§2.7` indexes.
 - `16 §§2–14` — `Relationship`, `Cardinality`, `JoinType`, `ComposedSemanticInterface`, `UnifiedSemantics`, `FieldProvenance`, `CompositionCoverage`, field-first resolution, Joinset-as-explicit-subset; `§2.8` indexes. `§2.8`'s `16 §7.3.3` row is the canonical anchor for the "Unionset-only `FieldOwnership::NullFill`" rule reproduced in `§5`.
 - `17 §§2–8` — `TemporalShape`, `AsOf` JoinType, shape-gated composition; `§2.9` indexes. Forward-refs marked where `17 §*` numbering is still landing.

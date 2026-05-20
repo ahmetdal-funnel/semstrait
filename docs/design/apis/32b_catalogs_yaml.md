@@ -1,6 +1,5 @@
 ---
-
-## prereqs: [00, 10, 15, 30, 31, 31b, 32]
+prereqs: [00, 10, 15, 30, 31, 31b, 32]
 authoritative-for:
   - the `catalogs.yaml` file shape: root key (`catalogs:`), per-entry alias, `type`, `name`, `url`, `realm`, `default_namespace`, `auth`
   - the `CatalogEntry` / `CatalogAuthMethod` typed roster (Oauth2 / Bearer / AwsSecrets variants)
@@ -13,6 +12,7 @@ refined-by:
   - 31b (`apis/31b_semstrait_core_io.md` — transport vocabulary used by the §5.4 wrappers)
   - 33 (`apis/33_semstrait_manifest.md` — catalog resolution at compile time)
   - 37 (`apis/37_semstrait_catalog.md` — the `CatalogProvider` trait that consumes a resolved catalog connection)
+---
 
 # 32b. `catalogs.yaml` — Catalog Grammar
 

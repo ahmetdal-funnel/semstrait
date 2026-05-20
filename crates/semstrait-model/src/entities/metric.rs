@@ -3,10 +3,11 @@
 use crate::entities::ai::AiContext;
 use crate::entities::filter::AggregationFilter;
 use crate::entities::measure::{AdditivityType, AggregationType, SemiAdditivity};
-use crate::expr_ast::ExprSource;
+use crate::expr_source::ExprSource;
 use crate::types::SemanticsName;
 use bon::Builder;
 use semstrait_core::DataType;
+use semstrait_ir::SemanticLeaf;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_yaml::Value;
 
@@ -52,9 +53,10 @@ pub struct Metric {
     /// REQUIRED on Metric — the derivation expression over Measures /
     /// Dimensions. May be deferred-body on a root-pool Metric per
     /// `18 §1.3`; SR-E-2 catches the all-missing case at validate.
+    /// Per `14 §7`, Metric `expr:` parses to `SemanticExpr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[builder(into)]
-    pub expr: Option<ExprSource>,
+    pub expr: Option<ExprSource<SemanticLeaf>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additivity: Option<AdditivityType>,
@@ -184,7 +186,7 @@ pub struct MetricRef {
     pub name: SemanticsName,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expr: Option<ExprSource>,
+    pub expr: Option<ExprSource<SemanticLeaf>>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<AggregationFilter>,

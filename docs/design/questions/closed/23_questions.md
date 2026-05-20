@@ -94,11 +94,11 @@ The suggestion to lift `Intersect` / `Except` into separate `ComplexDataKind` va
 
 **CLOSED (post-thirteenth-pass cascade rebase, 2026-05-03).** Re-scoped under `CompositionKind` retirement. `CompositionKind` was a pre-cascade artifact not authored by the user; removed entirely from the v1 architecture. `ComposedSemanticInterface` survives as a **Joinset-only** per-hop join-path-search artifact (per `24`'s scope) — it has no role in Unionset or Grainset.
 
-For Unionset, composition-level computed Semantics are authored directly on the Unionset's own `SemanticInterface` via Computed Dimensions / Metrics per `14b` — identical to Dataset's authoring surface (the `SemanticInterface` is a flat set of Dimensions / Measures / Metrics / Keys / Filters per `18 §1.1`). No `23`-specific declaration mechanism is needed; the question's premise (a separate `ComposedSemanticInterface` carrier on Unionset) does not hold in the post-thirteenth-pass architecture.
+For Unionset, composition-level computed Semantics are authored directly on the Unionset's own `SemanticInterface` via Computed Dimensions / Metrics per `19 §3` — identical to Dataset's authoring surface (the `SemanticInterface` is a flat set of Dimensions / Measures / Metrics / Keys / Filters per `18 §1.1`). No `23`-specific declaration mechanism is needed; the question's premise (a separate `ComposedSemanticInterface` carrier on Unionset) does not hold in the post-thirteenth-pass architecture.
 
 **Question.** When a composed-surface Semantics is `Derived` at the Unionset level (computed from other composed-surface fields, not from any child), where does the author declare the derivation?
 
-**Current position.** On the Unionset's own `SemanticInterface` per `14b`, like any Computed Dimension / Metric. Body retained as historical context.
+**Current position.** On the Unionset's own `SemanticInterface` per `19 §3`, like any Computed Dimension / Metric. Body retained as historical context.
 
 ---
 

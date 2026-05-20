@@ -24,7 +24,7 @@ purpose: Resolved questions originally raised against `apis/38_semstrait_api.md`
 
 **Status.** Closed (preserved as Round-1 default). The audit treats this as closed because the doc commits to "preserve variant identity; escalation leaves the outer kind unchanged" — a ratified position with `38 §5.6` carrying the invariant that variant / severity / message remain unchanged by escalation.
 
-**Question.** When `WarningPolicy::FailOnWarning` escalates a compile-stage warning to a fatal, `38 §5.3` re-emits it as the originating stage's fail-fast tuple — the originating-stage `Diagnostic<K>` lands in the `Err` tuple's fatal slot with its kind variant preserved (e.g. `CompileErrorKind::SchemaInferenceClamped`). Should the outer wrap be the stage's native kind (current default), or a dedicated `SemStraitErrorKind::ApiEscalated { origin: StageOrigin, kind: SemStraitErrorKind }` variant that clarifies the escalation occurred?
+**Question.** When `WarningPolicy::FailOnWarning` escalates a compile-stage warning to a fatal, `38 §5.3` re-emits it as the originating stage's fail-fast tuple — the originating-stage `Diagnostic<K>` lands in the `Err` tuple's fatal slot with its kind variant preserved (e.g. `CompileError::SchemaInferenceClamped`). Should the outer wrap be the stage's native kind (current default), or a dedicated `SemStraitErrorKind::ApiEscalated { origin: StageOrigin, kind: SemStraitErrorKind }` variant that clarifies the escalation occurred?
 
 **Refs.**
 
@@ -34,7 +34,7 @@ purpose: Resolved questions originally raised against `apis/38_semstrait_api.md`
 
 **Arguments for variant-identity preservation (current Round-1 default).**
 
-- Caller code that pattern-matches on (e.g.) `SemStraitErrorKind::Compile(CompileErrorKind::SchemaInferenceClamped { .. })` sees no difference between "compile intrinsically errored" and "compile emitted a warning escalated by policy" — both are legitimate reasons for compile to halt from the caller's perspective. The inner `Diagnostic::severity()` is the sole bit that differs.
+- Caller code that pattern-matches on (e.g.) `SemStraitErrorKind::Compile(CompileError::SchemaInferenceClamped { .. })` sees no difference between "compile intrinsically errored" and "compile emitted a warning escalated by policy" — both are legitimate reasons for compile to halt from the caller's perspective. The inner `Diagnostic::severity()` is the sole bit that differs.
 - Keeps the variant set small; adding `ApiEscalated` is a new discriminator to pattern-match on, and would force every consumer to consider both shapes.
 - Aligns with `30 §7`'s per-stage fail-fast rule: the kind variant identifies the failure category regardless of how it became fatal.
 

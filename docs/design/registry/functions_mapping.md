@@ -106,7 +106,7 @@ All comparison operators are `BinaryOp` variants per `14 §3.2` (`BinaryOpKind::
 
 Portability summary: **Universal** across all six.
 
-Per `14 §5.6`, semstrait does NOT validate operand-type compatibility for comparisons — each engine raises its own diagnostics at execution time if e.g. `Integer < String` is attempted. Cross-engine comparability rules (`Integer` vs `Double`, `String` vs `Date`) are engine-native; see §5 below for arithmetic promotion reference tables.
+Per `14 §5.4`, semstrait does NOT validate operand-type compatibility for comparisons — each engine raises its own diagnostics at execution time if e.g. `Integer < String` is attempted. Cross-engine comparability rules (`Integer` vs `Double`, `String` vs `Date`) are engine-native; see §5 below for arithmetic promotion reference tables.
 
 ---
 
@@ -229,7 +229,7 @@ Portability summary: **Universal** across all five.
 | `trim` | `trim(str) -> String` | `trim(str)` | Name-only | `trim(str)` | Name-only | `trim(str)` | Name-only | Removes leading + trailing whitespace. Engine-native parsers accept extended forms (`TRIM(BOTH 'x' FROM str)`); canonical is the simple 1-arg form. |
 | `ltrim` | `ltrim(str) -> String` | `ltrim(str)` | Name-only | `ltrim(str)` | Name-only | `ltrim(str)` | Name-only | Removes leading whitespace. |
 | `rtrim` | `rtrim(str) -> String` | `rtrim(str)` | Name-only | `rtrim(str)` | Name-only | `rtrim(str)` | Name-only | Removes trailing whitespace. |
-| `concat` | `concat(str, ...) -> String` (variadic) | `concat(...)` | Name-only | `concat(...)` | Name-only | `concat(...)` | Name-only | Variadic (N ≥ 1). NULL-argument handling differs subtly across engines; canonical posture: engine-delegated per `14 §5.6` / `14a §3.1`. |
+| `concat` | `concat(str, ...) -> String` (variadic) | `concat(...)` | Name-only | `concat(...)` | Name-only | `concat(...)` | Name-only | Variadic (N ≥ 1). NULL-argument handling differs subtly across engines; canonical posture: engine-delegated per `14 §5.4` / `14a §3.1`. |
 | `replace` | `replace(str, from, to) -> String` | `replace(str, from, to)` | Name-only | `replace(str, from, to)` | Name-only | `replace(str, from, to)` | Name-only | Replaces ALL occurrences (not just first). Universal. |
 | `lpad` | `lpad(str, len, [pad]) -> String` | `lpad(str, len, [pad])` | Name-only | `lpad(str, len, [pad])` | Name-only | `lpad(str, len, [pad])` | Name-only | Default `pad` = single space. 2-arg and 3-arg overloads. |
 | `rpad` | `rpad(str, len, [pad]) -> String` | `rpad(str, len, [pad])` | Name-only | `rpad(str, len, [pad])` | Name-only | `rpad(str, len, [pad])` | Name-only | Same as `lpad`. |

@@ -4,7 +4,7 @@
 //! primary structural surface.
 
 use semstrait_core::{DataType, Grain};
-use semstrait_model::expr_ast::ExprSource;
+use semstrait_model::expr_source::ExprSource;
 use semstrait_model::*;
 
 // ── Track A: entity facade ───────────────────────────────────────

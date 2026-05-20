@@ -26,8 +26,8 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 |---|---|---|
 | Pipeline semantics and stage boundaries | [`foundations/10_resolution_pipeline.md`](foundations/10_resolution_pipeline.md) | [`apis/30_api_contracts.md`](apis/30_api_contracts.md) |
 | Names, scopes, Semantics elements | [`foundations/11_names_and_scopes.md`](foundations/11_names_and_scopes.md) | [`foundations/16_composition.md`](foundations/16_composition.md) |
-| Types, expressions, function semantics | [`foundations/13_types_and_grain.md`](foundations/13_types_and_grain.md) | [`foundations/14_expressions.md`](foundations/14_expressions.md), [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md), [`foundations/14b_expression_resolution.md`](foundations/14b_expression_resolution.md), [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
-| Expression pipeline, sugar, placement | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) | [`foundations/14_expressions.md`](foundations/14_expressions.md), [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md), [`apis/34_semstrait_planner.md`](apis/34_semstrait_planner.md) |
+| Types, expressions, function semantics | [`foundations/13_types_and_grain.md`](foundations/13_types_and_grain.md) | [`foundations/14_expressions.md`](foundations/14_expressions.md) (type architecture), [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md) (registry + function-level `Additivity`), [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) (compile pipeline) |
+| Expression compile pipeline, resolution algorithm, sugar, placement | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) | [`foundations/14_expressions.md`](foundations/14_expressions.md), [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md), [`apis/34_semstrait_planner.md`](apis/34_semstrait_planner.md) |
 | Mapping/binding and metadata synthesis | [`foundations/15_mapping_and_binding.md`](foundations/15_mapping_and_binding.md) | [`apis/32_semstrait_model.md`](apis/32_semstrait_model.md), [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) |
 | Temporal semantics | [`foundations/17_temporal_shape.md`](foundations/17_temporal_shape.md) | [`data-kinds/22_grainset.md`](data-kinds/22_grainset.md), [`data-kinds/23_unionset.md`](data-kinds/23_unionset.md) |
 | DataKind taxonomy and variant behavior | [`data-kinds/20_taxonomy.md`](data-kinds/20_taxonomy.md) | [`data-kinds/21_dataset.md`](data-kinds/21_dataset.md), [`data-kinds/22_grainset.md`](data-kinds/22_grainset.md), [`data-kinds/23_unionset.md`](data-kinds/23_unionset.md), [`data-kinds/24_joinset.md`](data-kinds/24_joinset.md), [`data-kinds/25_applicability_matrix.md`](data-kinds/25_applicability_matrix.md), [`data-kinds/26_nesting_matrix.md`](data-kinds/26_nesting_matrix.md) |
@@ -46,12 +46,12 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 - `13` [`foundations/13_types_and_grain.md`](foundations/13_types_and_grain.md) — canonical logical types and Grain.
 - `14` [`foundations/14_expressions.md`](foundations/14_expressions.md) — canonical expression model.
 - `14a` [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md) — canonical function identity/registry.
-- `14b` [`foundations/14b_expression_resolution.md`](foundations/14b_expression_resolution.md) — expression resolution semantics.
+- `14b` — **RETIRED 2026-05-18.** Compile-time resolution algorithm merged into `19`; forwarding stub deleted. See `[questions/closed/14b_questions.md](questions/closed/14b_questions.md)` for historical ratifications.
 - `15` [`foundations/15_mapping_and_binding.md`](foundations/15_mapping_and_binding.md) — mapping/binding algorithm.
 - `16` [`foundations/16_composition.md`](foundations/16_composition.md) — relationships and composed interfaces.
 - `17` [`foundations/17_temporal_shape.md`](foundations/17_temporal_shape.md) — temporal shape model.
 - `18` [`foundations/18_entities.md`](foundations/18_entities.md) — canonical entity type definitions.
-- `19` [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) — two-phase expression pipeline, sugar contract, Phase B placement.
+- `19` [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) — **unified compile-pipeline document**: two-phase pipeline (Phase A compile-time resolution + Phase B plan-time placement), `ResolvedExprTable` shape, substitution algorithm with cross-DataKind BFS, cycle detection, type inference, Semantics-boundary reconciliation, auto-mapping synthesis pre-step, sugar contract (Family A constant folding / Family B accessor sugar), per-site shape gates, Phase B placement (filter / `group_by` / Metric / `Additivity`), advisory channel, error model.
 
 ### DataKinds (2x)
 - `20` [`data-kinds/20_taxonomy.md`](data-kinds/20_taxonomy.md) — taxonomy and shared invariants.
@@ -97,13 +97,22 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 | Pipeline (`parse -> validate -> compile -> plan -> optimize -> adapt`) | [`foundations/10_resolution_pipeline.md`](foundations/10_resolution_pipeline.md) |
 | Semantics element types and naming constraints | [`foundations/11_names_and_scopes.md`](foundations/11_names_and_scopes.md) |
 | `DataType`, `Grain` | [`foundations/13_types_and_grain.md`](foundations/13_types_and_grain.md) |
-| `Expr`, `SemanticExpr`, `PhysicalExpr` | [`foundations/14_expressions.md`](foundations/14_expressions.md), [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) (type-architectural form) |
-| `CanonicalFn`, `FunctionRegistry` | [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md) |
-| Expression substitution/resolution | [`foundations/14b_expression_resolution.md`](foundations/14b_expression_resolution.md) |
+| `Expr<L>`, `SemanticExpr`, `PhysicalExpr`, `SemanticLeaf`, `PhysicalLeaf` | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md); crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) |
+| `Tree`, `Visitor`, `Rewriter`, `ExprLeaf` (traversal trait family) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §3.1 / §3.2; crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §3.2 (owned by `semstrait-ir` per second-cascade landing — `[STATUS.md](STATUS.md)` item Q) |
+| Structural-variant support enums (`BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`) and `Literal` typed-literal carrier | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §3.3; crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §3.4 (owned by `semstrait-ir` per second-cascade landing) |
+| Identifier carriers (`ColumnRef`, `SemanticsName`) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §3.4 / §3.5; crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §3.4 (owned by `semstrait-ir` per second-cascade landing) |
+| `ExprSource` (Inline-DSL / `Block(Expr<L>)` authoring carrier — **no separate `ExprBlock` AST**) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §6.1; crate-of-record: [`apis/32_semstrait_model.md`](apis/32_semstrait_model.md) (owned by `semstrait-model`; `Block(...)` carries `Expr<L>` from `semstrait-ir` directly via serde) |
+| Narrow expression-side error kinds (`ValidateError` for trait-machinery construction failures; `CompileError` for `ReturnTypeRule::Custom` failures) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §10 (I12 row); crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §15.1 / §15.2 (owned by `semstrait-ir`; embedded via D.ii kind-nesting by `model::ValidateError` and `manifest::CompileError`) |
+| Non-coercion / pass-through posture (no implicit type promotion at canonical layer) | [`foundations/14_expressions.md`](foundations/14_expressions.md) §5.4 |
+| `CanonicalFn`, `FunctionRegistry`, function-level `Additivity` | concept: [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md); crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §6 / §7 |
+| Expression compile-pipeline (Phase A resolution + Phase B placement) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
 | Two-phase expression flow, `resolve`, sugar (Family A/B) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
-| `Accessor`, `MeasureAccessor`, `DimensionAccessor`, `MetricAccessor`, `KeyAccessor`, `Parameter` | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
-| `DimensionRef`, `DimensionVariation` (Request shape) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
-| `Additivity`, `DimensionAxis` (function-tag axis) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md), [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md), [`foundations/18_entities.md`](foundations/18_entities.md) |
+| Per-kind typed semantic leaves (`Field`, `Dimension`, `Measure`, `Metric`, `Key`); accessor enums (`MeasureAccessor`, `DimensionAccessor`, `MetricAccessor`, `KeyAccessor`); `Parameter` | [`foundations/14_expressions.md`](foundations/14_expressions.md) |
+| `ResolvedExprTable`, cross-DataKind path resolution, `PathSignature`, cycle detection, type inference, semantics-boundary reconciliation, referenced-column harvesting | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
+| Auto-mapping synthesis pre-step, `Column`-under-manual-mapping rejection | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) §3.11 |
+| `ResolvedExprEntry` + `Provenance` (manifest storage shape) | [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) §6.3 |
+| `RequestDimensionRef`, `DimensionVariation` (rollup-aware Dimension carrier) | [`apis/34_semstrait_planner.md`](apis/34_semstrait_planner.md) §3.10 (consumer cross-ref in `[foundations/19_expression_flow.md](foundations/19_expression_flow.md) §6.2`) |
+| Effective-`Additivity` composition (function-level × model-level → planner-effective) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) §6.5 (sources: `[14a §3.6](foundations/14a_function_catalog.md)` + `[18 §5.2](foundations/18_entities.md)`) |
 | `SemanticMapping` and binding flow | [`foundations/15_mapping_and_binding.md`](foundations/15_mapping_and_binding.md) |
 | `Relationship`, composed interface semantics | [`foundations/16_composition.md`](foundations/16_composition.md) |
 | `TemporalShape` and shape semantics | [`foundations/17_temporal_shape.md`](foundations/17_temporal_shape.md) |

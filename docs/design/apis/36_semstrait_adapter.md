@@ -596,7 +596,7 @@ Adding a new `Capability` variant is MINOR. The owning ratification crate is `36
 
 The function-rewrite pipeline consumes two sources of truth:
 
-1. **`FunctionRegistry`** (`31 §5.2` / `14a §2`) — the canonical catalog. Every `FunctionCall.name` reaching the adapter has already been resolved against this registry at compile time per `14b`; the adapter consults the registry for return-type / signature metadata only, never to decide whether the call is valid.
+1. **`FunctionRegistry`** (`35 §7` / `14a §2`) — the canonical catalog. Every `FunctionCall.name` reaching the adapter has already been resolved against this registry at compile time per `19 §3.3`; the adapter consults the registry for return-type / signature metadata only, never to decide whether the call is valid.
 2. **`registry/functions_mapping.md`** — the per-engine mapping, authoritative for rewrite-tier classification. Each `(canonical_name, adapter_id)` pair maps to exactly one tier: Name-only / Name-remap / Structural / Unsupported.
 
 ### 7.2 Rewrite tiers
