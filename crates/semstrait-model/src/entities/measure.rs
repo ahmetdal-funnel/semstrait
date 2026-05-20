@@ -3,11 +3,12 @@
 
 use crate::entities::ai::AiContext;
 use crate::entities::filter::AggregationFilter;
-use crate::expr_ast::ExprSource;
+use crate::expr_source::ExprSource;
 use crate::types::SemanticsName;
 use crate::yaml::tagged::single_key_map;
 use bon::Builder;
 use semstrait_core::DataType;
+use semstrait_ir::SemanticLeaf;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_yaml::Value;
 
@@ -47,10 +48,11 @@ pub struct Measure {
 
     /// Optional horizontal-only transform applied before aggregation.
     /// `None` means the aggregation is applied directly to the
-    /// Semantic named by the Measure.
+    /// Semantic named by the Measure. Per `14 §7`, Measure `expr:`
+    /// parses to `SemanticExpr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[builder(into)]
-    pub expr: Option<ExprSource>,
+    pub expr: Option<ExprSource<SemanticLeaf>>,
 
     /// Optional additivity classification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -274,7 +276,7 @@ pub struct MeasureRef {
     pub name: SemanticsName,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expr: Option<ExprSource>,
+    pub expr: Option<ExprSource<SemanticLeaf>>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<AggregationFilter>,

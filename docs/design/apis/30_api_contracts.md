@@ -15,8 +15,8 @@ authoritative-for:
   - per-crate stability tier assignment
 refined-by:
   - 31 (`semstrait-core` — `Diagnostic<K>` / `Severity` / `Location` placement, `Diagnose` trait, narrow core kind enums)
-  - 32 (`semstrait-model` — `ParseErrorKind`, `ValidateErrorKind`, `SourceId` constructors)
-  - 33 (`semstrait-manifest` — `CompileErrorKind`, `RepositoryErrorKind`, `SemanticManifest` struct `#[non_exhaustive]` roster)
+  - 32 (`semstrait-model` — `ParseErrorKind`, `ValidateError`, `SourceId` constructors)
+  - 33 (`semstrait-manifest` — `CompileError`, `RepositoryErrorKind`, `SemanticManifest` struct `#[non_exhaustive]` roster)
   - 34 (`semstrait-planner` — `PlanErrorKind`, `OptimizeErrorKind`, Constraint / adapter-injection hook surface)
   - 35 (`semstrait-ir` — `SemanticPlan`, `PlanNode`, `EngineArtifact` non-exhaustive roster)
   - 36 (`semstrait-adapter` — `AdaptErrorKind`, `EngineAdapter` sealed-vs-open, `DialectId`)
@@ -145,7 +145,7 @@ The v1 roster, pulled from `00 §9 I10` and extended by the error-enum families 
 
 - **Canonical domain enums.** `DataType`, `DataKind`, `Additivity`, `Cardinality`, `JoinType`, `DialectId`, `EngineArtifact`, `EnginePlan`, `ExprSource` variants (`Inline`, `Declarative`), `TemporalShape` and its `Scd` subtype enum, the composition-kind tag of `ComposedSemanticInterface`, `DimensionType`, `Grain`, `LiteralValue`, `BinaryOpKind`, `Aggregation`, `FunctionCategory`, `ParamType`, `ReturnTypeRule`, `Portability`.
 - **Diagnostic-surface enums.** `Severity` (§5.2). `SourceId` is opaque (no `#[non_exhaustive]` annotation needed — its variant set is private to its producing crate; see §5.3).
-- **Per-stage kind enums.** Every per-stage typed-kind enum: `ParseErrorKind`, `ValidateErrorKind`, `CompileErrorKind`, `PlanErrorKind`, `OptimizeErrorKind`, `AdaptErrorKind`, `CatalogProviderErrorKind`, `FileSystemErrorKind`, `RepositoryErrorKind`, `SemStraitErrorKind`. New variant addition is the whole point — kind enums grow as new conditions surface.
+- **Per-stage kind enums.** Every per-stage typed-kind enum: `ParseErrorKind`, `ValidateError`, `CompileError`, `PlanErrorKind`, `OptimizeErrorKind`, `AdaptErrorKind`, `CatalogProviderErrorKind`, `FileSystemErrorKind`, `RepositoryErrorKind`, `SemStraitErrorKind`. New variant addition is the whole point — kind enums grow as new conditions surface.
 
 **Special case: `CanonicalFn`.** `CanonicalFn` is a newtype `struct CanonicalFn(&'static str)` with `pub const` identities (`CanonicalFn::UPPER`, `CanonicalFn::LOWER`, …) per `00 §4.1` and `14a §2`. It is **inherently extensible** — a new adapter-contributed constant does not change the type's shape. No `#[non_exhaustive]` is needed because there is no `enum` to annotate; extensibility is structural. Matching semantics use the `pub const` identities directly.
 
@@ -176,7 +176,7 @@ Consumers of `#[non_exhaustive]` types must always include a wildcard arm. `30` 
 
 ## 5. Diagnostic Structure
 
-The diagnostic surface is **typed** and **per-stage**. Every consumer crate declares its own kind enum (`ParseErrorKind`, `ValidateErrorKind`, `CompileErrorKind`, …) implementing the `Diagnose` trait; the generic `Diagnostic<K>` envelope wraps a kind with severity and source location. Public entry points that can fail return either `Result<…, Diagnostic<K>>` (fail-fast) or `Result<…, Diagnostics<K>>` (accumulating). Raw `String` errors, `anyhow::Error`, and `Box<dyn Error>` are banned on public APIs (§5.5).
+The diagnostic surface is **typed** and **per-stage**. Every consumer crate declares its own kind enum (`ParseErrorKind`, `ValidateError`, `CompileError`, …) implementing the `Diagnose` trait; the generic `Diagnostic<K>` envelope wraps a kind with severity and source location. Public entry points that can fail return either `Result<…, Diagnostic<K>>` (fail-fast) or `Result<…, Diagnostics<K>>` (accumulating). Raw `String` errors, `anyhow::Error`, and `Box<dyn Error>` are banned on public APIs (§5.5).
 
 There is no central error-code allocation table. Stable identification is by **variant identity** of the per-stage kind — renaming a variant is MAJOR per §2; adding one inside a `#[non_exhaustive]` enum is MINOR. The prior code-allocation framework (§6 of earlier drafts) is retired; §6 now hosts the workspace observability policy.
 
@@ -306,19 +306,19 @@ When multiple stage kinds need to surface through a single helper (e.g. `compile
 #[non_exhaustive]
 pub enum SemStraitErrorKind {
     Parse(semstrait_model::ParseErrorKind),
-    Validate(semstrait_model::ValidateErrorKind),
-    Compile(semstrait_manifest::CompileErrorKind),
+    Validate(semstrait_model::ValidateError),
+    Compile(semstrait_manifest::CompileError),
     Plan(semstrait_planner::PlanErrorKind),
     Adapt(semstrait_adapter::AdaptErrorKind),
 }
 
 impl From<semstrait_model::ParseErrorKind>     for SemStraitErrorKind { /* … */ }
-impl From<semstrait_model::ValidateErrorKind>  for SemStraitErrorKind { /* … */ }
-impl From<semstrait_manifest::CompileErrorKind> for SemStraitErrorKind { /* … */ }
+impl From<semstrait_model::ValidateError>  for SemStraitErrorKind { /* … */ }
+impl From<semstrait_manifest::CompileError> for SemStraitErrorKind { /* … */ }
 // ...
 ```
 
-The fused helper returns `Diagnostic<SemStraitErrorKind>` (or `Diagnostics<…>`); per-stage results lift via `From`. Cross-crate kind-nesting is permitted but not mandatory — a stage's kind enum MAY embed an upstream stage's kind directly (e.g. `CompileErrorKind::Parse(ParseErrorKind)`) when convenient; the fused sum at `38` is the canonical location for cross-stage aggregation.
+The fused helper returns `Diagnostic<SemStraitErrorKind>` (or `Diagnostics<…>`); per-stage results lift via `From`. Cross-crate kind-nesting is permitted but not mandatory — a stage's kind enum MAY embed an upstream stage's kind directly (e.g. `CompileError::Parse(ParseErrorKind)`) when convenient; the fused sum at `38` is the canonical location for cross-stage aggregation.
 
 ## 6. Observability and Tracing
 
@@ -424,8 +424,8 @@ The accumulating-vs-fail-fast classification is fixed at the spec level — swit
 | Stage | Crate | Class | Public-API return shape |
 |---|---|---|---|
 | `parse` | `32` (model) | accumulating | `Result<(SemanticModel, Diagnostics<ParseErrorKind>), Diagnostics<ParseErrorKind>>` |
-| `validate` | `32` (model) | accumulating | `Result<Diagnostics<ValidateErrorKind>, Diagnostics<ValidateErrorKind>>` |
-| `compile` | `33` (manifest) | fail-fast | `Result<(SemanticManifest, Diagnostics<CompileErrorKind>), (Diagnostic<CompileErrorKind>, Diagnostics<CompileErrorKind>)>` |
+| `validate` | `32` (model) | accumulating | `Result<Diagnostics<ValidateError>, Diagnostics<ValidateError>>` |
+| `compile` | `33` (manifest) | fail-fast | `Result<(SemanticManifest, Diagnostics<CompileError>), (Diagnostic<CompileError>, Diagnostics<CompileError>)>` |
 | `plan` | `34` (planner) | fail-fast | `Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>` |
 | `optimize` | `34` (planner) | fail-fast | `Result<(SemanticPlan, Diagnostics<OptimizeErrorKind>), (Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>)>` |
 | `adapt` | `36` (adapter) | fail-fast | `Result<(EngineArtifact, Diagnostics<AdaptErrorKind>), (Diagnostic<AdaptErrorKind>, Diagnostics<AdaptErrorKind>)>` |
@@ -461,7 +461,7 @@ Both arms of every stage signature carry warnings. A library implementation that
 
 ### 7.4 Stage-ownership of kinds
 
-A diagnostic's stage of origin is determined by the kind type (`ParseErrorKind`, `CompileErrorKind`, …), not by a substring of a code. Cross-crate kind-nesting is permitted (`CompileErrorKind::Parse(ParseErrorKind)` when compile internally re-parses a fragment); see §5.6 for the canonical aggregation pattern at fused helpers.
+A diagnostic's stage of origin is determined by the kind type (`ParseErrorKind`, `CompileError`, …), not by a substring of a code. Cross-crate kind-nesting is permitted (`CompileError::Parse(ParseErrorKind)` when compile internally re-parses a fragment); see §5.6 for the canonical aggregation pattern at fused helpers.
 
 ### 7.5 Accumulation limits
 
@@ -655,11 +655,11 @@ v1 per-crate maturity markers. These lock at the v1.0 cut and evolve per the sem
 
 | Crate | Stability | Notes |
 |---|---|---|
-| `semstrait-core` | Stable in v1 | Canonical shared primitives: `DataType`, `Diagnostic`, `Severity`, `Span`, `CanonicalFn` newtype, `FunctionRegistry` public surface. Breaking changes require a workspace-wide MAJOR. |
-| `semstrait-model` | Stable in v1 | `SemanticModel`, `ParseErrorKind`, `ValidateErrorKind` (model-level, embedding `Core(core::ValidateErrorKind)` per D.ii), YAML grammar. The author-facing YAML shape extends non-exhaustively (new keys, new variants) in MINOR. |
-| `semstrait-manifest` | Stable in v1 | `SemanticManifest`, `Resolved*` family, `CompileErrorKind` (embedding `Core(core::CompileErrorKind)` per D.ii), `RepositoryErrorKind`, `Repository` trait. **Internal serialization format (SemanticManifest on-disk bytes) is NOT a public API** — callers round-trip through `Repository::save` / `Repository::load`, not through direct byte access. |
-| `semstrait-planner` | Stable in v1 | `plan`, `optimize`, `PlanError`, `OptimizeError`. Per-DataKind strategy dispatch is internal. `PlanNode` variants are I10 `#[non_exhaustive]`. |
-| `semstrait-ir` | Stable in v1 | `SemanticPlan`, `PlanNode`, `EngineArtifact`, `SqlArtifact`, `EnginePlan`. Variant and field additions are MINOR via `#[non_exhaustive]`. |
+| `semstrait-core` | Stable in v1 | Non-expression shared vocabulary only after the second-cascade landing (`STATUS.md` item Q): `DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn`, `Diagnostic`, `Diagnostics`, `Severity`, `Location`, `Span`, `SourceId`, `Diagnose`, constraint DSL, `io` transport. Expression-tree vocabulary moved to `semstrait-ir`. Breaking changes require a workspace-wide MAJOR. |
+| `semstrait-ir` | Stable in v1 | `Expr<L>`, `PhysicalExpr`, `SemanticExpr`, `PhysicalLeaf`, `SemanticLeaf`, `Tree` / `Visitor` / `Rewriter` / `ExprLeaf` traits, structural-variant support enums (`BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`), `Literal`, `ColumnRef`, `SemanticsName`, `Accessor` family, `Parameter`, `CanonicalFn`, `FunctionRegistry`, narrow `ValidateError` (trait-machinery) and narrow `CompileError` (`ReturnTypeRule::Custom`), `SemanticPlan`, `PlanNode`, `EngineArtifact`, `SqlArtifact`, `EnginePlan`. Variant and field additions are MINOR via `#[non_exhaustive]`. |
+| `semstrait-model` | Stable in v1 | `SemanticModel`, `ExprSource`, `ParseErrorKind`, `ValidateError` (model-level, embedding `Ir(ir::ValidateError)` per D.ii — `35 §15.1`), YAML grammar. The author-facing YAML shape extends non-exhaustively (new keys, new variants) in MINOR. |
+| `semstrait-manifest` | Stable in v1 | `SemanticManifest`, `Resolved*` family, `CompileError` (embedding `Ir(ir::CompileError)` per D.ii — `35 §15.2`), `RepositoryErrorKind`, `Repository` trait. **Internal serialization format (SemanticManifest on-disk bytes) is NOT a public API** — callers round-trip through `Repository::save` / `Repository::load`, not through direct byte access. |
+| `semstrait-planner` | Stable in v1 | `plan`, `optimize`, `PlanError`, `OptimizeError`. Per-DataKind strategy dispatch is internal. `PlanNode` variants are I10 `#[non_exhaustive]` and defined in `semstrait-ir`. |
 | `semstrait-adapter` | Provisional | `EngineAdapter` trait stable; `AdaptError` stable; `DialectId` extends in MINOR. Per-engine adapter crates (`semstrait-adapter-datafusion`, `semstrait-adapter-duckdb`, `semstrait-adapter-spark`, `semstrait-adapter-substrait`) are **versioned independently** and may carry their own stability tier in their own `3x` appendix. |
 | `semstrait-catalog` | Provisional | `CatalogProvider`, `FileSystem`, local-fs impl stable. Per-provider impls (`semstrait-catalog-iceberg`, `semstrait-catalog-unity`) are **versioned independently**; their stability follows their own maturity. |
 | `semstrait-api` | Stable in v1 | Unified entry point wrapping the `parse → … → adapt` pipeline. Re-exports the minimum `semstrait-*` types required to use the pipeline end-to-end. |
@@ -675,10 +675,10 @@ v1 per-crate maturity markers. These lock at the v1.0 cut and evolve per the sem
 - `10 §3` — per-stage contracts consumed by `30 §7`.
 - `10 §5` — internal-error model; `30 §5` is the public-boundary refinement (the prior code-allocation framework retired in this doc).
 - `11 §8` — Constraint framework; `ConstraintViolation` is now a `PlanErrorKind` variant rather than a numeric code.
-- `14 §7` — expression-error catalog (cross-doc reconciliation queued under foundations — these become variants on `ParseErrorKind` / `ValidateErrorKind` / `CompileErrorKind`).
+- `14 §7` — expression-error catalog (cross-doc reconciliation queued under foundations — these become variants on `ParseErrorKind` / `ValidateError` / `CompileError`).
 - `14a §3.1`, `§7`, `§8` — `FunctionSpec` `#[non_exhaustive]`, `RegistryExtension`, function-resolution kinds (queued for foundations alignment).
-- `13 §6` — type-related Precondition IDs (`TG-*`) map to `ValidateErrorKind` / `CompileErrorKind` variants.
-- `18 §11` — SR-E rules become `ValidateErrorKind` variants (queued for foundations alignment).
+- `13 §6` — type-related Precondition IDs (`TG-*`) map to `ValidateError` / `CompileError` variants.
+- `18 §11` — SR-E rules become `ValidateError` variants (queued for foundations alignment).
 - `31`–`39` — per-crate refinements of every policy in this doc.
 - `implementation/41_deprecations.md` — deprecation lifecycle tracking.
 - `implementation/42_migration_notes.md` — MAJOR migration entries.

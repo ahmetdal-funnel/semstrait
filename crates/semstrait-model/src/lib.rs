@@ -36,11 +36,11 @@ pub mod catalogs;
 pub mod data_kind;
 pub mod entities;
 pub mod error;
-#[doc(hidden)]
-pub mod expr_ast;
+pub mod expr_source;
 pub mod loader;
 pub mod model;
 pub mod parse;
+pub mod parser;
 pub mod source_fs;
 pub mod types;
 pub mod validate;
@@ -70,6 +70,8 @@ pub use builder::{
     DatasetBuilder, GrainsetBuilder, JoinsetBuilder, NestedDatasetBuilder, NestedGrainsetBuilder,
     NestedJoinsetBuilder, NestedUnionsetBuilder, SemanticModelBuilder, UnionsetBuilder,
 };
+pub use expr_source::{parse_physical, parse_semantic, ExprSource};
+pub use parser::ParseError;
 pub use error::{
     CatalogsParseErrorKind, ModelBuildErrorKind, ParseErrorKind, ValidateErrorKind,
 };

@@ -47,7 +47,7 @@ Historical ratifications for `foundations/19_expression_flow.md`. Each entry rec
 | Q-EXPR-19-009d | Per-element `filter:` admission | `dimensions.<d>.filter:` and `keys.<k>.<member>.filter:` both structurally rejected. Admitted only on Measures, Metrics, and DataKind-level `filters:` block. |
 | Q-EXPR-19-014 | Temporal rollup mechanism | Structured `DimensionRef { name, variation }` on `Request`; `DimensionVariation::{ None, Temporal { grain } }` for v1; CLI `name.grain` sugar; native model grain default; legacy `temporal_rollup` retired. |
 | Q-EXPR-19-015a | `Additivity` shape | 3-class: `Additive` / `SemiAdditive { axes: Vec<DimensionAxis> }` / `NonAdditive`. |
-| Q-EXPR-19-015b | `SemiAdditive::axes` declarability | Function-level `axes` hardcoded in `14a §3.1` per built-in aggregate; UDF authoring deferred post-v1. Model-level `axes` declarable on Measure / Metric per `18 §5.2`. |
+| Q-EXPR-19-015b | `SemiAdditive::axes` declarability | Function-level `axes` hardcoded in `14a §3.6` per built-in aggregate; UDF authoring deferred post-v1. Model-level `axes` declarable on Measure / Metric per `18 §5.2`. |
 | Q-EXPR-19-018a | Dim refs in Metric `expr` | Admitted per `18 §5.2`; evaluates as per-group value (post-aggregate context). Plan-time validation rejects requests missing the Dim with `PLAN_E_xxxx MetricRequiresDimensionInRequest`. |
 | Q-EXPR-19-018b | Metric → Metric chain depth | Unbounded with DAG semantics; cycles rejected at compile (`EXPR_E_xxxx MetricCycle { path }`); no depth bound. |
 | Q-EXPR-19-019 | Constituent column naming | Canonical Measure / Metric name (no anonymous-aggregate names — `expr:` syntax never carries inline aggregates). Dedup key is Measure / Metric name. Adapter output carries author-visible names. |

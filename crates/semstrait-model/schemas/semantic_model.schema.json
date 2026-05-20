@@ -287,14 +287,14 @@
     },
 
     "SemanticMappingValue": {
-      "description": "Per-Semantic mapping payload — bare physical column string OR `{literal: ...}` OR `{expr: ...}`. The compile-synthesized `Metadata` variant has no author surface (R3, SR-10).",
+      "description": "Per-Semantic mapping payload — bare physical column string OR `{lit: ...}` OR `{expr: ...}`. The compile-synthesized `Metadata` variant has no author surface (R3, SR-10).",
       "oneOf": [
         { "type": "string" },
-        { "type": "object", "required": ["literal"], "additionalProperties": false,
-          "properties": { "literal": { "$ref": "#/$defs/LiteralValue" } }
+        { "type": "object", "required": ["lit"], "additionalProperties": false,
+          "properties": { "lit": { "$ref": "#/$defs/LiteralValue" } }
         },
         { "type": "object", "required": ["expr"], "additionalProperties": false,
-          "properties": { "expr": { "type": "object", "description": "Declarative expression. Opaque YAML pass-through pending 19 §3 / 14 §2 reconciliation; tooling that needs the typed AST consults the hidden semstrait-model::expr_ast module." } }
+          "properties": { "expr": { "type": "object", "description": "Declarative expression block — typed `ExprSource<PhysicalLeaf>` per `14 §6`. Same reserved-tag catalog as entity-level `expr:`, restricted to physical leaves (`col:` / `lit:`)." } }
         }
       ]
     },

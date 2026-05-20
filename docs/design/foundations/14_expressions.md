@@ -144,7 +144,7 @@ The traversal contract is **node-shape-agnostic** — it works for `Expr<L>` reg
 ```rust
 pub trait Tree: Sized {
     fn children(&self) -> Vec<&Self>;
-    fn with_new_children(self, new_children: Vec<Self>) -> Result<Self, ValidateErrorKind>;
+    fn with_new_children(self, new_children: Vec<Self>) -> Result<Self, ValidateError>;
 }
 ```
 
@@ -155,8 +155,8 @@ impl<T: Tree> T {
     /// Pre-order read-only walk.
     pub fn apply<V: Visitor<Self>>(&self, v: &mut V) -> V::Output { /* default body */ }
     /// Bottom-up rewrite.
-    pub fn transform<F>(self, f: F) -> Result<Self, ValidateErrorKind>
-    where F: FnMut(Self) -> Result<Self, ValidateErrorKind> { /* default body */ }
+    pub fn transform<F>(self, f: F) -> Result<Self, ValidateError>
+    where F: FnMut(Self) -> Result<Self, ValidateError> { /* default body */ }
 }
 ```
 
@@ -170,8 +170,8 @@ pub trait Visitor<N> {
 }
 
 pub trait Rewriter<N> {
-    fn f_down(&mut self, node: N) -> Result<N, ValidateErrorKind>;
-    fn f_up(&mut self,   node: N) -> Result<N, ValidateErrorKind>;
+    fn f_down(&mut self, node: N) -> Result<N, ValidateError>;
+    fn f_up(&mut self,   node: N) -> Result<N, ValidateError>;
 }
 ```
 
@@ -440,7 +440,7 @@ The planner-level binding mechanics and the exact `Request` shape that supplies 
 
 semstrait performs **no implicit type coercion or promotion** at the canonical layer:
 
-- **Function calls** — signature matching requires exact `DataType` equality per-argument per `[14a §3.3](14a_function_catalog.md)`. No `Integer → Long` widening, no `String → Date` parsing. On mismatch: `CompileErrorKind::NoMatchingSignature`. Authors insert explicit `Cast` when types differ.
+- **Function calls** — signature matching requires exact `DataType` equality per-argument per `[14a §3.3](14a_function_catalog.md)`. No `Integer → Long` widening, no `String → Date` parsing. On mismatch: `manifest::CompileError::NoMatchingSignature`. Authors insert explicit `Cast` when types differ.
 - **Binary operators** — arithmetic return type is `SameAs(left_operand)`. Cross-operand type compatibility (`Integer < String`, `Double + Date`) is **not validated at the semstrait layer** — the engine raises its own diagnostics at execution time. This keeps semstrait's compile deterministic and engine-neutral.
 - **Comparison operators** — produce `Boolean` regardless of operand types. No canonical comparison-compatibility matrix in v1.
 - **NULL handling** — NULL-in / NULL-out behaviour is engine-delegated. `FunctionSpec` carries no `null_handling` field; the canonical IR expresses structural null-test shapes (`IsNull`, `Coalesce`, `NullIf`) but does not model per-function null-propagation semantics.
@@ -456,18 +456,18 @@ This posture keeps the canonical layer thin and engine-neutral: semstrait compil
 
 ```rust
 #[non_exhaustive]
-pub enum ExprSource {
+pub enum ExprSource<L: ExprLeaf> {
     /// Constrained SQL-like DSL string.
     Inline(String),
 
-    /// Structured YAML tree.
-    Block(ExprBlock),
+    /// Structured YAML tree — `Expr<L>` deserialized directly via serde.
+    Block(Expr<L>),
 }
 ```
 
-Both forms produce a tree value of the parse-site's expected type — `SemanticExpr` (semantic sites) or `PhysicalExpr` (physical-mapping sites). The two forms are **interchangeable** in expressive power for everything that fits the Inline DSL's grammar; the Declarative form additionally covers everything the Inline DSL deliberately omits.
+Both forms produce a tree value of the parse-site's expected type — `ExprSource<SemanticLeaf>` at semantic sites (yielding `SemanticExpr`) or `ExprSource<PhysicalLeaf>` at physical-mapping sites (yielding `PhysicalExpr`). The two forms are **interchangeable** in expressive power for everything that fits the Inline DSL's grammar; the Declarative form additionally covers everything the Inline DSL deliberately omits.
 
-`ExprBlock` is a structured YAML AST whose tags map 1:1 to `Expr<L>` structural variants for the reserved set, and dispatch to `FunctionRegistry` (`14a`) for any non-reserved tag. The full tag catalog and dispatch rules are described in §6.4.
+The `Block(...)` variant carries an `Expr<L>` value directly. There is **no separate `ExprBlock` parallel AST**: the YAML serde shape *is* `Expr<L>` deserialized, using the serde derives on `Expr<L>` owned by `semstrait-ir` per `[35 §14.1](../apis/35_semstrait_ir.md)`. The reserved-tag catalog of §6.4 is therefore implemented as serde tag-discrimination on `Expr<L>`'s `#[serde(tag = "...")]` derive (structural variants) plus a `FunctionRegistry` look-aside for non-reserved tags — both wired in `semstrait-model`'s `Deserialize` impl for `ExprSource<L>`.
 
 ### 6.2 Parse-site dispatch
 
@@ -619,7 +619,7 @@ The site catalog (per-element shape and parse-site dispatch):
 - A typed leaf carrying `accessor: Some(_)` whose lowered shape contains `Aggregate` or `Window` is gated against sites whose required result is scalar/Boolean and not aggregate-admitting. The check is on the *lowered* shape, not on syntactic surface — sugars carry their own admissibility metadata.
 - `filters[].expr` is admitted only on `measures.<m>` and `metrics.<m>`. No `keys` member-level filter slot. No `dimensions.<d>.filter` — DataKind-level filtering uses the `filters:` block.
 
-The full mechanics of how Phase-B placement consumes these shape gates live in `[19](19_expression_flow.md)` (rebase pending — see §12).
+The full mechanics of how Phase-B placement consumes these shape gates live in `[19](19_expression_flow.md)`.
 
 ---
 
@@ -633,12 +633,12 @@ The full mechanics of how Phase-B placement consumes these shape gates live in `
 
 ## 9. Crate Placement
 
-The layered model maps onto the workspace DAG as follows. Each crate has exactly one job.
+The layered model maps onto the workspace DAG as follows. Each crate has exactly one job. Post-second-cascade (`STATUS.md` item Q) placement: the full expression vocabulary lives in `semstrait-ir`; `semstrait-core` keeps only non-expression shared vocabulary.
 
 ```mermaid
 flowchart LR
-  C["semstrait-core<br/>primitives + Tree trait + ExprLeaf trait"] --> IR["semstrait-ir<br/>Expr&lt;L&gt; + leaf sets + CanonicalFn + FunctionRegistry + PlanNode"]
-  IR --> M["semstrait-model<br/>ExprSource + ExprBlock + parse-site dispatch"]
+  C["semstrait-core<br/>DataType + Schema + Diagnostic + constraints + io"] --> IR["semstrait-ir<br/>Tree/Visitor/Rewriter/ExprLeaf + Expr&lt;L&gt; + leaves + accessors + Parameter<br/>+ BinaryOpKind/.../Literal + ColumnRef/SemanticsName<br/>+ CanonicalFn/FunctionRegistry + ValidateError/CompileError + PlanNode"]
+  IR --> M["semstrait-model<br/>ExprSource (Inline/Block) + parse-site dispatch"]
   M --> MAN["semstrait-manifest<br/>compile: SemanticExpr → PhysicalExpr"]
   MAN --> P["semstrait-planner<br/>plan: Request × Manifest → PlanNode tree"]
   P --> A["semstrait-adapter<br/>render: PhysicalExpr → engine artifact"]
@@ -646,25 +646,30 @@ flowchart LR
 
 ### 9.1 `semstrait-core`
 
-Owns:
+Owns (non-expression shared vocabulary only):
 
-- The `Tree` trait + `Visitor` / `Rewriter` companion traits (§3.1).
-- The `ExprLeaf` trait (§3.2).
-- Bare types shared by every layer: `DataType`, `Grain`, `Literal`, `BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`.
-- The cross-cutting diagnostic primitives (`Diagnostic<K>`, `Diagnose`, `Severity`, `Location`, `Span`, `SourceId`) per the broader workspace policy.
+- The logical-type vocabulary `DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn` per `[13](13_types_and_grain.md)`.
+- The constraint-DSL shapes `MeasureConstraints`, `DimensionConstraints`, `AggregationConstraints` per `[11 §8.3](11_constraints.md)` / `§8.4`.
+- The cross-cutting diagnostic primitives `Diagnostic<K>`, `Diagnostics<K>`, `Diagnose`, `Severity`, `Location`, `Span`, `SourceId` per `[30 §5](../apis/30_api_contracts.md)`.
+- The byte-blob `io` transport per `[31b](../apis/31b_semstrait_core_io.md)`.
 
-Does NOT own:
+Does NOT own (everything tied to the expression tree moved to `semstrait-ir`):
 
-- `Expr<L>` itself (lives in `semstrait-ir`).
-- `CanonicalFn` / `FunctionRegistry` (lives in `semstrait-ir`).
-- `PhysicalLeaf` / `SemanticLeaf` (lives in `semstrait-ir`).
+- The traversal trait family — `Tree`, `Visitor<N>`, `Rewriter<N>`, `ExprLeaf` (lives in `semstrait-ir` per §9.2).
+- The structural-variant support enums — `BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `WindowFrameKind`, `WindowBound`, `Literal` (lives in `semstrait-ir`).
+- The identifier carriers — `ColumnRef`, `SemanticsName` (lives in `semstrait-ir`).
+- The narrow expression-side error kinds — `ValidateError`, `CompileError` (lives in `semstrait-ir`).
+- `Expr<L>`, `PhysicalLeaf`, `SemanticLeaf`, accessor enums, `Parameter`, `CanonicalFn`, `FunctionRegistry`, `expr_fn` DSL — all in `semstrait-ir`.
 
-Rationale: `semstrait-core` is the workspace-DAG leaf. Keeping only primitives + trait scaffolding here means every other crate can depend on it without dragging in canonical-IR vocabulary it may not need.
+Rationale: `semstrait-core` is the workspace-DAG leaf (I7). The placement rule is precise — a type belongs in core iff it is consumed by two or more crates that do not depend on `semstrait-ir`. Every type tied to expression trees or plan trees is consumed only through `semstrait-ir`, so it belongs there.
 
 ### 9.2 `semstrait-ir` — canonical-IR layer
 
-Owns:
+Owns the **full expression vocabulary**:
 
+- The traversal trait family `Tree`, `Visitor<N>`, `Rewriter<N>`, `ExprLeaf` (§3.1 / §3.2) — moved from `semstrait-core` at the second cascade.
+- The structural-variant support enums `BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `WindowFrameKind`, `WindowBound`, `Literal` (rosters per §3.3) — moved from `semstrait-core` at the second cascade.
+- The identifier carriers `ColumnRef`, `SemanticsName` (§3.4 / §3.5) — moved from `semstrait-core` at the second cascade.
 - The `Expr<L>` structural enum (§3.3).
 - The `PhysicalLeaf` and `SemanticLeaf` enums (§3.4 / §3.5), including the per-kind typed semantic leaves (`Field`, `Dimension`, `Measure`, `Metric`, `Key`).
 - The `PhysicalExpr` / `SemanticExpr` type aliases (§3.6).
@@ -672,21 +677,23 @@ Owns:
 - The `Parameter` placeholder + `ParameterKey` closed enum (§5.1 / §5.2).
 - The authoring-surface constructors (`col`, `field`, `dim`, `measure`, `metric`, `key`) in `expr_fn` per the layered-DSL pattern (§6.4.1).
 - `CanonicalFn` and the `FunctionRegistry` per `[14a](14a_function_catalog.md)`.
+- The narrow error kinds `ValidateError` (raised by `Tree::with_new_children` + `Rewriter<N>::f_*`) and `CompileError` (raised by `ReturnTypeRule::Custom` callbacks). Per `[35 §15.1](../apis/35_semstrait_ir.md)` / `[§15.2](../apis/35_semstrait_ir.md)`. The `Kind` suffix is dropped on these two enums per the scoped cleanup tied to the second-cascade landing; downstream stages embed via D.ii kind-nesting.
 - `PlanNode` and the canonical plan-tree per `[35](../apis/35_semstrait_ir.md)`.
 
-Rationale: this crate is the **canonical Internal Representation** of the workspace. It carries every type the post-compile pipeline operates on. Adapters consume from here; the manifest produces from here; the planner composes from here.
+Rationale: this crate is the **canonical Internal Representation** of the workspace. It carries every type the post-compile pipeline operates on. Adapters consume from here; the manifest produces from here; the planner composes from here. Co-locating the trait family + support enums + literal / identifier carriers + narrow error kinds with their producers (`Expr<L>`, `PlanNode`, `FunctionSpec`) eliminates the cross-crate hop downstream consumers previously paid and is the natural conclusion of Option A.
 
 ### 9.3 `semstrait-model`
 
 Owns:
 
-- The `ExprSource` enum and the `ExprBlock` reserved-tag AST (§6).
+- The `ExprSource` enum (§6.1) — `Inline(String)` and `Block(Expr<L>)`. The `Block(...)` variant carries `Expr<SemanticLeaf>` at semantic sites and `Expr<PhysicalLeaf>` at physical-mapping sites directly, deserialized via the serde derives on `Expr<L>` (`[35 §14.1](../apis/35_semstrait_ir.md)`). There is **no separate `ExprBlock` type** — the YAML serde shape *is* `Expr<L>` deserialized.
 - Parse-site dispatch (`parse_semantic` / `parse_physical`) (§6.2).
 - The Inline DSL grammar implementation (§6.3) when shipped.
+- The reserved-tag catalog used by the `Block(...)` parser to recognize structural-variant tags vs `FunctionRegistry` lookups (§6.4).
 - The author-facing entity types (`Dimension`, `Measure`, `Metric`, `Key`, `Filter`, …) per `[18](18_entities.md)`.
 - Structural validation that does not require catalog resolution.
 
-Depends on `semstrait-ir` because every parsing entry point produces a typed `Expr<L>` value owned by `semstrait-ir`.
+Depends on `semstrait-ir` because every parsing entry point produces a typed `Expr<L>` value owned by `semstrait-ir`. The `model::ValidateError` enum embeds `Ir(ir::ValidateError)` via D.ii kind-nesting (`[30 §7.4](../apis/30_api_contracts.md)`) for construction-boundary failures raised by ir types during parse.
 
 ### 9.4 `semstrait-manifest`
 
@@ -695,6 +702,9 @@ Owns:
 - The `compile` entry point that transforms `SemanticExpr` into `PhysicalExpr` per `[19 §3](19_expression_flow.md)`.
 - `ResolvedExprTable` and per-`(Semantics, Binding)` storage per `[19 §3.2](19_expression_flow.md)`.
 - The sealed `SemanticManifest` artifact.
+- The wider `manifest::CompileError` (resolution-stage errors — `UnknownReference`, `NoRelationshipPath`, `CyclicReference`, `TypeInferenceFailure`, …). Embeds `Ir(ir::CompileError)` via D.ii kind-nesting for function-return-type failures raised by ir.
+
+Depends on `semstrait-ir` for `Expr<L>`, leaves, `FunctionRegistry`, the trait family, and `ir::CompileError`.
 
 Does not invent new expression types — uses the types from `semstrait-ir`.
 
@@ -716,7 +726,7 @@ The following `[00 §9](../00_overview.md)` invariants find concrete realisation
 | **I5** — name resolution at compile time | `SemanticLeaf::Field` / `Dimension` / `Measure` / `Metric` / `Key` carry unresolved names at parse; compile substitutes per binding (§8). `PhysicalLeaf` carries no semantic names. |
 | **I7** — strict acyclic crate DAG | The placement in §9 preserves the DAG; `semstrait-core` remains the leaf. `semstrait-ir` ↑ `semstrait-model` ↑ `semstrait-manifest` ↑ `semstrait-planner` ↑ `semstrait-adapter`. |
 | **I10** — non-exhaustive public sum types | Every public enum in §3–§5 is `#[non_exhaustive]`. Adding a `MeasureAccessor` variant, an `Expr<L>` structural variant, or a `ParameterKey` is additive. |
-| **I12** — first-class typed diagnostics | Construction-time invariant violations surface as `Diagnostic<ValidateErrorKind>`. Compile-time resolution failures surface as `Diagnostic<CompileErrorKind>` per the kind enums defined by `semstrait-model` and `semstrait-manifest`. |
+| **I12** — first-class typed diagnostics | Construction-time invariant violations surface as `Diagnostic<ValidateError>` (`semstrait-ir` for trait-machinery violations; `semstrait-model::ValidateError` for parse-time violations, embedding `Ir(ir::ValidateError)` via D.ii). Compile-time resolution failures surface as `Diagnostic<CompileError>` (`semstrait-manifest::CompileError` for the wider resolution stage, embedding `Ir(ir::CompileError)` for function-return-type failures). |
 
 ---
 

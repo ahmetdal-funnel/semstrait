@@ -441,7 +441,7 @@ YAML ExprSource  (14 §4)
 
 The compile stage invokes `SemanticExpr::resolve` per `[19 §3.1](19_expression_flow.md)` per `Expr` entry. The binding context supplies (a) the cross-source reconciled schema over which `Column` identifiers resolve, (b) the `FunctionRegistry` (via `14a`), (c) the substitution map for typed-leaf identifiers into same-Binding `Expr` / `Column` entries. The output is a `PhysicalExpr` with `inferred_type` set; §9.1 then compares `inferred_type` against the declared Semantics `DataType` and emits a `Cast` at the Semantics boundary if needed.
 
-**Cross-reference to `19 §3.5` cycle detection.** `Expr`-entries within a single `SemanticMapping` can refer to other Semantics via typed semantic leaves. The `19 §3.5` Tarjan-SCC pass runs over the Binding's `Expr` entries and detects same-Binding cycles (`e1 → e2 → e1`); the failure is `CompileErrorKind::CyclicReference` per `[19 §8.1](19_expression_flow.md)`.
+**Cross-reference to `19 §3.5` cycle detection.** `Expr`-entries within a single `SemanticMapping` can refer to other Semantics via typed semantic leaves. The `19 §3.5` Tarjan-SCC pass runs over the Binding's `Expr` entries and detects same-Binding cycles (`e1 → e2 → e1`); the failure is `CompileError::CyclicReference` per `[19 §8.1](19_expression_flow.md)`.
 
 ### 5.5 `SemanticMappingValue::Metadata` — compile semantics
 

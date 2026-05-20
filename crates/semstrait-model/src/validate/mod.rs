@@ -19,6 +19,7 @@
 //!   (`OrphanSharedSemantics`, `SemanticsRefMissingExpr`,
 //!   `SemanticsShadowRootPool`).
 
+mod cycle_check;
 mod relationship;
 mod semantics;
 mod structure;
@@ -41,6 +42,7 @@ pub fn validate(
     temporal::check_temporal(model, &mut diags);
     relationship::check_all_relationships(model, &mut diags);
     semantics::check_all_semantics(model, &mut diags);
+    cycle_check::check_all_cycles(model, &mut diags);
 
     let (errors, warnings) = split_by_severity(diags);
     if errors.is_empty() {

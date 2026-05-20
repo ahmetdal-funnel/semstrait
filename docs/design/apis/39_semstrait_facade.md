@@ -88,8 +88,8 @@ Consumers who DO need sub-crate-level control (pick a different adapter registry
 | Name / module | Kind | Source crate | Purpose |
 |---|---|---|---|
 | `core`        | module (re-export) | `semstrait-core` (`31`)         | Shared primitives: `Expr` family, `DataType`, `Diagnostic<K>`, `Diagnostics<K>`, `Severity`, `Diagnose`, `Location`, `Span`, `FunctionRegistry`, `CanonicalFn`, `IoErrorKind`. |
-| `model`       | module (re-export) | `semstrait-model` (`32`)        | `SemanticModel`, `parse`, `ParseErrorKind`, `ValidateErrorKind`, `ModelBuildErrorKind`, `CatalogsParseErrorKind`. |
-| `manifest`    | module (re-export) | `semstrait-manifest` (`33`)     | `SemanticManifest`, `compile`, `CompileErrorKind`, `Repository`, `RepositoryErrorKind`, `SemanticManifestLoadErrorKind`, `SemanticManifestDumpErrorKind` + bundled `Repository` impls. |
+| `model`       | module (re-export) | `semstrait-model` (`32`)        | `SemanticModel`, `ExprSource`, `parse`, `ParseErrorKind`, `ValidateError`, `ModelBuildErrorKind`, `CatalogsParseErrorKind`. |
+| `manifest`    | module (re-export) | `semstrait-manifest` (`33`)     | `SemanticManifest`, `compile`, `CompileError`, `Repository`, `RepositoryErrorKind`, `SemanticManifestLoadErrorKind`, `SemanticManifestDumpErrorKind` + bundled `Repository` impls. |
 | `planner`     | module (re-export) | `semstrait-planner` (`34`)      | `Request`, `SessionContext`, `plan`, `optimize`, `PlanErrorKind`, `OptimizeErrorKind`. |
 | `ir`          | module (re-export) | `semstrait-ir` (`35`)           | `SemanticPlan`, `PlanNode`, `EngineArtifact`, `DialectId`, `IrErrorKind`. |
 | `adapter`     | module (re-export) | `semstrait-adapter` (`36`)      | `EngineAdapter`, `AdaptErrorKind`, `AdapterCapabilities`, `AnsiSqlAdapter`, `SubstraitAdapter`. |
