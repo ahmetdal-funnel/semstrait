@@ -194,28 +194,7 @@ pub trait ExprLeaf: Sized + Clone + Debug {
 
 ### 3.3 `Expr<L>` — structural-variant catalog
 
-The structural variants are declared once and parameterised over `L`. Every structural variant is `#[non_exhaustive]` per I10.
-
-```rust
-#[non_exhaustive]
-pub enum Expr<L: ExprLeaf> {
-    Leaf(L),
-
-    BinaryOp     { op: BinaryOpKind, left: Box<Self>, right: Box<Self> },
-    UnaryOp      { op: UnaryOpKind,  operand: Box<Self> },
-    FunctionCall { name: CanonicalFn, args: Vec<Self> },
-    Cast         { input: Box<Self>, target: DataType, on_failure: CastFailure },
-    Case         { whens: Vec<(Self, Self)>, else_: Option<Box<Self>> },
-    InList       { value: Box<Self>, list: Vec<Self>, negated: bool },
-    Between      { value: Box<Self>, low: Box<Self>, high: Box<Self>, negated: bool },
-    Like         { value: Box<Self>, pattern: Box<Self>, kind: LikeKind },
-    IsNull(Box<Self>),
-    Coalesce(Vec<Self>),
-    NullIf       { left: Box<Self>, right: Box<Self> },
-    Aggregate    { op: AggregationOp, args: Vec<Self>, distinct: bool, filter: Option<Box<Self>> },
-    Window       { function: WindowFn, args: Vec<Self>, partition_by: Vec<Self>, order_by: Vec<Self>, frame: Option<WindowFrame> },
-}
-```
+The structural variants are declared once and parameterised over `L`. Every structural variant is `#[non_exhaustive]` per I10. The variants in scope: `Leaf(L)`, `BinaryOp`, `UnaryOp`, `FunctionCall`, `Cast`, `Case`, `InList`, `Between`, `Like`, `IsNull`, `Coalesce`, `NullIf`, `Aggregate`, `Window`. The enum body lives in `[35 §3.3](../apis/35_semstrait_ir.md)` (crate-of-record).
 
 **Notes on the structural catalog:**
 
@@ -734,12 +713,12 @@ The following `[00 §9](../00_overview.md)` invariants find concrete realisation
 
 Deferred per `[00 §10](../00_overview.md)` and per the workspace's pre-1.0 surface policy:
 
-- **`Window` author surface**. `Window` is compile-emitted only via sugar-accessor elimination on the typed semantic leaves. Direct authoring of window functions (frame clauses, `RANGE BETWEEN`, etc.) is post-v1.
-- **Subquery / correlated subquery / lambda / mask expression forms**. Cross-DataKind correlation rides through the per-kind typed semantic leaves + `Relationship` per `[16](16_composition.md)`.
-- **Substrait wire emission as a canonical target**. Substrait is one possible adapter output; the canonical IR is not Substrait-isomorphic.
-- **Stringly-typed parameter IDs** (`"$1"` style). Superseded by typed `ParameterKey` (§5.2).
-- **Type-class-parameterised function signatures**. v1 uses overload-set polymorphism per `[14a](14a_function_catalog.md)`.
-- **Full SQL query parsing**. A future optional crate may lower `sqlparser-rs` AST to `SemanticExpr` + `Request` at the boundary; the canonical IR is not extended for this.
+- **`Window` author surface** — compile-emitted only via Family-B sugar-accessor lowering.
+- **Subquery / correlated subquery / lambda / mask forms** — cross-DataKind correlation rides through typed semantic leaves + `Relationship` per `[16](16_composition.md)`.
+- **Substrait wire emission as a canonical target** — Substrait is one adapter output, not canonical-isomorphic.
+- **Stringly-typed parameter IDs** (`"$1"`) — superseded by typed `ParameterKey` (§5.2).
+- **Type-class-parameterised function signatures** — v1 uses overload-set polymorphism per `[14a](14a_function_catalog.md)`.
+- **Full SQL query parsing** — out of scope; future optional crate may lower `sqlparser-rs` AST at the boundary.
 
 ---
 

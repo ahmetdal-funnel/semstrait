@@ -35,7 +35,7 @@ refined-by:
 
 # 19. Expression Flow — Compile Pipeline
 
-> **Status:** ratified (merged compile-pipeline document; 2026-05-18 per `STATUS.md` item N). Vocabulary throughout is the typed-leaf model ratified in `[14](14_expressions.md)`'s second refinement.
+> **Status:** ratified. Vocabulary throughout is the typed-leaf model from `[14](14_expressions.md)`.
 >
 > **Code samples are illustrative.** Exact field names, method signatures, and enum-vs-struct shape may be refined during implementation. The spec asserts the architectural design (two-phase boundary, conversion direction, substep ordering, placement contracts), not the precise Rust spelling.
 
@@ -47,13 +47,13 @@ refined-by:
 
 **What `19` ratifies:**
 
-- The **two-phase pipeline** (`14 §2.2`'s pipeline diagram refined): Phase A is compile-time, `Request`-free, synchronous and produces `PhysicalExpr` modulo `Parameter` placeholders; Phase B is plan-time, `Request`-bound, synchronous (per `00 §5` hot-path rule) and produces a `PlanNode` tree (§2).
-- The **Phase A algorithm** (§3) — `resolve` entry point and substep order (§3.1); `ResolvedExprTable` data shape (§3.2); per-leaf-kind substitution rules (§3.3); cross-DataKind path resolution (§3.4); cycle detection (§3.5); type inference (§3.6); Semantics-boundary reconciliation (§3.7); per-Binding keying (§3.8); ordering of sub-passes inside `compile` (§3.9); referenced-column harvesting (§3.10); auto-mapping synthesis pre-step (§3.11).
-- The **sugar contract** (§4) — Family A (constant folding / partial evaluation, no AST variant); Family B (per-kind typed-leaf accessor sugar, eliminated by lowering to `Window`-rooted subtrees).
-- **Per-site shape gates** (§5) governing which authoring sites admit which expression shapes.
-- The **Phase B placement contract** (§6) — filter placement (§6.1); `group_by` handoff (§6.2); computed-Dimension placement (§6.3); Metric semantics (§6.4); function-tag axis `Additivity` (§6.5); advisory channel (§6.6).
-- The **aggregation handling** at the Phase A/B boundary (§7) — `Aggregate` admission, `Avg` posture, structural-vs-aggregate-site separation.
-- The **error model** (§8) — `CompileError` variants and the `EXPR_E_02xx` sub-range.
+- The two-phase pipeline (§2): Phase A compile-time, `Request`-free, produces `PhysicalExpr` modulo `Parameter`; Phase B plan-time, `Request`-bound, produces a `PlanNode` tree.
+- The Phase A algorithm (§3): `resolve` substep order, `ResolvedExprTable` shape, per-leaf substitution, cross-DataKind path resolution, cycle detection, type inference, Semantics-boundary reconciliation, per-Binding keying, sub-pass ordering inside `compile`, referenced-column harvesting, auto-mapping synthesis.
+- The sugar contract (§4): Family A constant folding; Family B accessor lowering to `Window`-rooted subtrees.
+- Per-site shape gates (§5).
+- The Phase B placement contract (§6): filter placement, `group_by` handoff, computed-Dimension placement, Metric semantics, function-tag axis `Additivity`, advisory channel.
+- Aggregation handling at the Phase A/B boundary (§7).
+- The error model (§8).
 
 **What `19` does NOT ratify** (forward-refs):
 

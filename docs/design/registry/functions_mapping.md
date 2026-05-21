@@ -73,21 +73,24 @@ Portability summary: **Universal** across all five aggregates.
 
 `SUM DISTINCT` / `AVG DISTINCT` render per `14 §5.4` — `Aggregate { aggregation: Sum, distinct: true }` renders as `sum(DISTINCT expr)`. All three engines support these forms natively; portability **Universal**.
 
-### 3.2 Non-closed aggregates (`14a §4.6` candidate list, pending Round-2 intersection verification)
+### 3.2 Non-closed aggregates (`14a §4.6`)
 
-*Every row 🟡 pending Round-2 empirical intersection scan per `14a §10.2`.*
+*Ratified Round-2 (2026-05-21). Canonical FunctionSpecs at `14a §4.6`. All entries `FunctionCategory::Aggregate` + `Additivity::NonAdditive`.*
 
 | Canonical | Signature | DataFusion | Tier | DuckDB | Tier | Spark | Tier | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `stddev` | `stddev(expr)` | `stddev(expr)` / `stddev_samp(expr)` 🟡 | Name-only | `stddev(expr)` / `stddev_samp(expr)` 🟡 | Name-only | `stddev(expr)` / `stddev_samp(expr)` 🟡 | Name-only | Canonical = sample stddev. Population-stddev variant `stddev_pop` is a separate canonical entry (same 🟡 intersection across all three). |
-| `variance` | `variance(expr)` | `var_samp(expr)` 🟡 | Name-remap | `variance(expr)` / `var_samp(expr)` 🟡 | Name-only | `variance(expr)` / `var_samp(expr)` 🟡 | Name-only | DataFusion lacks `variance` alias historically; `var_samp` preferred. `TD-FUNCS-MAPPING-AGG-INTERSECTION`. |
-| `median` | `median(expr)` | `median(expr)` 🟡 | Name-only | `median(expr)` | Name-only | `median(expr)` (Spark 3.4+) 🟡 | Name-only | Spark < 3.4 requires `percentile_approx(expr, 0.5)`; Spark 3.4+ adds native `median`. Floor-version constraint per Q-FUNCS-MAP-020. |
-| `string_agg` | `string_agg(expr, sep)` | `string_agg(expr, sep)` 🟡 | Name-only | `string_agg(expr, sep)` | Name-only | `array_join(collect_list(expr), sep)` 🟡 | Structural | Spark has no `string_agg`; structural rewrite composes `collect_list` + `array_join`. **Demotion candidate** to adapter-extended if the structural rewrite is judged too coarse. |
-| `percentile_cont` | `percentile_cont(expr, fraction)` | `approx_percentile_cont(expr, fraction)` 🟡 | Name-remap | `percentile_cont(fraction) WITHIN GROUP (ORDER BY expr)` 🟡 | Structural | `percentile_approx(expr, fraction)` 🟡 | Name-remap | **Likely demoted to adapter-extended.** Name / signature divergence too wide; DuckDB's `WITHIN GROUP` syntax is structural; engine semantics differ between exact (`percentile_cont`) and approximate (`approx_percentile`). `TD-FUNCS-MAPPING-PERCENTILE`. |
-| `percentile_disc` | `percentile_disc(expr, fraction)` | 🟡 absent | Unsupported | `percentile_disc(fraction) WITHIN GROUP (ORDER BY expr)` 🟡 | Structural | 🟡 absent | Unsupported | **Likely demoted to adapter-extended.** Not intersection. |
-| `approx_count_distinct` | `approx_count_distinct(expr)` | `approx_distinct(expr)` 🟡 | Name-remap | `approx_count_distinct(expr)` | Name-only | `approx_count_distinct(expr)` | Name-only | Intersection viable pending DF name-remap. Implementation semantics differ (HyperLogLog variants); acceptable under `14a §6.2`'s engine-delegation posture. |
+| `stddev` | `(Numeric) -> Double` | `stddev` (alias `stddev_samp`) | Name-only | `stddev` (alias `stddev_samp`) | Name-only | `stddev` (aliases `stddev_samp`, `std`) | Name-only | Bare name = sample across all three (since Spark 1.6). |
+| `stddev_pop` | `(Numeric) -> Double` | `stddev_pop` | Name-only | `stddev_pop` | Name-only | `stddev_pop` | Name-only | Population variant. Universal. |
+| `variance` | `(Numeric) -> Double` | `var_samp` (PlanBuilder name-remap; DF bare name is `var`) | Name-remap | `variance` (alias `var_samp`) | Name-only | `variance` (alias `var_samp`; since 1.6) | Name-only | Bare name = sample. DF historically uses `var` / `var_samp`; PlanBuilder rewrites to `var_samp` for clarity. |
+| `var_pop` | `(Numeric) -> Double` | `var_pop` | Name-only | `var_pop` | Name-only | `var_pop` | Name-only | Population variant. Universal. |
+| `median` | `(Numeric) -> Double`, `(Decimal(p,s)) -> Decimal(p,s)` | `median` (exact) | Name-only | `median` | Name-only | `median` (Spark 3.4+) | Name-only | Spark floor at 3.4+ — consistent with `types_mapping.md §3.2`'s 3.4 floor for `TimestampNTZType`. |
+| `string_agg` | `(String, String) -> String` | `string_agg(expr, sep)` | Name-only | `string_agg(expr, sep)` (aliases `group_concat`, `listagg`) | Name-only | `string_agg(expr, sep)` (Spark 3.3+) | Name-only | Spark floor at 3.3+. ORDER BY / DISTINCT clause modifiers are adapter-extended. |
+| `percentile_cont` | `(Float, Numeric) -> Double` | `percentile_cont(p) WITHIN GROUP (ORDER BY col)` | Name-only (dialect-layer) | `percentile_cont(p) WITHIN GROUP (ORDER BY col)` | Name-only (dialect-layer) | `percentile_cont(p) WITHIN GROUP (ORDER BY col)` (Spark 3.1+) | Name-only (dialect-layer) | Author-facing surface is FunctionCall `percentile_cont(fraction, col)`. Dialect layer renders SQL-standard `WITHIN GROUP (ORDER BY col)` form (same shape as `count(DISTINCT)`'s DISTINCT rendering — pure SQL syntax, not a structural Expr rewrite). |
+| `approx_count_distinct` | `(Any) -> Long` | `approx_distinct` (PlanBuilder name-remap) | Name-remap | `approx_count_distinct` | Name-only | `approx_count_distinct` (since 1.6) | Name-only | DF emits `approx_distinct`. Implementation backends differ (HyperLogLog vs HyperLogLog++) — engine-delegated per `14a §6.2`. |
 
-Portability summary: **Partial** or **likely-demoted** for every non-closed aggregate. Final canonical membership depends on Round-2 intersection verification per `14a §10.2`.
+Portability summary: 8 ratified canonical entries. **Universal** (Name-only) on `stddev`, `stddev_pop`, `var_pop`, `median`, `string_agg`, `percentile_cont`, and `approx_count_distinct`-on-DuckDB/Spark. Two name-remaps on DataFusion (`variance` → `var_samp`; `approx_count_distinct` → `approx_distinct`). Spark version floors: `median` 3.4+, `string_agg` 3.3+, `percentile_cont` 3.1+ — within the existing 3.4+ floor mandated by `types_mapping.md §3.2`.
+
+`percentile_disc` is NOT canonical — DataFusion lacks it entirely. Adapter-extended on DuckDB + Spark only (§12.4).
 
 ---
 
@@ -218,26 +221,26 @@ Portability summary: **Universal** across all five.
 
 ## 7. String Functions (`14a §4.2`)
 
-*Round-2 intersection candidates from `14a §4.2` plus legacy `FUNCTION_CATALOG.md §7`.*
+*Ratified Round-2 (2026-05-21). Canonical FunctionSpecs at `14a §4.2`.*
 
 | Canonical | Signature | DataFusion | Tier | DuckDB | Tier | Spark | Tier | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `upper` | `upper(str) -> String` | `upper(str)` | Name-only | `upper(str)` | Name-only | `upper(str)` | Name-only | Universal. |
-| `lower` | `lower(str) -> String` | `lower(str)` | Name-only | `lower(str)` | Name-only | `lower(str)` | Name-only | Universal. |
-| `length` | `length(str) -> Long` | `length(str)` / `char_length(str)` | Name-only | `length(str)` / `len(str)` | Name-only | `length(str)` / `char_length(str)` | Name-only | Character count (not bytes). `char_length` / `len` are adapter-side aliases the native parser accepts; canonical name is `length`. |
-| `substring` | `substring(str, start, [length])` | `substr(str, start, [length])` / `substring(str FROM start [FOR length])` | Name-only | `substring(str, start, length)` / `substr(str, start, length)` | Name-only | `substring(str, pos, [length])` / `substr(str, pos, [length])` | Name-only | 1-indexed on all three. Spark allows negative `pos` (count from end); DuckDB / DF do not. Signature registered as two overloads (2-arg, 3-arg) per `14a §3.5`. |
-| `trim` | `trim(str) -> String` | `trim(str)` | Name-only | `trim(str)` | Name-only | `trim(str)` | Name-only | Removes leading + trailing whitespace. Engine-native parsers accept extended forms (`TRIM(BOTH 'x' FROM str)`); canonical is the simple 1-arg form. |
-| `ltrim` | `ltrim(str) -> String` | `ltrim(str)` | Name-only | `ltrim(str)` | Name-only | `ltrim(str)` | Name-only | Removes leading whitespace. |
-| `rtrim` | `rtrim(str) -> String` | `rtrim(str)` | Name-only | `rtrim(str)` | Name-only | `rtrim(str)` | Name-only | Removes trailing whitespace. |
-| `concat` | `concat(str, ...) -> String` (variadic) | `concat(...)` | Name-only | `concat(...)` | Name-only | `concat(...)` | Name-only | Variadic (N ≥ 1). NULL-argument handling differs subtly across engines; canonical posture: engine-delegated per `14 §5.4` / `14a §3.1`. |
-| `replace` | `replace(str, from, to) -> String` | `replace(str, from, to)` | Name-only | `replace(str, from, to)` | Name-only | `replace(str, from, to)` | Name-only | Replaces ALL occurrences (not just first). Universal. |
-| `lpad` | `lpad(str, len, [pad]) -> String` | `lpad(str, len, [pad])` | Name-only | `lpad(str, len, [pad])` | Name-only | `lpad(str, len, [pad])` | Name-only | Default `pad` = single space. 2-arg and 3-arg overloads. |
-| `rpad` | `rpad(str, len, [pad]) -> String` | `rpad(str, len, [pad])` | Name-only | `rpad(str, len, [pad])` | Name-only | `rpad(str, len, [pad])` | Name-only | Same as `lpad`. |
-| `reverse` | `reverse(str) -> String` | `reverse(str)` | Name-only | `reverse(str)` | Name-only | `reverse(str)` | Name-only | Universal. See Q-FUNCS-MAP-005 for `repeat` promotion candidacy (legacy also records `repeat` as universal name-only — likely a canonical Round-2 addition). |
-| `split_part` | `split_part(str, delim, part_num) -> String` 🟡 | `split_part(str, delim, part_num)` | Name-only | `split_part(str, delim, part_num)` | Name-only | `split_part(str, delim, part_num)` (Spark 3.4+) 🟡 | Name-only | 1-indexed; returns empty string on out-of-range. Spark-version floor constraint per Q-FUNCS-MAP-020. |
-| `position` | `position(substr, str) -> Long` 🟡 | `strpos(str, substr)` | Name-remap | `strpos(str, substr)` / `position(substr IN str)` | Name-remap | `locate(substr, str, [pos])` | Structural | ⚠️ Argument order and function name both diverge on Spark. Spark `locate` takes `(substr, str)` with optional start position; DF / DuckDB `strpos` takes `(str, substr)`. Canonical = `position(substr, str)` (matches SQL `POSITION(substr IN str)` natural reading). See Q-FUNCS-MAP-001. |
+| `upper` | `(String) -> String` | `upper` | Name-only | `upper` | Name-only | `upper` | Name-only | Universal. Unicode-aware. |
+| `lower` | `(String) -> String` | `lower` | Name-only | `lower` | Name-only | `lower` | Name-only | Universal. Unicode-aware. |
+| `length` | `(String) -> Integer`, `(Array<T>) -> Integer` | String → `length` (or `character_length`); Array → `array_length` | Name-remap (Array) | `length` (polymorphic over String + LIST) | Name-only | String → `length`; Array → `size` | Name-remap (Array) | Character count for String; element count for Array. DF returns `Int32` for `Utf8`/`Utf8View`, `Int64` for `LargeUtf8` — adapter normalizes. |
+| `substring` | `(String, Integer) -> String`, `(String, Integer, Integer) -> String` | `substr` / `substring` | Name-only | `substring` / `substr` | Name-only | `substring` / `substr` | Name-only | 1-indexed. Positive `pos` only — negative `pos` is non-portable (each engine differs) and rejected at compile. |
+| `trim` | `(String) -> String`, `(String, String) -> String` | `btrim` (alias `trim`) | Name-remap | `trim` | Name-only | `trim` | Name-only | Default = ASCII space `0x20`. 2-arg form: strips any character in the second arg from both ends. |
+| `ltrim` | `(String) -> String`, `(String, String) -> String` | `ltrim` | Name-only | `ltrim` | Name-only | `ltrim` (Spark 3.x: `(str, set)` order) | Name-only | Default = ASCII space. Set semantics in 2-arg form. |
+| `rtrim` | `(String) -> String`, `(String, String) -> String` | `rtrim` | Name-only | `rtrim` | Name-only | `rtrim` (Spark 3.x: `(str, set)` order) | Name-only | Default = ASCII space. Set semantics in 2-arg form. |
+| `concat` | variadic `(String, String...) -> String` | `a || b || c || ...` (PlanBuilder rewrite) | Structural | `a || b || c || ...` (PlanBuilder rewrite) | Structural | `concat(...)` | Name-only | NULL-propagating canonical. DF / DuckDB native `concat` is NULL-skip — rewritten to `||`-chain so semantics match Spark's NULL-propagating `concat`. |
+| `replace` | `(String, String, String) -> String` | `replace` | Name-only | `replace` | Name-only | `replace` | Name-only | Replaces all occurrences. Literal substring (not regex). |
+| `lpad` | `(String, Integer) -> String`, `(String, Integer, String) -> String` | `lpad` (both arities) | Name-only | 2-arg → `lpad(s, n, ' ')` rewrite; 3-arg native | Structural (2-arg) / Name-only (3-arg) | 2-arg → `lpad(s, n, ' ')` rewrite; 3-arg native | Structural (2-arg) / Name-only (3-arg) | DF native for both arities; Spark / DuckDB require 3-arg natively, so 2-arg form is rewritten by injecting `' '` at the PlanBuilder layer. Truncates if input already exceeds target length. |
+| `rpad` | `(String, Integer) -> String`, `(String, Integer, String) -> String` | `rpad` (both arities) | Name-only | 2-arg → `rpad(s, n, ' ')` rewrite; 3-arg native | Structural (2-arg) / Name-only (3-arg) | 2-arg → `rpad(s, n, ' ')` rewrite; 3-arg native | Structural (2-arg) / Name-only (3-arg) | Mirror of `lpad`. |
+| `reverse` | `(String) -> String`, `(Array<T>) -> Array<T>` | String → `reverse`; Array → `array_reverse` | Name-remap (Array) | `reverse` (polymorphic over String + LIST) | Name-only | `reverse` (polymorphic over String + ARRAY) | Name-only | Reverses by code points (String) / element order (Array). |
+| `split_part` | `split_part(str, delim, part_num) -> String` 🟡 | `split_part` | Name-only | `split_part` | Name-only | `split_part` (Spark 3.4+) 🟡 | Name-only | 1-indexed; returns empty string on out-of-range. Spark-version floor constraint per Q-FUNCS-MAP-020. Pre-Round-2 row; not in `14a §4.2`. |
+| `position` | `position(substr, str) -> Long` 🟡 | `strpos(str, substr)` | Name-remap | `strpos(str, substr)` / `position(substr IN str)` | Name-remap | `locate(substr, str, [pos])` | Structural | ⚠️ Argument order and function name both diverge on Spark. Pre-Round-2 row; not in `14a §4.2`. See Q-FUNCS-MAP-001. |
 
-Portability summary: mostly **Universal** or **Partial** (name-remap). `position` is **Partial** with structural rewrite on Spark.
+Portability summary: 12 ratified canonical entries across the three engines. Two structural rewrites (DF / DuckDB `concat` → `||`-chain; Spark / DuckDB `lpad`/`rpad` 2-arg → 3-arg). All others Name-only or single Name-remap.
 
 ### 7.1 String functions demoted from legacy catalog
 
@@ -258,23 +261,23 @@ Portability summary: mostly **Universal** or **Partial** (name-remap). `position
 
 ## 8. Math Functions (`14a §4.3`)
 
-*Round-2 intersection candidates from `14a §4.3` plus legacy `FUNCTION_CATALOG.md §6`.*
+*Ratified Round-2 (2026-05-21). Canonical FunctionSpecs at `14a §4.3`.*
 
 | Canonical | Signature | DataFusion | Tier | DuckDB | Tier | Spark | Tier | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `abs` | `abs(x) -> same` | `abs(x)` | Name-only | `abs(x)` | Name-only | `abs(x)` | Name-only | Universal. Return type = operand type (`SameAs(0)`). |
-| `round` | `round(x, [digits]) -> same` | `round(x, [digits])` | Name-only | `round(x, [digits])` | Name-only | `round(x, [d])` | Name-only | Default `digits = 0`. 1-arg and 2-arg overloads. |
-| `ceil` | `ceil(x) -> same` | `ceil(x)` / `ceiling(x)` | Name-only | `ceil(x)` / `ceiling(x)` | Name-only | `ceil(x)` / `ceiling(x)` | Name-only | `ceiling` is an adapter-side alias all three parsers accept. Canonical name = `ceil`. |
-| `floor` | `floor(x) -> same` | `floor(x)` | Name-only | `floor(x)` | Name-only | `floor(x)` | Name-only | Universal. |
-| `sqrt` | `sqrt(x) -> Double` | `sqrt(x)` | Name-only | `sqrt(x)` | Name-only | `sqrt(x)` | Name-only | Universal. Return `Double` regardless of operand. |
-| `power` | `power(base, exp) -> Double` | `power(base, exp)` / `pow(base, exp)` | Name-only | `power(base, exp)` / `pow(base, exp)` | Name-only | `power(base, exp)` / `pow(base, exp)` | Name-only | `pow` is adapter-side alias. Canonical = `power`. |
-| `exp` | `exp(x) -> Double` | `exp(x)` | Name-only | `exp(x)` | Name-only | `exp(x)` | Name-only | Universal. |
-| `ln` | `ln(x) -> Double` | `ln(x)` | Name-only | `ln(x)` | Name-only | `ln(x)` | Name-only | Natural logarithm. Universal. |
-| `log` | `log(base, x) -> Double` 🟡 | `log(base, x)` | Name-only | `log(x)` (1-arg = base-10) / — 🟡 | Partial | `log(base, x)` | Name-only | ⚠️ **Semantic divergence.** Spark / DF: `log(base, x)` (2-arg). DuckDB: `log(x)` (1-arg, base-10). See `TD-FUNCS-MAPPING-LOG-ARITY`. Canonical = 2-arg per majority rule. |
-| `log10` | `log10(x) -> Double` | `log10(x)` | Name-only | `log10(x)` / `log(x)` | Name-only | `log10(x)` | Name-only | Base-10 logarithm. Universal. |
-| `sign` | `sign(x) -> same` 🟡 | `signum(x)` | Name-remap | `sign(x)` | Name-only | `signum(x)` / `sign(x)` | Name-only | DataFusion only exposes `signum`; canonical = `sign` (majority); DF adapter name-remaps. |
+| `abs` | `(Numeric) -> same` | `abs` | Name-only | `abs` | Name-only | `abs` | Name-only | Type-preserving across all engines. Signed-integer min overflow is engine-visible. |
+| `round` | `(Float\|Decimal, [Integer]) -> same` | `round` | Name-only | `round` | Name-only | `round` | Name-only | Half-away-from-zero across all engines. Integer args rejected at compile (no native integer overload on DF). |
+| `ceil` | `(Float) -> Float`, `(Decimal(p,s)) -> Decimal(p,0)` | `ceil` | Name-only | `ceil` | Name-only | `cast(ceil(x) as Double)` for Float; `ceil` for Decimal | Structural (Float) | Spark's `ceil(Float) -> BIGINT` requires cast wrap to keep canonical Float-in/Float-out shape. `ceiling` alias accepted by all engine parsers. |
+| `floor` | `(Float) -> Float`, `(Decimal(p,s)) -> Decimal(p,0)` | `floor` | Name-only | `floor` | Name-only | `cast(floor(x) as Double)` for Float; `floor` for Decimal | Structural (Float) | Same shape as `ceil` mirrored. |
+| `sqrt` | `(Float) -> Float` | `sqrt` | Name-only | `sqrt` | Name-only | `sqrt` | Name-only | Negative input is engine-visible (DuckDB errors, DF/Spark NaN). |
+| `power` | `(Float, Float) -> Float` | `power` | Name-only | `power` | Name-only | `power` | Name-only | `pow` is adapter-side alias accepted by all parsers. |
+| `exp` | `(Float) -> Float` | `exp` | Name-only | `exp` | Name-only | `exp` | Name-only | Universal. |
+| `ln` | `(Float) -> Float` | `ln` | Name-only | `ln` | Name-only | `ln` | Name-only | Natural logarithm. Non-positive input engine-visible. |
+| `log` | `(Float, Float) -> Float` (2-arg only) | `log` | Name-only | `log` | Name-only | `log` | Name-only | 2-arg form `log(base, value)` agreed across all three engines. **1-arg `log(x)` is NOT canonical** — DF/DuckDB = log10, Spark = ln; semantic divergence; authors use `ln(x)` or `log10(x)` explicitly. |
+| `log10` | `(Float) -> Float` | `log10` | Name-only | `log10` | Name-only | `log10` | Name-only | Base-10 logarithm. |
+| `sign` | `(Numeric) -> Integer` | `cast(signum(x) as Integer)` | Structural | `sign` (returns TINYINT, widens to Integer) | Name-only | `sign` | Name-only | DF only exposes `signum` (returns Float), so wrap with cast to canonical Integer. |
 
-Portability summary: mostly **Universal** or **Partial** (minor name-remap / alias). `log` is **Partial** with a semantic divergence (arity) — see Q-FUNCS-MAP about arity unification at Round-2.
+Portability summary: 11 ratified canonical entries. Three structural rewrites (DF `sign`→`signum`+cast; Spark `ceil(Float)`/`floor(Float)` cast wrap). Domain-error behavior on `sqrt`/`ln`/`log` for out-of-range inputs is engine-visible quirk, not gated.
 
 ### 8.1 Math functions explicitly excluded from canonical
 
@@ -287,43 +290,57 @@ Portability summary: mostly **Universal** or **Partial** (minor name-remap / ali
 
 ## 9. Temporal Functions (`14a §4.4`)
 
-*Round-2 intersection candidates from `14a §4.4` plus legacy `FUNCTION_CATALOG.md §9`. `DateTrunc` is a dedicated `Expr` variant (not a registry entry) — documented in §11.*
+*Ratified Round-2 (2026-05-21). Canonical FunctionSpecs at `14a §4.4`. `DateTrunc` is a dedicated `Expr` variant (not a registry entry) — documented in §11. `EXTRACT(part FROM x)` is parser sugar that lowers to `date_part('part', x)` — `extract` is NOT a registry entry.*
+
+Author-facing surface for every row below is `FunctionCall` (`14a §4.4`). Per-engine emission MAY rewrite to `BinaryOp` infix at the PlanBuilder layer (e.g. DF / Spark `date_add(d, i)` → `d + i`); that is a structural-rewrite-without-demotion, matching the `regexp_extract` precedent.
 
 | Canonical | Signature | DataFusion | Tier | DuckDB | Tier | Spark | Tier | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `date_part` | `date_part(part, expr) -> Long` | `date_part('year', expr)` / `extract(YEAR FROM expr)` | Name-only | `date_part('year', expr)` / `extract(YEAR FROM expr)` / `year(expr)` | Name-only | `date_part('YEAR', expr)` / `extract(YEAR FROM expr)` / `year(expr)` | Name-only | `extract` / `year(expr)` / etc. are adapter-side syntactic sugars all three parsers accept. Canonical name = `date_part`. Q-FUNCS-MAP-007. |
-| `year` | `year(expr) -> Long` 🟡 | `year(expr)` / `date_part('year', expr)` | Name-only | `year(expr)` | Name-only | `year(expr)` | Name-only | Convenience alias for `date_part('year', expr)`. Candidate in `14a §4.4`. All three engines accept as function call. |
-| `month` | `month(expr) -> Long` 🟡 | `month(expr)` | Name-only | `month(expr)` | Name-only | `month(expr)` | Name-only | Same convenience pattern as `year`. |
-| `day` | `day(expr) -> Long` 🟡 | `day(expr)` | Name-only | `day(expr)` | Name-only | `day(expr)` / `dayofmonth(expr)` | Name-only | Universal. Spark also accepts `dayofmonth`. |
-| `hour` | `hour(expr) -> Long` 🟡 | `hour(expr)` | Name-only | `hour(expr)` | Name-only | `hour(expr)` | Name-only | Universal. |
-| `minute` | `minute(expr) -> Long` 🟡 | `minute(expr)` | Name-only | `minute(expr)` | Name-only | `minute(expr)` | Name-only | Universal. |
-| `second` | `second(expr) -> Long` 🟡 | `second(expr)` | Name-only | `second(expr)` | Name-only | `second(expr)` | Name-only | Universal. Returns integer seconds — fractional-second extraction goes through `date_part('millisecond', ...)` or similar. |
-| `current_date` | `current_date() -> Date` | `current_date()` | Name-only | `current_date` / `current_date()` / `today()` | Name-only | `current_date()` / `curdate()` | Name-only | Canonical emission always uses paren form. Q-FUNCS-MAP-010. |
-| `current_timestamp` | `current_timestamp() -> Timestamp` | `current_timestamp()` / `now()` | Name-only | `current_timestamp` / `current_timestamp()` / `now()` | Name-only | `current_timestamp()` / `now()` | Name-only | Canonical emission always uses paren form. Determinism per query (sourced from `SessionContext` per `apis/34 §*`). |
-| `date_add` | `date_add(date, interval) -> Date` | `date + interval` 🟡 | Structural | `date_add(date, interval)` / `dateadd(date, interval)` | Name-only | `date + interval` 🟡 | Structural | ⚠️ DataFusion + Spark have no interval-form `date_add`; Spark's `date_add(date, num_days)` is integer-days only. Both adapters structurally rewrite to `date + interval`. Q-FUNCS-MAP-008. `TD-FUNCS-MAPPING-DATE-ADD-SPARK`. |
-| `date_sub` | `date_sub(date, interval) -> Date` | `date - interval` 🟡 | Structural | `date_sub(date, interval)` 🟡 | Name-only | `date - interval` 🟡 | Structural | Mirrors `date_add`. DF / Spark structural rewrite. |
-| `date_diff` | `date_diff(d1, d2) -> Long` (days) 🟡 | `CAST(d2 - d1 AS BIGINT)` 🟡 | Structural | `date_diff('day', d1, d2)` 🟡 | Structural | `datediff(d2, d1)` 🟡 | Name-remap | ⚠️ Three-way signature divergence. Canonical = 2-arg integer-days form (matches Spark). DF structural rewrite; DuckDB structural rewrite adding the `'day'` unit arg; Spark name-remap (underscore stripped). Q-FUNCS-MAP-009. `TD-FUNCS-MAPPING-DATE-DIFF-ARITY`. |
-| `extract` | `extract(part, expr) -> Long` 🟡 | `extract(YEAR FROM expr)` | Name-only | `extract(YEAR FROM expr)` | Name-only | `extract(YEAR FROM expr)` | Name-only | ⚠️ Canonical `extract` vs `date_part` overlap. Both are listed; `14a §4.4` treats them as aliases. See Q-FUNCS-MAP-007. |
-| `to_date` | `to_date(str, [format]) -> Date` | `to_date(str, [fmt])` | Name-only | `CAST(str AS DATE)` (1-arg) 🟡 / `strptime(str, fmt)` (2-arg, reversed args) 🟡 | Structural | `to_date(str, [fmt])` | Name-only | ⚠️ DuckDB has no native `to_date()`. 1-arg: structural rewrite to `CAST`. 2-arg: **demoted to adapter-extended** (DF + Spark only) due to DuckDB's `strptime` arg reversal. Q-FUNCS-MAP-011. `TD-FUNCS-MAPPING-TO-DATE-FORMAT`. |
-| `to_timestamp` | `to_timestamp(str, [format]) -> Timestamp` | `to_timestamp(str, [fmt])` | Name-only | `CAST(str AS TIMESTAMP)` (1-arg) 🟡 / `strptime(str, fmt)::TIMESTAMP` (2-arg) 🟡 | Structural | `to_timestamp(str, [fmt])` | Name-only | Same pattern as `to_date`. Format-string dialects differ across engines (strftime vs Java SimpleDateFormat) — see `TD-FUNCS-MAPPING-DATETIME-FORMATS`. |
+| `date_part` | `(String, Date\|Timestamp) -> Long` | `date_part(part, expr)` | Name-only | `date_part(part, expr)` | Name-only | `date_part(part, expr)` | Name-only | First arg is a part literal (`'year'`, `'month'`, `'day'`, `'hour'`, `'minute'`, `'second'`, `'millisecond'`, …). All three engines accept. SQL sugar `EXTRACT(part FROM x)` is parsed to canonical `date_part('part', x)`. |
+| `year` | `(Date\|Timestamp) -> Long` | `date_part('year', expr)` (PlanBuilder rewrite) | Structural | `year(expr)` | Name-only | `year(expr)` | Name-only | DF lacks the 1-arg `year(x)` function; PlanBuilder rewrites to `date_part('year', x)`. |
+| `month` | `(Date\|Timestamp) -> Long` | `date_part('month', expr)` (PlanBuilder rewrite) | Structural | `month(expr)` | Name-only | `month(expr)` | Name-only | Same DF rewrite pattern as `year`. |
+| `day` | `(Date\|Timestamp) -> Long` | `date_part('day', expr)` (PlanBuilder rewrite) | Structural | `day(expr)` | Name-only | `day(expr)` / `dayofmonth(expr)` | Name-only | Same DF rewrite pattern. |
+| `hour` | `(Timestamp) -> Long` | `date_part('hour', expr)` (PlanBuilder rewrite) | Structural | `hour(expr)` | Name-only | `hour(expr)` | Name-only | Same DF rewrite pattern. |
+| `minute` | `(Timestamp) -> Long` | `date_part('minute', expr)` (PlanBuilder rewrite) | Structural | `minute(expr)` | Name-only | `minute(expr)` | Name-only | Same DF rewrite pattern. |
+| `second` | `(Timestamp) -> Long` | `date_part('second', expr)` (PlanBuilder rewrite) | Structural | `second(expr)` | Name-only | `second(expr)` | Name-only | Same DF rewrite pattern. Integer seconds; sub-second extraction via `date_part('millisecond', …)`. |
+| `current_date` | `() -> Date` | `current_date()` | Name-only | `current_date()` | Name-only | `current_date()` | Name-only | Canonical emission always uses paren form. Per-query determinism (sourced from session). |
+| `current_timestamp` | `() -> Timestamp` | `current_timestamp()` | Name-only | `current_timestamp()` | Name-only | `current_timestamp()` | Name-only | Same paren-form rule. |
+| `date_add` | `(Date\|Timestamp, Interval) -> same` | `BinaryOp(Add, d, i)` (PlanBuilder rewrite) | Structural | `date_add(d, i)` | Name-only | `BinaryOp(Add, d, i)` (PlanBuilder rewrite) | Structural | DF + Spark have no Interval-arg `date_add` function — `date_add(d, n)` on Spark is integer-days only. Both PlanBuilders rewrite the canonical FunctionCall to `d + i`. Spark's integer-days form is adapter-extended (`Spark.date_add(d: Date, n: Integer)`). |
+| `date_sub` | `(Date\|Timestamp, Interval) -> same` | `BinaryOp(Subtract, d, i)` (PlanBuilder rewrite) | Structural | `date_sub(d, i)` | Name-only | `BinaryOp(Subtract, d, i)` (PlanBuilder rewrite) | Structural | Mirrors `date_add`. |
+| `date_diff` | `(String, Date\|Timestamp, Date\|Timestamp) -> Long` | `(end - start) extracted via date_part(part, …)` (PlanBuilder structural) | Structural | `date_diff(part, start, end)` | Name-only | `'day'` part → `datediff(end, start)`; other parts → `date_part(part, end) - date_part(part, start)` (PlanBuilder structural) | Structural | Canonical = 3-arg `(part, start, end)`. Returns signed difference in `part` units (positive when `end > start`). DuckDB native; DF + Spark structural. The 2-arg integer-days form (Spark-style `datediff(end, start)`) is adapter-extended. |
+| `to_date` | `(String) -> Date` | `to_date(str)` | Name-only | `Cast(str, Date)` (PlanBuilder rewrite) | Structural | `to_date(str)` | Name-only | ISO-8601 input only. DuckDB has no native `to_date()`; PlanBuilder casts string to Date. Format-string overload `(String, String)` is adapter-extended. |
+| `to_timestamp` | `(String) -> Timestamp` | `to_timestamp(str)` | Name-only | `Cast(str, Timestamp)` (PlanBuilder rewrite) | Structural | `to_timestamp(str)` | Name-only | Same pattern as `to_date`. Format-string overload adapter-extended. |
 
-Portability summary: a mix of **Universal** (date_part, year..second, current_date, current_timestamp, extract), **Partial** (date_add, date_sub, date_diff with structural rewrites on DF / DuckDB / Spark), and **demoted / split** (2-arg `to_date`, 2-arg `to_timestamp`).
+Portability summary: 14 ratified canonical entries. Five DF structural rewrites for unary component shortcuts (`year`/`month`/`day`/`hour`/`minute`/`second` → `date_part`). Two structural rewrites for interval arithmetic on DF + Spark (`date_add`/`date_sub` → BinaryOp). Three-engine structural divergence on `date_diff` (DuckDB native; DF + Spark structural). DuckDB structural for `to_date`/`to_timestamp` (Cast).
+
+### 9.1 Temporal forms explicitly excluded from canonical
+
+| Name | Reason |
+|---|---|
+| `extract(part FROM x)` | Parser sugar — lowers to `date_part('part', x)` at parse time. Not a separate registry entry. |
+| 2-arg `to_date(str, fmt)` / `to_timestamp(str, fmt)` | Format-string dialects diverge across engines (DF Chrono strftime, Spark Java DateTimeFormatter, DuckDB strptime syntax) and are mutually incompatible. Adapter-extended on each engine with engine-native format syntax. `TD-FUNCS-MAPPING-TO-DATE-FORMAT` / `TD-FUNCS-MAPPING-DATETIME-FORMATS`. |
+| 2-arg `date_diff(start, end)` (integer-days) | Convenience form; canonical 3-arg `date_diff('day', start, end)` covers it. Adapter-extended on engines that prefer the shorter signature (Spark `datediff`). `TD-FUNCS-MAPPING-DATE-DIFF-2ARG`. |
+| `date_add(d, n)` (Spark integer-days form) | Spark-specific integer-days variant — adapter-extended only. Canonical uses Interval second arg. |
 
 ---
 
 ## 10. Logical / Conditional Helpers (`14a §4.5`)
 
-*Round-2 intersection candidates from `14a §4.5`.*
+*Ratified Round-2 (2026-05-21). Canonical FunctionSpecs at `14a §4.5`.*
 
 | Canonical | Signature | DataFusion | Tier | DuckDB | Tier | Spark | Tier | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `greatest` | `greatest(x, ...) -> same` (variadic) 🟡 | `greatest(x, ...)` | Name-only | `greatest(x, ...)` | Name-only | `greatest(x, ...)` | Name-only | ⚠️ NULL semantics divergence: DF / Spark propagate NULL; DuckDB ignores NULL. See Q-FUNCS-MAP-014. `TD-FUNCS-MAPPING-GREATEST-LEAST-NULL`. |
-| `least` | `least(x, ...) -> same` (variadic) 🟡 | `least(x, ...)` | Name-only | `least(x, ...)` | Name-only | `least(x, ...)` | Name-only | Same NULL-semantics caveat as `greatest`. |
-| `if` | `if(cond, then, else) -> unified(then, else)` | *(no native `if` function; use `CASE`)* | Structural | *(no native `if` function; use `CASE`)* | Structural | `if(cond, then, else)` | Name-only | **Demoted to adapter-extended** (Spark-only). Canonical authors express this as `Expr::Case { when: [{condition, result}], else_expr: Some(else) }`. Q-FUNCS-MAP-015. |
-| `ifnull` | `ifnull(x, y)` | *(alias: `coalesce(x, y)`)* 🟡 | Name-remap | `ifnull(x, y)` / `coalesce(x, y)` | Name-only | `ifnull(x, y)` / `nvl(x, y)` / `coalesce(x, y)` | Name-only | **Demoted to adapter-extended.** Canonical authors use `Expr::Coalesce(args=[x, y])` (dedicated variant per `14 §3.2`). Q-FUNCS-MAP-015. |
-| `nvl` | `nvl(x, y)` | *(no native `nvl`)* | Unsupported | `nvl(x, y)` / `coalesce(x, y)` | Name-only | `nvl(x, y)` / `coalesce(x, y)` | Name-only | **Demoted to adapter-extended** (DuckDB + Spark). Canonical authors use `Expr::Coalesce`. Q-FUNCS-MAP-015. |
+| `greatest` | variadic `(T, T...) -> T` | `greatest(x, ...)` | Name-only | `greatest(x, ...)` | Name-only | `greatest(x, ...)` | Name-only | NULL-skip across all three: returns greatest non-NULL value; NULL only when every arg is NULL. Earlier `TD-FUNCS-MAPPING-GREATEST-LEAST-NULL` (DF/Spark "propagate" vs DuckDB "ignore") was a Round-1 misclassification — closed. |
+| `least` | variadic `(T, T...) -> T` | `least(x, ...)` | Name-only | `least(x, ...)` | Name-only | `least(x, ...)` | Name-only | Mirror of `greatest`. Same NULL-skip semantics across all three. |
 
-Portability summary: `greatest` / `least` are **Partial** (universal names, divergent NULL semantics). `if` / `ifnull` / `nvl` demoted to adapter-extended per Q-FUNCS-MAP-015.
+Portability summary: **Universal** Name-only across all three engines.
+
+### 10.1 Forms explicitly excluded from canonical
+
+| Form | Reason |
+|---|---|
+| `if(cond, then, else)` | `Expr::Case` (dedicated variant per `14 §3.3`) covers the use-case directly. Authors write `Case { when: [{cond, then}], else_expr: Some(else) }`. Spark / DuckDB native `if(...)` and DF's missing-`if` are all served by `Case` rendering. Not registered to keep the surface minimal. |
+| `ifnull(a, b)` / `nvl(a, b)` | `Expr::Coalesce` (dedicated variant) covers both. Authors write `Coalesce([a, b])`. All three adapters render `Coalesce` natively (universal); the DuckDB-lacks-`nvl` and DF-`nvl-as-alias-of-ifnull` quirks disappear at the Coalesce layer. |
 
 ---
 
@@ -384,15 +401,17 @@ Engine-specific functions NOT in the canonical catalog, registered via `Registry
 | `list_append` | `list_append(list, elem) -> list` | Immutable list append. | DuckDB built-in. |
 | `strptime` | `strptime(str, fmt) -> Timestamp` | Custom-format timestamp parse. See Q-FUNCS-MAP-011. | DuckDB built-in. |
 | `epoch_ms` | `epoch_ms(ts) -> Long` 🟡 | Timestamp → epoch milliseconds. | DuckDB built-in. |
+| `percentile_disc` | `percentile_disc(p) WITHIN GROUP (ORDER BY col) -> same` | Discrete percentile (returns actual data point). DataFusion lacks an equivalent — adapter-extended only. | DuckDB built-in. |
 
 ### 12.3 Spark-extended
 
 | Name | Signature | Purpose | Source |
 |---|---|---|---|
 | `collect_set` | `collect_set(expr) -> Array<T>` | Aggregate to distinct array. `FunctionCategory::Aggregate`. | Spark built-in. |
-| `collect_list` | `collect_list(expr) -> Array<T>` | Aggregate to array (preserving duplicates). `FunctionCategory::Aggregate`. Used by the `string_agg` structural rewrite (§3.2). | Spark built-in. |
+| `collect_list` | `collect_list(expr) -> Array<T>` | Aggregate to array (preserving duplicates). `FunctionCategory::Aggregate`. | Spark built-in. |
 | `array_join` | `array_join(array, sep, [null_replacement]) -> String` | Array join. | Spark built-in. |
 | `percentile_approx` | `percentile_approx(expr, frac) -> same` | Approximate percentile. | Spark built-in. |
+| `percentile_disc` | `percentile_disc(p) WITHIN GROUP (ORDER BY col) -> same` (Spark 3.1+) | Discrete percentile. DataFusion lacks an equivalent — adapter-extended only. | Spark built-in. |
 | `try_divide` | `try_divide(a, b) -> Double` (Spark 3.3+) 🟡 | NULL-on-zero-divisor safe division. See Q-FUNCS-MAP-017. | Spark built-in. |
 | `pmod` | `pmod(a, b) -> same` | Positive modulo. | Spark built-in. |
 | `startswith` / `endswith` | Spark native names for `starts_with` / `ends_with`. | — | Spark built-in; adapter name-remaps to canonical if promoted (§7.1). |
@@ -404,7 +423,7 @@ These were canonical in legacy `FUNCTION_CATALOG.md` but failed `14a` Q10 inters
 | Name | Rationale for demotion | Per-adapter disposition | TD |
 |---|---|---|---|
 | `initcap` | No DuckDB native. | DataFusion + Spark adapter-extended. Author using DuckDB must emulate or omit. | `TD-FUNCS-MAPPING-INITCAP` |
-| `percentile_cont` / `percentile_disc` | DuckDB uses `WITHIN GROUP` syntax; Spark lacks exact variants. | All three adapter-extended with per-engine signatures. | `TD-FUNCS-MAPPING-PERCENTILE` |
+| `percentile_disc` | DataFusion has no equivalent. | DuckDB + Spark adapter-extended (Spark 3.1+). DF authors use `percentile_cont` or `approx_percentile_cont`. | `TD-FUNCS-MAPPING-PERCENTILE` |
 | 2-arg `to_date` / `to_timestamp` | DuckDB's `strptime` reverses arg order. | DataFusion + Spark adapter-extended as 2-arg; DuckDB adapter-extended as `strptime` (separate canonical name). | `TD-FUNCS-MAPPING-TO-DATE-FORMAT` |
 | `if(cond, then, else)` | Not universal (Spark-only native). | Spark adapter-extended; canonical authors use `Expr::Case`. | `TD-FUNCS-MAPPING-IF-IFNULL-NVL` |
 | `ifnull` / `nvl` | Overlap with `coalesce`; DF lacks `nvl`. | Per-adapter aliases; canonical authors use `Expr::Coalesce`. | Same TD. |
@@ -421,16 +440,24 @@ Cross-references every rewrite asserted in §§3–11 into a per-adapter layerin
 
 | Source | Target | Tier | §ref |
 |---|---|---|---|
+| `FunctionCall("trim", [s, ...])` | `FunctionCall("btrim", [s, ...])` | Name-remap | §7 |
+| `FunctionCall("length", [arr])` (Array arg) | `FunctionCall("array_length", [arr])` | Name-remap | §7 |
+| `FunctionCall("reverse", [arr])` (Array arg) | `FunctionCall("array_reverse", [arr])` | Name-remap | §7 |
+| `FunctionCall("concat", [a, b, c, ...])` | `BinaryOp(Concat, ... a || b || c ...)` | Structural | §7 |
 | `FunctionCall("position", [s, t])` | `FunctionCall("strpos", [t, s])` | Name-remap + arg-reorder | §7 |
-| `FunctionCall("sign", [x])` | `FunctionCall("signum", [x])` | Name-remap | §8 |
-| `FunctionCall("variance", [x])` | `FunctionCall("var_samp", [x])` 🟡 | Name-remap | §3.2 |
-| `FunctionCall("approx_count_distinct", [x])` | `FunctionCall("approx_distinct", [x])` 🟡 | Name-remap | §3.2 |
+| `FunctionCall("sign", [x])` | `Cast(FunctionCall("signum", [x]), Integer)` | Structural (name-remap + cast to canonical Integer) | §8 |
+| `FunctionCall("variance", [x])` | `FunctionCall("var_samp", [x])` | Name-remap | §3.2 |
+| `FunctionCall("approx_count_distinct", [x])` | `FunctionCall("approx_distinct", [x])` | Name-remap | §3.2 |
+| `FunctionCall("year", [x])` | `FunctionCall("date_part", [Literal("year"), x])` | Structural | §9 |
+| `FunctionCall("month", [x])` | `FunctionCall("date_part", [Literal("month"), x])` | Structural | §9 |
+| `FunctionCall("day", [x])` | `FunctionCall("date_part", [Literal("day"), x])` | Structural | §9 |
+| `FunctionCall("hour", [x])` | `FunctionCall("date_part", [Literal("hour"), x])` | Structural | §9 |
+| `FunctionCall("minute", [x])` | `FunctionCall("date_part", [Literal("minute"), x])` | Structural | §9 |
+| `FunctionCall("second", [x])` | `FunctionCall("date_part", [Literal("second"), x])` | Structural | §9 |
 | `FunctionCall("date_add", [d, i])` | `BinaryOp(Add, d, i)` | Structural | §9 |
 | `FunctionCall("date_sub", [d, i])` | `BinaryOp(Subtract, d, i)` | Structural | §9 |
-| `FunctionCall("date_diff", [d1, d2])` | `Cast(BinaryOp(Subtract, d2, d1), Long)` 🟡 | Structural | §9 |
-| `FunctionCall("to_date", [s])` | `Cast(s, Date)` 🟡 | Structural (DuckDB only; DF is Name-only) | — |
+| `FunctionCall("date_diff", [Literal(part), start, end])` | `Cast(FunctionCall("date_part", [Literal(part), BinaryOp(Subtract, end, start)]), Long)` (`'day'` part) / part-wise extraction for non-day parts | Structural | §9 |
 | `Expr::RegexpExtract { expr, pattern, group }` | `FunctionCall("array_element", [FunctionCall("regexp_match", [expr, pattern]), group + 1])` | Structural | §11 |
-| `FunctionCall("percentile_cont", [x, p])` | `FunctionCall("approx_percentile_cont", [x, p])` 🟡 | Name-remap | §3.2 |
 
 **Dialect-layer rendering** (dedicated variants → SQL):
 
@@ -443,6 +470,7 @@ Cross-references every rewrite asserted in §§3–11 into a per-adapter layerin
 | `Expr::DateTrunc` | `date_trunc('grain', expr)` | `date_trunc` |
 | `Expr::Cast` | `CAST(expr AS <type>)` | `type_name` (per `types_mapping §1`) |
 | `Aggregate { distinct: true }` | `fn(DISTINCT expr)` | aggregate-render path |
+| `FunctionCall("percentile_cont", [p, col])` | `percentile_cont(p) WITHIN GROUP (ORDER BY col)` | aggregate-render path (`WITHIN GROUP` form) |
 
 ### 13.2 DuckDB
 
@@ -450,12 +478,13 @@ Cross-references every rewrite asserted in §§3–11 into a per-adapter layerin
 
 | Source | Target | Tier | §ref |
 |---|---|---|---|
+| `FunctionCall("concat", [a, b, c, ...])` | `BinaryOp(Concat, ... a || b || c ...)` | Structural | §7 |
+| `FunctionCall("lpad", [s, n])` (2-arg form) | `FunctionCall("lpad", [s, n, Literal(" ")])` | Structural | §7 |
+| `FunctionCall("rpad", [s, n])` (2-arg form) | `FunctionCall("rpad", [s, n, Literal(" ")])` | Structural | §7 |
 | `FunctionCall("position", [s, t])` | `FunctionCall("strpos", [t, s])` | Name-remap + arg-reorder | §7 |
-| `FunctionCall("to_date", [s])` | `Cast(s, Date)` 🟡 | Structural | §9 |
-| `FunctionCall("to_timestamp", [s])` | `Cast(s, Timestamp)` 🟡 | Structural | §9 |
-| `FunctionCall("date_diff", [d1, d2])` | `FunctionCall("date_diff", [Literal("day"), d1, d2])` 🟡 | Structural (3-arg) | §9 |
+| `FunctionCall("to_date", [s])` | `Cast(s, Date)` | Structural | §9 |
+| `FunctionCall("to_timestamp", [s])` | `Cast(s, Timestamp)` | Structural | §9 |
 | `FunctionCall("log", [base, x])` | *(left as-is if DuckDB supports 2-arg form; else arity mismatch)* 🟡 | — | §8 |
-| `FunctionCall("percentile_cont", [x, p])` | `<WITHIN GROUP structural>` 🟡 | Structural | §3.2 |
 
 **Dialect-layer rendering:**
 
@@ -467,6 +496,7 @@ Cross-references every rewrite asserted in §§3–11 into a per-adapter layerin
 | `Expr::RegexpExtract` | `regexp_extract(expr, pattern, group)` | `regexp_extract` |
 | `Expr::DateTrunc` | `date_trunc('grain', expr)` | `date_trunc` |
 | `Expr::Cast` | `CAST(expr AS <type>)` | `type_name` |
+| `FunctionCall("percentile_cont", [p, col])` | `percentile_cont(p) WITHIN GROUP (ORDER BY col)` | aggregate-render path |
 
 ### 13.3 Spark
 
@@ -474,15 +504,18 @@ Cross-references every rewrite asserted in §§3–11 into a per-adapter layerin
 
 | Source | Target | Tier | §ref |
 |---|---|---|---|
+| `FunctionCall("length", [arr])` (Array arg) | `FunctionCall("size", [arr])` | Name-remap | §7 |
+| `FunctionCall("lpad", [s, n])` (2-arg form) | `FunctionCall("lpad", [s, n, Literal(" ")])` | Structural | §7 |
+| `FunctionCall("rpad", [s, n])` (2-arg form) | `FunctionCall("rpad", [s, n, Literal(" ")])` | Structural | §7 |
 | `FunctionCall("position", [s, t])` | `FunctionCall("locate", [s, t])` 🟡 | Name-remap (arg order matches canonical) | §7 |
 | `FunctionCall("starts_with", [s, p])` | `FunctionCall("startswith", [s, p])` 🟡 | Name-remap (underscore strip) | §7.1 |
 | `FunctionCall("ends_with", [s, p])` | `FunctionCall("endswith", [s, p])` 🟡 | Name-remap | §7.1 |
-| `FunctionCall("sign", [x])` | `FunctionCall("signum", [x])` 🟡 | Name-remap | §8 |
+| `FunctionCall("ceil", [x])` (Float arg) | `Cast(FunctionCall("ceil", [x]), Double)` | Structural (cast wrap — Spark's `ceil(Float)` returns BIGINT) | §8 |
+| `FunctionCall("floor", [x])` (Float arg) | `Cast(FunctionCall("floor", [x]), Double)` | Structural (cast wrap) | §8 |
 | `FunctionCall("date_add", [d, i])` | `BinaryOp(Add, d, i)` | Structural | §9 |
 | `FunctionCall("date_sub", [d, i])` | `BinaryOp(Subtract, d, i)` | Structural | §9 |
-| `FunctionCall("date_diff", [d1, d2])` | `FunctionCall("datediff", [d2, d1])` 🟡 | Name-remap + arg-reorder | §9 |
-| `FunctionCall("string_agg", [e, s])` | `FunctionCall("array_join", [FunctionCall("collect_list", [e]), s])` 🟡 | Structural | §3.2 |
-| `FunctionCall("median", [x])` (Spark < 3.4) | `FunctionCall("percentile_approx", [x, 0.5])` 🟡 | Structural | §3.2 |
+| `FunctionCall("date_diff", [Literal("day"), start, end])` | `FunctionCall("datediff", [end, start])` | Structural (name-remap + arg-reorder, day part only) | §9 |
+| `FunctionCall("date_diff", [Literal(part), start, end])` (non-day part) | `BinaryOp(Subtract, FunctionCall("date_part", [Literal(part), end]), FunctionCall("date_part", [Literal(part), start]))` | Structural (per-part extraction) | §9 |
 | `BinaryOp(SafeDivide, a, b)` (Spark 3.3+) | `FunctionCall("try_divide", [a, b])` 🟡 | Structural (optional optimization) | §5.1 |
 
 **Dialect-layer rendering:**
@@ -495,6 +528,7 @@ Cross-references every rewrite asserted in §§3–11 into a per-adapter layerin
 | `Expr::RegexpExtract` | `regexp_extract(expr, pattern, group)` | `regexp_extract` |
 | `Expr::DateTrunc` | `date_trunc('grain', expr)` | `date_trunc` |
 | `Expr::Cast` | `CAST(expr AS <type>)` | `type_name` |
+| `FunctionCall("percentile_cont", [p, col])` | `percentile_cont(p) WITHIN GROUP (ORDER BY col)` | aggregate-render path (Spark 3.1+) |
 
 ### 13.4 ANSI (fallback dialect)
 
@@ -519,17 +553,17 @@ Canonical-catalog entries from `14a §4` that FAILED the Q10 intersection test a
 | TD ID | Canonical candidate | Failing engine(s) | Demotion reason | Resolution path |
 |---|---|---|---|---|
 | `TD-FUNCS-MAPPING-INITCAP` | `initcap` | DuckDB | No native equivalent. | DuckDB adds native `initcap`, or adapter accepts structural emulation (e.g. `regexp_replace` pattern). |
-| `TD-FUNCS-MAPPING-PERCENTILE` | `percentile_cont` / `percentile_disc` | Spark (lacks exact), DuckDB (`WITHIN GROUP` syntax) | Signature divergence. | Spark adds exact-percentile aggregate, or canonical catalog accepts a structural rewrite for DuckDB. |
-| `TD-FUNCS-MAPPING-TO-DATE-FORMAT` | 2-arg `to_date(str, fmt)` / `to_timestamp(str, fmt)` | DuckDB (uses `strptime`, reversed args) | Arg-order divergence on DuckDB. | DuckDB adds `to_date` wrapper, or canonical accepts arg-swap structural rewrite. |
-| `TD-FUNCS-MAPPING-IF-IFNULL-NVL` | `if` / `ifnull` / `nvl` | All three except Spark (`if`), DataFusion (`nvl`). | Overlap with `coalesce` / `case` dedicated variants. | Consensus to keep these as adapter-extended — dedicated variants subsume the use-cases. |
-| `TD-FUNCS-MAPPING-DATE-ADD-SPARK` | `date_add(date, interval)` | Spark (only integer-days form native) | Arg-type divergence. | Already structurally rewritten via `date + interval` at Spark adapter's PlanBuilder. Non-blocking. |
-| `TD-FUNCS-MAPPING-DATE-DIFF-ARITY` | `date_diff(d1, d2)` | All three diverge in arity / name / unit | Signature divergence. | Canonical = 2-arg; per-engine structural + name-remap rewrites in place. |
+| `TD-FUNCS-MAPPING-PERCENTILE` | `percentile_cont` / `percentile_disc` | — / DataFusion (`percentile_disc` absent) | Resolved 2026-05-21. | **CLOSED for `percentile_cont`** — Spark 3.1+ has native exact form; all three engines converge on `WITHIN GROUP` SQL-standard syntax (dialect-layer rendering, not a structural rewrite). `percentile_disc` demoted to adapter-extended (DuckDB + Spark only) per §12.4. |
+| `TD-FUNCS-MAPPING-TO-DATE-FORMAT` | 2-arg `to_date(str, fmt)` / `to_timestamp(str, fmt)` | All three (mutually incompatible format-string dialects) | Format-string syntax divergence (DF Chrono strftime / Spark Java DateTimeFormatter / DuckDB strptime). | Adapter-extended on each engine with engine-native format syntax. Canonical 1-arg ISO-only form is ratified. |
+| `TD-FUNCS-MAPPING-IF-IFNULL-NVL` | `if` / `ifnull` / `nvl` | — | Overlap with `Case` / `Coalesce` dedicated variants. | **CLOSED 2026-05-21.** Not registered; authors write `Expr::Case` / `Expr::Coalesce` directly. Dedicated variants render natively on all three engines. |
+| `TD-FUNCS-MAPPING-DATE-ADD-SPARK` | `date_add(date, interval)` | Spark (only integer-days form native) | Arg-type divergence. | Already structurally rewritten via `date + interval` at Spark adapter's PlanBuilder. Non-blocking. Spark integer-days form `date_add(d: Date, n: Integer)` is adapter-extended. |
+| `TD-FUNCS-MAPPING-DATE-DIFF-2ARG` | 2-arg `date_diff(start, end)` integer-days form | — | Convenience overload; canonical 3-arg `date_diff('day', start, end)` covers the use-case. | Adapter-extended on engines that prefer the shorter signature (Spark `datediff`, DuckDB legacy form). |
 | `TD-FUNCS-MAPPING-LOG-ARITY` | `log(base, x)` | DuckDB (1-arg base-10 only) | Arity / semantic divergence. | DuckDB adds 2-arg form, or canonical splits into `log` (1-arg base-10 only) + `logb` (2-arg). |
 | `TD-FUNCS-MAPPING-SAFEDIVIDE-SPARK` | `SafeDivide` Spark rendering | — | Optimization opportunity, not a gap. | Spark 3.3+ adapter may emit `try_divide`. |
 | `TD-FUNCS-MAPPING-BINOP-EMPIRICAL` | BinaryOp promotion tables §5.2–§5.3 | All three | Rows drafted from docs, not empirically verified. | Test harness against live adapter instances. |
 | `TD-FUNCS-MAPPING-DECIMAL-DIV` | `Decimal / Decimal` result type | DuckDB (divergent from DF / Spark) | Result-type divergence. | Reconciliation Cast at Semantics boundary. |
 | `TD-FUNCS-MAPPING-DATE-SUB-DATE` | `Date - Date` result type | DataFusion (returns `Interval`) vs DuckDB / Spark (return `Integer` days) | Result-type divergence. | Document as expected; author declares `data_type:` appropriately. |
-| `TD-FUNCS-MAPPING-AGG-INTERSECTION` | Non-closed aggregates §3.2 | All three (pending verification) | Intersection not yet verified. | `14a` Round-2 intersection scan. |
+| `TD-FUNCS-MAPPING-AGG-INTERSECTION` | Non-closed aggregates §3.2 | — | Resolved 2026-05-21. | **CLOSED** — Round-2 intersection ratified 8 canonical entries (`stddev`, `stddev_pop`, `variance`, `var_pop`, `median`, `string_agg`, `percentile_cont`, `approx_count_distinct`); `percentile_disc` adapter-extended only. |
 | `TD-FUNCS-MAPPING-ADAPTER-INVENTORY` | §12 seed lists | All three | Inventories not yet authoritative. | Per-adapter crate README ratifies full list. |
 | `TD-FUNCS-MAPPING-DATETIME-FORMATS` | `to_date` / `to_timestamp` format strings | All three differ (strftime / Java SimpleDateFormat) | Format-string dialect divergence. | Either canonical format-string grammar OR engine-delegated per-call. |
 | `TD-FUNCS-MAPPING-CONCAT-WS-PROMOTE` | `concat_ws` | — | Not in `14a §4.2`; universal per legacy. | Add to `14a §4.2` in Round-2. |
@@ -632,17 +666,17 @@ Consolidated list of all `TD-FUNCS-MAPPING-*` entries emitted by this doc. Each 
 | TD ID | § | Current posture |
 |---|---|---|
 | `TD-FUNCS-MAPPING-INITCAP` | 14 | Demoted to adapter-extended (DF + Spark only). |
-| `TD-FUNCS-MAPPING-PERCENTILE` | 14 | Likely demoted pending Round-2 verification. |
+| `TD-FUNCS-MAPPING-PERCENTILE` | 14 | `percentile_cont` ratified canonical (dialect-layer `WITHIN GROUP`); `percentile_disc` adapter-extended. |
 | `TD-FUNCS-MAPPING-TO-DATE-FORMAT` | 14 | 2-arg forms demoted. |
-| `TD-FUNCS-MAPPING-IF-IFNULL-NVL` | 14 | Demoted; canonical authors use `Case` / `Coalesce`. |
-| `TD-FUNCS-MAPPING-DATE-ADD-SPARK` | 14 | Structural rewrite in place. |
-| `TD-FUNCS-MAPPING-DATE-DIFF-ARITY` | 14 | Structural + name-remap in place. |
+| `TD-FUNCS-MAPPING-IF-IFNULL-NVL` | 14 | **CLOSED 2026-05-21** — `if` / `ifnull` / `nvl` not registered; authors use `Case` / `Coalesce`. |
+| `TD-FUNCS-MAPPING-DATE-ADD-SPARK` | 14 | Structural rewrite in place; integer-days form adapter-extended. |
+| `TD-FUNCS-MAPPING-DATE-DIFF-2ARG` | 14 | Canonical = 3-arg; 2-arg form adapter-extended. |
 | `TD-FUNCS-MAPPING-LOG-ARITY` | 14 | Open — requires `14a` Round-2 clarification. |
 | `TD-FUNCS-MAPPING-SAFEDIVIDE-SPARK` | 14 | Optimization; non-blocking. |
 | `TD-FUNCS-MAPPING-BINOP-EMPIRICAL` | 14 | Blocked on test harness. |
 | `TD-FUNCS-MAPPING-DECIMAL-DIV` | 14 | Reconciliation Cast at Semantics boundary. |
 | `TD-FUNCS-MAPPING-DATE-SUB-DATE` | 14 | Documented as expected divergence. |
-| `TD-FUNCS-MAPPING-AGG-INTERSECTION` | 14 | Blocked on `14a` Round-2. |
+| `TD-FUNCS-MAPPING-AGG-INTERSECTION` | 14 | **CLOSED 2026-05-21** — 8 canonical entries ratified at `14a §4.6`. |
 | `TD-FUNCS-MAPPING-ADAPTER-INVENTORY` | 14 | Blocked on per-adapter crate readmes. |
 | `TD-FUNCS-MAPPING-DATETIME-FORMATS` | 14 | Open design item. |
 | `TD-FUNCS-MAPPING-CONCAT-WS-PROMOTE` | 14 | Proposed `14a` Round-2 addition. |

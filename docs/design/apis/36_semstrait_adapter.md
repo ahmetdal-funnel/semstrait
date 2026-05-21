@@ -243,8 +243,6 @@ that produce no warnings return an empty `Diagnostics<AdaptErrorKind>`;
 adapters that do (e.g. DuckDB precision clamping, Spark structural
 rewrites) accumulate them in the same vector and propagate.
 
-This closes `Q-ADAPT-001` — the bare-`Result` default is superseded.
-
 ### 3.5 `debug_sql` free function
 
 ```rust
@@ -469,7 +467,7 @@ impl EngineAdapter for AnsiSqlAdapter {
 ```
 
 - Purpose — the reference / fallback adapter. Used by `debug_sql` (§3.5), by diagnostics that surface rendered SQL for troubleshooting, and as a starting point for authors bringing up a new dialect. Matches current code's `AnsiDialect` + ANSI emitter path.
-- Capabilities — conservative. Advertises `Cte = true`, `DistinctAggregate = true`, `AsOfJoin = false`, `GroupingSets = false`. See §6.
+- Capabilities — conservative. Advertises none of the irreducible features (`AsOfJoin = false`, `RegexpMatch = false`, `RegexpExtract = false`, `IntervalLiteral = false`, `StructAccess = false`). Authors targeting the ANSI fallback who require those features get a `34`/`38`-side pre-flight diagnostic. See §6.
 - Rewrite posture — zero PlanBuilder-layer rewrites; every canonical `FunctionCall` emits its canonical name verbatim. `DialectEmit::rewrite_function` always returns `Ok(RewrittenCall::NameOnly)`. Adapters that need rewrites use the per-engine impls below.
 
 ### 5.2 `DataFusionSqlAdapter`
@@ -478,8 +476,8 @@ Lives in `semstrait-adapter-datafusion`. Produces SQL targetable at `datafusion-
 
 - `id() = AdapterId::DATAFUSION_SQL`.
 - `dialect() = Some(&DataFusionDialect)` (dialect lives in `semstrait-adapter-datafusion`).
-- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.1`: `position` → `strpos` with arg-reorder; `sign` → `signum`; `variance` → `var_samp`; `date_add` / `date_sub` / `date_diff` → structural `BinaryOp` / `Cast` forms; `RegexpExtract` → `array_element(regexp_match(...), group + 1)`.
-- Capabilities — `Cte = true`, `DistinctAggregate = true`, `AsOfJoin = false`, `GroupingSets = true`, `RegexpMatch = true`, `IntervalLiteral = true`. `StructAccess = false` (pending canonical `DataType::Struct` which is out of v1).
+- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.1`: `position` → `strpos` with arg-reorder; `sign` → `Cast(signum(x), Integer)`; `variance` → `var_samp`; `approx_count_distinct` → `approx_distinct`; `date_add` / `date_sub` → `BinaryOp` forms; `date_diff` (3-arg) → `date_part`-extracted form; `year`/`month`/`day`/`hour`/`minute`/`second` → `date_part('part', x)`; `RegexpExtract` → `array_element(regexp_match(...), group + 1)`.
+- Capabilities — `AsOfJoin = false`, `RegexpMatch = true`, `RegexpExtract = true`, `IntervalLiteral = true`, `StructAccess = false` (pending canonical `DataType::Struct` which is out of v1).
 
 ### 5.3 `DuckDbSqlAdapter`
 
@@ -487,8 +485,8 @@ Lives in `semstrait-adapter-duckdb`.
 
 - `id() = AdapterId::DUCKDB_SQL`.
 - `dialect() = Some(&DuckDbDialect)`.
-- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.2`: `position` → `strpos` with arg-reorder; `to_date` / `to_timestamp` (1-arg) → `CAST`; `date_diff` → 3-arg form with `'day'` unit; `percentile_cont` → `WITHIN GROUP` structural (flagged for demotion per `TD-FUNCS-MAPPING-PERCENTILE`). `log(base, x)` — if DuckDB version floor does not carry the 2-arg form, raises `AdaptError::UnsupportedFeature { feature: UnsupportedFeatureKind::Function, .. }`.
-- Capabilities — `Cte = true`, `DistinctAggregate = true`, `AsOfJoin = true` (DuckDB 0.9+ native `ASOF JOIN` syntax), `GroupingSets = true`, `RegexpMatch = true`.
+- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.2`: `position` → `strpos` with arg-reorder; `concat` → `||`-chain (NULL-propagation alignment); `lpad` / `rpad` 2-arg → 3-arg space-injection; `to_date` / `to_timestamp` (1-arg) → `Cast`. `log(base, x)` — if DuckDB version floor does not carry the 2-arg form, raises `AdaptError::UnsupportedFeature { feature: UnsupportedFeatureKind::Function, .. }`. Dialect-layer rendering of `percentile_cont` uses native `WITHIN GROUP (ORDER BY col)` syntax per `§13.2`.
+- Capabilities — `AsOfJoin = true` (DuckDB 0.9+ native `ASOF JOIN` syntax), `RegexpMatch = true`, `RegexpExtract = true`, `IntervalLiteral = true`, `StructAccess = false` (pending canonical `DataType::Struct`).
 - Dialect notes — `DuckDbDialect.type_name` maps `Timestamp(p)` to precision-specific keywords (`TIMESTAMP_S` / `TIMESTAMP_MS` / `TIMESTAMP` / `TIMESTAMP_NS`) per `registry/types_mapping.md §3.3`.
 
 ### 5.4 `SparkSqlAdapter`
@@ -497,8 +495,8 @@ Lives in `semstrait-adapter-spark`.
 
 - `id() = AdapterId::SPARK_SQL`.
 - `dialect() = Some(&SparkDialect)`.
-- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.3`: `position` → `locate` (arg order matches canonical — no re-order); `sign` → `signum`; `date_add` / `date_sub` → `+` / `-` structural; `date_diff` → `datediff` with arg-reorder; `string_agg` → `array_join(collect_list(...), sep)` structural; `median` (Spark < 3.4) → `percentile_approx(expr, 0.5)`; `SafeDivide` (Spark 3.3+) → `try_divide` (optional optimization).
-- Capabilities — `Cte = true`, `DistinctAggregate = true`, `AsOfJoin = false` (Spark lacks native as-of), `GroupingSets = true`, `RegexpMatch = true`, `IntervalLiteral = true` (Spark 3.4+ for `TimestampNTZType` per `registry/types_mapping.md §3.2`).
+- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.3`: `length(arr)` → `size(arr)`; `lpad` / `rpad` 2-arg → 3-arg space-injection; `ceil(Float)` / `floor(Float)` → `Cast(... as Double)`; `date_add` / `date_sub` → `BinaryOp` forms; `date_diff` (3-arg, day part) → `datediff(end, start)` with arg-reorder; `date_diff` (3-arg, non-day part) → per-part extraction via `date_part(part, end) - date_part(part, start)`; `SafeDivide` (Spark 3.3+) → `try_divide` (optional optimization). Dialect-layer rendering of `percentile_cont` uses native `WITHIN GROUP (ORDER BY col)` syntax (Spark 3.1+).
+- Capabilities — `AsOfJoin = false` (Spark lacks native as-of), `RegexpMatch = true`, `RegexpExtract = true`, `IntervalLiteral = true` (Spark 3.4+ for `TimestampNTZType` per `registry/types_mapping.md §3.2`), `StructAccess = false` (pending canonical `DataType::Struct`).
 - `SparkDialect::emit_ilike` uses the `LOWER(...) LIKE LOWER(...)` form per §4.7 default; Spark has no native `ILIKE`.
 
 ### 5.5 `SubstraitAdapter`
@@ -534,7 +532,7 @@ impl EngineAdapter for SubstraitAdapter {
 - Emission follows the mapping table at `35 §9.2` — each `PlanNode` maps to exactly one `substrait::proto::Rel` kind.
 - Function anchors — every `FunctionCall.name` / every `Aggregation` variant maps directly to a Substrait-standard function URN. V1 uses `CanonicalFn::as_str()` as the anchor; per-function URN overrides are tracked as `[TD-ADAPTER-SUBSTRAIT-ANCHOR]` (see `Q-ADAPT-008`).
 - `SemAnnotation` round-trip — per `35 §9.2`, annotations travel through `AdvancedExtension.optimization` with URN `urn:semstrait:annotations:v1`. Deserializers unknown to the consuming engine skip unknown annotations gracefully per `35 §11.2`.
-- Capabilities — `Cte = false` (Substrait has no CTE rel), `DistinctAggregate = true`, `AsOfJoin = false` in v1 (Substrait has no standard as-of; an extension path is `[TD-ADAPTER-SUBSTRAIT-ASOF]`), `GroupingSets = true`, `StructAccess = true` (Substrait supports struct-field access natively; gated by canonical `DataType::Struct` which is out of v1).
+- Capabilities — `AsOfJoin = false` in v1 (Substrait has no standard as-of; extension path tracked as `[TD-ADAPTER-SUBSTRAIT-ASOF]`), `RegexpMatch = true`, `RegexpExtract = true`, `IntervalLiteral = true`, `StructAccess = true` (Substrait supports struct-field access natively; advertisement gated by canonical `DataType::Struct` which is out of v1, but the consumer-side support is real). **Substrait is the load-bearing capability-contract path** per §6.2 — capabilities advertised here are what the Substrait plan REQUIRES the consuming engine to support.
 
 ## 6. `AdapterCapabilities`
 
@@ -557,36 +555,41 @@ impl AdapterCapabilities {
     /// `capabilities.len()`, but the slices are bounded (≤ 32 entries).
     pub fn supports(&self, cap: Capability) -> bool;
 
-    // --- Ratified predicate shortcuts: one per flag in the non-exhaustive
-    // `Capability` roster ratified in `35 §6.6` and extended here. ---
-    pub fn supports_as_of(&self)          -> bool;
-    pub fn supports_distinct_agg(&self)   -> bool;
-    pub fn supports_cte(&self)            -> bool;
-    pub fn supports_grouping_sets(&self)  -> bool;
-    pub fn supports_regexp_match(&self)   -> bool;
-    pub fn supports_regexp_extract(&self) -> bool;
-    pub fn supports_interval_literal(&self)-> bool;
-    pub fn supports_struct_access(&self)  -> bool;
+    // --- Ratified predicate shortcuts: one per variant in the
+    // non-exhaustive `Capability` roster defined in `35 §11.6`. ---
+    pub fn supports_as_of(&self)            -> bool;
+    pub fn supports_regexp_match(&self)     -> bool;
+    pub fn supports_regexp_extract(&self)   -> bool;
+    pub fn supports_interval_literal(&self) -> bool;
+    pub fn supports_struct_access(&self)    -> bool;
     // Additional predicates MAY be added in MINOR per `30 §2.1`.
 }
 ```
 
 The struct surface is `#[non_exhaustive]` per `30 §4.2`. Adding a new `Capability` variant is MINOR per I10 / `30 §11.1`.
 
-### 6.2 Consumers
+### 6.2 Consumers — SQL adapters vs Substrait handoff
 
-Per `Q-ADAPT-002`, `AdapterCapabilities` is consumed:
+Per `Q-ADAPT-002` (closed 2026-05-21), `AdapterCapabilities` plays two architecturally distinct roles depending on the emission target. The asymmetry is load-bearing.
 
-- **`semstrait-planner` (`34`)** — capability-gated plan rules. A plan rule that produces `Capability::AsOfJoin` must be disabled when the target adapter advertises `supports_as_of() == false`. The planner receives the target adapter from `semstrait-api` (`38`) before planning begins.
-- **`semstrait-api` (`38`)** — pre-`adapt` feasibility check. The caller consults the adapter's capabilities before dispatching the plan. Not mandatory; `adapt` will fail with `AdaptError::UnsupportedFeature` if a capability gap surfaces downstream.
+**SQL-emitting adapters** (`AnsiSqlAdapter`, `DataFusionSqlAdapter`, `DuckDbSqlAdapter`, `SparkSqlAdapter`) — capabilities are **ergonomic hints**, not contracts. semstrait owns the full PlanBuilder-layer rewrite pipeline and emits engine-native SQL itself; adapter-internal rewrite strategies (CTE expansion, GROUPING SETS expansion, DISTINCT-aggregate emulation, function-name remaps) are private to each adapter and NOT advertised through `Capability`. Consumers:
 
-Not consumed inside `adapt` itself — the authoritative feasibility check is the emission path (`AdaptError::Unsupported*`). Duplicating the check inside `adapt` is parked as `Q-ADAPT-002`.
+- **`semstrait-planner` (`34`)** — pre-flight UX. A plan rule that emits `Capability::AsOfJoin` SHOULD be disabled when the target adapter advertises `supports_as_of() == false`, so authors get a clear `34`-side diagnostic instead of an opaque `adapt`-time failure.
+- **`semstrait-api` (`38`)** — pre-`adapt` feasibility check. The caller consults the adapter's capabilities before dispatching. Not mandatory — `adapt` is the authoritative feasibility check, raising `AdaptError::Unsupported*` when an irreducible gap surfaces downstream.
+
+**`SubstraitAdapter`** — capabilities are the **handoff contract**. semstrait emits a Substrait plan to be consumed by a foreign engine across a process / engine boundary; semstrait CANNOT rewrite on the consumer's behalf. The capability set declares what the consuming engine MUST support. The same `AdapterCapabilities` advertisement is consulted by `34` / `38` exactly as for SQL adapters, but the role flips from ergonomic to contractual at the handoff line.
+
+**Inside `adapt` itself** — capabilities are NOT consulted. Each adapter's `adapt()` either renders successfully or raises `AdaptError::Unsupported*`. Q-ADAPT-002 closes with the rule: capability checks live at planner / api pre-flight; `adapt`-time failures are the fallback.
 
 ### 6.3 Roster growth policy
 
-Adding a new `Capability` variant is MINOR. The owning ratification crate is `36` per `Q-ADAPT-007`; `35 §6.6` re-exports the enum for planner consumption but does not own the roster. Each new variant:
+Adding a new `Capability` variant is MINOR. The type definition lives in `35 §11.6` (closed catalog rule R4); `36` drives variant additions through concrete adapter-feature need and owns the per-adapter `AdapterCapabilities` roster (Q-IR-010, 2026-05-21).
 
-1. Earns a paragraph in §4 / §5 describing its emission pathway.
+**Scope test for a new variant.** Before adding a variant, answer: *"Is this feature irreducible across the Substrait-handoff boundary?"* — i.e. is its absence in the consuming engine impossible to paper over with a semstrait-side PlanBuilder rewrite without changing semantics? If yes, add it. If the feature is universally synthesizable via SQL-adapter rewrite (CTE → subquery, GROUPING SETS → UNION ALL, DISTINCT-aggregate → universal), it is adapter-internal strategy and does NOT belong in `Capability`.
+
+Each new variant:
+
+1. Earns a paragraph in §4 / §5 describing its emission pathway and (if Substrait-bound) the consumer-engine requirement.
 2. Earns a predicate shortcut on `AdapterCapabilities` if it's a commonly-consulted flag.
 3. Documents the adapters that advertise it in the per-adapter subsections of §5.
 
@@ -1055,7 +1058,7 @@ Per-session allow-lists (e.g. "this read-only session can only use `duckdb-sql`"
 - **Built-in `Dialect` implementations stable across v1** — `AnsiDialect`, `DataFusionDialect`, `DuckDbDialect`, `SparkDialect`. Their emission output is tested byte-for-byte against a snapshot fixture per `§14.6`; a MINOR release MAY NOT change the rendering of a plan that did not change canonical representation between versions. Matches `30 §11.4`'s "behavior-preserving refactors" rule.
 - **`AdapterId` / `DialectId` const additions are non-breaking** (MINOR per `30 §11.1`).
 - **`AdapterCapabilities` predicate additions are non-breaking** (method addition is MINOR per `30 §2.1`).
-- **`Capability` variant additions are non-breaking** (`#[non_exhaustive]` per `35 §6.6`; roster ownership in `36` per `Q-ADAPT-007`).
+- **`Capability` variant additions are non-breaking** (`#[non_exhaustive]` per `35 §11.6`; type definition in `35`, per-adapter roster authority in `36` per Q-IR-010 / `Q-ADAPT-007`).
 - **`AdaptErrorKind` variant additions** are non-breaking (`#[non_exhaustive]` per `10.1`; identification by variant identity per `30 §5`).
 - **The Substrait mapping** (per `35 §9.2`) is stable across v1; changes require a MINOR release of `semstrait-ir` AND a MINOR release of `semstrait-adapter` in lock-step per `30 §2.1`.
 
@@ -1068,20 +1071,6 @@ Per-session allow-lists (e.g. "this read-only session can only use `duckdb-sql`"
 ### 12.3 Per-engine crate versioning
 
 Per `30 §13`, per-engine adapter crates (`semstrait-adapter-datafusion`, `-duckdb`, `-spark`, `-substrait`) are **Provisional** and versioned **independently**. Their stability tiers follow each crate's own maturity; a `semstrait-adapter` MINOR does not automatically force a per-adapter-crate MINOR. Whether per-adapter crates pin `semstrait-adapter` exactly or float within a MINOR band is parked as `Q-ADAPT-006`.
-
-### 12.4 Delta with current code
-
-The `crates/semstrait-adapter/src` definitions diverge from the target roster. Items tracked in `implementation/40_refactor_plan.md`:
-
-- `EngineAdapter::name() -> &str` → rename to `id() -> AdapterId` with the `AdapterId` newtype.
-- `EngineAdapter::plan_builder()` default-impl → drop. PlanBuilder-layer rewrites relocate into `DialectEmit::rewrite_function` (§4.5); the separate `PlanBuilder` trait retires.
-- `EngineAdapter::debug_sql()` default-impl → drop in favor of the free function (§3.5).
-- `SqlDialect` trait → rename to `DialectEmit` and add the `Dialect` supertrait from `35 §6.5`.
-- `AdaptError::{SqlEmission, SubstraitSerialization, UnsupportedFeature}` → replace with the v1 `AdaptErrorKind` roster of §10.1 (16 variants — 13 error + 3 warning advisory).
-- `TargetDialect` enum → drop in favor of `DialectId` (`35 §6.4`).
-- Register v1 adapters in `adapter_registry()` at crate init.
-
-Migration items: `[TD-ADAPTER-RENAME]`, `[TD-ADAPTER-ERROR-MIGRATION]`, `[TD-ADAPTER-DIALECT-SPLIT]`, `[TD-ADAPTER-DEBUG-SQL-FREE-FN]`, `[TD-ADAPTER-PLAN-BUILDER-RETIRE]`.
 
 ## 13. Crate Boundaries
 
@@ -1197,7 +1186,7 @@ pub(crate) fn escape_ansi_string_literal(&str) -> String
 
 ```
 pub struct AdapterCapabilities                           // capability slice + predicate shortcuts
-pub use    semstrait_ir::Capability                      // re-export per 35 §6.6
+pub use    semstrait_ir::Capability                      // re-export per 35 §11.6
 ```
 
 ### 15.5 `substrait`
