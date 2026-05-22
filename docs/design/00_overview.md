@@ -234,9 +234,9 @@ Deferred-but-in-scope items are tracked as `DEFERRED` in owning docs and questio
 
 ## 11. Relationship to Existing Documents
 
-- `[AGENTS.md](../../AGENTS.md)` and `[CLAUDE.md](../../CLAUDE.md)` define project mode and workflow discipline.
-- Legacy docs outside `docs/design/` describe current code state and are non-authoritative for target-state decisions.
-- Design-to-implementation migration is tracked under `implementation/40-42` once design ratification closes.
+- `[AGENTS.md](../../AGENTS.md)` / `[CLAUDE.md](../../CLAUDE.md)`: project mode + workflow.
+- Legacy docs outside `docs/design/`: current-state reference, not authoritative for target.
+- Migration tracking: `implementation/40-42`.
 
 ---
 

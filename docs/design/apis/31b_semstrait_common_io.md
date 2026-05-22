@@ -14,11 +14,11 @@ refined-by:
 
 # 31b. `semstrait-common::io` — Byte-Blob I/O Transport Layer
 
-`31b` pins the byte-blob I/O protocol that every `semstrait-*` crate layers its format-specific load/dump wrappers on top of. It extends `semstrait-common` with a single new module (`io`) whose surface is deliberately minimal: two async traits (`Source`, `Sink`) plus two conversion traits (`FromIoBytes`, `IntoIoBytes`), one polymorphic scheme-dispatching enum (`Location`), one typed-kind enum (`IoErrorKind`) implementing `Diagnose` per `30 §5.4`, and a small roster of back-end implementations.
+`semstrait-common::io` is the byte-blob transport substrate. It exposes two async traits (`Source`, `Sink`), two conversion traits (`FromIoBytes`, `IntoIoBytes`), the `Location` scheme-dispatching enum, the `IoErrorKind` typed-kind enum, and a fixed back-end roster (`memory`, `local`, `s3`).
 
-Back-ends are thin wrappers over the `object_store` crate (Apache Arrow project): `object_store` provides the actual filesystem / S3 / in-memory machinery; `core::io` owns the public trait vocabulary, the `Location` scheme parser, and the `IoErrorKind` taxonomy. `object_store` is an implementation detail — consumers never see its types.
+Back-ends thin-wrap `object_store` (Apache Arrow); `object_store` is internal and never appears on the public surface (one documented escape hatch: §8.3).
 
-Domain-specific functions like `load_model` (`32 §10.4`), `load_catalogs` (`32 §10.4`), and `load_manifest` (`33 §16.5`) do **not** live here. They live in the crate that owns the corresponding typed artifact. Core owns the transport; consumers own the format.
+Trait surface: see §3 (Source) and §4 (Sink). Domain wrappers (`load_model`, `load_manifest`) live in the crate owning the typed artifact.
 
 ## 1. Purpose and Scope
 
@@ -34,20 +34,18 @@ Domain-specific functions like `load_model` (`32 §10.4`), `load_catalogs` (`32 
 
 ### 1.2 What `semstrait-common::io` does NOT own
 
-- `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs`. Those live in `semstrait-model::io` (`32 §10.4`) because they reference `SemanticModel` / `CatalogsConfig`.
-- `load_manifest` / `dump_manifest`. Those live in `semstrait-manifest::io` (`33 §16.5`) and reference `SemanticManifest`.
-- Directory walking, `$include` directive handling, multi-file merging. **Out of scope forever** — callers that need multi-source aggregation perform their own enumeration (`std::fs::read_dir`, `object_store::ObjectStore::list`, or a CLI-level helper) and stitch the results themselves.
-- Format decoding (YAML / JSON / MessagePack). Transport yields bytes; format is a domain-crate concern.
-- Retry policies, CDN failover, credential rotation. `object_store` handles transient retries internally; higher-level policies are caller concerns.
-- Conditional writes (compare-and-swap / if-none-match). v1 ships with last-writer-wins semantics; CAS can land later as a MINOR extension trait if a concrete need surfaces.
+- `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` — `semstrait-model::io` (`32 §10.4`).
+- `load_manifest` / `dump_manifest` — `semstrait-manifest::io` (`33 §16.5`).
+- Directory walking, `$include`, multi-file merging.
+- Format decoding (YAML / JSON / MessagePack).
+- Retry policies, CDN failover, credential rotation.
+- Conditional writes (compare-and-swap / if-none-match).
 
 ### 1.3 Design posture
 
-Three invariants drive the shape:
-
-1. **Cycle-free.** Core cannot import from `semstrait-model` / `semstrait-manifest` (they depend on core). Therefore core's `io` module knows about bytes, not about `SemanticModel` / `SemanticManifest`.
-2. **Feature-gated cloud SDKs.** AWS (and future GCS / Azure / HTTP) back-ends compile only when opted-in, so library crates that only need local I/O don't pay the cloud-SDK compile cost.
-3. **Polymorphic ergonomics via `Location`.** A consumer holding a `Location` value can call `src.read::<String>().await` without caring which back-end is underneath. `Location` is `Clone + Debug` and carried by value in diagnostics, caches, and audit logs.
+1. Cycle-free: `io` knows bytes, not `SemanticModel` / `SemanticManifest`.
+2. Cloud SDKs are feature-gated.
+3. Polymorphic dispatch via `Location` (`Clone + Debug`, carried by value).
 
 ## 2. Module Layout
 
@@ -124,34 +122,11 @@ pub trait Source: Send + Sync {
 }
 ```
 
-### 3.1 Async posture
+### 3.1 Source contract
 
-`Source::read_raw` and `Source::read` use the stable async-fn-in-trait shape (Rust 1.75+) with an explicit `+ Send` bound on the returned future. Implementations that perform blocking work wrap via `tokio::task::spawn_blocking`. Consumers await inside their own runtime; `core::io` does not own the runtime and does not block.
-
-### 3.2 Cancellation and timeouts
-
-Standard tokio cancellation applies: dropping the future aborts the read mid-flight. No `CancellationToken` parameter is threaded through the trait. Callers enforce deadlines via `tokio::time::timeout(duration, src.read_raw())`. Implementations must not leave partial state visible on cancellation — in-memory back-ends never mutate on `read`; network back-ends drop the in-flight connection cleanly (delegated to `object_store`).
-
-### 3.3 Idempotency
-
-`read_raw` / `read` are idempotent from the caller's perspective: calling twice on the same `Source` returns the same payload unless the underlying store changed between calls.
-
-### 3.4 Size limits
-
-None at the transport level. A caller that loads a multi-gigabyte blob pays the memory cost. If a domain wrapper (e.g. `load_model`) wants to cap input size, it does so in its own layer. This matches `object_store`'s default posture.
-
-### 3.5 `describe()` contract
-
-`describe()` is the stable content-addressable identity of the source — NOT a human-readable free-form log message. The contract is:
-
-> If two `Source` handles `a` and `b` satisfy `a.describe() == b.describe()`, then `a.read_raw()` and `b.read_raw()` yield identical bytes (absent concurrent mutation).
-
-Consequences per back-end:
-
-- `LocalFile::describe()` returns an absolute path string. Two `LocalFile` handles constructed from the same canonicalized path have equal `describe()`; a handle constructed from `./x.yaml` and one from `/abs/x.yaml` have *different* `describe()` even if the paths resolve to the same file. Canonicalization is the caller's responsibility if cache hits matter.
-- `S3Source::describe()` returns `"s3://<bucket>/<key>"`. Trivially stable.
-- `InMemory::describe()` returns `"mem:<name>"`, where `name` is supplied at construction (`InMemory::new(name, bytes)`). Anonymous in-memory sources are not supported — the contract requires a user-picked identity.
-- `Location::describe()` delegates to the inner back-end.
+- Async via stable async-fn-in-trait (Rust 1.75+) with `+ Send` bound; blocking impls wrap via `tokio::task::spawn_blocking`. Cancellation: drop the future; deadlines via `tokio::time::timeout`.
+- `read_raw` / `read` are idempotent; no transport-level size limit.
+- `describe()` is stable content-addressable identity: equal `describe()` ⇒ equal bytes (absent concurrent mutation); MUST NOT emit secrets. Per back-end: `LocalFile` → absolute path (caller canonicalizes); `S3Source` → `s3://<bucket>/<key>`; `InMemory` → `mem:<name>` (constructor-supplied, never anonymous); `Location` delegates.
 
 ---
 
@@ -515,8 +490,6 @@ With `--no-default-features`, the `io` module disappears from `semstrait-common`
 | `thiserror`                         | —        | Already a `semstrait-common` dep for error types (`31 §12`)                                                   |
 | `dashmap`                           | `io`     | `OnceLock<DashMap<ClientKey, Arc<AmazonS3>>>` for the `Location`-dispatch client cache                      |
 
-
-**Amendment to `31 §1.3`.** The original "`semstrait-common` is the leaf of the workspace DAG — depends on nothing" posture is refined: under default features, `semstrait-common` depends on `tokio`, `bytes`, `object_store`, and `dashmap`. Under `--no-default-features`, the original zero-runtime-dep shape is preserved. This amendment is ratified here and cross-referenced in `31 §12`.
 
 **No transitive dep escalation in downstream crates.** `semstrait-model` disables `io` in its default feature set and uses `parse(&str)`; it gains I/O by enabling its own `io` feature, which forwards to `semstrait-common/io`. `semstrait-api` / `semstrait-facade` / CLI enable `io-aws` explicitly if they need S3.
 

@@ -27,9 +27,9 @@ refined-by:
 
 ## 1. Purpose and Scope
 
-`semstrait-common` is the **leaf** of the semstrait workspace DAG (I7). It owns the small set of types every stage needs that are not specific to any single concept: a way to render a typed diagnostic, a way to read or write a byte blob, and the shape-only constraint DSL that `Measure` / `Metric` carriers attach as authoring policy.
+`semstrait-common` is the substrate crate at the root of the workspace DAG (I7). It owns stage-agnostic infrastructure: the diagnostic envelope, the byte-blob `io` transport, and the shape-only constraint DSL.
 
-The crate's identity is positive: it is the home for **stage-agnostic infrastructure**. A type belongs in `common` when it is consumed by two or more stages and carries no per-stage vocabulary (no expression tree, no plan tree, no engine identity). A type belongs elsewhere when it carries one of those vocabularies — even if multiple stages consume it.
+Surface roster: see §1.1.
 
 ### 1.1 What `semstrait-common` OWNS
 
@@ -39,32 +39,30 @@ The crate's identity is positive: it is the home for **stage-agnostic infrastruc
 
 ### 1.2 What `semstrait-common` does NOT own
 
-- **Canonical type vocabulary.** `DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn` live in `semstrait-ir::types` per `[35](35_semstrait_ir.md)`. These types belong with the IR because they are the canonical shapes the IR operates on — `Cast { target: DataType }`, typed `Literal`, `ResolvedColumn { data_type }`. `semstrait-common` does NOT re-export them.
-- **Every expression-tree-tied type.** `Expr<L>`, leaf sets, accessor enums, `Parameter`, support enums (`BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `WindowFrameKind`, `WindowBound`), `Literal`, identifier carriers (`ColumnRef`, `SemanticsName`), the `expr_fn` DSL, `CanonicalFn` / `FunctionRegistry`, and the narrow ir-emitted error kinds (`ValidateError`, `CompileError`) all live in `semstrait-ir` per `[35](35_semstrait_ir.md)`.
-- **Plan-tree types.** `SemanticPlan`, `PlanNode`, `NodeMeta`, `SourceRef`, `ResolvedColumn`, the adapter-consumable artifact family — all in `semstrait-ir` per `[35](35_semstrait_ir.md)`.
-- **The YAML authoring surface.** `ExprSource` and the reserved-tag dispatch live in `semstrait-model` per `[14 §9.3](../foundations/14_expressions.md)` and `[32](32_semstrait_model.md)`.
-- **SemanticManifest structure, planner + plan tree, engine identity / dialect, catalog / filesystem, name resolution algorithms, domain load / dump wrappers.** Per the per-crate routing in `[INDEX.md §3](../INDEX.md)`.
+| Surface | Owning crate | Doc |
+|---|---|---|
+| Canonical type vocabulary (`DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn`) | `semstrait-ir::types` | `[35](35_semstrait_ir.md)` |
+| Expression-tree types (`Expr<L>`, leaves, `Parameter`, op enums, `Literal`, `ColumnRef`, `SemanticsName`, `expr_fn`, `CanonicalFn` / `FunctionRegistry`, ir-emitted `ValidateError` / `CompileError`) | `semstrait-ir` | `[35](35_semstrait_ir.md)` |
+| Plan-tree types (`SemanticPlan`, `PlanNode`, `NodeMeta`, `SourceRef`, `ResolvedColumn`) | `semstrait-ir` | `[35](35_semstrait_ir.md)` |
+| YAML authoring surface (`ExprSource`, reserved-tag dispatch) | `semstrait-model` | `[14 §9.3](../foundations/14_expressions.md)`, `[32](32_semstrait_model.md)` |
+| `SemanticManifest`, planner + plan tree, engine identity / dialect, catalog / filesystem, name resolution, domain load / dump wrappers | per-crate | `[INDEX.md §3](../INDEX.md)` |
 
 ### 1.3 Design posture — workspace-wide infrastructure
 
-`semstrait-common` exists for **stage-agnostic infrastructure**. The placement rule:
+Placement rule: a type belongs in `semstrait-common` iff (a) consumed by two or more stages and (b) carries no per-stage vocabulary (no expression tree, no plan tree, no engine identity, no canonical type roster).
 
-> A type belongs in `semstrait-common` iff (a) it is consumed by two or more stages, and (b) it carries no per-stage vocabulary — no expression tree, no plan tree, no engine identity, no canonical type roster.
-
-The diagnostic envelope satisfies both clauses: every stage emits `Diagnostic<K>` with its own `K`, and the envelope itself carries no expression / plan / engine vocabulary. `io` satisfies both clauses: every domain-specific load / dump wrapper composes `Source` / `Sink`, and the transport carries no domain vocabulary. The shape-only constraint DSL satisfies both clauses: it crosses model→planner with `Vec<String>` membership lists and `Option<…>` blocks, no expression tree.
-
-Engine-identity dependencies (datafusion, arrow, duckdb, substrait) are rejected outright. The crate is the workspace DAG root: zero workspace dependencies; every other crate depends on `semstrait-common` directly or transitively.
-
-**I/O amendment (ratified in `[31b](31b_semstrait_common_io.md)`).** The `io` module provides the shared transport vocabulary every downstream load / dump wrapper composes. Under default features (`io` ON), `semstrait-common` pulls `tokio`. Under `--no-default-features`, the crate retains its zero-runtime-dep posture (only `thiserror`). Cloud SDKs (`aws-sdk-s3`, future `gcs` / `azure`) sit behind additional opt-in flags.
+- Stage-agnostic: only types meeting both clauses above.
+- Workspace-DAG root: zero `semstrait-*` workspace dependencies.
+- No engine-identity dependencies: `datafusion`, `arrow`, `duckdb`, `substrait` are rejected.
+- I/O posture: `io` feature default ON pulls `tokio` / `bytes` / `object_store` / `dashmap`; `--no-default-features` keeps only `thiserror`. Cloud SDKs sit behind additional opt-in flags. Full spec: `[31b](31b_semstrait_common_io.md)`.
 
 ### 1.4 Boundary rule for expression-bodied future constraints
 
-Constraint blocks come in two shapes, and only one belongs here:
+Shape-only constraint blocks live in `semstrait-common::constraints` (§6); any constraint carrying `Expr<L>` or other expression-tree vocabulary lives in `semstrait-ir`.
 
-- **Shape-only constraint DSL** — fields are scalars, strings, scalar lists, or `Option<…>` blocks; no expression tree. Current `MeasureConstraints` / `DimensionConstraints` / `AggregationConstraints` are shape-only. Lives in `semstrait-common::constraints` (§6).
-- **Expression-bodied constraint DSL** — fields carry `Expr<L>` predicates, derivation rules referencing `SemanticLeaf`, or any expression-tree vocabulary. Belongs in `semstrait-ir` alongside the other expression-bearing types. The placement rationale matches `35 §1.1`: anything carrying expression vocabulary lives with the IR.
+Triggers: a new constraint field references `Expr<L>`, `SemanticLeaf`, or any expression-bearing type.
 
-This boundary is reservation, not implementation. v1 has only shape-only constraints; the rule pre-allocates the future split so author-defined constraint blocks (e.g., predicates relating one Metric to another, derivation guards over Measure expressions) land cleanly in `semstrait-ir` when introduced. No v1 ratification is required to keep the boundary; any expression-bodied constraint introduced post-v1 must declare its home in `semstrait-ir`, never `semstrait-common`.
+Escalation: introduce the new constraint in `semstrait-ir`, never in `semstrait-common`; cross-reference `[35 §1.1](35_semstrait_ir.md)`.
 
 ## 2. Module Layout
 
@@ -407,6 +405,3 @@ Concrete crate-level guarantees mapping to `[00 §9](../00_overview.md)` invaria
 | **I11** — no downward I/O surprises | Transport primitives (`io::Source`, `io::Sink`, `io::Location`, `io::backends::{memory, local, s3}`) live here under the `io` feature flag (ratified in `[31b](31b_semstrait_common_io.md)`). Domain-specific load / dump (`load_model`, `load_manifest`) do not — they live in the crate that owns the typed artifact. `reqwest`, `hyper`, raw `std::net` sockets remain rejected; cloud SDKs (`aws-sdk-s3`) sit behind opt-in `io-aws`. The dependency audit (§9.1) is enforced in CI via `cargo deny`. |
 | **I12** — first-class diagnostics | `Diagnostic<K>` and `Diagnose` are the workspace's diagnostic primitives. `Diagnostic<K>` carries `kind: K, severity, location, notes`; the kind decides per-variant rendering and severity defaults via `Diagnose`. No central error-code allocation; stable identification is variant identity. The parallel observability channel (`tracing`) is described in `[30 §6](../foundations/30_stability_diagnostics.md)`; library code never writes to stdout / stderr. `IoError` per `[31b §6](31b_semstrait_common_io.md)` is its own kind enum implementing `Diagnose`. |
 
-## 11. Migration Note
-
-The crate name `semstrait-common` replaces the legacy `semstrait-common`. The migration delta — including the canonical type vocabulary moving from `core::types` to `semstrait-ir::types` — is tracked in `[implementation/40_refactor_plan.md](../implementation/40_refactor_plan.md)` under `[TD-CRATE-RENAME-CORE-COMMON]` and `[TD-TYPES-MIGRATION-CORE-TO-IR]`. The legacy crate `crates/semstrait-common/` is flagged for deletion in `[implementation/41_deprecations.md](../implementation/41_deprecations.md)`; no transitional re-export, no compat alias.
