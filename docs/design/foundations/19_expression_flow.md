@@ -367,7 +367,7 @@ The per-kind accessor enums (`DimensionAccessor`, `MeasureAccessor`, `MetricAcce
 
 #### 3.3.3 Structural variants — recurse and rebuild
 
-For every non-`Leaf` variant of `Expr<L>` (per `14 §3.3`), the algorithm recurses on the children, then rebuilds the same variant tag with resolved children. Variant tag and non-child fields are preserved verbatim (this is the `Tree::with_new_children` contract from `[31 §3.2](../apis/31_semstrait_core.md)`).
+For every non-`Leaf` variant of `Expr<L>` (per `14 §3.3`), the algorithm recurses on the children, then rebuilds the same variant tag with resolved children. Variant tag and non-child fields are preserved verbatim (this is the `Tree::with_new_children` contract from `[31 §3.2](../apis/31_semstrait_common.md)`).
 
 **Three structural notes:**
 

@@ -5,7 +5,7 @@ authoritative-for:
   - the `SemanticManifest` struct: top-level field roster, `#[non_exhaustive]` status, serde/persistence posture
   - the `ResolvedDataKind` family: `Simple | Complex(Unionset | Grainset | Joinset)` split at the SemanticManifest layer
   - `ResolvedJoinset` / `ResolvedUnionset` carriage of `origin: Origin` per `16 §5.6`; `Grainset` is always `Origin::Explicit`
-  - `Origin` / `ImplicitId` — re-exported from `semstrait-core::composition` per `16 §5.6` / `§5.7`; carry the explicit-vs-implicit axis for compositions
+  - `Origin` / `ImplicitId` — re-exported from `semstrait-common::composition` per `16 §5.6` / `§5.7`; carry the explicit-vs-implicit axis for compositions
   - `ResolvedBinding` / `ResolvedPhysicalSource` / `ResolvedColumnMapping` SemanticManifest-layer shape (refines `15 §9`)
   - `ResolvedExprTable` SemanticManifest-facing surface (`lookup`, `lookup_all`, `iter`; the map is owned here, shape in `19 §3.2`)
   - `ResolvedRelationship` SemanticManifest-layer shape (refines `16 §3` for the compiled form)
@@ -23,7 +23,7 @@ authoritative-for:
   - stability tier: MINOR vs. MAJOR cases per `30 §2` for every public leaf in this doc
   - crate boundaries — no planner code, no I/O except through provider traits and `core::io`, no raw SQL
 refined-by:
-  - 31b (`semstrait-core::io` — transport vocabulary used by §16.5 and future `Repository` impls)
+  - 31b (`semstrait-common::io` — transport vocabulary used by §16.5 and future `Repository` impls)
   - 34 (`semstrait-planner` — consumes `SemanticManifest` synchronously at plan time; never re-resolves)
   - 36 (`semstrait-adapter` — consumes `PhysicalExpr` from `ResolvedExprTable` entries at `adapt`)
   - 37 (`semstrait-catalog` — authoritative for `CatalogProvider` / `FileSystem` trait surfaces; `33` only names them)
@@ -45,7 +45,7 @@ refined-by:
 
 ### 1.1 Crate responsibility
 
-`semstrait-manifest` sits above `semstrait-core`, `semstrait-ir`, and `semstrait-model` in the workspace DAG (`30 §13`; I7) — post-second-cascade landing (`STATUS.md` item Q) the manifest crate depends on `semstrait-ir` for the full expression vocabulary (`Expr<L>`, `PhysicalExpr`, `FunctionRegistry`, `CanonicalFn`, `ir::CompileError` per `35`). It owns exactly two things:
+`semstrait-manifest` sits above `semstrait-common`, `semstrait-ir`, and `semstrait-model` in the workspace DAG (`30 §13`; I7) — post-second-cascade landing (`STATUS.md` item Q) the manifest crate depends on `semstrait-ir` for the full expression vocabulary (`Expr<L>`, `PhysicalExpr`, `FunctionRegistry`, `CanonicalFn`, `ir::CompileError` per `35`). It owns exactly two things:
 
 1. The `**compile` stage** — the `SemanticModel + Catalog → SemanticManifest` transformation ratified in `10 §3.3`. This is the only stage in the `semstrait-*` pipeline where async I/O is permitted (per I11a).
 2. The `**SemanticManifest`** — the sealed, planner-complete, engine-agnostic artifact that `compile` produces and that every stage from `plan` onward consumes synchronously (per I8 / I6).
@@ -65,7 +65,7 @@ Persistence (`Repository` trait + two bundled impls, `InMemoryRepository` and `F
 - **Post-compile consumption is synchronous.** `plan` / `optimize` / `adapt` consume the `SemanticManifest` through `&` references; `Arc<SemanticManifest>` is the conventional carrier inside `semstrait-api`. Re-entrant lookup is O(log n) per `19 §3.2.3`.
 - **Determinism is cross-cutting.** Every ordered map in the SemanticManifest is a `BTreeMap`; every serialized output is byte-stable given the same input bytes. §13 ratifies the testing discipline.
 
-Per I7, the crate's workspace dependencies are exactly four: `semstrait-core`, `semstrait-ir`, `semstrait-model`, `semstrait-catalog`. No dep on `semstrait-planner`, `semstrait-adapter`, or any engine crate. A SemanticManifest artifact flows downward; the manifest crate never reaches back up. The `semstrait-ir` dep is the canonical-IR layer producing `Expr<L>`, `PhysicalExpr`, `FunctionRegistry`, and the narrow `ir::CompileError` that `compile` embeds via D.ii nesting (§10).
+Per I7, the crate's workspace dependencies are exactly four: `semstrait-common`, `semstrait-ir`, `semstrait-model`, `semstrait-catalog`. No dep on `semstrait-planner`, `semstrait-adapter`, or any engine crate. A SemanticManifest artifact flows downward; the manifest crate never reaches back up. The `semstrait-ir` dep is the canonical-IR layer producing `Expr<L>`, `PhysicalExpr`, `FunctionRegistry`, and the narrow `ir::CompileError` that `compile` embeds via D.ii nesting (§10).
 
 ### 1.4 Guardrails — how `33` upholds `00 §9` invariants
 
@@ -115,7 +115,7 @@ semstrait-manifest
 | `SemanticManifestFormatVersion`                                                     | `repository`               | on-disk format discriminator                                                                                                        |
 | `ResolvedDataKind`                                                                  | `manifest::datakind`       | sum type: `Simple                                                                                                                   |
 | `ResolvedSimpleDataKind`, `ResolvedUnionset`, `ResolvedGrainset`, `ResolvedJoinset` | `manifest::datakind`       | per-variant resolved shape (Joinset / Unionset carry `origin: Origin` per `16 §5.6`)                                                |
-| `Origin`, `ImplicitId`                                                              | `manifest::datakind`       | re-exports from `semstrait-core::composition` per `16 §5.6` / `§5.7`; carry the explicit-vs-implicit axis on Joinsets and Unionsets |
+| `Origin`, `ImplicitId`                                                              | `manifest::datakind`       | re-exports from `semstrait-common::composition` per `16 §5.6` / `§5.7`; carry the explicit-vs-implicit axis on Joinsets and Unionsets |
 | `ResolvedBinding`                                                                   | `manifest::binding`        | SemanticManifest-layer Binding                                                                                                      |
 | `ResolvedPhysicalSource`                                                            | `manifest::binding`        | SemanticManifest-layer PhysicalSource                                                                                               |
 | `ResolvedColumnMapping`                                                             | `manifest::binding`        | flattened binding map                                                                                                               |
@@ -348,12 +348,12 @@ Mirrors `DataKindOps` from `semstrait-model` per `20 §2.2`. Consumed by the pla
 
 ### 4.7 `Origin` and `ImplicitId`
 
-Re-exported from `semstrait-core::composition` per `16 §5.6` / `§5.7`. The shape ratification is owned by `16`; `33` carries it on `ResolvedJoinset` / `ResolvedUnionset`.
+Re-exported from `semstrait-common::composition` per `16 §5.6` / `§5.7`. The shape ratification is owned by `16`; `33` carries it on `ResolvedJoinset` / `ResolvedUnionset`.
 
 ```rust
-pub use semstrait_core::composition::{Origin, ImplicitId};
+pub use semstrait_common::composition::{Origin, ImplicitId};
 
-// For reference — definitions in `semstrait-core::composition`:
+// For reference — definitions in `semstrait-common::composition`:
 //
 // #[non_exhaustive]
 // pub enum Origin {
@@ -402,7 +402,7 @@ pub struct ResolvedBinding {
 }
 ```
 
-`BindingId` is re-exported from `semstrait-core` (ratified in `19 §3.2.1`):
+`BindingId` is re-exported from `semstrait-common` (ratified in `19 §3.2.1`):
 
 ```rust
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -498,7 +498,7 @@ Every `SemanticsName` on the owning DataKind's `SemanticInterface` appears in ex
 
 `CoverageKey.source_index` is per-source within a binding (not `BindingId`); the planner needs that granularity when materializing multi-source bindings per `23 §6`. The SemanticManifest-level `CoverageIndex` (§7) adds the `BindingId` dimension. `CoverageVariant` distinguishes Semantics native to the source (`Native`), projected via `NULL`-padding (`NullFill`), produced via the `computed` map (`Derived`), or read from the source's per-source `metadata_values` map for metadata-bound Semantics (`Metadata`, per `15 §6.1` 4-variant roster).
 
-`ResolvedLiteral`, `MetadataDimensionRecipe`, `MetadataExtraction`, `ColumnName`, `PartitionColumn`, `LiteralValue` are re-exported from `semstrait-core` / `semstrait-model`. `PhysicalExpr` is the `semstrait-ir` type from `35 §3.6` (sourced via `14 §2`).
+`ResolvedLiteral`, `MetadataDimensionRecipe`, `MetadataExtraction`, `ColumnName`, `PartitionColumn`, `LiteralValue` are re-exported from `semstrait-common` / `semstrait-model`. `PhysicalExpr` is the `semstrait-ir` type from `35 §3.6` (sourced via `14 §2`).
 
 ---
 
@@ -509,7 +509,7 @@ Every `SemanticsName` on the owning DataKind's `SemanticInterface` appears in ex
 The `ResolvedExprTable` shape is authoritative in `19 §3.2`. `33`'s role is to document ownership and access at the SemanticManifest layer; all shape details are cross-referenced.
 
 ```rust
-pub use semstrait_core::expr::{
+pub use semstrait_common::expr::{
     ResolvedExprTable,
     ResolvedExprKey,
     ResolvedExprEntry,
@@ -764,7 +764,7 @@ impl SemanticManifest {
 ### 9.1 Signature
 
 ```rust
-use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+use semstrait_common::diagnostic::{Diagnostic, Diagnostics};
 
 pub async fn compile(
     model: SemanticModel,
@@ -812,11 +812,11 @@ Parse / validate warnings are not re-surfaced by `compile` — those are the cal
 
 ### 10.1 Typed-kind enum
 
-The SemanticManifest-layer `CompileError` **owns** the wider resolution-stage roster (name resolution, catalog resolution, binding resolution, relationship / composition graph, type resolution, function-signature matching) and **embeds** the narrow `ir::CompileError` (`35 §15.2`) via D.ii kind-nesting (`30 §7.4`) for function-return-rule failures raised by `ReturnTypeRule::Custom` callbacks inside `semstrait-ir`'s `FunctionRegistry`. Per `30 §5`'s typed-kind discipline, the kind enum carries semantic payload only — primary `Location` lives on the wrapping `Diagnostic<CompileError>` envelope per `30 §5.1`.
+The SemanticManifest-layer `CompileError` **owns** the wider resolution-stage roster (name resolution, catalog resolution, binding resolution, relationship / composition graph, type resolution, function-signature matching) and **embeds** the narrow `ir::CompileError` (`35 §16.2`) via D.ii kind-nesting (`30 §7.4`) for function-return-rule failures raised by `ReturnTypeRule::Custom` callbacks inside `semstrait-ir`'s `FunctionRegistry`. Per `30 §5`'s typed-kind discipline, the kind enum carries semantic payload only — primary `Location` lives on the wrapping `Diagnostic<CompileError>` envelope per `30 §5.1`.
 
 ```rust
-use semstrait_core::diagnostic::{Diagnose, Severity};
-use semstrait_core::{DataType, Location};
+use semstrait_common::diagnostic::{Diagnose, Severity};
+use semstrait_common::{DataType, Location};
 use semstrait_ir as ir;
 
 #[non_exhaustive]
@@ -877,7 +877,7 @@ pub enum CompileError {
 
     // -- IR-emitted function-return-rule failure (D.ii nesting per `30 §7.4`).
     //    Surfaces `ReturnTypeRule::Custom` callback failures raised inside
-    //    `semstrait-ir`'s `FunctionRegistry` resolution. Defined in `35 §15.2`.
+    //    `semstrait-ir`'s `FunctionRegistry` resolution. Defined in `35 §16.2`.
     Ir(ir::CompileError),
 }
 
@@ -922,7 +922,7 @@ Warnings live on `manifest.metadata.warnings` (success arm) or in the failure tu
 ### 11.1 Surface
 
 ```rust
-use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+use semstrait_common::diagnostic::{Diagnostic, Diagnostics};
 
 pub trait Repository: Send + Sync {
     async fn save(
@@ -963,8 +963,8 @@ Persistence trait for `SemanticManifest`s. `load` is one of the two out-of-band 
 ### 11.2 `RepositoryErrorKind`
 
 ```rust
-use semstrait_core::diagnostic::{Diagnose, Severity};
-use semstrait_core::io::IoErrorKind;
+use semstrait_common::diagnostic::{Diagnose, Severity};
+use semstrait_common::io::IoErrorKind;
 
 #[non_exhaustive]
 pub enum RepositoryErrorKind {
@@ -1092,7 +1092,7 @@ A compile-internal algorithm change that preserves every `canonical_bytes()` out
 Per `30 §10.4`, `serde` support is opt-in via a `serde` feature. `semstrait-manifest`:
 
 - Default-off in v1.
-- `serde` feature enables `Serialize` / `Deserialize` on every public type in §2 (`SemanticManifest`, every `Resolved`*, `CoverageIndex`, `CompositionIndex`, `SemanticManifestMetadata`, `SemanticManifestId`, `SemanticManifestFormatVersion`) and transitively enables `semstrait-core`'s `serde` feature.
+- `serde` feature enables `Serialize` / `Deserialize` on every public type in §2 (`SemanticManifest`, every `Resolved`*, `CoverageIndex`, `CompositionIndex`, `SemanticManifestMetadata`, `SemanticManifestId`, `SemanticManifestFormatVersion`) and transitively enables `semstrait-common`'s `serde` feature.
 - `FileSystemRepository` requires `serde`; `InMemoryRepository` does not.
 
 ### 14.2 Format choice is `Repository`-selectable
@@ -1172,8 +1172,8 @@ Per `30 §12`: any symbol slated for removal passes through `#[deprecated]` for 
 
 ### 16.1 What `semstrait-manifest` does NOT contain
 
-- **No planner code.** `SemanticPlan`, `PlanError`, `Request`, `SessionContext` live in `semstrait-planner`. The `PlanNode` container is **defined** in `semstrait-ir` (`35 §6` / `§7`) but populated by `semstrait-planner` — `33` neither defines it nor builds it.
-- **No adapter code.** `EngineAdapter`, `DialectId`, `AdaptError`, `EngineArtifact` live in `semstrait-adapter`. The SemanticManifest carries only the engine-agnostic `DataType` (from `semstrait-core` per `13 §2`) and `PhysicalExpr` (from `semstrait-ir` per `35 §3.6`, sourced via `14 §2` ratification).
+- **No planner code.** `SemanticPlan`, `PlanError`, `Request`, `SessionContext` live in `semstrait-planner`. The `PlanNode` container is **defined** in `semstrait-ir` (`35 §7` / `§7`) but populated by `semstrait-planner` — `33` neither defines it nor builds it.
+- **No adapter code.** `EngineAdapter`, `DialectId`, `AdaptError`, `EngineArtifact` live in `semstrait-adapter`. The SemanticManifest carries only the engine-agnostic `DataType` (from `semstrait-common` per `13 §2`) and `PhysicalExpr` (from `semstrait-ir` per `35 §3.6`, sourced via `14 §2` ratification).
 - **No catalog I/O logic.** Catalog / filesystem trait methods are consumed by `compile` but provided by `semstrait-catalog`. No catalog impl is bundled here.
 - **No raw SQL.** `ResolvedPhysicalSource` is engine-agnostic; dialect rendering is `semstrait-adapter`'s job.
 - **No YAML parser.** `SemanticModel` arrives parsed; parsing lives in `semstrait-model`.
@@ -1187,7 +1187,7 @@ The `compile` function and its sub-passes; the `SemanticManifest` struct and eve
 
 Depends on exactly four workspace crates per the second-cascade landing (`STATUS.md` item Q):
 
-- `semstrait-core` — for `DataType`, `Schema`, `Diagnostic<K>` / `Diagnose`, the constraint DSL, `IoErrorKind`, and the `io` transport traits from `31b`.
+- `semstrait-common` — for `DataType`, `Schema`, `Diagnostic<K>` / `Diagnose`, the constraint DSL, `IoErrorKind`, and the `io` transport traits from `31b`.
 - `semstrait-ir` — for `Expr<L>`, `PhysicalExpr`, `SemanticExpr`, the trait family (`Tree`, `Visitor`, `Rewriter`, `ExprLeaf`), the structural-variant support enums (`BinaryOpKind`, …), the identifier carriers (`ColumnRef`, `SemanticsName`), `CanonicalFn`, `FunctionRegistry`, `ir::CompileError` (embedded in §10 via D.ii), and the `PlanNode` container that the downstream planner populates.
 - `semstrait-model` — for `SemanticModel`, `ExprSource`, and Model-layer names.
 - `semstrait-catalog` — for the `CatalogProvider` / `FileSystem` trait surfaces and `Schema` / `PartitionColumn`.
@@ -1200,11 +1200,11 @@ Three async surfaces cross this crate's public boundary: `compile` (I11a), `Repo
 
 ### 16.5 SemanticManifest-level I/O convenience wrappers (`semstrait-manifest::io`)
 
-A small feature-gated submodule exposes one-shot load / dump helpers that compose `semstrait-core::io` (`31b`) with manifest byte-level encoding, for callers that want single-function ergonomics rather than constructing a full `Repository`:
+A small feature-gated submodule exposes one-shot load / dump helpers that compose `semstrait-common::io` (`31b`) with manifest byte-level encoding, for callers that want single-function ergonomics rather than constructing a full `Repository`:
 
 ```rust
-use semstrait_core::io::{Source, Sink, IoErrorKind};
-use semstrait_core::diagnostic::{Diagnose, Diagnostic, Diagnostics, Severity};
+use semstrait_common::io::{Source, Sink, IoErrorKind};
+use semstrait_common::diagnostic::{Diagnose, Diagnostic, Diagnostics, Severity};
 
 pub mod io {
     pub async fn load_manifest<S: Source + ?Sized>(
@@ -1251,9 +1251,9 @@ pub mod io {
 
 **Fused-kind composition.** Both `SemanticManifestLoadErrorKind` and `SemanticManifestDumpErrorKind` follow the cross-crate kind-nesting pattern from `30 §5.6`: the `Io` variant embeds `IoErrorKind` directly so transport-level identification is preserved without cloning variants. Because `IoErrorKind` itself is `#[non_exhaustive]` (`31b §7`), adding an `IoErrorKind` variant propagates as a MINOR through this layer per `30 §4.4`'s match-discipline rule. Identification is by variant identity per `30 §5.4`; there is no string-code accessor.
 
-**Feature flag.** Gated behind `manifest`'s `io` feature (default off), which forwards to `semstrait-core/io`. `aws` feature forwards to `semstrait-core/io-aws`.
+**Feature flag.** Gated behind `manifest`'s `io` feature (default off), which forwards to `semstrait-common/io`. `aws` feature forwards to `semstrait-common/io-aws`.
 
-**Migration note.** Pre-`31b` the manifest crate shipped a `load_text` helper for loading YAML *model* text. Under the ratified layout that utility is superseded by `semstrait-core::io` + `semstrait-model::io::load_model` (`32 §10.4`). Removal of `semstrait-manifest::io::load_text` is the closing step of `TD-008`.
+**Migration note.** Pre-`31b` the manifest crate shipped a `load_text` helper for loading YAML *model* text. Under the ratified layout that utility is superseded by `semstrait-common::io` + `semstrait-model::io::load_model` (`32 §10.4`). Removal of `semstrait-manifest::io::load_text` is the closing step of `TD-008`.
 
 ---
 

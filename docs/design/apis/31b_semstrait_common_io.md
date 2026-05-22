@@ -1,8 +1,8 @@
 ---
 prereqs: [00, 30, 31]
 authoritative-for:
-  - the `semstrait-core::io` module surface: the `Source` / `Sink` async traits, the `FromIoBytes` / `IntoIoBytes` conversion traits, the `Location` polymorphic enum, the `IoErrorKind` typed-kind enum
-  - the back-end roster exposed under `semstrait-core::io::backends`: `memory`, `local`, `s3` (feature-gated)
+  - the `semstrait-common::io` module surface: the `Source` / `Sink` async traits, the `FromIoBytes` / `IntoIoBytes` conversion traits, the `Location` polymorphic enum, the `IoErrorKind` typed-kind enum
+  - the back-end roster exposed under `semstrait-common::io::backends`: `memory`, `local`, `s3` (feature-gated)
   - the adoption of `object_store` (Apache Arrow) as the internal back-end implementation; `object_store` is NEVER part of the public surface
   - the async posture (tokio) and its consequences for targets (`--no-default-features` preserves the original zero-runtime-dep posture)
   - the feature-flag set: `io` (default ON) and `io-aws` (default OFF); the v1 back-end roster is frozen at `memory` / `local` / `s3`
@@ -12,9 +12,9 @@ refined-by:
   - 33 §16.5 (`semstrait-manifest::io::{load_manifest, dump_manifest}` — manifest-level wrappers)
 ---
 
-# 31b. `semstrait-core::io` — Byte-Blob I/O Transport Layer
+# 31b. `semstrait-common::io` — Byte-Blob I/O Transport Layer
 
-`31b` pins the byte-blob I/O protocol that every `semstrait-*` crate layers its format-specific load/dump wrappers on top of. It extends `semstrait-core` with a single new module (`io`) whose surface is deliberately minimal: two async traits (`Source`, `Sink`) plus two conversion traits (`FromIoBytes`, `IntoIoBytes`), one polymorphic scheme-dispatching enum (`Location`), one typed-kind enum (`IoErrorKind`) implementing `Diagnose` per `30 §5.4`, and a small roster of back-end implementations.
+`31b` pins the byte-blob I/O protocol that every `semstrait-*` crate layers its format-specific load/dump wrappers on top of. It extends `semstrait-common` with a single new module (`io`) whose surface is deliberately minimal: two async traits (`Source`, `Sink`) plus two conversion traits (`FromIoBytes`, `IntoIoBytes`), one polymorphic scheme-dispatching enum (`Location`), one typed-kind enum (`IoErrorKind`) implementing `Diagnose` per `30 §5.4`, and a small roster of back-end implementations.
 
 Back-ends are thin wrappers over the `object_store` crate (Apache Arrow project): `object_store` provides the actual filesystem / S3 / in-memory machinery; `core::io` owns the public trait vocabulary, the `Location` scheme parser, and the `IoErrorKind` taxonomy. `object_store` is an implementation detail — consumers never see its types.
 
@@ -22,7 +22,7 @@ Domain-specific functions like `load_model` (`32 §10.4`), `load_catalogs` (`32 
 
 ## 1. Purpose and Scope
 
-### 1.1 What `semstrait-core::io` OWNS
+### 1.1 What `semstrait-common::io` OWNS
 
 - The `Source` and `Sink` async traits that every back-end implements.
 - The `FromIoBytes` and `IntoIoBytes` conversion traits that let `Source::read::<T>` and `Sink::write::<B>` accept a range of owned / borrowed types (`Bytes`, `Vec<u8>`, `String`, `&str`, `&[u8]`, …).
@@ -32,7 +32,7 @@ Domain-specific functions like `load_model` (`32 §10.4`), `load_catalogs` (`32 
 - Back-end implementations: `backends::memory::InMemory`, `backends::local::LocalFile`, and (feature-gated) `backends::s3::S3Source` + `backends::s3::S3SourceBuilder`.
 - The `io` feature flag (default ON) and the `io-aws` feature flag (default OFF).
 
-### 1.2 What `semstrait-core::io` does NOT own
+### 1.2 What `semstrait-common::io` does NOT own
 
 - `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs`. Those live in `semstrait-model::io` (`32 §10.4`) because they reference `SemanticModel` / `CatalogsConfig`.
 - `load_manifest` / `dump_manifest`. Those live in `semstrait-manifest::io` (`33 §16.5`) and reference `SemanticManifest`.
@@ -54,7 +54,7 @@ Three invariants drive the shape:
 Top-level `pub mod` structure of the new `io` module:
 
 ```
-semstrait-core
+semstrait-common
 ├── expr, types, functions, constraints, diagnostic, error   (per 31 §2)
 └── io                                                       ← NEW (feature "io", default ON)
     ├── Source            (trait)                            // §3
@@ -70,7 +70,7 @@ semstrait-core
         └── s3::S3SourceBuilder                              // cfg(feature = "io-aws")
 ```
 
-**Re-exports.** `semstrait_core::io::`* re-exports `Source`, `Sink`, `FromIoBytes`, `IntoIoBytes`, `Location`, `IoErrorKind`. Back-ends are reached through `semstrait_core::io::backends::{memory, local, s3}`; no back-end type is re-exported at the module root — the flat surface stays tiny, and back-end discovery goes through `backends::`.
+**Re-exports.** `semstrait_common::io::`* re-exports `Source`, `Sink`, `FromIoBytes`, `IntoIoBytes`, `Location`, `IoErrorKind`. Back-ends are reached through `semstrait_common::io::backends::{memory, local, s3}`; no back-end type is re-exported at the module root — the flat surface stays tiny, and back-end discovery goes through `backends::`.
 
 **Placement rationale.** `io` is a top-level module beside `expr` / `types` / `functions` (`31 §2`). It is not nested under any existing module because it is cross-cutting: consumers of `expr` never need it, consumers of `types` never need it, but any crate that loads YAML from disk or from S3 does. A peer module keeps the discovery story flat and the feature-flag gating surgical.
 
@@ -498,10 +498,10 @@ No new back-ends ship in v1. Adding `backends::http`, `backends::gcs`, `backends
 
 ```toml
 [dependencies]
-semstrait-core = { version = "…", default-features = false }
+semstrait-common = { version = "…", default-features = false }
 ```
 
-With `--no-default-features`, the `io` module disappears from `semstrait-core`. `tokio`, `bytes`, `object_store` are not in the dep graph. The crate's original "zero-runtime-dep leaf" posture (`31 §1.3`) is preserved. Consumers that only want `Expr` / `DataType` / `Diagnostic` — no I/O — take this path.
+With `--no-default-features`, the `io` module disappears from `semstrait-common`. `tokio`, `bytes`, `object_store` are not in the dep graph. The crate's original "zero-runtime-dep leaf" posture (`31 §1.3`) is preserved. Consumers that only want `Expr` / `DataType` / `Diagnostic` — no I/O — take this path.
 
 ## 10. Dependency Posture
 
@@ -512,13 +512,13 @@ With `--no-default-features`, the `io` module disappears from `semstrait-core`. 
 | `bytes`                             | `io`     | `Bytes` zero-copy buffer type returned by `Source::read_raw` / accepted by `Sink::write_raw`                |
 | `object_store`                      | `io`     | Back-end implementations (LocalFileSystem, InMemory — via minimal-features set)                             |
 | `object_store` (with `aws` feature) | `io-aws` | S3 back-end (`AmazonS3` + builder)                                                                          |
-| `thiserror`                         | —        | Already a `semstrait-core` dep for error types (`31 §12`)                                                   |
+| `thiserror`                         | —        | Already a `semstrait-common` dep for error types (`31 §12`)                                                   |
 | `dashmap`                           | `io`     | `OnceLock<DashMap<ClientKey, Arc<AmazonS3>>>` for the `Location`-dispatch client cache                      |
 
 
-**Amendment to `31 §1.3`.** The original "`semstrait-core` is the leaf of the workspace DAG — depends on nothing" posture is refined: under default features, `semstrait-core` depends on `tokio`, `bytes`, `object_store`, and `dashmap`. Under `--no-default-features`, the original zero-runtime-dep shape is preserved. This amendment is ratified here and cross-referenced in `31 §12`.
+**Amendment to `31 §1.3`.** The original "`semstrait-common` is the leaf of the workspace DAG — depends on nothing" posture is refined: under default features, `semstrait-common` depends on `tokio`, `bytes`, `object_store`, and `dashmap`. Under `--no-default-features`, the original zero-runtime-dep shape is preserved. This amendment is ratified here and cross-referenced in `31 §12`.
 
-**No transitive dep escalation in downstream crates.** `semstrait-model` disables `io` in its default feature set and uses `parse(&str)`; it gains I/O by enabling its own `io` feature, which forwards to `semstrait-core/io`. `semstrait-api` / `semstrait-facade` / CLI enable `io-aws` explicitly if they need S3.
+**No transitive dep escalation in downstream crates.** `semstrait-model` disables `io` in its default feature set and uses `parse(&str)`; it gains I/O by enabling its own `io` feature, which forwards to `semstrait-common/io`. `semstrait-api` / `semstrait-facade` / CLI enable `io-aws` explicitly if they need S3.
 
 `**object_store` is not re-exported.** Consumers never see `object_store::ObjectStore`, `object_store::Path`, or any of its error types. The one exception is `S3SourceBuilder::with_object_store_builder`, which accepts an `object_store::aws::AmazonS3Builder` as the advanced escape hatch — callers who opt into this API implicitly opt into `object_store` evolution.
 
@@ -546,7 +546,7 @@ v1 does not support the wasm target. Adding wasm support (any flavour — `InMem
 
 ```rust
 use std::str::FromStr;
-use semstrait_core::io::{Location, Source};
+use semstrait_common::io::{Location, Source};
 
 let loc = Location::from_str("./model.yaml")?;
 let text: String = loc.read().await?;
@@ -561,8 +561,8 @@ let text: String = String::from_io_bytes(bytes)?;
 ### 12.2 Typed back-end directly
 
 ```rust
-use semstrait_core::io::Source;
-use semstrait_core::io::backends::local::LocalFile;
+use semstrait_common::io::Source;
+use semstrait_common::io::backends::local::LocalFile;
 
 let src = LocalFile::new("./model.yaml");
 let text: String = src.read().await?;       // generic read into String
@@ -572,7 +572,7 @@ let vec:  Vec<u8> = src.read().await?;      // or into an owned vec
 ### 12.3 Custom S3 configuration via the builder
 
 ```rust
-use semstrait_core::io::backends::s3::S3SourceBuilder;
+use semstrait_common::io::backends::s3::S3SourceBuilder;
 
 let src = S3SourceBuilder::new("my-bucket", "path/to/model.yaml")
     .with_region("eu-west-1")
@@ -588,7 +588,7 @@ let text: String = src.read().await?;
 
 ```rust
 use std::str::FromStr;
-use semstrait_core::io::{Location, Sink};
+use semstrait_common::io::{Location, Sink};
 
 let loc = Location::from_str("s3://my-bucket/artifacts/out.yaml")?;
 let canonical: String = /* produced by semstrait_model::io::dump_model */;
@@ -600,7 +600,7 @@ loc.write(canonical).await?;            // &str / String / Vec<u8> / Bytes all a
 Consumers rarely call `Source::read_raw` / `Sink::write_raw` directly. They call the domain wrapper that combines transport with typed parse / serialize:
 
 ```rust
-use semstrait_core::io::Location;
+use semstrait_common::io::Location;
 use semstrait_model::io::{load_model, dump_model, DumpMode};
 
 let src = Location::from_str("./model.yaml")?;
@@ -617,7 +617,7 @@ See `32 §10.4` for the `semstrait-model::io` wrappers and `33 §16.5` for the `
 ### 12.6 Tests — in-memory round-trip
 
 ```rust
-use semstrait_core::io::backends::memory::InMemory;
+use semstrait_common::io::backends::memory::InMemory;
 use semstrait_model::io::load_model;
 
 let src = InMemory::new(

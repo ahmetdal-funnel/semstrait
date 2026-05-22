@@ -17,7 +17,7 @@ refined-by:
 
 > Ratifies the machinery `14` defers to at every `FunctionCall` site and at `14 §6.4`'s Declarative-block tag dispatch: the `FunctionRegistry` API shape and lifecycle, the function-spec model, the canonical scalar / non-closed-aggregate catalog, function-level `Additivity`, and the adapter extension API.
 >
-> Crate placement: `CanonicalFn`, `FunctionRegistry`, and the spec types live in `semstrait-ir` per `[35 §7](../apis/35_semstrait_ir.md)`.
+> Crate placement: `CanonicalFn`, `FunctionRegistry`, and the spec types live in `semstrait-ir` per `[35 §8](../apis/35_semstrait_ir.md)`.
 
 ## 1. Purpose and Scope
 
@@ -260,7 +260,7 @@ Per-engine native names, name-remaps, and structural rewrites: `registry/functio
 
 ### 4.7 The closed five aggregates
 
-`Sum` / `Avg` / `Count` / `Min` / `Max` are carried by `Expr::Aggregate { op: AggregationOp, … }` (the closed `AggregationOp` enum in `[31 §5.2](../apis/31_semstrait_core.md)`) — **not** registry entries. Their return-type rules follow SQL:2016 promotion; effective additivity is `Additive` for Sum / Count / Min / Max, `NonAdditive` for Avg.
+`Sum` / `Avg` / `Count` / `Min` / `Max` are carried by `Expr::Aggregate { op: AggregationOp, … }` (the closed `AggregationOp` enum in `[31 §5.2](../apis/31_semstrait_common.md)`) — **not** registry entries. Their return-type rules follow SQL:2016 promotion; effective additivity is `Additive` for Sum / Count / Min / Max, `NonAdditive` for Avg.
 
 ## 5. BinaryOp Promotion — No Canonical Lattice
 

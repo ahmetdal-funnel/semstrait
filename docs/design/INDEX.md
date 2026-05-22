@@ -64,8 +64,8 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 
 ### API contracts (3x)
 - `30` [`apis/30_api_contracts.md`](apis/30_api_contracts.md) — cross-crate API and stability policy.
-- `31` [`apis/31_semstrait_core.md`](apis/31_semstrait_core.md) — `semstrait-core`.
-- `31b` [`apis/31b_semstrait_core_io.md`](apis/31b_semstrait_core_io.md) — `semstrait-core::io`.
+- `31` [`apis/31_semstrait_common.md`](apis/31_semstrait_common.md) — `semstrait-common`.
+- `31b` [`apis/31b_semstrait_common_io.md`](apis/31b_semstrait_common_io.md) — `semstrait-common::io`.
 - `32` [`apis/32_semstrait_model.md`](apis/32_semstrait_model.md) — `semstrait-model`.
 - `32b` [`apis/32b_catalogs_yaml.md`](apis/32b_catalogs_yaml.md) — catalogs YAML side-surface.
 - `33` [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) — `semstrait-manifest`.

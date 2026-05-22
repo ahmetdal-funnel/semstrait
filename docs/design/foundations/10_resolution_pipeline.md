@@ -15,7 +15,7 @@ refined-by:
   - 16 (composition — Relationship resolution and ComposedSemanticInterface construction inside compile)
   - 17 (temporal shape — shape resolution inside compile; shape-gating inside plan)
   - 20–25 (DataKind strategy dispatch inside plan)
-  - 31 (semstrait-core — shared-types crate role, pending)
+  - 31 (semstrait-common — shared-types crate role, pending)
   - 32–37 (per-crate public surfaces for each stage)
 ---
 
@@ -328,7 +328,7 @@ This section cements the layering implied by §3's per-stage Owning-crate fields
 **Supporting crates (consumed across stages, not owners of any verb):**
 
 - `semstrait-ir` — canonical representation types (`Expr`, `PlanNode`, `EngineArtifact`, etc.). Consumed by `compile`, `plan`, `optimize`, `adapt`.
-- `semstrait-core` — **role pending ratification in `31_semstrait_core.md`**. Expected to be a shared-types crate for cross-cutting primitives (logical `DataType`, identifier types, shared error traits). `10` treats it as a supporting crate with no stage-ownership claim.
+- `semstrait-common` — **role pending ratification in `31_semstrait_common.md`**. Expected to be a shared-types crate for cross-cutting primitives (logical `DataType`, identifier types, shared error traits). `10` treats it as a supporting crate with no stage-ownership claim.
 
 **Injection vs ownership.** `EngineAdapter` is owned by `semstrait-adapter` (for `adapt`) but can be **injected** into `semstrait-planner` to hook `plan` and `optimize` (for example, rewriting plan fragments for substrait-compatible engines that accept the canonical plan with minor adjustments, or for dialect-specific expression rewrites). This does not transfer ownership — the planner still owns the stage; the adapter contributes through the hook surface ratified in `36_semstrait_adapter.md`.
 
@@ -450,7 +450,7 @@ trait IntoDiagnostic {
 
 `IntoDiagnostic` is implemented for each `<Stage>Error` enum and for `Vec<<Stage>Error>` (via a blanket impl that maps each element). Crates that publish API surface (`32`, `33`, `34`, `36`) convert at the public boundary; internal callers continue to match on the typed enum when they need to.
 
-**Placement.** The `Diagnostic`, `Severity`, and `Location` types are **crate-layer primitives**; their canonical home is almost certainly `semstrait-core` (pending ratification in `31`). Stage crates import and construct them; they do not define competing local types.
+**Placement.** The `Diagnostic`, `Severity`, and `Location` types are **crate-layer primitives**; their canonical home is almost certainly `semstrait-common` (pending ratification in `31`). Stage crates import and construct them; they do not define competing local types.
 
 ## 6. I/O Permission Matrix
 
@@ -552,5 +552,5 @@ The async boundary is exactly one stage: `compile`. Everything downstream is syn
 - `00_overview.md §9 I6, I11` — invariants refined by this doc.
 - `11`–`17` — structural specifications of inputs and outputs.
 - `20`–`25` — DataKind strategy dispatch inside `plan`.
-- `31` — `semstrait-core` role (pending).
+- `31` — `semstrait-common` role (pending).
 - `32`–`37` — per-crate public surface for each stage.

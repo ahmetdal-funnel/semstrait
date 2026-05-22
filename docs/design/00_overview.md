@@ -90,7 +90,7 @@ Detailed semantics live in owning docs. This section is a compact term map; the 
 | `Additivity`                | Function-tag axis for aggregate composition          | `foundations/19_expression_flow.md`, `foundations/14a_function_catalog.md`, `foundations/18_entities.md` |
 | `CanonicalFn`               | Stable canonical function identity                   | `foundations/14a_function_catalog.md`                                 |
 | `SemanticMapping`           | Semantics-to-physical mapping contract               | `foundations/15_mapping_and_binding.md`, `foundations/18_entities.md` |
-| `Diagnostic<K>`             | Typed diagnostic carrier by stage kind               | `apis/31_semstrait_core.md`, `apis/30_api_contracts.md`               |
+| `Diagnostic<K>`             | Typed diagnostic carrier by stage kind               | `apis/31_semstrait_common.md`, `apis/30_api_contracts.md`               |
 | `SemStraitErrorKind`        | Unified API-level kind sum                           | `apis/38_semstrait_api.md`                                            |
 
 

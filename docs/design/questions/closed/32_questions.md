@@ -23,7 +23,7 @@ The late-session Q&A sweep ratified 18 model-level decisions, consolidated into 
 
 **Question.** Should `semstrait-model` expose a helper for loading YAML from external storage, and if so, does it also cover multi-file / directory aggregation?
 
-**Resolution (single-file).** `semstrait-model::io::load_model` / `load_catalogs` are ratified as the async single-source wrappers over `semstrait-core::io::Source` — see `32 §10.4`, `32b §5.4`, `31b §1 / §5`. The wrappers accept exactly one `Source` yielding a single YAML blob; directory / multi-blob aggregation is **not** in their contract.
+**Resolution (single-file).** `semstrait-model::io::load_model` / `load_catalogs` are ratified as the async single-source wrappers over `semstrait-common::io::Source` — see `32 §10.4`, `32b §5.4`, `31b §1 / §5`. The wrappers accept exactly one `Source` yielding a single YAML blob; directory / multi-blob aggregation is **not** in their contract.
 
 **Resolution (multi-file).** Out of scope for the `model` crate, **forever**. `Q-IO-003` was ratified as **CLOSED (out-of-scope)** in [`questions/closed/31b_io_questions.md`](31b_io_questions.md): multi-file walks are caller territory (CLI / LSP / pipeline orchestrator), not a `core::io` back-end concern and not a `model::io` wrapper concern. `[TD-MODEL-DIR-LOADER]` is therefore retired — there is no `model`-side feature pending; callers compose `Source::List(_)` walks themselves and feed each blob through `load_model` independently.
 

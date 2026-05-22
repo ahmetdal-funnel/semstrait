@@ -54,7 +54,7 @@ refined-by:
 
 ### 1.2 What `semstrait-planner` does NOT own
 
-- **Expression / type vocabulary.** `Expr`, `PhysicalExpr`, `Aggregation`, `DataType`, `Grain`, `Diagnostic<K>`, `Severity`, `Diagnose` all live in `semstrait-core` (`31`). `34` consumes them.
+- **Expression / type vocabulary.** `Expr`, `PhysicalExpr`, `Aggregation`, `DataType`, `Grain`, `Diagnostic<K>`, `Severity`, `Diagnose` all live in `semstrait-common` (`31`). `34` consumes them.
 - **Plan-tree shape.** `SemanticPlan`, `PlanNode`, `NodeMeta`, `SourceRef`, `Name` all live in `semstrait-ir` (`35`). `34` emits and consumes them.
 - **SemanticManifest shape.** `SemanticManifest`, `ResolvedDataKind`, `ResolvedBinding`, `ResolvedExprTable`, `CoverageIndex`, `CompositionIndex` all live in `semstrait-manifest` (`33`). `34` reads them — never mutates, never re-resolves (I5 / I8).
 - **YAML parsing / structural validation.** Lives in `semstrait-model` (`32`). The `Request` the planner accepts is already a Rust value — the API layer (`semstrait-api`) is responsible for converting user-facing JSON / gRPC / protobuf into `Request`.
@@ -192,7 +192,7 @@ Filters on a Measure or two-stage Metric with `agg:` land above `PlanNode::Agg` 
 - `limit: Option<u64>` — row cap on the post-sort output. `Some(0)` emits an empty-result `PlanNode::Fetch`.
 - `offset: Option<u64>` — row offset applied before `limit`.
 
-Placement: `order` → `PlanNode::Sort`; `offset` / `limit` → `PlanNode::Fetch`. Empty `order` with non-empty `limit` is legal; result order is non-deterministic (`35 §4.8`).
+Placement: `order` → `PlanNode::Sort`; `offset` / `limit` → `PlanNode::Fetch`. Empty `order` with non-empty `limit` is legal; result order is non-deterministic (`35 §5.8`).
 
 ### 3.5 `Filter`
 
@@ -271,7 +271,7 @@ pub enum SortDir {
 }
 ```
 
-The null-aware variants are explicit vocabulary per `35 §4.7`. `Asc` and `Desc` are null-placement-agnostic; the planner forwards the agnostic variant to the `PlanNode::Sort` node and the adapter's null-placement default applies.
+The null-aware variants are explicit vocabulary per `35 §5.7`. `Asc` and `Desc` are null-placement-agnostic; the planner forwards the agnostic variant to the `PlanNode::Sort` node and the adapter's null-placement default applies.
 
 ### 3.7 Delta with legacy code
 
@@ -288,7 +288,7 @@ The rename is tracked in `implementation/40_refactor_plan.md` as `[TD-REQUEST-SH
 
 ```rust
 /// Reference to a top-level `ResolvedDataKind` by its canonical name.
-/// Newtype over `DataKindName` (from `semstrait-core` / `11 §4`).
+/// Newtype over `DataKindName` (from `semstrait-common` / `11 §4`).
 pub struct DataKindRef(pub DataKindName);
 
 impl DataKindRef {
@@ -449,7 +449,7 @@ A well-formed `ResolvedQueryRequest` satisfies: every `owner` names a `ResolvedD
 ### 6.1 Signature
 
 ```rust
-use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+use semstrait_common::diagnostic::{Diagnostic, Diagnostics};
 
 /// Planner entry point. Per `10 §3.4`.
 ///
@@ -482,7 +482,7 @@ The SemanticManifest must satisfy every invariant in `33 §3.1` — in particula
 
 ### 6.3 Postconditions
 
-**On success** (`Ok((plan, warnings))`): every `SemanticPlan` invariant from `35 §3.2` holds — `output_names.len()` equals `root.meta().output_schema.len()`, every `Name` is valid per `35 §5.4`, the tree satisfies `35 §7` well-formedness, and `warnings` (and the artifact-side `plan.diagnostics`) carry no `Severity::Error` entries. Step 6 (§7.7) is the enforcement point.
+**On success** (`Ok((plan, warnings))`): every `SemanticPlan` invariant from `35 §3.2` holds — `output_names.len()` equals `root.meta().output_schema.len()`, every `Name` is valid per `35 §6.4`, the tree satisfies `35 §8` well-formedness, and `warnings` (and the artifact-side `plan.diagnostics`) carry no `Severity::Error` entries. Step 6 (§7.7) is the enforcement point.
 
 **On failure** (`Err((fatal, warnings))`): `fatal.severity == Severity::Error`; `fatal.kind` is a `PlanErrorKind` variant identifying the failure category; `warnings` carries every `Severity::Warning` `Diagnostic<PlanErrorKind>` emitted before the fail-fast abort.
 
@@ -548,9 +548,9 @@ After the strategy returns, the planner wraps with Request-level nodes: (1) user
 
 Errors: per-variant `PLAN_E_21xx` / `PLAN_E_22xx` / `PLAN_E_23xx` / `PLAN_E_24xx` surfaced through the `PlanError::{Simple|Grainset|Unionset|Joinset}` wrapper variants; shared `PLAN_E_0600 PlanNodeConstructionFailed`, `PLAN_E_0601 UnsupportedRequestShape`.
 
-### 7.7 Step 6 — Post-construction validation (`35 §7`)
+### 7.7 Step 6 — Post-construction validation (`35 §8`)
 
-Invoke `SemanticPlan::validate()` per `35 §8.3`. The validator walks the tree and checks every `35 §7` invariant (schema alignment, type resolution, predicate well-typedness, join-key agreement, union arm parity). Failure wraps an `IR_E_35xx` error into `PLAN_E_0610 PostConstructionInvariantViolated`.
+Invoke `SemanticPlan::validate()` per `35 §9.3`. The validator walks the tree and checks every `35 §8` invariant (schema alignment, type resolution, predicate well-typedness, join-key agreement, union arm parity). Failure wraps an `IR_E_35xx` error into `PLAN_E_0610 PostConstructionInvariantViolated`.
 
 **Production posture.** In optimized builds, step 6 is a no-op by default — strategies are trusted to produce well-formed plans. Test builds (`cfg(test)` + `debug_assertions`) always run it. An operator concerned about planner regressions opts in via the `semstrait.plan.validate` feature toggle (§4.2).
 
@@ -563,7 +563,7 @@ flowchart TD
     S2 --> S3["Step 3 — Relationship traversal<br/>(16 §11.4 / §11.5)"]
     S3 --> S4["Step 4 — Strategy dispatch<br/>(20 §5.3)"]
     S4 --> S5["Step 5 — PlanNode construction<br/>(21–24)"]
-    S5 --> S6["Step 6 — Post-construction validation<br/>(35 §7)"]
+    S5 --> S6["Step 6 — Post-construction validation<br/>(35 §8)"]
     S6 --> OUT[SemanticPlan]
 ```
 
@@ -795,7 +795,7 @@ Per `16 §11.7`, plan-time field-first resolution and compile-time cross-kind pa
 ### 11.1 Signature
 
 ```rust
-use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+use semstrait_common::diagnostic::{Diagnostic, Diagnostics};
 
 pub fn optimize(
     plan: SemanticPlan,
@@ -805,7 +805,7 @@ pub fn optimize(
 >;
 ```
 
-Optimizer entry point per `10 §3.5`. Consumes a `SemanticPlan` and returns an equivalent plan (same observable results) with canonical-form rewrites applied, plus warnings on the success arm. Sync (I6), no I/O (I11), fail-fast per `30 §7.1`. Return-shape mirrors `30 §7.2`'s fail-fast pattern: success `(SemanticPlan, Diagnostics<OptimizeErrorKind>)`, failure `(Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>)`. Passes are in-place rewrites over the tree (`PlanNode::transform` per `35 §8`); ownership is consumed because retaining the caller's copy has no utility.
+Optimizer entry point per `10 §3.5`. Consumes a `SemanticPlan` and returns an equivalent plan (same observable results) with canonical-form rewrites applied, plus warnings on the success arm. Sync (I6), no I/O (I11), fail-fast per `30 §7.1`. Return-shape mirrors `30 §7.2`'s fail-fast pattern: success `(SemanticPlan, Diagnostics<OptimizeErrorKind>)`, failure `(Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>)`. Passes are in-place rewrites over the tree (`PlanNode::transform` per `35 §9`); ownership is consumed because retaining the caller's copy has no utility.
 
 The free function applies `Optimizer::with_v1_passes()`, bundling the four canonical passes (§11.2). A caller wishing to skip optimization simply does not call `optimize` — there is no bypass argument. Callers composing custom pass chains use `OptimizerBuilder` (§12.5) and `Optimizer::apply` directly.
 
@@ -853,7 +853,7 @@ Passes run in order 1 → 2 → 3 → 4. Pass 2 must run before pass 3 so that m
 ### 12.1 Trait surface
 
 ```rust
-use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+use semstrait_common::diagnostic::{Diagnostic, Diagnostics};
 
 pub trait OptimizerPass: Send + Sync {
     fn name(&self) -> &str;
@@ -931,8 +931,8 @@ The free function `optimize(plan)` is equivalent to `OptimizerBuilder::new().wit
 ### 13.1 `PlanErrorKind`
 
 ```rust
-use semstrait_core::diagnostic::{Diagnose, Severity};
-use semstrait_core::{DataType, Location};
+use semstrait_common::diagnostic::{Diagnose, Severity};
+use semstrait_common::{DataType, Location};
 
 /// Typed-kind enum for the `plan` stage. Per `30 §5`. Identification is
 /// by variant identity (`matches!`); there is no string-code accessor.
@@ -1105,7 +1105,7 @@ No `std::fs`, no `std::net`, no `tokio`, no `reqwest`, no `aws-sdk-`*, no `objec
 
 ### 16.2 NO SQL emission
 
-The planner emits `PlanNode`s carrying `PhysicalExpr` trees (`35 §4`). No SQL string is produced and no dialect-aware operator is chosen; SQL emission is strictly `semstrait-adapter`'s concern (`36`) per I1 / I3. Filter placement names `PlanNode::Filter` (not `WHERE` / `HAVING`); aggregation emission names `PlanNode::Agg` with `Aggregation` variants (not `SUM(...)` strings).
+The planner emits `PlanNode`s carrying `PhysicalExpr` trees (`35 §5`). No SQL string is produced and no dialect-aware operator is chosen; SQL emission is strictly `semstrait-adapter`'s concern (`36`) per I1 / I3. Filter placement names `PlanNode::Filter` (not `WHERE` / `HAVING`); aggregation emission names `PlanNode::Agg` with `Aggregation` variants (not `SUM(...)` strings).
 
 ### 16.3 NO YAML parsing
 
@@ -1121,7 +1121,7 @@ A canonical `Cargo.toml` target (matching `31 §12.1`'s discipline):
 
 ```toml
 [dependencies]
-semstrait-core     = { workspace = true }
+semstrait-common     = { workspace = true }
 semstrait-ir       = { workspace = true }
 semstrait-manifest = { workspace = true }
 
@@ -1135,7 +1135,7 @@ features = ["derive"]
 
 [features]
 default = []
-serde = ["dep:serde", "semstrait-core/serde", "semstrait-ir/serde", "semstrait-manifest/serde"]
+serde = ["dep:serde", "semstrait-common/serde", "semstrait-ir/serde", "semstrait-manifest/serde"]
 ```
 
 **No runtime async dependencies.** No `tokio`, `async-trait`, `futures`, `reqwest`.

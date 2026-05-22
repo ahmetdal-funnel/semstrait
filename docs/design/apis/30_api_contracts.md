@@ -14,7 +14,7 @@ authoritative-for:
   - breaking-change governance and deprecation policy
   - per-crate stability tier assignment
 refined-by:
-  - 31 (`semstrait-core` — `Diagnostic<K>` / `Severity` / `Location` placement, `Diagnose` trait, narrow core kind enums)
+  - 31 (`semstrait-common` — `Diagnostic<K>` / `Severity` / `Location` placement, `Diagnose` trait, narrow core kind enums)
   - 32 (`semstrait-model` — `ParseErrorKind`, `ValidateError`, `SourceId` constructors)
   - 33 (`semstrait-manifest` — `CompileError`, `RepositoryErrorKind`, `SemanticManifest` struct `#[non_exhaustive]` roster)
   - 34 (`semstrait-planner` — `PlanErrorKind`, `OptimizeErrorKind`, Constraint / adapter-injection hook surface)
@@ -208,7 +208,7 @@ pub struct Diagnostic<K: Diagnose> {
 pub type Diagnostics<K> = Vec<Diagnostic<K>>;
 ```
 
-`Diagnostic<K>` lives in `semstrait-core` (ratified in `31 §7`). The `#[non_exhaustive]` annotation permits adding fields (e.g. a `related: Vec<Location>` cross-reference) in a MINOR release. `Diagnostics<K>` is a transparent type alias — callers may use either form interchangeably.
+`Diagnostic<K>` lives in `semstrait-common` (ratified in `31 §7`). The `#[non_exhaustive]` annotation permits adding fields (e.g. a `related: Vec<Location>` cross-reference) in a MINOR release. `Diagnostics<K>` is a transparent type alias — callers may use either form interchangeably.
 
 Construction sites are crate-local; callers do not construct `Diagnostic<K>` by hand. Each per-stage helper in the owning crate builds a kind, sets severity (defaulting to `K::severity_default()`), attaches optional location / notes, and wraps.
 
@@ -251,7 +251,7 @@ pub struct Span {
 pub struct SourceId(/* crate-private */);
 ```
 
-`Location`, `Span`, `SourceId` live in `semstrait-core`. `SourceId` is opaque — its variant set is private; constructors live on the producing crate (`semstrait-model` for YAML-file sources, etc.). Public surface exposes `SourceId::unknown()`, `as_str()`, plus `Eq` / `Hash` / `Display`.
+`Location`, `Span`, `SourceId` live in `semstrait-common`. `SourceId` is opaque — its variant set is private; constructors live on the producing crate (`semstrait-model` for YAML-file sources, etc.). Public surface exposes `SourceId::unknown()`, `as_str()`, plus `Eq` / `Hash` / `Display`.
 
 **Retired.** `ContextLine` is retired. The earlier "supplementary line with annotated pointer" role is covered either by (a) `notes: Vec<String>` on `Diagnostic<K>` for short remarks, or (b) richer typed location information embedded directly in the kind variant when structurally meaningful (e.g., a `ShapeFieldConflict` variant carrying `occurrences: Vec<Location>`).
 
@@ -278,7 +278,7 @@ pub trait Diagnose {
 }
 ```
 
-`semstrait-core` provides blanket impls:
+`semstrait-common` provides blanket impls:
 
 ```rust
 impl<K: Diagnose> std::fmt::Display for Diagnostic<K> { /* delegates to K::message() */ }
@@ -510,7 +510,7 @@ An **open** public trait is implementable by any crate. Used where semstrait ben
 | `FileSystem` | `semstrait-manifest` (compile, glob expansion), `semstrait-catalog-*` (source reads) | local-fs impl in `semstrait-catalog`; object-store impls in per-provider crates | open | `37` |
 | `Repository` | callers at the `semstrait-api` / `semstrait-facade` layer | in-memory, filesystem-backed (bundled); third-party may add | open | `33` |
 | `EngineAdapter` | `semstrait-planner` (injection hooks), `semstrait-api` (terminal `adapt`) | `semstrait-adapter-*` crates | open — new engine support is a primary extension axis | `36` |
-| `RegistryExtension` | `function_registry()` initializer in `semstrait-core` | `semstrait-adapter-*` crates | open (see `questions/open/30_questions.md` Q-API-009) | `36` (via `14a §7`) |
+| `RegistryExtension` | `function_registry()` initializer in `semstrait-common` | `semstrait-adapter-*` crates | open (see `questions/open/30_questions.md` Q-API-009) | `36` (via `14a §7`) |
 | `Diagnose` | `Display` / `Error` blanket impls on `Diagnostic<K>`; the `?` operator | each per-stage kind enum | open — enables third-party kinds to participate in the diagnostic surface | `31` |
 
 ### 8.3 Trait-method return shape
@@ -538,7 +538,7 @@ Per I6 (sync hot path) and I11 (gated I/O), most crates are sync-only. The excep
 
 | Crate | Sync / async | I/O allowed? | Rationale |
 |---|---|---|---|
-| `semstrait-core` | Sync only | No | Pure primitives (`DataType`, `Diagnostic`, `Span`, `CanonicalFn`); no I/O surface. |
+| `semstrait-common` | Sync only | No | Pure primitives (`DataType`, `Diagnostic`, `Span`, `CanonicalFn`); no I/O surface. |
 | `semstrait-model` | Sync only | No | `parse` and `validate` are pure transformations over in-memory YAML. |
 | `semstrait-manifest` | Compile-time async; plan-time sync | Compile-time via providers | The `compile` entry point is `async fn` (awaits `CatalogProvider` / `FileSystem`). The `SemanticManifest` is then consumed synchronously; no `async fn` at plan time. |
 | `semstrait-planner` | Sync only | No | `plan` and `optimize` are the I6 hot path. |
@@ -556,7 +556,7 @@ Per I6 (sync hot path) and I11 (gated I/O), most crates are sync-only. The excep
 
 ### 10.1 Default features: minimum viable
 
-Every `semstrait-*` crate ships with default features equal to the minimum set needed to use that crate's primary function. No crate gates a core type or trait behind an opt-in feature. A consumer depending on `semstrait-core` gets every public type in `semstrait-core` with no `--features` hunt.
+Every `semstrait-*` crate ships with default features equal to the minimum set needed to use that crate's primary function. No crate gates a core type or trait behind an opt-in feature. A consumer depending on `semstrait-common` gets every public type in `semstrait-common` with no `--features` hunt.
 
 ### 10.2 Adapter crates are SEPARATE crates, not feature flags
 
@@ -585,7 +585,7 @@ Same reasoning as §10.2 for `CatalogProvider` impls:
 
 ### 10.4 Optional serialization features
 
-Serde support on public types is opt-in via a `serde` feature per crate. Default-off for `semstrait-core`, `semstrait-model`, `semstrait-manifest`, `semstrait-ir`. Enabled downstream (e.g. `semstrait-facade` turns it on by default for end-user convenience).
+Serde support on public types is opt-in via a `serde` feature per crate. Default-off for `semstrait-common`, `semstrait-model`, `semstrait-manifest`, `semstrait-ir`. Enabled downstream (e.g. `semstrait-facade` turns it on by default for end-user convenience).
 
 Serde support is documented per-crate in `31`–`39`. A `#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]` attribute on a public type is itself part of the public surface — adding it is MINOR (no existing caller code breaks); removing it is MAJOR.
 
@@ -655,10 +655,10 @@ v1 per-crate maturity markers. These lock at the v1.0 cut and evolve per the sem
 
 | Crate | Stability | Notes |
 |---|---|---|
-| `semstrait-core` | Stable in v1 | Non-expression shared vocabulary only after the second-cascade landing (`STATUS.md` item Q): `DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn`, `Diagnostic`, `Diagnostics`, `Severity`, `Location`, `Span`, `SourceId`, `Diagnose`, constraint DSL, `io` transport. Expression-tree vocabulary moved to `semstrait-ir`. Breaking changes require a workspace-wide MAJOR. |
+| `semstrait-common` | Stable in v1 | Non-expression shared vocabulary only after the second-cascade landing (`STATUS.md` item Q): `DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn`, `Diagnostic`, `Diagnostics`, `Severity`, `Location`, `Span`, `SourceId`, `Diagnose`, constraint DSL, `io` transport. Expression-tree vocabulary moved to `semstrait-ir`. Breaking changes require a workspace-wide MAJOR. |
 | `semstrait-ir` | Stable in v1 | `Expr<L>`, `PhysicalExpr`, `SemanticExpr`, `PhysicalLeaf`, `SemanticLeaf`, `Tree` / `Visitor` / `Rewriter` / `ExprLeaf` traits, structural-variant support enums (`BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`), `Literal`, `ColumnRef`, `SemanticsName`, `Accessor` family, `Parameter`, `CanonicalFn`, `FunctionRegistry`, narrow `ValidateError` (trait-machinery) and narrow `CompileError` (`ReturnTypeRule::Custom`), `SemanticPlan`, `PlanNode`, `EngineArtifact`, `SqlArtifact`, `EnginePlan`. Variant and field additions are MINOR via `#[non_exhaustive]`. |
-| `semstrait-model` | Stable in v1 | `SemanticModel`, `ExprSource`, `ParseErrorKind`, `ValidateError` (model-level, embedding `Ir(ir::ValidateError)` per D.ii — `35 §15.1`), YAML grammar. The author-facing YAML shape extends non-exhaustively (new keys, new variants) in MINOR. |
-| `semstrait-manifest` | Stable in v1 | `SemanticManifest`, `Resolved*` family, `CompileError` (embedding `Ir(ir::CompileError)` per D.ii — `35 §15.2`), `RepositoryErrorKind`, `Repository` trait. **Internal serialization format (SemanticManifest on-disk bytes) is NOT a public API** — callers round-trip through `Repository::save` / `Repository::load`, not through direct byte access. |
+| `semstrait-model` | Stable in v1 | `SemanticModel`, `ExprSource`, `ParseErrorKind`, `ValidateError` (model-level, embedding `Ir(ir::ValidateError)` per D.ii — `35 §16.1`), YAML grammar. The author-facing YAML shape extends non-exhaustively (new keys, new variants) in MINOR. |
+| `semstrait-manifest` | Stable in v1 | `SemanticManifest`, `Resolved*` family, `CompileError` (embedding `Ir(ir::CompileError)` per D.ii — `35 §16.2`), `RepositoryErrorKind`, `Repository` trait. **Internal serialization format (SemanticManifest on-disk bytes) is NOT a public API** — callers round-trip through `Repository::save` / `Repository::load`, not through direct byte access. |
 | `semstrait-planner` | Stable in v1 | `plan`, `optimize`, `PlanError`, `OptimizeError`. Per-DataKind strategy dispatch is internal. `PlanNode` variants are I10 `#[non_exhaustive]` and defined in `semstrait-ir`. |
 | `semstrait-adapter` | Provisional | `EngineAdapter` trait stable; `AdaptError` stable; `DialectId` extends in MINOR. Per-engine adapter crates (`semstrait-adapter-datafusion`, `semstrait-adapter-duckdb`, `semstrait-adapter-spark`, `semstrait-adapter-substrait`) are **versioned independently** and may carry their own stability tier in their own `3x` appendix. |
 | `semstrait-catalog` | Provisional | `CatalogProvider`, `FileSystem`, local-fs impl stable. Per-provider impls (`semstrait-catalog-iceberg`, `semstrait-catalog-unity`) are **versioned independently**; their stability follows their own maturity. |

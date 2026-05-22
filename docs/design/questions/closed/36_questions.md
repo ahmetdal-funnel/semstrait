@@ -23,7 +23,7 @@ purpose: Resolved questions originally raised against `apis/36_semstrait_adapter
 - **SQL-emitting adapters** — capabilities are **ergonomic hints**. `34` planner pre-flight gives authors a clear `34`-side diagnostic before emission; `38` api pre-`adapt` check is the same UX. `adapt`-time `AdaptError::Unsupported*` is the authoritative fallback.
 - **`SubstraitAdapter`** — capabilities are the **handoff contract**. The Substrait plan declares what the consuming engine MUST support; semstrait cannot rewrite on the consumer's behalf across the process boundary.
 
-**Cascade.** `35 §11.6` `Capability` enum trimmed (dropped `DistinctAggregate`; kept `RegexpMatch`, `RegexpExtract`, `IntervalLiteral`, `AsOfJoin`, `StructAccess`). `36 §6.1` `AdapterCapabilities` predicate roster reduced 1:1. `36 §6.2` rewritten to express the SQL-vs-Substrait asymmetry. `36 §6.3` adds the scope test for new variants. Per-adapter capability advertisements in `36 §5.1`–`§5.5` rewritten to use the narrowed vocabulary.
+**Cascade.** `35 §12.6` `Capability` enum trimmed (dropped `DistinctAggregate`; kept `RegexpMatch`, `RegexpExtract`, `IntervalLiteral`, `AsOfJoin`, `StructAccess`). `36 §6.1` `AdapterCapabilities` predicate roster reduced 1:1. `36 §6.2` rewritten to express the SQL-vs-Substrait asymmetry. `36 §6.3` adds the scope test for new variants. Per-adapter capability advertisements in `36 §5.1`–`§5.5` rewritten to use the narrowed vocabulary.
 
 ---
 

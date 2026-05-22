@@ -9,7 +9,7 @@ authoritative-for:
   - deterministic-ordering guarantees (I4) for `CatalogsConfig` (`BTreeMap`, not `HashMap`)
 refined-by:
   - 15 (`foundations/15_mapping_and_binding.md` — how `CatalogRef` participates in the binding process)
-  - 31b (`apis/31b_semstrait_core_io.md` — transport vocabulary used by the §5.4 wrappers)
+  - 31b (`apis/31b_semstrait_common_io.md` — transport vocabulary used by the §5.4 wrappers)
   - 33 (`apis/33_semstrait_manifest.md` — catalog resolution at compile time)
   - 37 (`apis/37_semstrait_catalog.md` — the `CatalogProvider` trait that consumes a resolved catalog connection)
 ---
@@ -255,7 +255,7 @@ At `compile` time, every `CatalogRef` is matched against `CatalogsConfig.catalog
 ### 5.1 Signature
 
 ```rust
-use semstrait_core::diagnostic::Diagnostics;
+use semstrait_common::diagnostic::Diagnostics;
 
 /// Parse a `catalogs.yaml` document. Pure and synchronous. Accumulating
 /// stage per `30 §7.1` (sibling to `32 §9.1`'s `parse`). `${VAR}`
@@ -273,8 +273,8 @@ Pure: same input + same environment → byte-identical output under a canonical 
 ### 5.2 `CatalogsParseErrorKind` roster
 
 ```rust
-use semstrait_core::diagnostic::{Diagnose, Severity};
-use semstrait_core::Location;
+use semstrait_common::diagnostic::{Diagnose, Severity};
+use semstrait_common::Location;
 
 #[non_exhaustive]
 pub enum CatalogsParseErrorKind {
@@ -312,7 +312,7 @@ The exact shape of `compile` is `33`'s to pin down.
 The ergonomic "read-then-parse" and "serialize-then-write" forms live on `semstrait-model::io` (`32 §10.4`) alongside `load_model` / `dump_model`. Catalog callers consume the same transport vocabulary (`Source` / `Sink` / `Location` per `31b`):
 
 ```rust
-use semstrait_core::io::Location;
+use semstrait_common::io::Location;
 use semstrait_model::io::{load_catalogs, dump_catalogs, DumpMode};
 
 let loc = "./catalogs.yaml".parse::<Location>()?;

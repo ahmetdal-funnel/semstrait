@@ -38,10 +38,10 @@ It ships **no new logic**. Every type, trait, and free function it exposes is re
 
 ### 1.3 Scope — what this crate does NOT own
 
-- **No new types.** If `semstrait::Foo` compiles, `Foo` is re-exported from `semstrait-core`, `-model`, `-manifest`, `-planner`, `-ir`, `-adapter`, `-catalog`, or `-api`. Zero `pub struct`, `pub enum`, `pub trait`, `pub fn` are declared inside `crates/semstrait/src/` except the single `semstrait::run` convenience in `§4`.
+- **No new types.** If `semstrait::Foo` compiles, `Foo` is re-exported from `semstrait-common`, `-model`, `-manifest`, `-planner`, `-ir`, `-adapter`, `-catalog`, or `-api`. Zero `pub struct`, `pub enum`, `pub trait`, `pub fn` are declared inside `crates/semstrait/src/` except the single `semstrait::run` convenience in `§4`.
 - **No algorithm logic.** `semstrait::run` is the entirety of the algorithmic surface in this crate, and its body is a straight chain of sub-crate calls with no branching beyond error propagation.
 - **No parsing, no planning, no adaptation, no I/O.** Every one of those lives in a lower crate; the facade merely re-exports their entry points.
-- **No prelude aliases or short names.** If `semstrait-core` names a type `SemanticExpr`, the facade re-exports it as `semstrait::SemanticExpr` (and `semstrait::prelude::SemanticExpr`). No `semstrait::SemExpr` shortening, no `use … as …` rebranding.
+- **No prelude aliases or short names.** If `semstrait-common` names a type `SemanticExpr`, the facade re-exports it as `semstrait::SemanticExpr` (and `semstrait::prelude::SemanticExpr`). No `semstrait::SemExpr` shortening, no `use … as …` rebranding.
 
 ### 1.4 Layering
 
@@ -57,7 +57,7 @@ semstrait-manifest   semstrait-planner   semstrait-adapter   semstrait-catalog
     ↓
 semstrait-ir  (35)   semstrait-model (32)
     ↓
-semstrait-core (31)
+semstrait-common (31)
 ```
 
 `semstrait` sits at the apex of the workspace DAG (I7). Every other `semstrait-*` crate is a direct or transitive dependency. No workspace crate imports from `semstrait` — the facade is strictly terminal.
@@ -87,7 +87,7 @@ Consumers who DO need sub-crate-level control (pick a different adapter registry
 
 | Name / module | Kind | Source crate | Purpose |
 |---|---|---|---|
-| `core`        | module (re-export) | `semstrait-core` (`31`)         | Shared primitives: `Expr` family, `DataType`, `Diagnostic<K>`, `Diagnostics<K>`, `Severity`, `Diagnose`, `Location`, `Span`, `FunctionRegistry`, `CanonicalFn`, `IoErrorKind`. |
+| `core`        | module (re-export) | `semstrait-common` (`31`)         | Shared primitives: `Expr` family, `DataType`, `Diagnostic<K>`, `Diagnostics<K>`, `Severity`, `Diagnose`, `Location`, `Span`, `FunctionRegistry`, `CanonicalFn`, `IoErrorKind`. |
 | `model`       | module (re-export) | `semstrait-model` (`32`)        | `SemanticModel`, `ExprSource`, `parse`, `ParseErrorKind`, `ValidateError`, `ModelBuildErrorKind`, `CatalogsParseErrorKind`. |
 | `manifest`    | module (re-export) | `semstrait-manifest` (`33`)     | `SemanticManifest`, `compile`, `CompileError`, `Repository`, `RepositoryErrorKind`, `SemanticManifestLoadErrorKind`, `SemanticManifestDumpErrorKind` + bundled `Repository` impls. |
 | `planner`     | module (re-export) | `semstrait-planner` (`34`)      | `Request`, `SessionContext`, `plan`, `optimize`, `PlanErrorKind`, `OptimizeErrorKind`. |
@@ -99,14 +99,14 @@ Consumers who DO need sub-crate-level control (pick a different adapter registry
 | `run`         | `pub fn`           | (this crate — §4)               | One-shot `compile → plan → optimize → adapt`. |
 | `VERSION`     | `pub const`        | (this crate)                    | Workspace version string (`env!("CARGO_PKG_VERSION")`). |
 
-"Kind" is `module (re-export)` when the facade simply re-exports the sub-crate's public surface wholesale — i.e. `semstrait::core` is isomorphic to `semstrait_core`, `semstrait::model` to `semstrait_model`, etc. No filtering occurs at the module-level; filtering is applied only in `prelude::*` (`§3`).
+"Kind" is `module (re-export)` when the facade simply re-exports the sub-crate's public surface wholesale — i.e. `semstrait::core` is isomorphic to `semstrait_common`, `semstrait::model` to `semstrait_model`, etc. No filtering occurs at the module-level; filtering is applied only in `prelude::*` (`§3`).
 
 ### 2.2 Module-level re-exports
 
 ```rust
 // crates/semstrait/src/lib.rs
 
-pub use semstrait_core       as core;
+pub use semstrait_common       as core;
 pub use semstrait_model      as model;
 pub use semstrait_manifest   as manifest;
 pub use semstrait_planner    as planner;
@@ -129,7 +129,7 @@ Every public symbol of every sub-crate is reachable through `semstrait::<module>
 Two conventions:
 
 1. **Crate-root re-exports are MODULE-level only.** `semstrait::core::DataType` works; `semstrait::DataType` does NOT. The crate root is deliberately uncluttered — consumers who want flat access use `prelude::*` (`§3`).
-2. **No leaking of sub-crate-private items.** The facade re-exports sub-crate roots exactly as-is. An item that is `pub(crate)` in `semstrait-core` remains `pub(crate)` when accessed via `semstrait::core`; no `#[doc(hidden)]` items are promoted to `#[doc(visible)]`.
+2. **No leaking of sub-crate-private items.** The facade re-exports sub-crate roots exactly as-is. An item that is `pub(crate)` in `semstrait-common` remains `pub(crate)` when accessed via `semstrait::core`; no `#[doc(hidden)]` items are promoted to `#[doc(visible)]`.
 
 ### 2.4 Module layout (informative)
 
@@ -158,7 +158,7 @@ use semstrait::prelude::*;
 
 to immediately write against the facade without knowing the sub-crate layout. It is curated, not exhaustive: every module-level re-export in `§2.2` exposes the full sub-crate surface; the `prelude::*` set is the subset of those items a *typical* caller uses when wiring the canonical pipeline from end to end.
 
-The prelude pattern follows `31`'s precedent — `31 §14.10` sketched a crate-root re-export for `semstrait-core`; `39 §3` is the analogous curated bundle at the workspace apex.
+The prelude pattern follows `31`'s precedent — `31 §14.10` sketched a crate-root re-export for `semstrait-common`; `39 §3` is the analogous curated bundle at the workspace apex.
 
 ### 3.2 Member set
 
@@ -254,7 +254,7 @@ The following are reachable through `semstrait::<module>::*` but deliberately ex
 - `FunctionRegistry`, `FunctionSpec`, `FnSignature` (registry is process-global via `core::function_registry()`; rarely referenced by name).
 - Every per-engine adapter type beyond `AnsiSqlAdapter` / the feature-gated `DataFusionSqlAdapter` (the default bundle — see `§5`).
 - Every `*Id` newtype (`CatalogId`, `SourceId`, `SemanticManifestId`) — consumers reference them by value, not by type path.
-- `Location` / `Span` / `SourceId` from `semstrait-core`'s diagnostic primitive set (consumed via `Diagnostic::location()` accessors; rarely constructed by callers).
+- `Location` / `Span` / `SourceId` from `semstrait-common`'s diagnostic primitive set (consumed via `Diagnostic::location()` accessors; rarely constructed by callers).
 - `StageOrigin` from `semstrait-api §6.6` (used by callers writing log routers; reachable through `semstrait::api::StageOrigin`).
 
 ### 3.5 Glob discipline
@@ -380,7 +380,7 @@ Following `30 §10.4`: the facade exposes a `serde` feature that turns on `serde
 ```toml
 [features]
 serde = [
-    "semstrait-core/serde",
+    "semstrait-common/serde",
     "semstrait-model/serde",
     "semstrait-manifest/serde",
     "semstrait-ir/serde",
@@ -410,7 +410,7 @@ Per `30 §2.1`, every `semstrait-*` crate in this workspace ships a single coord
 # crates/semstrait/Cargo.toml — authoritative pattern
 
 [dependencies]
-semstrait-core      = { version = "=1.0.0", path = "../semstrait-core"      }
+semstrait-common      = { version = "=1.0.0", path = "../semstrait-common"      }
 semstrait-model     = { version = "=1.0.0", path = "../semstrait-model"     }
 semstrait-manifest  = { version = "=1.0.0", path = "../semstrait-manifest"  }
 semstrait-planner   = { version = "=1.0.0", path = "../semstrait-planner"   }
@@ -481,7 +481,7 @@ The entirety of `crates/semstrait/src/` in v1 is expected to be well under 200 s
 
 - Overview: `00 §4.1` (canonical vocabulary — every re-exported type defined there), `00 §9` (design invariants I7, I10 uphold through the re-export boundary).
 - API contracts: `30 §2.1` (coordinated-release semver), `30 §3.4` (re-export policy), `30 §10` (feature-flag policy), `30 §13` (stability table; facade row).
-- Sub-crate contracts being re-exported: `31` (`semstrait-core`), `32` (`semstrait-model`), `33` (`semstrait-manifest`), `34` (`semstrait-planner`), `35` (`semstrait-ir`), `36` (`semstrait-adapter`), `37` (`semstrait-catalog`), `38` (`semstrait-api`).
+- Sub-crate contracts being re-exported: `31` (`semstrait-common`), `32` (`semstrait-model`), `33` (`semstrait-manifest`), `34` (`semstrait-planner`), `35` (`semstrait-ir`), `36` (`semstrait-adapter`), `37` (`semstrait-catalog`), `38` (`semstrait-api`).
 - Implementation: `implementation/40_refactor_plan.md` — current-vs-target delta for `crates/semstrait/src/`.
 
 ---

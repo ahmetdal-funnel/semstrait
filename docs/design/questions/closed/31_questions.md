@@ -1,12 +1,12 @@
 ---
 doc: design/questions/closed/31_questions
 status: Closed
-purpose: Resolved questions originally raised against `apis/31_semstrait_core.md`
+purpose: Resolved questions originally raised against `apis/31_semstrait_common.md` (formerly `apis/31_semstrait_common.md`)
 depends-on:
-  - apis/31_semstrait_core.md
+  - apis/31_semstrait_common.md
 ---
 
-# Closed Questions — `apis/31_semstrait_core.md`
+# Closed Questions — `apis/31_semstrait_common.md`
 
 ---
 
@@ -30,5 +30,5 @@ depends-on:
 
 **CLOSED (second-cascade landing, 2026-05-19, `STATUS.md` item Q).** Question is **moot under the Option A landing** ratified for `[14 §6.1](../../foundations/14_expressions.md)`.
 
-**Resolution.** There is no `ExprBlock` type anywhere in the workspace. `ExprSource::Block(Expr<L>)` (`14 §6.1`) carries `Expr<L>` directly via serde, using the serde derives on `Expr<L>` owned by `semstrait-ir` (`35 §14.1`). The reserved-tag catalog (`14 §6.4`) is implemented as serde tag-discrimination on `Expr<L>` plus a `FunctionRegistry` look-aside, wired in `semstrait-model`'s `Deserialize` impl for `ExprSource<L>`. `semstrait-core` owns neither `ExprBlock` nor `ExprSource` — its post-cascade surface excludes all expression-tree vocabulary (`31 §1.1` / `§1.2`).
+**Resolution.** There is no `ExprBlock` type anywhere in the workspace. `ExprSource::Block(Expr<L>)` (`14 §6.1`) carries `Expr<L>` directly via serde, using the serde derives on `Expr<L>` owned by `semstrait-ir` (`35 §15.1`). The reserved-tag catalog (`14 §6.4`) is implemented as serde tag-discrimination on `Expr<L>` plus a `FunctionRegistry` look-aside, wired in `semstrait-model`'s `Deserialize` impl for `ExprSource<L>`. `semstrait-common` owns neither `ExprBlock` nor `ExprSource` — its post-cascade surface excludes all expression-tree vocabulary (`31 §1.1` / `§1.2`).
 

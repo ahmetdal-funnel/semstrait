@@ -15,7 +15,7 @@ authoritative-for:
   - "Caller responsibilities: construction, injection, thread-safety"
 references:
   - apis/30_api_contracts.md
-  - apis/31_semstrait_core.md
+  - apis/31_semstrait_common.md
   - apis/35_semstrait_ir.md
   - foundations/15_mapping_and_binding.md
   - 00_overview.md
@@ -69,7 +69,7 @@ NoopCatalogProvider              AzureFileSystem
                                  GcsFileSystem
 ```
 
-`semstrait-catalog` depends only on `semstrait-core` (`31`). It does NOT depend on `semstrait-manifest`, `semstrait-ir`, `semstrait-planner`, or any adapter crate. This keeps metadata-source concerns behind a single narrow dependency edge and preserves the I3 independence axis.
+`semstrait-catalog` depends only on `semstrait-common` (`31`). It does NOT depend on `semstrait-manifest`, `semstrait-ir`, `semstrait-planner`, or any adapter crate. This keeps metadata-source concerns behind a single narrow dependency edge and preserves the I3 independence axis.
 
 ---
 
@@ -205,7 +205,7 @@ pub enum PartitionTransform {
 }
 ```
 
-`DataType` and `Diagnostic<K>` / `Diagnose` are re-exported from `semstrait-core` per `31 §3` / `§4`; no duplicate definitions live here. `Schema` / `SchemaColumn` shapes follow `15 §3.2`; the fully-qualified field list is deferred pending `Q-CAT-008`.
+`DataType` and `Diagnostic<K>` / `Diagnose` are re-exported from `semstrait-common` per `31 §3` / `§4`; no duplicate definitions live here. `Schema` / `SchemaColumn` shapes follow `15 §3.2`; the fully-qualified field list is deferred pending `Q-CAT-008`.
 
 ---
 
@@ -493,14 +493,14 @@ pub async fn expand_glob(
 ) -> Result<Vec<Path>, FileSystemErrorKind>;
 ```
 
-`GlobPattern` is re-exported from `semstrait-core` (`31 §14.4`-adjacent per `Q-CAT-002`). `expand_glob` is the single public glob-expansion entry point. It:
+`GlobPattern` is re-exported from `semstrait-common` (`31 §14.4`-adjacent per `Q-CAT-002`). `expand_glob` is the single public glob-expansion entry point. It:
 
 1. Parses `pattern` into a fixed prefix (everything up to the first glob metacharacter) and a suffix pattern.
 2. Wraps the prefix in a `Path` and calls `fs.list(&prefix)` to enumerate candidates.
-3. Filters candidate `FileEntry.path` values against the suffix using glob semantics defined in `31` (via `semstrait_core::glob_match` or equivalent — see `questions/open/37 Q-CAT-002`).
+3. Filters candidate `FileEntry.path` values against the suffix using glob semantics defined in `31` (via `semstrait_common::glob_match` or equivalent — see `questions/open/37 Q-CAT-002`).
 4. Returns the lexicographically-sorted list of matching `Path`s.
 
-Globbing supports `*`, `**`, `?`, and character classes `[abc]` as defined by `semstrait-core`'s glob module. `**` matches any number of path segments; `*` matches within a single segment.
+Globbing supports `*`, `**`, `?`, and character classes `[abc]` as defined by `semstrait-common`'s glob module. `**` matches any number of path segments; `*` matches within a single segment.
 
 ### 7.2 Composition with `CatalogProvider`
 
@@ -587,10 +587,10 @@ pub enum CatalogProviderErrorKind {
     Internal            { msg: String },
 }
 
-impl semstrait_core::diagnostic::Diagnose for CatalogProviderErrorKind {
+impl semstrait_common::diagnostic::Diagnose for CatalogProviderErrorKind {
     fn message(&self) -> std::borrow::Cow<'_, str>;
-    fn severity(&self) -> semstrait_core::Severity {
-        semstrait_core::Severity::Error
+    fn severity(&self) -> semstrait_common::Severity {
+        semstrait_common::Severity::Error
     }
 }
 ```
@@ -649,10 +649,10 @@ pub enum FileSystemErrorKind {
     Internal            { msg: String },
 }
 
-impl semstrait_core::diagnostic::Diagnose for FileSystemErrorKind {
+impl semstrait_common::diagnostic::Diagnose for FileSystemErrorKind {
     fn message(&self) -> std::borrow::Cow<'_, str>;
-    fn severity(&self) -> semstrait_core::Severity {
-        semstrait_core::Severity::Error
+    fn severity(&self) -> semstrait_common::Severity {
+        semstrait_common::Severity::Error
     }
 }
 ```
@@ -850,7 +850,7 @@ This procedure is the MINOR-safe path; any growth that cannot be fit into it bec
 | Scheme-dispatch across FileSystems           | **NO.** Callers compose. See `Q-CAT-004`. |
 | Format enumeration (`FileFormat`)            | **YES.** Owned here because `FileFormat` is a metadata attribute of resolved tables and files. Adapters and the manifest consume it as opaque metadata. |
 | Partition-transform enumeration (`PartitionTransform`) | **YES (v1 limited).** `Identity`, `Year`, `Month`, `Day`, `Hour`, `Bucket(u32)`, `Truncate(u32)`, `Void` (per `§2.3`). Matches Iceberg REST v2 spec. New transforms land in MINOR via `#[non_exhaustive]`. See `Q-CAT-010`. |
-| Glob semantics                               | **Delegated.** `expand_glob` uses `semstrait-core`'s glob predicate; this crate owns only the `FileSystem::list`-driven prefix-then-filter dance. |
+| Glob semantics                               | **Delegated.** `expand_glob` uses `semstrait-common`'s glob predicate; this crate owns only the `FileSystem::list`-driven prefix-then-filter dance. |
 
 ---
 
@@ -861,7 +861,7 @@ This procedure is the MINOR-safe path; any growth that cannot be fit into it bec
 - API contracts: `30 §3 (Open/sealed traits)`, `30 §5 (Typed-kind discipline)`, `30 §7 (Result shapes)`, `30 §8 (Stability)`, `30 §9 (Async posture)`, `30 §10 (Per-crate async table)`.
 - Compile-time consumers: `15 §5 (Compile-Time Resolution)`, `15 §6 (Source resolution: paths, tables, globs)`.
 - Query-time consumers: `33 (semstrait-manifest, I11b gate)` — drafted adjacent to this doc.
-- Sibling crate: `31 (semstrait-core)` — shared primitives (`ColumnName`, `DataType`, `Span`, `Diagnostic<K>`, `Diagnose`, `GlobPattern`).
+- Sibling crate: `31 (semstrait-common)` — shared primitives (`ColumnName`, `DataType`, `Span`, `Diagnostic<K>`, `Diagnose`, `GlobPattern`).
 - Downstream: `35 (semstrait-ir)`, `34 (semstrait-planner)`, `36 (semstrait-adapter)` — do NOT import from this crate.
 
 ---

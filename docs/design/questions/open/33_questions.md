@@ -36,10 +36,10 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 
 ## Q2 — `CompileError` as unified enum vs split
 
-**Question.** `33 §10.1`'s `manifest::CompileError` carries the wider resolution-stage roster and embeds the narrow `ir::CompileError` (`35 §15.2`) via D.ii kind-nesting (single `Ir(ir::CompileError)` variant). Should this remain a single enum with one D.ii embed, or should `33` expose a split `IrCompileError` + `ManifestCompileError` pair without embedding?
+**Question.** `33 §10.1`'s `manifest::CompileError` carries the wider resolution-stage roster and embeds the narrow `ir::CompileError` (`35 §16.2`) via D.ii kind-nesting (single `Ir(ir::CompileError)` variant). Should this remain a single enum with one D.ii embed, or should `33` expose a split `IrCompileError` + `ManifestCompileError` pair without embedding?
 
 **Refs.**
-- `35 §15.2` — narrow `ir::CompileError` variant roster (`ReturnTypeRule::Custom` failures).
+- `35 §16.2` — narrow `ir::CompileError` variant roster (`ReturnTypeRule::Custom` failures).
 - `33 §10.1` — wider `manifest::CompileError` roster + `Ir(ir::CompileError)` embed.
 - `30 §5` / `§7.4` — typed-error-carrier discipline + D.ii kind-nesting pattern.
 

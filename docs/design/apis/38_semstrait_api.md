@@ -23,7 +23,7 @@ authoritative-for:
   - "crate boundaries: no new domain logic; no I/O beyond injected providers; no raw SQL; no catalog branching"
 references:
   - apis/30_api_contracts.md
-  - apis/31_semstrait_core.md
+  - apis/31_semstrait_common.md
   - apis/32_semstrait_model.md
   - apis/33_semstrait_manifest.md
   - apis/34_semstrait_planner.md
@@ -123,7 +123,7 @@ pub use policy::WarningPolicy;
 pub use error::{SemStraitErrorKind, StageOrigin};
 pub use outcome::PipelineOutcome;
 
-pub use semstrait_core::{
+pub use semstrait_common::{
     diagnostic::{Diagnostic, Diagnostics, Diagnose},
     Severity, Request, SessionContext,
 };
@@ -350,7 +350,7 @@ The builder itself is `pub`, but fields are `pub(crate)`; configuration flows th
 | `catalog_provider`  | yes       | — (build fails with `SemStraitErrorKind::BuilderInvalid`)                   |
 | `file_system`       | yes       | — (build fails with `SemStraitErrorKind::BuilderInvalid`)                   |
 | `repository`        | no        | `None` — save/load methods then return `SemStraitErrorKind::NoRepositoryConfigured` |
-| `function_registry` | no        | `semstrait_core::function_registry()` (the process-global instance) |
+| `function_registry` | no        | `semstrait_common::function_registry()` (the process-global instance) |
 | `optimizer_passes`  | no        | the canonical-pass list from `34 §*` (`Vec::new()` semantically means "use defaults", not "no passes") |
 | `warning_policy`    | no        | `WarningPolicy::Accumulate` (`§5.2`)                    |
 
@@ -502,7 +502,7 @@ pub enum SemStraitErrorKind {
     NoRepositoryConfigured,
 }
 
-impl semstrait_core::diagnostic::Diagnose for SemStraitErrorKind {
+impl semstrait_common::diagnostic::Diagnose for SemStraitErrorKind {
     fn message(&self) -> std::borrow::Cow<'_, str> {
         use SemStraitErrorKind::*;
         match self {
@@ -521,7 +521,7 @@ impl semstrait_core::diagnostic::Diagnose for SemStraitErrorKind {
                 "no repository configured on this SemStrait".into(),
         }
     }
-    fn severity(&self) -> semstrait_core::Severity {
+    fn severity(&self) -> semstrait_common::Severity {
         use SemStraitErrorKind::*;
         match self {
             Parse(k)            => k.severity(),
@@ -534,7 +534,7 @@ impl semstrait_core::diagnostic::Diagnose for SemStraitErrorKind {
             CatalogProvider(k)  => k.severity(),
             FileSystem(k)       => k.severity(),
             BuilderInvalid { .. } | NoRepositoryConfigured =>
-                semstrait_core::Severity::Error,
+                semstrait_common::Severity::Error,
         }
     }
 }
@@ -843,7 +843,7 @@ The rightmost "YES" row is narrow: orchestration, warning policy, builder, unifi
 - Parse / validate: `32 §9 (parse signature)`, `32 §11 (validate signature)`.
 - Compile: `33 §9 (compile signature)`, `33 §10 (CompileError / RepositoryErrorKind)`, `33 §11 (Repository)`, `33 §12 (I11b drift-check caller)`.
 - Plan / optimize: `34 §10 (PlanErrorKind / OptimizeErrorKind)`.
-- IR types: `35 §3 (SemanticPlan)`, `35 §5 (EngineArtifact)`, `35 §10 (IrErrorKind)`.
+- IR types: `35 §3 (SemanticPlan)`, `35 §6 (EngineArtifact)`, `35 §11 (IrErrorKind)`.
 - Adapt: `36 §3 (EngineAdapter::adapt)`, `36 §9 (EngineArtifact / SqlArtifact shape)`, `36 §10 (AdaptErrorKind)`.
 - Catalog / FileSystem: `37 §3 (CatalogProvider)`, `37 §5 (FileSystem)`, `37 §8 (CatalogProviderErrorKind / FileSystemErrorKind)`, `37 §9 (I11b drift gate)`.
 - Downstream: `39 (semstrait-facade)` — zero-config wrapper over this crate.

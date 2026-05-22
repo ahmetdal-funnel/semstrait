@@ -351,7 +351,7 @@ Filters are **opt-in per Request**. A Filter named `F` is applied only when the 
 
 Initial design deliberately avoids always-on Filters. Rationale: always-on Filters hide Request semantics at plan time — two identical-looking Requests can produce different results depending on which DataKind they resolve against. Opt-in keeps the Request's behavior locally legible.
 
-**Future design — Filter-injection.** A future extension MAY let a Measure / Metric / DataKind declare Filter(s) as required (informally: "any Request using `premium_customer_revenue` must apply `is_premium_customer`"), with the planner auto-injecting them and recording the Constraint-injected provenance in `SemanticPlan` lineage per `35`. The current model has no carrier for this — see `[TD-REQUIRES-MECHANISM]` in `§8.5.2`. The field name is deliberately left open (`requires:` is reserved per the source comment in `semstrait-core::constraints` — `// This is NOT \`requires\``).
+**Future design — Filter-injection.** A future extension MAY let a Measure / Metric / DataKind declare Filter(s) as required (informally: "any Request using `premium_customer_revenue` must apply `is_premium_customer`"), with the planner auto-injecting them and recording the Constraint-injected provenance in `SemanticPlan` lineage per `35`. The current model has no carrier for this — see `[TD-REQUIRES-MECHANISM]` in `§8.5.2`. The field name is deliberately left open (`requires:` is reserved per the source comment in `semstrait-common::constraints` — `// This is NOT \`requires\``).
 
 ### 6.5 Key
 
@@ -585,7 +585,7 @@ None are authoring-legal in v1.
 Candidate kinds — not authoring-legal in v1:
 
 - `reachability:` — DataKinds the Filter is admissible from (restricts which Requests may name this Filter).
-- `requires:` — the Filter-injection mechanism the source comment in `semstrait-core::constraints` reserves (`// This is NOT \`requires\``). When authored on a Measure / Metric / DataKind (carrier TBD), declares that a named Filter must be in effect; planner auto-injects at step 0 or at a dedicated plan sub-step. Tracked as `[TD-REQUIRES-MECHANISM]`.
+- `requires:` — the Filter-injection mechanism the source comment in `semstrait-common::constraints` reserves (`// This is NOT \`requires\``). When authored on a Measure / Metric / DataKind (carrier TBD), declares that a named Filter must be in effect; planner auto-injects at step 0 or at a dedicated plan sub-step. Tracked as `[TD-REQUIRES-MECHANISM]`.
 
 The future placement of `requires:` — whether on Filter itself or on Measure/Metric/DataKind — is part of the `[TD-REQUIRES-MECHANISM]` design work.
 

@@ -5,7 +5,7 @@ purpose: Parked unresolved questions surfaced while drafting `apis/38_semstrait_
 depends-on:
   - apis/38_semstrait_api.md
   - apis/30_api_contracts.md
-  - apis/31_semstrait_core.md
+  - apis/31_semstrait_common.md
   - apis/32_semstrait_model.md
   - apis/33_semstrait_manifest.md
   - apis/34_semstrait_planner.md
@@ -110,7 +110,7 @@ depends-on:
 
 ## Q-API-006 — Per-`SemStrait`-handle `FunctionRegistry`
 
-**Question.** `38 §4.5` and `§1.3` state the `FunctionRegistry` is process-global per `31 §5.2`. Should `SemStraitBuilder::with_function_registry` accept a caller-built `&'static FunctionRegistry` constructed from a test-local `RegistryBuilder`, or remain pinned to `semstrait_core::function_registry()`?
+**Question.** `38 §4.5` and `§1.3` state the `FunctionRegistry` is process-global per `31 §5.2`. Should `SemStraitBuilder::with_function_registry` accept a caller-built `&'static FunctionRegistry` constructed from a test-local `RegistryBuilder`, or remain pinned to `semstrait_common::function_registry()`?
 
 **Refs.**
 - `31 §5.2` — canonical registry is process-global and sealed.
@@ -125,7 +125,7 @@ depends-on:
 - `CanonicalFn` identity is process-global per `31 §5.2` — two registries with different function rosters would create IDs that don't compose across them, violating I3 (stability of canonical IDs).
 - Current `RegistryExtension` / `RegistryBuilder` surfaces don't support isolated instances cleanly; work in `31` is prerequisite.
 
-**Current position in `38`.** The `function_registry` field on `SemStraitBuilder` (set via `with_function_registry`) accepts any `&'static FunctionRegistry`, but v1 ships only `semstrait_core::function_registry()`. The builder field shape accommodates future isolation without API change.
+**Current position in `38`.** The `function_registry` field on `SemStraitBuilder` (set via `with_function_registry`) accepts any `&'static FunctionRegistry`, but v1 ships only `semstrait_common::function_registry()`. The builder field shape accommodates future isolation without API change.
 
 **Next step.** Depends on `Q-CORE-005` resolution. If `31` adopts per-process isolation, `38` picks it up with no signature change.
 

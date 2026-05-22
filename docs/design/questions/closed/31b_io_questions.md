@@ -1,10 +1,10 @@
 ---
 doc: design/questions/closed/31b_io_questions
 status: Closed
-purpose: Resolved I/O-layer questions originally raised against `apis/31b_semstrait_core_io.md`
+purpose: Resolved I/O-layer questions originally raised against `apis/31b_semstrait_common_io.md`
 ---
 
-# Closed Questions — `apis/31b_semstrait_core_io.md`
+# Closed Questions — `apis/31b_semstrait_common_io.md`
 
 Ratification pass on 2026-04-17 closed every open item in this file. This document is retained as a historical record of the decisions; no live items remain. New questions arising in post-v1 work go into a separate file.
 
@@ -20,7 +20,7 @@ Cross-references in this document are by section (e.g. `31b §3.2`, `32 §10.4`)
 
 ## Q-IO-002 — Additional transport back-ends (HTTP / GCS / Azure) — **RETIRED (v1 FROZEN AT 3)**
 
-**Resolution.** v1 ships with `Local`, `InMemory`, `S3` only. `object_store` (the chosen back-end library, `31b §1.4`) already implements `HttpStore`, `GoogleCloudStorage`, `MicrosoftAzure` — each would be ~30 LOC of trait delegation + one feature flag (`io-http`, `io-gcs`, `io-azure`) in `semstrait-core`. Each lands as an additive MINOR when a concrete caller asks; neither we nor adopters pay the compile cost until opt-in. Priority order when demand surfaces: HTTP (public YAML mirrors, dev servers) > GCS > Azure.
+**Resolution.** v1 ships with `Local`, `InMemory`, `S3` only. `object_store` (the chosen back-end library, `31b §1.4`) already implements `HttpStore`, `GoogleCloudStorage`, `MicrosoftAzure` — each would be ~30 LOC of trait delegation + one feature flag (`io-http`, `io-gcs`, `io-azure`) in `semstrait-common`. Each lands as an additive MINOR when a concrete caller asks; neither we nor adopters pay the compile cost until opt-in. Priority order when demand surfaces: HTTP (public YAML mirrors, dev servers) > GCS > Azure.
 
 ---
 
@@ -32,7 +32,7 @@ Cross-references in this document are by section (e.g. `31b §3.2`, `32 §10.4`)
 
 ## Q-IO-004 — WASM back-end constraints — **CLOSED (NO WASM IN v1)**
 
-**Resolution.** v1 does not support the `wasm32-unknown-unknown` target. `semstrait-core::io` is not compiled for wasm; `cfg` guards in the back-end layer prevent wasm builds from ever exercising `tokio::fs` / S3 paths. Adding wasm support (`InMemory` only, `fetch`-backed HTTP, IndexedDB-backed `Sink`, or any combination) is not planned for any follow-on MINOR unless a concrete tooling need surfaces. Browser-hosted tools that want `semstrait` must preload model bytes into their runtime and call sync-path parse functions (`semstrait_model::parse(&str)`), bypassing `io` entirely.
+**Resolution.** v1 does not support the `wasm32-unknown-unknown` target. `semstrait-common::io` is not compiled for wasm; `cfg` guards in the back-end layer prevent wasm builds from ever exercising `tokio::fs` / S3 paths. Adding wasm support (`InMemory` only, `fetch`-backed HTTP, IndexedDB-backed `Sink`, or any combination) is not planned for any follow-on MINOR unless a concrete tooling need surfaces. Browser-hosted tools that want `semstrait` must preload model bytes into their runtime and call sync-path parse functions (`semstrait_model::parse(&str)`), bypassing `io` entirely.
 
 ---
 
