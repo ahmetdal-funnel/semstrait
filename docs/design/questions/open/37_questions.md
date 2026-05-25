@@ -22,7 +22,7 @@ Deferred (non-blocking operational depth):
 
 ## Q-CAT-002 — Glob semantics ownership
 
-Should glob predicate semantics stay in `semstrait-core` with catalog-layer orchestration, or move fully into catalog crate?
+Should glob predicate semantics stay in `semstrait-common` with catalog-layer orchestration, or move fully into catalog crate?
 
 Current default: keep predicate in core, orchestration in catalog.
 

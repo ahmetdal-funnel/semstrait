@@ -21,14 +21,6 @@ Deferred (non-blocking operational depth):
 
 ---
 
-## Q-ADAPT-002 — Capability consultation site
-
-Should capability gating remain planner/API-side only, or also be enforced early inside `adapt` as a defensive check?
-
-Current default: planner/API pre-check; emitter-path failure remains authoritative.
-
----
-
 ## Q-ADAPT-003 — `Dialect` vs `DialectEmit` split ownership
 
 Should the split remain (`Dialect` structural in `35`, `DialectEmit` operational in `36`) or collapse into one trait?

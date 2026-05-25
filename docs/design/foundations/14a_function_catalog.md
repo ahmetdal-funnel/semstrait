@@ -17,7 +17,7 @@ refined-by:
 
 > Ratifies the machinery `14` defers to at every `FunctionCall` site and at `14 §6.4`'s Declarative-block tag dispatch: the `FunctionRegistry` API shape and lifecycle, the function-spec model, the canonical scalar / non-closed-aggregate catalog, function-level `Additivity`, and the adapter extension API.
 >
-> Crate-level placement (after the `14` second-refinement landing): `CanonicalFn`, `FunctionRegistry`, and the spec types live in `semstrait-ir` per `[14 §9.2](14_expressions.md)` and `[35 §7](../apis/35_semstrait_ir.md)`.
+> Crate placement: `CanonicalFn`, `FunctionRegistry`, and the spec types live in `semstrait-ir` per `[35 §8](../apis/35_semstrait_ir.md)`.
 
 ## 1. Purpose and Scope
 
@@ -164,27 +164,103 @@ Population policy: **adapter-capability intersection** across DataFusion ∩ Spa
 
 ### 4.2 Scalar — String
 
-Candidates: `upper`, `lower`, `length`, `substring`, `trim`, `ltrim`, `rtrim`, `concat`, `replace`, `lpad`, `rpad`, `reverse`. Reserved predicates (`Like` / `ILike` / `RegexpMatch` / `RegexpExtract`) are NOT registry entries — see `[14 §3.3](14_expressions.md)`.
+Ratified Round-2 (2026-05-21). Reserved predicates (`Like` / `ILike` / `RegexpMatch` / `RegexpExtract`) are NOT registry entries — see `[14 §3.3](14_expressions.md)`.
+
+| Canonical | Signatures | Notes |
+|---|---|---|
+| `upper` | `(String) -> String` | Unicode-aware case mapping. |
+| `lower` | `(String) -> String` | Unicode-aware case mapping. |
+| `length` | `(String) -> Integer`, `(Array<T>) -> Integer` | Character count for String; element count for Array. |
+| `substring` | `(String, Integer) -> String`, `(String, Integer, Integer) -> String` | 1-indexed. Positive `pos` only in v1; negative `pos` is non-portable (each engine differs). |
+| `trim` | `(String) -> String`, `(String, String) -> String` | Default = strip ASCII space `0x20`. 2-arg form: set semantics — strips any character in the second arg from both ends. |
+| `ltrim` | `(String) -> String`, `(String, String) -> String` | Same defaults / set semantics as `trim`. |
+| `rtrim` | `(String) -> String`, `(String, String) -> String` | Same defaults / set semantics as `trim`. |
+| `concat` | variadic `(String, String...) -> String` | NULL-propagating (any NULL arg → NULL result), per SQL standard. |
+| `replace` | `(String, String, String) -> String` | Replaces all occurrences. Literal substring (not regex). |
+| `lpad` | `(String, Integer) -> String`, `(String, Integer, String) -> String` | 2-arg form defaults pad to ASCII space. Truncates if input already exceeds target length. |
+| `rpad` | `(String, Integer) -> String`, `(String, Integer, String) -> String` | Same as `lpad` mirrored. |
+| `reverse` | `(String) -> String`, `(Array<T>) -> Array<T>` | Reverses by code points (String) / by element order (Array). |
+
+Per-engine native names, name-remaps, and structural rewrites: `registry/functions_mapping.md §7`.
 
 ### 4.3 Scalar — Math
 
-Candidates: `abs`, `round`, `ceil`, `floor`, `sqrt`, `power`, `exp`, `ln`, `log`, `log10`, `sign`. `mod(x, y)` is NOT in the catalog — `BinaryOpKind::Mod` (`%`) is the canonical form.
+Ratified Round-2 (2026-05-21). `mod(x, y)` is NOT in the catalog — `BinaryOpKind::Mod` (`%`) is the canonical form.
+
+| Canonical | Signatures | Notes |
+|---|---|---|
+| `abs` | `(Numeric) -> same` | Type-preserving across all numeric types. Signed-integer minimum (e.g. `abs(INT_MIN)`) is engine-visible overflow. |
+| `round` | `(Float) -> Float`, `(Float, Integer) -> Float`, `(Decimal(p,s)) -> Decimal(p,s)`, `(Decimal(p,s), Integer) -> Decimal(p,s)` | Half-away-from-zero. Integer arg form: rounds to N decimal places (negative = left of decimal). Integer inputs are rejected at compile — authors cast explicitly. |
+| `ceil` | `(Float) -> Float`, `(Decimal(p,s)) -> Decimal(p,0)` | Single-arg only in v1. 2-arg with `scale` deferred. |
+| `floor` | `(Float) -> Float`, `(Decimal(p,s)) -> Decimal(p,0)` | Same as `ceil` mirrored. |
+| `sqrt` | `(Float) -> Float` | Negative input is engine-visible (DuckDB errors, DF/Spark return NaN). |
+| `power` | `(Float, Float) -> Float` | Out-of-domain behavior (`power(0, neg)`, `power(neg, 0.5)`) is engine-visible. |
+| `exp` | `(Float) -> Float` | |
+| `ln` | `(Float) -> Float` | Natural logarithm. Non-positive input is engine-visible. |
+| `log` | `(Float, Float) -> Float` | 2-arg only: `log(base, value)`. 1-arg `log(x)` is NOT canonical — engines disagree (DF/DuckDB = log10, Spark = ln); authors use `ln(x)` or `log10(x)` explicitly. |
+| `log10` | `(Float) -> Float` | Base-10 logarithm. Non-positive input is engine-visible. |
+| `sign` | `(Numeric) -> Integer` | Returns `-1`, `0`, `1`. Return type widened to Integer for portability. |
+
+Per-engine native names, name-remaps, and structural rewrites: `registry/functions_mapping.md §8`.
 
 ### 4.4 Scalar — Temporal
 
-Candidates: `date_add`, `date_sub`, `date_diff`, `extract`, `year`, `month`, `day`, `hour`, `minute`, `second`, `current_date`, `current_timestamp`, `to_date`, `to_timestamp`. Per-engine name remaps live in `registry/functions_mapping.md`.
+Ratified Round-2 (2026-05-21). `EXTRACT(part FROM source)` is parser sugar that lowers to canonical `date_part('part', source)` — `extract` is NOT a registry entry.
+
+| Canonical | Signatures | Notes |
+|---|---|---|
+| `date_part` | `(String, Date) -> Long`, `(String, Timestamp) -> Long` | First arg is a part literal (`'year'`, `'month'`, `'day'`, `'hour'`, `'minute'`, `'second'`, `'millisecond'`, …). Canonical name; `extract` is parser sugar that lowers to this. |
+| `year` | `(Date) -> Long`, `(Timestamp) -> Long` | Convenience for `date_part('year', x)`. |
+| `month` | `(Date) -> Long`, `(Timestamp) -> Long` | Convenience for `date_part('month', x)`. |
+| `day` | `(Date) -> Long`, `(Timestamp) -> Long` | Convenience for `date_part('day', x)`. |
+| `hour` | `(Timestamp) -> Long` | Convenience for `date_part('hour', x)`. |
+| `minute` | `(Timestamp) -> Long` | Convenience for `date_part('minute', x)`. |
+| `second` | `(Timestamp) -> Long` | Integer seconds. Sub-second extraction goes through `date_part('millisecond', …)` or similar. |
+| `date_add` | `(Date, Interval) -> Date`, `(Timestamp, Interval) -> Timestamp` | Author-facing surface is FunctionCall. Some engines render as `d + i` (BinaryOp) — that is a per-engine rewrite, not a demotion. Spark's integer-days `date_add(d, n)` form is adapter-extended only. |
+| `date_sub` | `(Date, Interval) -> Date`, `(Timestamp, Interval) -> Timestamp` | Mirror of `date_add`. |
+| `date_diff` | `(String, Date, Date) -> Long`, `(String, Timestamp, Timestamp) -> Long` | 3-arg form: `date_diff(part, start, end)`. Returns difference in `part` units (signed: positive when `end > start`). 2-arg integer-days form is adapter-extended. |
+| `to_date` | `(String) -> Date` | ISO-8601 input only (`'YYYY-MM-DD'`). Format-string overload `(String, String)` is adapter-extended — engine format-string dialects (Chrono strftime / Java DateTimeFormatter / DuckDB strptime) are mutually incompatible. |
+| `to_timestamp` | `(String) -> Timestamp` | ISO-8601 input only. Format-string overload adapter-extended (same rationale as `to_date`). |
+| `current_date` | `() -> Date` | Per-query determinism (sourced from session). |
+| `current_timestamp` | `() -> Timestamp` | Per-query determinism. |
+
+Per-engine native names, name-remaps, and structural rewrites: `registry/functions_mapping.md §9`.
 
 ### 4.5 Scalar — Logical / Conditional helpers
 
-Candidates: `greatest`, `least`, `if`, `ifnull`, `nvl`. Reserved AST variants (`Case`, `Coalesce`, `NullIf`, `IsNull`) are NOT registry entries.
+Ratified Round-2 (2026-05-21). Reserved AST variants (`Case`, `Coalesce`, `NullIf`, `IsNull`) are NOT registry entries.
+
+| Canonical | Signatures | Notes |
+|---|---|---|
+| `greatest` | variadic `(T, T...) -> T` | Returns greatest non-NULL value. NULL-skip semantics: returns NULL only when every argument is NULL. Args must share a comparable common type. |
+| `least` | variadic `(T, T...) -> T` | Mirror of `greatest`. NULL-skip semantics. |
+
+`if(cond, then, else)`, `ifnull(a, b)`, `nvl(a, b)` are NOT registered — `Expr::Case` and `Expr::Coalesce` (dedicated variants per `14 §3.3`) cover the same use-cases. Authors write the dedicated forms directly.
+
+Per-engine native names, name-remaps, and structural rewrites: `registry/functions_mapping.md §10`.
 
 ### 4.6 Aggregate — non-closed
 
-Candidates: `stddev`, `variance`, `median`, `string_agg`, `percentile_cont`, `percentile_disc`, `approx_count_distinct`. Engine-specific forms (DuckDB's `approx_top_k`, Spark's `percentile_approx`) are adapter-extended per §7. Entries carry `FunctionCategory::Aggregate` and `Additivity` per §3.6.
+Ratified Round-2 (2026-05-21). Engine-specific forms (DuckDB's `approx_top_k`, Spark's `percentile_approx`) are adapter-extended per §7. Entries carry `FunctionCategory::Aggregate` and `Additivity::NonAdditive` per §3.6.
+
+| Canonical | Signatures | Notes |
+|---|---|---|
+| `stddev` | `(Numeric) -> Double` | Sample standard deviation. Bare name is sample across all three engines. `stddev_samp` is parser sugar. |
+| `stddev_pop` | `(Numeric) -> Double` | Population standard deviation. Separate canonical entry. |
+| `variance` | `(Numeric) -> Double` | Sample variance. Bare name is sample across all three engines. `var_samp` is parser sugar. |
+| `var_pop` | `(Numeric) -> Double` | Population variance. Separate canonical entry. |
+| `median` | `(Numeric) -> Double`, `(Decimal(p,s)) -> Decimal(p,s)` | Exact median. Spark floor at 3.4+. |
+| `string_agg` | `(String, String) -> String` | Concatenates non-NULL values with the second-arg separator. ORDER BY / DISTINCT clause modifiers are adapter-extended. Spark floor at 3.3+. |
+| `percentile_cont` | `(Float, Numeric) -> Double` | First arg is percentile fraction `[0.0, 1.0]`; second arg is the value column. Author-facing surface is FunctionCall — engines render the SQL-standard `WITHIN GROUP (ORDER BY col)` form at the dialect layer (same shape as `count(DISTINCT)`'s rendering). Spark floor at 3.1+. |
+| `approx_count_distinct` | `(Any) -> Long` | HyperLogLog-class approximation. Implementation backends differ across engines (HyperLogLog vs HyperLogLog++) — engine-delegated per `§6.2`. |
+
+`percentile_disc` is NOT canonical — DataFusion lacks it entirely; intersection violation per `§4.1`. Adapter-extended on DuckDB + Spark only.
+
+Per-engine native names, name-remaps, and structural rewrites: `registry/functions_mapping.md §3.2`.
 
 ### 4.7 The closed five aggregates
 
-`Sum` / `Avg` / `Count` / `Min` / `Max` are carried by `Expr::Aggregate { op: AggregationOp, … }` (the closed `AggregationOp` enum in `[31 §5.2](../apis/31_semstrait_core.md)`) — **not** registry entries. Their return-type rules follow SQL:2016 promotion; effective additivity is `Additive` for Sum / Count / Min / Max, `NonAdditive` for Avg.
+`Sum` / `Avg` / `Count` / `Min` / `Max` are carried by `Expr::Aggregate { op: AggregationOp, … }` (the closed `AggregationOp` enum in `[31 §5.2](../apis/31_semstrait_common.md)`) — **not** registry entries. Their return-type rules follow SQL:2016 promotion; effective additivity is `Additive` for Sum / Count / Min / Max, `NonAdditive` for Avg.
 
 ## 5. BinaryOp Promotion — No Canonical Lattice
 

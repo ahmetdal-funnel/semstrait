@@ -90,7 +90,7 @@ Detailed semantics live in owning docs. This section is a compact term map; the 
 | `Additivity`                | Function-tag axis for aggregate composition          | `foundations/19_expression_flow.md`, `foundations/14a_function_catalog.md`, `foundations/18_entities.md` |
 | `CanonicalFn`               | Stable canonical function identity                   | `foundations/14a_function_catalog.md`                                 |
 | `SemanticMapping`           | Semantics-to-physical mapping contract               | `foundations/15_mapping_and_binding.md`, `foundations/18_entities.md` |
-| `Diagnostic<K>`             | Typed diagnostic carrier by stage kind               | `apis/31_semstrait_core.md`, `apis/30_api_contracts.md`               |
+| `Diagnostic<K>`             | Typed diagnostic carrier by stage kind               | `apis/31_semstrait_common.md`, `apis/30_api_contracts.md`               |
 | `SemStraitErrorKind`        | Unified API-level kind sum                           | `apis/38_semstrait_api.md`                                            |
 
 
@@ -234,9 +234,9 @@ Deferred-but-in-scope items are tracked as `DEFERRED` in owning docs and questio
 
 ## 11. Relationship to Existing Documents
 
-- `[AGENTS.md](../../AGENTS.md)` and `[CLAUDE.md](../../CLAUDE.md)` define project mode and workflow discipline.
-- Legacy docs outside `docs/design/` describe current code state and are non-authoritative for target-state decisions.
-- Design-to-implementation migration is tracked under `implementation/40-42` once design ratification closes.
+- `[AGENTS.md](../../AGENTS.md)` / `[CLAUDE.md](../../CLAUDE.md)`: project mode + workflow.
+- Legacy docs outside `docs/design/`: current-state reference, not authoritative for target.
+- Migration tracking: `implementation/40-42`.
 
 ---
 

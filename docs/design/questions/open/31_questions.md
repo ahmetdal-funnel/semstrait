@@ -1,13 +1,13 @@
 ---
 doc: design/questions/open/31_questions
 status: Living (focused v1 backlog)
-purpose: Active architecture-impacting questions for `apis/31_semstrait_core.md`
+purpose: Active architecture-impacting questions for `apis/31_semstrait_common.md` (formerly `apis/31_semstrait_common.md`)
 depends-on:
-  - apis/31_semstrait_core.md
+  - apis/31_semstrait_common.md
   - foundations/14_expressions.md
 ---
 
-# Open Questions — `apis/31_semstrait_core.md`
+# Open Questions — `apis/31_semstrait_common.md`
 
 Closed:
 - [`../closed/31_questions.md`](../closed/31_questions.md)
@@ -19,9 +19,9 @@ Deferred:
 
 ## Q2 — `ContextLine` placement
 
-Should rich context rendering data live directly on core diagnostic primitives or remain presentation-layer concern?
+Should rich context rendering data live directly on common diagnostic primitives or remain presentation-layer concern?
 
-Current default: not exposed in core public primitive surface.
+Current default: not exposed in common public primitive surface.
 
 ---
 

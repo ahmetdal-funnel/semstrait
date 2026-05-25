@@ -3,10 +3,10 @@ doc: design/questions/deferred/31_questions
 status: Deferred (post-v1 API surface refinements)
 purpose: Deferred non-blocking questions moved from `open/31_questions.md`
 depends-on:
-  - apis/31_semstrait_core.md
+  - apis/31_semstrait_common.md
 ---
 
-# Deferred Questions — `apis/31_semstrait_core.md`
+# Deferred Questions — `apis/31_semstrait_common.md` (formerly `apis/31_semstrait_common.md`)
 
 | ID | Topic | Last known default |
 |---|---|---|

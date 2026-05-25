@@ -25,11 +25,11 @@ refined-by:
 
 # 36. semstrait-adapter
 
-> **Status:** ratified. `36` nails down the public surface of `semstrait-adapter` — the crate that turns a `SemanticPlan` (`35`) into an `EngineArtifact` (`35 §6`). No new IR vocabulary is introduced; `36` refines `35`'s adapter-artifact shapes with the *emission* contract, the *dialect* operational trait, the *adapter roster*, the *function / type rewrite* pipelines, and the `AdaptErrorKind` surface (typed-kind discipline per `30 §5` / `31 §3`). All engine-identity branching in the workspace is confined behind `EngineAdapter` per I3.
+> **Status:** ratified. `36` nails down the public surface of `semstrait-adapter` — the crate that turns a `SemanticPlan` (`35`) into an `EngineArtifact` (`35 §7`). No new IR vocabulary is introduced; `36` refines `35`'s adapter-artifact shapes with the *emission* contract, the *dialect* operational trait, the *adapter roster*, the *function / type rewrite* pipelines, and the `AdaptErrorKind` surface (typed-kind discipline per `30 §5` / `31 §3`). All engine-identity branching in the workspace is confined behind `EngineAdapter` per I3.
 
 ## 1. Purpose, Scope, and Layering
 
-`semstrait-adapter` is the **engine-boundary crate**. Every piece of engine-specific knowledge in the workspace — dialect quirks, SQL idioms, Substrait wire format, per-engine function rewrites, per-engine type spellings, capability declarations — lives behind the `EngineAdapter` trait here or in a per-engine crate that implements it. No canonical-layer crate (`semstrait-core`, `semstrait-ir`, `semstrait-model`, `semstrait-manifest`, `semstrait-planner`) branches on engine identity (I3); every such branch resolves to an `EngineAdapter` dispatch.
+`semstrait-adapter` is the **engine-boundary crate**. Every piece of engine-specific knowledge in the workspace — dialect quirks, SQL idioms, Substrait wire format, per-engine function rewrites, per-engine type spellings, capability declarations — lives behind the `EngineAdapter` trait here or in a per-engine crate that implements it. No canonical-layer crate (`semstrait-common`, `semstrait-ir`, `semstrait-model`, `semstrait-manifest`, `semstrait-planner`) branches on engine identity (I3); every such branch resolves to an `EngineAdapter` dispatch.
 
 ### 1.1 What `semstrait-adapter` OWNS
 
@@ -58,7 +58,7 @@ refined-by:
 Three independent axes of engine-variation meet in this crate. `36` is where each is declared and confined:
 
 1. **Emission mode** — SQL text (`EngineArtifact::Sql(SqlArtifact)`) vs structured IR (`EngineArtifact::Plan(EnginePlan)`). Selected per-adapter; `EngineAdapter::dialect()` returns `None` for non-SQL adapters (§3.1).
-2. **Dialect** — for SQL-emitting adapters, the per-engine SQL variation axis (identifier quoting, keyword casing, function spelling, type name, cast semantics). Carried with every `SqlArtifact` via `DialectId` (`35 §6.4`). Ratified here as `DialectEmit` (§4).
+2. **Dialect** — for SQL-emitting adapters, the per-engine SQL variation axis (identifier quoting, keyword casing, function spelling, type name, cast semantics). Carried with every `SqlArtifact` via `DialectId` (`35 §7.4`). Ratified here as `DialectEmit` (§4).
 3. **Engine identity** — the concrete target engine (DataFusion, DuckDB, Spark, Substrait consumer, …). Identified by `AdapterId` (§3.3). Each per-engine adapter picks its own `Dialect` (or `None` for Substrait) + its own `AdapterCapabilities` + its own `RegistryExtension` impl (`14a §7`).
 
 These axes are *independent* in principle — two adapters MAY share a `DialectId` (`AnsiSqlAdapter` and a hypothetical `TrinoSqlAdapter` could both claim `DialectId::ANSI` as a baseline) — but in v1 every `DialectId` has exactly one built-in adapter that emits it.
@@ -206,13 +206,13 @@ Every `impl EngineAdapter` MUST uphold:
 - **I-ADAPT-3 — deterministic.** Two calls with identical `(plan, manifest)` must produce byte-identical `EngineArtifact`s. UUID generation, timestamp capture, randomized ordering — all forbidden inside `adapt`.
 - **I-ADAPT-4 — quoting mandatory.** Every identifier embedded in `SqlArtifact.text` passes through the adapter's `DialectEmit::quote_identifier` (§4.3). Every literal value passes through `DialectEmit::quote_literal` or equivalent. String concatenation of unquoted identifiers is a soundness bug (§14).
 - **I-ADAPT-5 — error-first fallback.** If a `PlanNode` variant, a `FunctionCall` name, or a `DataType` is not representable in the adapter's target, `AdaptError::Unsupported*` fires at `adapt` time. Silent truncation, stub emission, runtime-deferred panics — all banned. Matches `14a §6.3`'s hard-error policy for `UnsupportedFunction`.
-- **I-ADAPT-6 — structural-mapping conformance.** SQL-emitting adapters render each `PlanNode` variant per the structural conventions of §9; the generic orchestrator assumes conformance and composes clauses accordingly. Substrait adapters conform to the mapping table at `35 §9.2`.
+- **I-ADAPT-6 — structural-mapping conformance.** SQL-emitting adapters render each `PlanNode` variant per the structural conventions of §9; the generic orchestrator assumes conformance and composes clauses accordingly. Substrait adapters conform to the mapping table at `35 §10.2`.
 
 ### 3.3 `AdapterId`
 
 ```rust
 /// Stable identity newtype, paralleling `DialectId`'s posture at
-/// `35 §6.4`. Construction is crate-private; consumers compare against
+/// `35 §7.4`. Construction is crate-private; consumers compare against
 /// `pub const` identities.
 ///
 /// Newtype-over-stable exception per `30 §4.3`: no `#[non_exhaustive]`.
@@ -230,7 +230,7 @@ impl AdapterId {
 }
 ```
 
-Adding a new `pub const AdapterId` — e.g. `AdapterId::TRINO_SQL`, `AdapterId::CLICKHOUSE_SQL` — is MINOR per `30 §11.1`. Third-party adapter crates declare their own constants on their own type; they MAY NOT add `pub const`s to `AdapterId` directly (construction is crate-private). The crate-private construction mirrors `CanonicalFn` / `DialectId` (`31 §5.1` / `35 §6.4`).
+Adding a new `pub const AdapterId` — e.g. `AdapterId::TRINO_SQL`, `AdapterId::CLICKHOUSE_SQL` — is MINOR per `30 §11.1`. Third-party adapter crates declare their own constants on their own type; they MAY NOT add `pub const`s to `AdapterId` directly (construction is crate-private). The crate-private construction mirrors `CanonicalFn` / `DialectId` (`31 §5.1` / `35 §7.4`).
 
 ### 3.4 Diagnostics flow (no separate extension)
 
@@ -242,8 +242,6 @@ extension is **retired** by the workspace-wide diagnostic-shape decision in
 that produce no warnings return an empty `Diagnostics<AdaptErrorKind>`;
 adapters that do (e.g. DuckDB precision clamping, Spark structural
 rewrites) accumulate them in the same vector and propagate.
-
-This closes `Q-ADAPT-001` — the bare-`Result` default is superseded.
 
 ### 3.5 `debug_sql` free function
 
@@ -265,13 +263,13 @@ Routes through `AnsiSqlAdapter::emit` internally. Non-SQL adapters (`SubstraitAd
 
 ### 4.1 Relationship to `Dialect` in `35`
 
-`35 §6.5` ratifies the **structural** `Dialect` trait: associated `const ID: DialectId` and `fn capabilities(&self) -> &'static [Capability]`. That trait is consumed by planner-side capability gates — it answers "is this dialect in the set?" and "what can it do?".
+`35 §7.5` ratifies the **structural** `Dialect` trait: associated `const ID: DialectId` and `fn capabilities(&self) -> &'static [Capability]`. That trait is consumed by planner-side capability gates — it answers "is this dialect in the set?" and "what can it do?".
 
 `36` adds the **operational** half: `DialectEmit`, a supertrait extension that carries the per-dialect SQL rendering methods. The split per `Q-ADAPT-003`:
 
 ```rust
 /// Operational dialect surface. Extends the structural `Dialect` trait
-/// (`35 §6.5`) with rendering methods every SQL-emitting adapter relies
+/// (`35 §7.5`) with rendering methods every SQL-emitting adapter relies
 /// on. `DialectEmit: Dialect` (supertrait chain).
 ///
 /// Not sealed — third-party dialects (e.g. a hypothetical
@@ -297,7 +295,7 @@ Every impl MUST:
 
 - Enclose `ident` in the dialect's identifier-quote delimiters (ANSI / DataFusion / DuckDB: `"…"`; Spark: backtick-fallback per legacy SQL idiom; MySQL-family: backtick).
 - Escape the delimiter character occurring inside `ident` per dialect rules (ANSI: double the quote — `abc"def` → `"abc""def"`).
-- NOT truncate, case-fold, or reject `ident` based on length / reserved-word collisions — any identifier that survived `Name::new` (`35 §5.4`) is quoting-safe at this layer. Length limits and reserved-word handling are engine-side concerns.
+- NOT truncate, case-fold, or reject `ident` based on length / reserved-word collisions — any identifier that survived `Name::new` (`35 §6.4`) is quoting-safe at this layer. Length limits and reserved-word handling are engine-side concerns.
 
 ### 4.3 Literal escaping
 
@@ -383,7 +381,7 @@ fn emit_cast(&self, expr: &str, target: &DataType) -> Result<String, AdaptErrorK
 ```rust
 /// SQL rendering of `NullOrdering` as an ORDER BY suffix. `First` →
 /// `" NULLS FIRST"`, `Last` → `" NULLS LAST"`, `Unspecified` → `""`
-/// (engine default applies). Per `35 §5.6`.
+/// (engine default applies). Per `35 §6.6`.
 fn null_ordering_clause(&self, nulls: NullOrdering) -> &'static str;
 
 /// `Expr::DateTrunc { expr, grain }` emission. All three first-class
@@ -469,7 +467,7 @@ impl EngineAdapter for AnsiSqlAdapter {
 ```
 
 - Purpose — the reference / fallback adapter. Used by `debug_sql` (§3.5), by diagnostics that surface rendered SQL for troubleshooting, and as a starting point for authors bringing up a new dialect. Matches current code's `AnsiDialect` + ANSI emitter path.
-- Capabilities — conservative. Advertises `Cte = true`, `DistinctAggregate = true`, `AsOfJoin = false`, `GroupingSets = false`. See §6.
+- Capabilities — conservative. Advertises none of the irreducible features (`AsOfJoin = false`, `RegexpMatch = false`, `RegexpExtract = false`, `IntervalLiteral = false`, `StructAccess = false`). Authors targeting the ANSI fallback who require those features get a `34`/`38`-side pre-flight diagnostic. See §6.
 - Rewrite posture — zero PlanBuilder-layer rewrites; every canonical `FunctionCall` emits its canonical name verbatim. `DialectEmit::rewrite_function` always returns `Ok(RewrittenCall::NameOnly)`. Adapters that need rewrites use the per-engine impls below.
 
 ### 5.2 `DataFusionSqlAdapter`
@@ -478,8 +476,8 @@ Lives in `semstrait-adapter-datafusion`. Produces SQL targetable at `datafusion-
 
 - `id() = AdapterId::DATAFUSION_SQL`.
 - `dialect() = Some(&DataFusionDialect)` (dialect lives in `semstrait-adapter-datafusion`).
-- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.1`: `position` → `strpos` with arg-reorder; `sign` → `signum`; `variance` → `var_samp`; `date_add` / `date_sub` / `date_diff` → structural `BinaryOp` / `Cast` forms; `RegexpExtract` → `array_element(regexp_match(...), group + 1)`.
-- Capabilities — `Cte = true`, `DistinctAggregate = true`, `AsOfJoin = false`, `GroupingSets = true`, `RegexpMatch = true`, `IntervalLiteral = true`. `StructAccess = false` (pending canonical `DataType::Struct` which is out of v1).
+- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.1`: `position` → `strpos` with arg-reorder; `sign` → `Cast(signum(x), Integer)`; `variance` → `var_samp`; `approx_count_distinct` → `approx_distinct`; `date_add` / `date_sub` → `BinaryOp` forms; `date_diff` (3-arg) → `date_part`-extracted form; `year`/`month`/`day`/`hour`/`minute`/`second` → `date_part('part', x)`; `RegexpExtract` → `array_element(regexp_match(...), group + 1)`.
+- Capabilities — `AsOfJoin = false`, `RegexpMatch = true`, `RegexpExtract = true`, `IntervalLiteral = true`, `StructAccess = false` (pending canonical `DataType::Struct` which is out of v1).
 
 ### 5.3 `DuckDbSqlAdapter`
 
@@ -487,8 +485,8 @@ Lives in `semstrait-adapter-duckdb`.
 
 - `id() = AdapterId::DUCKDB_SQL`.
 - `dialect() = Some(&DuckDbDialect)`.
-- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.2`: `position` → `strpos` with arg-reorder; `to_date` / `to_timestamp` (1-arg) → `CAST`; `date_diff` → 3-arg form with `'day'` unit; `percentile_cont` → `WITHIN GROUP` structural (flagged for demotion per `TD-FUNCS-MAPPING-PERCENTILE`). `log(base, x)` — if DuckDB version floor does not carry the 2-arg form, raises `AdaptError::UnsupportedFeature { feature: UnsupportedFeatureKind::Function, .. }`.
-- Capabilities — `Cte = true`, `DistinctAggregate = true`, `AsOfJoin = true` (DuckDB 0.9+ native `ASOF JOIN` syntax), `GroupingSets = true`, `RegexpMatch = true`.
+- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.2`: `position` → `strpos` with arg-reorder; `concat` → `||`-chain (NULL-propagation alignment); `lpad` / `rpad` 2-arg → 3-arg space-injection; `to_date` / `to_timestamp` (1-arg) → `Cast`. `log(base, x)` — if DuckDB version floor does not carry the 2-arg form, raises `AdaptError::UnsupportedFeature { feature: UnsupportedFeatureKind::Function, .. }`. Dialect-layer rendering of `percentile_cont` uses native `WITHIN GROUP (ORDER BY col)` syntax per `§13.2`.
+- Capabilities — `AsOfJoin = true` (DuckDB 0.9+ native `ASOF JOIN` syntax), `RegexpMatch = true`, `RegexpExtract = true`, `IntervalLiteral = true`, `StructAccess = false` (pending canonical `DataType::Struct`).
 - Dialect notes — `DuckDbDialect.type_name` maps `Timestamp(p)` to precision-specific keywords (`TIMESTAMP_S` / `TIMESTAMP_MS` / `TIMESTAMP` / `TIMESTAMP_NS`) per `registry/types_mapping.md §3.3`.
 
 ### 5.4 `SparkSqlAdapter`
@@ -497,8 +495,8 @@ Lives in `semstrait-adapter-spark`.
 
 - `id() = AdapterId::SPARK_SQL`.
 - `dialect() = Some(&SparkDialect)`.
-- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.3`: `position` → `locate` (arg order matches canonical — no re-order); `sign` → `signum`; `date_add` / `date_sub` → `+` / `-` structural; `date_diff` → `datediff` with arg-reorder; `string_agg` → `array_join(collect_list(...), sep)` structural; `median` (Spark < 3.4) → `percentile_approx(expr, 0.5)`; `SafeDivide` (Spark 3.3+) → `try_divide` (optional optimization).
-- Capabilities — `Cte = true`, `DistinctAggregate = true`, `AsOfJoin = false` (Spark lacks native as-of), `GroupingSets = true`, `RegexpMatch = true`, `IntervalLiteral = true` (Spark 3.4+ for `TimestampNTZType` per `registry/types_mapping.md §3.2`).
+- PlanBuilder-layer rewrites per `registry/functions_mapping.md §13.3`: `length(arr)` → `size(arr)`; `lpad` / `rpad` 2-arg → 3-arg space-injection; `ceil(Float)` / `floor(Float)` → `Cast(... as Double)`; `date_add` / `date_sub` → `BinaryOp` forms; `date_diff` (3-arg, day part) → `datediff(end, start)` with arg-reorder; `date_diff` (3-arg, non-day part) → per-part extraction via `date_part(part, end) - date_part(part, start)`; `SafeDivide` (Spark 3.3+) → `try_divide` (optional optimization). Dialect-layer rendering of `percentile_cont` uses native `WITHIN GROUP (ORDER BY col)` syntax (Spark 3.1+).
+- Capabilities — `AsOfJoin = false` (Spark lacks native as-of), `RegexpMatch = true`, `RegexpExtract = true`, `IntervalLiteral = true` (Spark 3.4+ for `TimestampNTZType` per `registry/types_mapping.md §3.2`), `StructAccess = false` (pending canonical `DataType::Struct`).
 - `SparkDialect::emit_ilike` uses the `LOWER(...) LIKE LOWER(...)` form per §4.7 default; Spark has no native `ILIKE`.
 
 ### 5.5 `SubstraitAdapter`
@@ -531,10 +529,10 @@ impl EngineAdapter for SubstraitAdapter {
 }
 ```
 
-- Emission follows the mapping table at `35 §9.2` — each `PlanNode` maps to exactly one `substrait::proto::Rel` kind.
+- Emission follows the mapping table at `35 §10.2` — each `PlanNode` maps to exactly one `substrait::proto::Rel` kind.
 - Function anchors — every `FunctionCall.name` / every `Aggregation` variant maps directly to a Substrait-standard function URN. V1 uses `CanonicalFn::as_str()` as the anchor; per-function URN overrides are tracked as `[TD-ADAPTER-SUBSTRAIT-ANCHOR]` (see `Q-ADAPT-008`).
-- `SemAnnotation` round-trip — per `35 §9.2`, annotations travel through `AdvancedExtension.optimization` with URN `urn:semstrait:annotations:v1`. Deserializers unknown to the consuming engine skip unknown annotations gracefully per `35 §11.2`.
-- Capabilities — `Cte = false` (Substrait has no CTE rel), `DistinctAggregate = true`, `AsOfJoin = false` in v1 (Substrait has no standard as-of; an extension path is `[TD-ADAPTER-SUBSTRAIT-ASOF]`), `GroupingSets = true`, `StructAccess = true` (Substrait supports struct-field access natively; gated by canonical `DataType::Struct` which is out of v1).
+- `SemAnnotation` round-trip — per `35 §10.2`, annotations travel through `AdvancedExtension.optimization` with URN `urn:semstrait:annotations:v1`. Deserializers unknown to the consuming engine skip unknown annotations gracefully per `35 §12.2`.
+- Capabilities — `AsOfJoin = false` in v1 (Substrait has no standard as-of; extension path tracked as `[TD-ADAPTER-SUBSTRAIT-ASOF]`), `RegexpMatch = true`, `RegexpExtract = true`, `IntervalLiteral = true`, `StructAccess = true` (Substrait supports struct-field access natively; advertisement gated by canonical `DataType::Struct` which is out of v1, but the consumer-side support is real). **Substrait is the load-bearing capability-contract path** per §6.2 — capabilities advertised here are what the Substrait plan REQUIRES the consuming engine to support.
 
 ## 6. `AdapterCapabilities`
 
@@ -557,36 +555,41 @@ impl AdapterCapabilities {
     /// `capabilities.len()`, but the slices are bounded (≤ 32 entries).
     pub fn supports(&self, cap: Capability) -> bool;
 
-    // --- Ratified predicate shortcuts: one per flag in the non-exhaustive
-    // `Capability` roster ratified in `35 §6.6` and extended here. ---
-    pub fn supports_as_of(&self)          -> bool;
-    pub fn supports_distinct_agg(&self)   -> bool;
-    pub fn supports_cte(&self)            -> bool;
-    pub fn supports_grouping_sets(&self)  -> bool;
-    pub fn supports_regexp_match(&self)   -> bool;
-    pub fn supports_regexp_extract(&self) -> bool;
-    pub fn supports_interval_literal(&self)-> bool;
-    pub fn supports_struct_access(&self)  -> bool;
+    // --- Ratified predicate shortcuts: one per variant in the
+    // non-exhaustive `Capability` roster defined in `35 §12.6`. ---
+    pub fn supports_as_of(&self)            -> bool;
+    pub fn supports_regexp_match(&self)     -> bool;
+    pub fn supports_regexp_extract(&self)   -> bool;
+    pub fn supports_interval_literal(&self) -> bool;
+    pub fn supports_struct_access(&self)    -> bool;
     // Additional predicates MAY be added in MINOR per `30 §2.1`.
 }
 ```
 
 The struct surface is `#[non_exhaustive]` per `30 §4.2`. Adding a new `Capability` variant is MINOR per I10 / `30 §11.1`.
 
-### 6.2 Consumers
+### 6.2 Consumers — SQL adapters vs Substrait handoff
 
-Per `Q-ADAPT-002`, `AdapterCapabilities` is consumed:
+Per `Q-ADAPT-002` (closed 2026-05-21), `AdapterCapabilities` plays two architecturally distinct roles depending on the emission target. The asymmetry is load-bearing.
 
-- **`semstrait-planner` (`34`)** — capability-gated plan rules. A plan rule that produces `Capability::AsOfJoin` must be disabled when the target adapter advertises `supports_as_of() == false`. The planner receives the target adapter from `semstrait-api` (`38`) before planning begins.
-- **`semstrait-api` (`38`)** — pre-`adapt` feasibility check. The caller consults the adapter's capabilities before dispatching the plan. Not mandatory; `adapt` will fail with `AdaptError::UnsupportedFeature` if a capability gap surfaces downstream.
+**SQL-emitting adapters** (`AnsiSqlAdapter`, `DataFusionSqlAdapter`, `DuckDbSqlAdapter`, `SparkSqlAdapter`) — capabilities are **ergonomic hints**, not contracts. semstrait owns the full PlanBuilder-layer rewrite pipeline and emits engine-native SQL itself; adapter-internal rewrite strategies (CTE expansion, GROUPING SETS expansion, DISTINCT-aggregate emulation, function-name remaps) are private to each adapter and NOT advertised through `Capability`. Consumers:
 
-Not consumed inside `adapt` itself — the authoritative feasibility check is the emission path (`AdaptError::Unsupported*`). Duplicating the check inside `adapt` is parked as `Q-ADAPT-002`.
+- **`semstrait-planner` (`34`)** — pre-flight UX. A plan rule that emits `Capability::AsOfJoin` SHOULD be disabled when the target adapter advertises `supports_as_of() == false`, so authors get a clear `34`-side diagnostic instead of an opaque `adapt`-time failure.
+- **`semstrait-api` (`38`)** — pre-`adapt` feasibility check. The caller consults the adapter's capabilities before dispatching. Not mandatory — `adapt` is the authoritative feasibility check, raising `AdaptError::Unsupported*` when an irreducible gap surfaces downstream.
+
+**`SubstraitAdapter`** — capabilities are the **handoff contract**. semstrait emits a Substrait plan to be consumed by a foreign engine across a process / engine boundary; semstrait CANNOT rewrite on the consumer's behalf. The capability set declares what the consuming engine MUST support. The same `AdapterCapabilities` advertisement is consulted by `34` / `38` exactly as for SQL adapters, but the role flips from ergonomic to contractual at the handoff line.
+
+**Inside `adapt` itself** — capabilities are NOT consulted. Each adapter's `adapt()` either renders successfully or raises `AdaptError::Unsupported*`. Q-ADAPT-002 closes with the rule: capability checks live at planner / api pre-flight; `adapt`-time failures are the fallback.
 
 ### 6.3 Roster growth policy
 
-Adding a new `Capability` variant is MINOR. The owning ratification crate is `36` per `Q-ADAPT-007`; `35 §6.6` re-exports the enum for planner consumption but does not own the roster. Each new variant:
+Adding a new `Capability` variant is MINOR. The type definition lives in `35 §12.6` (closed catalog rule R4); `36` drives variant additions through concrete adapter-feature need and owns the per-adapter `AdapterCapabilities` roster (Q-IR-010, 2026-05-21).
 
-1. Earns a paragraph in §4 / §5 describing its emission pathway.
+**Scope test for a new variant.** Before adding a variant, answer: *"Is this feature irreducible across the Substrait-handoff boundary?"* — i.e. is its absence in the consuming engine impossible to paper over with a semstrait-side PlanBuilder rewrite without changing semantics? If yes, add it. If the feature is universally synthesizable via SQL-adapter rewrite (CTE → subquery, GROUPING SETS → UNION ALL, DISTINCT-aggregate → universal), it is adapter-internal strategy and does NOT belong in `Capability`.
+
+Each new variant:
+
+1. Earns a paragraph in §4 / §5 describing its emission pathway and (if Substrait-bound) the consumer-engine requirement.
 2. Earns a predicate shortcut on `AdapterCapabilities` if it's a commonly-consulted flag.
 3. Documents the adapters that advertise it in the per-adapter subsections of §5.
 
@@ -596,7 +599,7 @@ Adding a new `Capability` variant is MINOR. The owning ratification crate is `36
 
 The function-rewrite pipeline consumes two sources of truth:
 
-1. **`FunctionRegistry`** (`35 §7` / `14a §2`) — the canonical catalog. Every `FunctionCall.name` reaching the adapter has already been resolved against this registry at compile time per `19 §3.3`; the adapter consults the registry for return-type / signature metadata only, never to decide whether the call is valid.
+1. **`FunctionRegistry`** (`35 §8` / `14a §2`) — the canonical catalog. Every `FunctionCall.name` reaching the adapter has already been resolved against this registry at compile time per `19 §3.3`; the adapter consults the registry for return-type / signature metadata only, never to decide whether the call is valid.
 2. **`registry/functions_mapping.md`** — the per-engine mapping, authoritative for rewrite-tier classification. Each `(canonical_name, adapter_id)` pair maps to exactly one tier: Name-only / Name-remap / Structural / Unsupported.
 
 ### 7.2 Rewrite tiers
@@ -616,7 +619,7 @@ At every `FunctionCall` encounter inside `§9`'s walk, the generic emitter calls
 
 ### 7.4 Aggregates
 
-The closed five (`Sum` / `Avg` / `Count` / `Min` / `Max`) are carried on `AggregateExpr` (`35 §5.7`), not on `FunctionCall`. They bypass `rewrite_function` — the generic emitter renders them directly through a dialect-specific aggregate-emission path on `DialectEmit::emit_aggregate` (signature detailed in §9.4). Non-closed aggregates (`stddev` / `variance` / `median` / `percentile_cont` / …) ARE `FunctionCall`s with `FunctionCategory::Aggregate` and flow through `rewrite_function` like scalars — the aggregate-vs-scalar distinction is at the tier table, not at the pipeline level.
+The closed five (`Sum` / `Avg` / `Count` / `Min` / `Max`) are carried on `AggregateExpr` (`35 §6.7`), not on `FunctionCall`. They bypass `rewrite_function` — the generic emitter renders them directly through a dialect-specific aggregate-emission path on `DialectEmit::emit_aggregate` (signature detailed in §9.4). Non-closed aggregates (`stddev` / `variance` / `median` / `percentile_cont` / …) ARE `FunctionCall`s with `FunctionCategory::Aggregate` and flow through `rewrite_function` like scalars — the aggregate-vs-scalar distinction is at the tier table, not at the pipeline level.
 
 ### 7.5 Registry extension interplay
 
@@ -719,12 +722,12 @@ The orchestrator:
 3. At every `FunctionCall`, calls `dialect.rewrite_function(call)` and dispatches on `RewrittenCall`.
 4. At every `Expr::Cast`, calls `dialect.emit_cast(inner, target)`.
 5. At every identifier emission, calls `dialect.quote_identifier(name.as_str())`. No raw concatenation (§14).
-6. Wraps the assembled text into `SqlArtifact { text, dialect: D::ID }` per `35 §6.3`.
+6. Wraps the assembled text into `SqlArtifact { text, dialect: D::ID }` per `35 §7.3`.
 
 ### 9.3 Substrait-emission orchestrator (`crate::substrait::emit_substrait`)
 
 ```rust
-/// Per `35 §9.2`'s mapping table. Each `PlanNode` variant maps to
+/// Per `35 §10.2`'s mapping table. Each `PlanNode` variant maps to
 /// exactly one `substrait::proto::Rel` kind. The free function emits
 /// a complete `substrait::proto::Plan` together with any advisory
 /// warnings; the caller wraps the proto in
@@ -741,9 +744,9 @@ pub(crate) fn emit_substrait(
 
 The orchestrator:
 
-1. Walks `plan.root` bottom-up, emitting one `Rel` per `PlanNode` per the `35 §9.2` mapping.
+1. Walks `plan.root` bottom-up, emitting one `Rel` per `PlanNode` per the `35 §10.2` mapping.
 2. Threads Substrait function-anchor registration per `§5.5`.
-3. Round-trips `SemAnnotation` through `AdvancedExtension.optimization` per `35 §9.2`.
+3. Round-trips `SemAnnotation` through `AdvancedExtension.optimization` per `35 §10.2`.
 4. Serializes `output_names` into the plan's `RelRoot.names`.
 
 ### 9.4 Per-variant SQL rendering contracts
@@ -754,11 +757,11 @@ Every SQL-emitting `DialectEmit` provides (via default impls + targeted override
 - `fn emit_filter(&self, child: &str, pred: &PhysicalExpr) -> Result<String, AdaptErrorKind>` — default: wraps `child` with `WHERE <pred>`.
 - `fn emit_project(&self, child: &str, projs: &[(Name, PhysicalExpr)]) -> Result<String, AdaptErrorKind>`.
 - `fn emit_agg(&self, child: &str, group_by: &[Name], aggs: &[(Name, AggregateExpr)]) -> Result<String, AdaptErrorKind>`.
-- `fn emit_aggregate(&self, agg: &AggregateExpr) -> Result<String, AdaptErrorKind>` — the inner per-aggregate render; handles `distinct: true`, `FILTER (WHERE …)` (reserved per `35 §5.7`), and per-engine aggregate quirks.
+- `fn emit_aggregate(&self, agg: &AggregateExpr) -> Result<String, AdaptErrorKind>` — the inner per-aggregate render; handles `distinct: true`, `FILTER (WHERE …)` (reserved per `35 §6.7`), and per-engine aggregate quirks.
 - `fn emit_join(&self, left: &str, right: &str, ty: JoinType, card: Cardinality, on: &[KeyPair]) -> Result<String, AdaptErrorKind>` — per-engine `INNER`/`LEFT`/`RIGHT`/`FULL` rendering. `AsOf` routes through `emit_asof_join` (§4.7) when `supports_as_of()`.
 - `fn emit_union(&self, inputs: &[String], distinct: bool) -> String` — `UNION ALL` / `UNION DISTINCT`.
 - `fn emit_sort(&self, child: &str, order: &[(Name, SortDir)]) -> String` — uses `null_ordering_clause` per `§4.7`.
-- `fn emit_fetch(&self, child: &str, limit: Option<u64>, offset: Option<u64>) -> Result<String, AdaptErrorKind>` — dialect-specific `LIMIT` / `FETCH FIRST` syntax per `registry/types_mapping.md §1`-adjacent conventions. Rejects values exceeding `i64::MAX` per `35 §4.9` as `AdaptErrorKind::FetchValueOutOfRange`.
+- `fn emit_fetch(&self, child: &str, limit: Option<u64>, offset: Option<u64>) -> Result<String, AdaptErrorKind>` — dialect-specific `LIMIT` / `FETCH FIRST` syntax per `registry/types_mapping.md §1`-adjacent conventions. Rejects values exceeding `i64::MAX` per `35 §5.9` as `AdaptErrorKind::FetchValueOutOfRange`.
 
 Each method is a construction site per `31 §3.1` — returns the bare error kind; the orchestrator (§9.2 / §9.3) wraps into the stage-boundary `Diagnostic<AdaptErrorKind>` envelope alongside warning accumulation.
 
@@ -766,7 +769,7 @@ Each method carries a default ANSI-form impl; per-engine dialects override where
 
 ### 9.5 Error propagation
 
-Any per-variant error fires the orchestrator immediately — fail-fast per `30 §7`. Partial SQL / partial Substrait is never returned. The failing node's `NodeMeta.node_id` (`35 §5.1`) is carried into the `Diagnostic<AdaptErrorKind>`'s `location` field at the orchestrator's wrapping point for post-hoc correlation. Any warnings accumulated up to the failure point ride alongside the fatal in the `Err((fatal, warnings))` tuple per the `30 §7` shape.
+Any per-variant error fires the orchestrator immediately — fail-fast per `30 §7`. Partial SQL / partial Substrait is never returned. The failing node's `NodeMeta.node_id` (`35 §6.1`) is carried into the `Diagnostic<AdaptErrorKind>`'s `location` field at the orchestrator's wrapping point for post-hoc correlation. Any warnings accumulated up to the failure point ride alongside the fatal in the `Err((fatal, warnings))` tuple per the `30 §7` shape.
 
 ## 10. `AdaptErrorKind`
 
@@ -817,7 +820,7 @@ pub enum AdaptErrorKind {
     // -- Emission mechanics --
     /// Identifier quoting failed (e.g. embedded NULL byte,
     /// unrepresentable character). Rare; most pathological inputs are
-    /// caught at `Name::new` (`35 §5.4`).
+    /// caught at `Name::new` (`35 §6.4`).
     IdentifierQuotingFailed { identifier: String, reason: &'static str },
 
     /// A `FetchNode.limit` / `.offset` value exceeds the adapter's
@@ -825,7 +828,7 @@ pub enum AdaptErrorKind {
     /// engine's native `LIMIT` parse limit).
     FetchValueOutOfRange    { field: &'static str, value: u64, adapter: AdapterId },
 
-    /// An `AggregateExpr.filter` (`35 §5.7`) is populated but the
+    /// An `AggregateExpr.filter` (`35 §6.7`) is populated but the
     /// adapter has no emission path for `FILTER (WHERE ...)`. All
     /// three first-class engines do; reserved variant covers future
     /// adapters that do not.
@@ -834,7 +837,7 @@ pub enum AdaptErrorKind {
     /// Structural plan mismatch detected during emission (e.g.
     /// `JoinNode.on` has a `KeyPair` referencing a column not in the
     /// child's schema). Not re-raised by default (planner is the
-    /// authoritative validator, `35 §7`); fires only when the
+    /// authoritative validator, `35 §8`); fires only when the
     /// adapter's optional sanity check catches it.
     PlanStructureInvalid    { node_kind: &'static str, reason: String },
 
@@ -907,15 +910,15 @@ pub enum UnsupportedFeatureKind {
                     //   cannot consume as a hint
 }
 
-impl semstrait_core::diagnostic::Diagnose for AdaptErrorKind {
+impl semstrait_common::diagnostic::Diagnose for AdaptErrorKind {
     fn message(&self) -> std::borrow::Cow<'_, str>;
-    fn severity(&self) -> semstrait_core::Severity {
+    fn severity(&self) -> semstrait_common::Severity {
         use AdaptErrorKind::*;
         match self {
             PrecisionClamped { .. }
             | StructuralRewriteApplied { .. }
-            | SumOverflowRisk { .. } => semstrait_core::Severity::Warning,
-            _ => semstrait_core::Severity::Error,
+            | SumOverflowRisk { .. } => semstrait_common::Severity::Warning,
+            _ => semstrait_common::Severity::Error,
         }
     }
 }
@@ -1055,9 +1058,9 @@ Per-session allow-lists (e.g. "this read-only session can only use `duckdb-sql`"
 - **Built-in `Dialect` implementations stable across v1** — `AnsiDialect`, `DataFusionDialect`, `DuckDbDialect`, `SparkDialect`. Their emission output is tested byte-for-byte against a snapshot fixture per `§14.6`; a MINOR release MAY NOT change the rendering of a plan that did not change canonical representation between versions. Matches `30 §11.4`'s "behavior-preserving refactors" rule.
 - **`AdapterId` / `DialectId` const additions are non-breaking** (MINOR per `30 §11.1`).
 - **`AdapterCapabilities` predicate additions are non-breaking** (method addition is MINOR per `30 §2.1`).
-- **`Capability` variant additions are non-breaking** (`#[non_exhaustive]` per `35 §6.6`; roster ownership in `36` per `Q-ADAPT-007`).
+- **`Capability` variant additions are non-breaking** (`#[non_exhaustive]` per `35 §12.6`; type definition in `35`, per-adapter roster authority in `36` per Q-IR-010 / `Q-ADAPT-007`).
 - **`AdaptErrorKind` variant additions** are non-breaking (`#[non_exhaustive]` per `10.1`; identification by variant identity per `30 §5`).
-- **The Substrait mapping** (per `35 §9.2`) is stable across v1; changes require a MINOR release of `semstrait-ir` AND a MINOR release of `semstrait-adapter` in lock-step per `30 §2.1`.
+- **The Substrait mapping** (per `35 §10.2`) is stable across v1; changes require a MINOR release of `semstrait-ir` AND a MINOR release of `semstrait-adapter` in lock-step per `30 §2.1`.
 
 ### 12.2 Internal parts
 
@@ -1068,20 +1071,6 @@ Per-session allow-lists (e.g. "this read-only session can only use `duckdb-sql`"
 ### 12.3 Per-engine crate versioning
 
 Per `30 §13`, per-engine adapter crates (`semstrait-adapter-datafusion`, `-duckdb`, `-spark`, `-substrait`) are **Provisional** and versioned **independently**. Their stability tiers follow each crate's own maturity; a `semstrait-adapter` MINOR does not automatically force a per-adapter-crate MINOR. Whether per-adapter crates pin `semstrait-adapter` exactly or float within a MINOR band is parked as `Q-ADAPT-006`.
-
-### 12.4 Delta with current code
-
-The `crates/semstrait-adapter/src` definitions diverge from the target roster. Items tracked in `implementation/40_refactor_plan.md`:
-
-- `EngineAdapter::name() -> &str` → rename to `id() -> AdapterId` with the `AdapterId` newtype.
-- `EngineAdapter::plan_builder()` default-impl → drop. PlanBuilder-layer rewrites relocate into `DialectEmit::rewrite_function` (§4.5); the separate `PlanBuilder` trait retires.
-- `EngineAdapter::debug_sql()` default-impl → drop in favor of the free function (§3.5).
-- `SqlDialect` trait → rename to `DialectEmit` and add the `Dialect` supertrait from `35 §6.5`.
-- `AdaptError::{SqlEmission, SubstraitSerialization, UnsupportedFeature}` → replace with the v1 `AdaptErrorKind` roster of §10.1 (16 variants — 13 error + 3 warning advisory).
-- `TargetDialect` enum → drop in favor of `DialectId` (`35 §6.4`).
-- Register v1 adapters in `adapter_registry()` at crate init.
-
-Migration items: `[TD-ADAPTER-RENAME]`, `[TD-ADAPTER-ERROR-MIGRATION]`, `[TD-ADAPTER-DIALECT-SPLIT]`, `[TD-ADAPTER-DEBUG-SQL-FREE-FN]`, `[TD-ADAPTER-PLAN-BUILDER-RETIRE]`.
 
 ## 13. Crate Boundaries
 
@@ -1100,7 +1089,7 @@ Per `Cargo.toml`, `semstrait-adapter` depends on:
 
 ```toml
 [dependencies]
-semstrait-core     = { path = "../semstrait-core" }
+semstrait-common     = { path = "../semstrait-common" }
 semstrait-ir       = { path = "../semstrait-ir" }
 semstrait-manifest = { path = "../semstrait-manifest" }  # borrow-only use
 thiserror          = "^"
@@ -1114,14 +1103,14 @@ features = ["derive"]
 
 [features]
 default = []
-serde   = ["dep:serde", "semstrait-ir/serde", "semstrait-core/serde"]
+serde   = ["dep:serde", "semstrait-ir/serde", "semstrait-common/serde"]
 ```
 
 **No runtime-only dependencies.** No `tokio`, `async-trait`, `futures`, `reqwest`, `hyper`, `sqlx`.
 
 **No engine dependencies.** No `datafusion`, no `arrow`, no `duckdb`, no `spark-*` in the shared crate. Those live in per-engine crates (`semstrait-adapter-datafusion` depends on `datafusion` + this crate; `semstrait-adapter-duckdb` on `duckdb` + this crate; etc.) per `30 §10.2`.
 
-**Workspace dependencies** are limited to `semstrait-core`, `semstrait-ir`, `semstrait-manifest`. Adding a dependency on `semstrait-model`, `semstrait-planner`, `semstrait-catalog`, or `semstrait-api` is a CI-enforced failure per I7.
+**Workspace dependencies** are limited to `semstrait-common`, `semstrait-ir`, `semstrait-manifest`. Adding a dependency on `semstrait-model`, `semstrait-planner`, `semstrait-catalog`, or `semstrait-api` is a CI-enforced failure per I7.
 
 ## 14. Sandboxing / Safety
 
@@ -1129,7 +1118,7 @@ serde   = ["dep:serde", "semstrait-ir/serde", "semstrait-core/serde"]
 
 The emitter receives `SemanticPlan` values that are NOT necessarily trusted:
 
-- `Name` values were validated at `Name::new` (`35 §5.4`) and are empty-rejected + reserved-prefix-rejected.
+- `Name` values were validated at `Name::new` (`35 §6.4`) and are empty-rejected + reserved-prefix-rejected.
 - `LiteralValue::String(_)` values come from author-written YAML or from planner-substituted request parameters (`SessionContext` values). Both can contain arbitrary bytes including SQL-delimiter characters.
 - `ResolvedColumn.name` values come from SemanticManifest resolution (`15 §4.2`) and are catalog-derived — typically well-formed but may contain engine-specific special characters depending on source.
 - `SourceRef` resolves to a `ResolvedPhysicalSource` whose `table_name` / `path` fields are catalog-derived. Same trust model.
@@ -1197,7 +1186,7 @@ pub(crate) fn escape_ansi_string_literal(&str) -> String
 
 ```
 pub struct AdapterCapabilities                           // capability slice + predicate shortcuts
-pub use    semstrait_ir::Capability                      // re-export per 35 §6.6
+pub use    semstrait_ir::Capability                      // re-export per 35 §12.6
 ```
 
 ### 15.5 `substrait`
@@ -1220,7 +1209,7 @@ pub fn     adapter_registry() -> &'static AdapterRegistry
 ```
 pub enum   AdaptErrorKind                                // 16 variants v1 (13 error + 3 warning advisory); identification by variant identity per `30 §5`
 pub enum   UnsupportedFeatureKind                        // Function | JoinType | PlanNode | Annotation | Dialect | Cardinality
-impl       semstrait_core::diagnostic::Diagnose for AdaptErrorKind
+impl       semstrait_common::diagnostic::Diagnose for AdaptErrorKind
 ```
 
 ### 15.8 Crate-root re-exports

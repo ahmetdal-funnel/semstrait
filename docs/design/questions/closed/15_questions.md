@@ -28,8 +28,8 @@ purpose: Resolved questions originally raised against `foundations/15_mapping_an
 - `15 §3.5` — `paths:` / `tables:` resolution; `PhysicalSource` granularity (one engine-level LogicalRelation per author entry, with wildcard expansion at compile producing one `PhysicalSource` per resolved variation).
 - `15 §3.5.4` — `partition_def` carriage (manifest-side, runtime-dormant in v1).
 - `32 §4 StorageConfig` — author surface (`paths:` / `tables:` / `partition_def:`).
-- `35 §4.2` — `ScanNode` shape (no partition fields).
-- `35 §4.2.1` — partition-info-never-on-`ScanNode` clause grounded in 4-consumer alignment.
+- `35 §5.2` — `ScanNode` shape (no partition fields).
+- `35 §5.2.1` — partition-info-never-on-`ScanNode` clause grounded in 4-consumer alignment.
 - Substrait `ReadRel`, DataFusion `TableScan`, Spark `LogicalRelation`, SQL emit (DuckDB / Spark SQL / Trino) — primary consumer engines. Research conducted 2026-04-28 confirms 4/4 engines exclude partition info from logical scan rels.
 - `17 TemporalShape` — grain-aware planning that consumes partition info indirectly through catalog metadata.
 
@@ -41,7 +41,7 @@ purpose: Resolved questions originally raised against `foundations/15_mapping_an
 | Model (`32 §4 StorageConfig`)                 | **Yes** — author-facing          | `paths:` / `tables:` (source list); `partition_def:` (catalog-less `Range` / `List` declaration).                                                                                                           |
 | SemanticManifest (`15 §3 PhysicalSource`)     | **Yes** — manifest-side metadata | `PartitionColumn[]` per source (name / position / type / nullability extracted from Hive-style path segments at compile, or from catalog partition spec); `partition_def` carried verbatim from the model.  |
 | Catalog response (`37 TableMetadataResponse`) | **Yes** — catalog-side artifact  | Iceberg-style partition transforms (`identity`, `year`, `bucket[N]`, …); attached to `CatalogRef`-bearing sources. **Not** lifted onto `15 PartitionColumn`.                                                |
-| IR (`35 ScanNode`)                            | **No** — never                   | `ScanNode` has no partition fields. Adapter reads partition metadata from the SemanticManifest via `ScanNode.source` per `35 §4.2.1`.                                                                       |
+| IR (`35 ScanNode`)                            | **No** — never                   | `ScanNode` has no partition fields. Adapter reads partition metadata from the SemanticManifest via `ScanNode.source` per `35 §5.2.1`.                                                                       |
 | Engine                                        | **Yes** — runtime                | All four primary consumers (Substrait, DataFusion, Spark, SQL emit) handle partition pruning engine-side from filter predicates against partition columns. Logical plans never carry partition annotations. |
 
 
@@ -63,8 +63,8 @@ purpose: Resolved questions originally raised against `foundations/15_mapping_an
 - `15 §3.5` — replaced four-line resolution sketch with simplified rule (`paths:` / `tables:` separation; concrete path = 1 PS; wildcard path = N PSs; engine-level LogicalRelation framing).
 - `15 §3.5.1`–`§3.5.6` — restructured into `paths:` / `tables:` / asymmetry / `partition_def` / authoring guidance / algorithm subsections.
 - `15 §3.5.4` — new subsection ratifying `partition_def` runtime-dormant status.
-- `35 §4.2` — refreshed `ScanNode` doc-comment with engine-level LogicalRelation framing.
-- `35 §4.2.1` — new subsection with the 4-consumer alignment table and partition-info-never-on-`ScanNode` rule.
+- `35 §5.2` — refreshed `ScanNode` doc-comment with engine-level LogicalRelation framing.
+- `35 §5.2.1` — new subsection with the 4-consumer alignment table and partition-info-never-on-`ScanNode` rule.
 - `32 §4` — added `tables: Vec<String>` to `StorageConfig` (doc-gap fix; test_data already uses it), made `format: Option<StorageFormat>`, refreshed YAML examples to drop the Hive-partition-glob anti-pattern.
 
 **Open follow-ups.**

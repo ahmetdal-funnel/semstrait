@@ -416,7 +416,7 @@ pub struct StorageConfig {
     /// one `PhysicalSource` per resolved variation. Each `PhysicalSource`
     /// is an engine-level LogicalRelation — the engine handles file
     /// consolidation, schema merge, and Hive-partition discovery
-    /// internally per `35 §4.2.1`. Empty by default.
+    /// internally per `35 §5.2.1`. Empty by default.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
 
@@ -432,7 +432,7 @@ pub struct StorageConfig {
     /// First-class v1 author surface; **runtime-dormant in v1** — parsed,
     /// schema-validated, and carried through compile for v2+ partition-
     /// aware planning. v1 adapters defer partition pruning to engine-side
-    /// discovery from filter predicates per `35 §4.2.1`. See `Q-MAP-002`
+    /// discovery from filter predicates per `35 §5.2.1`. See `Q-MAP-002`
     /// for the layered partition-info plumbing decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition_def: Option<PartitionDef>,
@@ -484,7 +484,7 @@ extras:
       - "warehouse.sales.orders_current"
 ```
 
-**Authoring guidance — table-root preferred for file sources.** When a path is a Hive-partitioned table or a single-table folder containing many files, the recommended form is the **table-root prefix only** (e.g. `"s3://bucket/orders/"`), not a Hive-partition glob (e.g. `"s3://bucket/orders/year=*/month=*/*.parquet"`). The latter is wrong usage of the wildcarding surface — it forces compile to enumerate per file or per partition, when the engine can do the same far more efficiently from the table-root alone (per `35 §4.2.1`'s 4-consumer alignment). Compile resolves whatever the author writes literally; it does not detect or reject this pattern. See `15 §3.5` for the resolution rule.
+**Authoring guidance — table-root preferred for file sources.** When a path is a Hive-partitioned table or a single-table folder containing many files, the recommended form is the **table-root prefix only** (e.g. `"s3://bucket/orders/"`), not a Hive-partition glob (e.g. `"s3://bucket/orders/year=*/month=*/*.parquet"`). The latter is wrong usage of the wildcarding surface — it forces compile to enumerate per file or per partition, when the engine can do the same far more efficiently from the table-root alone (per `35 §5.2.1`'s 4-consumer alignment). Compile resolves whatever the author writes literally; it does not detect or reject this pattern. See `15 §3.5` for the resolution rule.
 
 ### 4.1 Per-effective-level validity
 
@@ -661,7 +661,7 @@ The model crate hosts two accumulating stages per `30 §7.1`: `parse` (YAML → 
 ### 9.1 `parse` signature
 
 ```rust
-use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+use semstrait_common::diagnostic::{Diagnostic, Diagnostics};
 
 /// YAML `&str` → `SemanticModelBuilder`. Pure and synchronous. Accumulating
 /// stage per `30 §7.1`: every independent parse error is collected; warnings
@@ -683,8 +683,8 @@ Per D-10, dup-name detection (SR-3 / SR-E-3) does **not** run at parse — it ru
 ### 9.2 `ParseErrorKind` roster
 
 ```rust
-use semstrait_core::diagnostic::{Diagnose, Severity};
-use semstrait_core::Location;
+use semstrait_common::diagnostic::{Diagnose, Severity};
+use semstrait_common::Location;
 
 #[non_exhaustive]
 pub enum ParseErrorKind {
@@ -787,7 +787,7 @@ The `Duplicate*` variants migrated from `ParseErrorKind` per D-10: dedup runs un
 
 The `SemanticsShadowRootPool` variant carries `Severity::Warning` (the only warning-class variant in v1) and rides through on the `Ok` arm.
 
-The `Ir(ir::ValidateError)` variant covers the narrow class of construction-boundary failures raised by `semstrait-ir`'s trait-machinery contract (`35 §15.1`): when `ExprSource::Block(Expr<L>)` deserializes a YAML tree, the serde shape *is* `Expr<L>` so any `Tree::with_new_children` violation surfaces as an `ir::ValidateError` value that the model crate wraps via D.ii nesting (`30 §7.4`).
+The `Ir(ir::ValidateError)` variant covers the narrow class of construction-boundary failures raised by `semstrait-ir`'s trait-machinery contract (`35 §16.1`): when `ExprSource::Block(Expr<L>)` deserializes a YAML tree, the serde shape *is* `Expr<L>` so any `Tree::with_new_children` violation surfaces as an `ir::ValidateError` value that the model crate wraps via D.ii nesting (`30 §7.4`).
 
 The full `SR-E-*` variant roster is enumerated alongside the entity-level invariants in `18 §11` (the canonical home of SR-E-*); variants here mirror those rules 1-to-1 and land MINOR per `30 §2.2` as new SR-E-* numbers are appended.
 
@@ -1076,7 +1076,7 @@ Most field-level required-vs-optional is enforced by `bon` at compile time (miss
 #### 9.7.6 Resulting usage — spec-faithful end-to-end
 
 ```rust
-use semstrait_core::{DataType, Grain};
+use semstrait_common::{DataType, Grain};
 use semstrait_model::{ExprSource, *};
 
 let order_ts = Dimension::builder("order_ts")
@@ -1139,7 +1139,7 @@ let model = SemanticModel::builder()
 Both forms produce identical `SemanticModel` values. The facade (§9.7.8) is sugar over the primary surface above; round-trip and code-gen tools continue to use the primary surface.
 
 ```rust
-use semstrait_core::{DataType, Grain};
+use semstrait_common::{DataType, Grain};
 use semstrait_model::*;
 
 let order_ts = Dimension::builder("order_ts")
@@ -1251,10 +1251,10 @@ Adding a facade method is MINOR per `§9.7.8.4`. The roster grows append-only.
 
 ## 10. Crate Boundaries
 
-`semstrait-model` is the thinnest authoring-surface crate. It sits two levels above `semstrait-core` in the workspace DAG (I7), via `semstrait-ir` per the second-cascade landing (`STATUS.md` item Q):
+`semstrait-model` is the thinnest authoring-surface crate. It sits two levels above `semstrait-common` in the workspace DAG (I7), via `semstrait-ir` per the second-cascade landing (`STATUS.md` item Q):
 
 ```
-semstrait-core      (leaf: DataType / Schema / Diagnostic<K> / Diagnose / constraints / io)
+semstrait-common      (leaf: DataType / Schema / Diagnostic<K> / Diagnose / constraints / io)
     ↑
 semstrait-ir        (Expr<L> + Tree/Visitor/Rewriter/ExprLeaf + leaves + accessors
                      + BinaryOpKind/…/Literal + ColumnRef/SemanticsName
@@ -1265,13 +1265,13 @@ semstrait-model     (parse + validate + SemanticModel + ExprSource + ParseErrorK
 semstrait-manifest, semstrait-planner, semstrait-adapter, …
 ```
 
-Dependencies: `semstrait-core`, `semstrait-ir`, `serde`, `serde_yaml`, `tracing` (`30 §6.2`). No other `semstrait-*` crate. No `async`, no `arrow`, no engine-specific deps. The `semstrait-ir` dep is what allows `ExprSource::Block(...)` to carry `Expr<L>` directly via serde — there is no parallel `ExprBlock` AST owned by this crate (`14 §6.1`).
+Dependencies: `semstrait-common`, `semstrait-ir`, `serde`, `serde_yaml`, `tracing` (`30 §6.2`). No other `semstrait-*` crate. No `async`, no `arrow`, no engine-specific deps. The `semstrait-ir` dep is what allows `ExprSource::Block(...)` to carry `Expr<L>` directly via serde — there is no parallel `ExprBlock` AST owned by this crate (`14 §6.1`).
 
 ### 10.1 No direct I/O in `parse`
 
 `parse` takes a `&str` and is synchronous. It performs no file opens and no network calls. `std::env::var` is the single allowlisted syscall (used for `${VAR}` substitution per §8). A CI check enumerates direct `std::fs`, `std::net`, `std::process` imports in `semstrait-model` source and fails on any match.
 
-The optional `::io` submodule (§10.4) adds async load / dump wrappers. It does not relax this check: `model::io` never imports `std::fs` / `std::net` / `std::process` directly either — all transport goes through `semstrait-core::io`'s `Source` / `Sink` traits (`31b §3` / `§4`). The CI check applies uniformly to the whole `semstrait-model` source tree.
+The optional `::io` submodule (§10.4) adds async load / dump wrappers. It does not relax this check: `model::io` never imports `std::fs` / `std::net` / `std::process` directly either — all transport goes through `semstrait-common::io`'s `Source` / `Sink` traits (`31b §3` / `§4`). The CI check applies uniformly to the whole `semstrait-model` source tree.
 
 ### 10.2 No resolution
 
@@ -1283,13 +1283,13 @@ Name resolution, reference expansion, and cross-kind path resolution are `compil
 
 ### 10.4 Model-Level I/O Surface (`semstrait-model::io`)
 
-The optional `::io` submodule provides async wrappers that combine `semstrait-core::io` transport (`31b`) with `parse` / `serialize` for both the `semantic_model:` file and the sibling `catalogs.yaml` file (`32b`). It is feature-gated behind `io` (see §10.5) so callers that only want the sync `parse(&str)` surface don't pull in the async runtime or transport dependencies.
+The optional `::io` submodule provides async wrappers that combine `semstrait-common::io` transport (`31b`) with `parse` / `serialize` for both the `semantic_model:` file and the sibling `catalogs.yaml` file (`32b`). It is feature-gated behind `io` (see §10.5) so callers that only want the sync `parse(&str)` surface don't pull in the async runtime or transport dependencies.
 
 #### 10.4.1 Entry points
 
 ```rust
-use semstrait_core::io::{Source, Sink};
-use semstrait_core::diagnostic::{Diagnostic, Diagnostics};
+use semstrait_common::io::{Source, Sink};
+use semstrait_common::diagnostic::{Diagnostic, Diagnostics};
 use semstrait_model::{SemanticModel, CatalogsConfig};
 
 pub mod io {
@@ -1344,8 +1344,8 @@ pub mod io {
 #### 10.4.2 Error roster
 
 ```rust
-use semstrait_core::diagnostic::Diagnose;
-use semstrait_core::io::IoErrorKind;
+use semstrait_common::diagnostic::Diagnose;
+use semstrait_common::io::IoErrorKind;
 
 #[non_exhaustive]
 pub enum ModelLoadErrorKind {
@@ -1404,7 +1404,7 @@ The guard is **strict** — there is no "try-best-effort" mode in v1; the caller
 #### 10.4.4 What the wrappers do NOT do
 
 - **No multi-file loading.** `load_model` reads exactly one `Source` payload. Directory walks, `$include` expansion, and cross-file merges are **out of scope forever** (`Q-IO-003`, closed). Callers that need multi-source aggregation enumerate blobs on their own side and call `load_model` per blob.
-- **No network tooling.** Retries, caching, CDN failover, and credential rotation are `object_store`'s internal concerns (transient retries) or the caller's responsibility (higher-level policies). `semstrait-core::io` exposes primitives only.
+- **No network tooling.** Retries, caching, CDN failover, and credential rotation are `object_store`'s internal concerns (transient retries) or the caller's responsibility (higher-level policies). `semstrait-common::io` exposes primitives only.
 - **No comment preservation.** `DumpMode::Canonical` is the only variant. Comment- / anchor-preserving dump is retired (`Q-IO-001`, closed).
 - **No implicit format detection.** `load_model` assumes the payload is a `semantic_model:` YAML document and will fail with a `Diagnostic<ModelLoadErrorKind>` whose kind is `Parse(_)` if it is not. `load_catalogs` similarly assumes a `catalogs:` document. Callers dispatch based on filename or an explicit argument. YAML is the only format, forever (`Q-IO-H`, resolved).
 
@@ -1420,7 +1420,7 @@ let (model, warnings) = semstrait_model::parse(&text)?;
 The async wrapper is pure sugar for the common "read then parse" pattern:
 
 ```rust
-use semstrait_core::io::Location;
+use semstrait_common::io::Location;
 use semstrait_model::io::load_model;
 
 let loc: Location = "./model.yaml".parse()?;
@@ -1439,8 +1439,8 @@ Both paths produce the same `SemanticModel`. Neither path performs resolution (�
 | Feature  | Gates                                                                                                               | Default | Forwards                      |
 | -------- | ------------------------------------------------------------------------------------------------------------------- | ------- | ----------------------------- |
 | `serde`  | `Serialize` + `Deserialize` on every public type                                                                    | ON      | —                             |
-| `io`     | The `::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` / `DumpMode` / error rosters | OFF     | `semstrait-core/io`           |
-| `io-aws` | Makes `Location::S3` reachable through `load_*` / `dump_*`; no new model-level surface                              | OFF     | `io`, `semstrait-core/io-aws` |
+| `io`     | The `::io` submodule — `load_model` / `dump_model` / `load_catalogs` / `dump_catalogs` / `DumpMode` / error rosters | OFF     | `semstrait-common/io`           |
+| `io-aws` | Makes `Location::S3` reachable through `load_*` / `dump_*`; no new model-level surface                              | OFF     | `io`, `semstrait-common/io-aws` |
 
 
 Per I11. `io` is default-off so the historical pure-type consumer of `semstrait-model` (`parse(&str)` only) pays no async-runtime cost. Callers that want the wrappers enable `io` explicitly; the CLI, `semstrait-api`, and `semstrait-facade` do so by default.
@@ -1464,7 +1464,7 @@ Per I11. `io` is default-off so the historical pure-type consumer of `semstrait-
 | Temporal shape (planner) | `[../foundations/17_temporal_shape.md](../foundations/17_temporal_shape.md)`           | Planner-level variant semantics, rollup matrix                                                                                                                                                                                                                                                                                                                                                        |
 | Catalogs file            | `[./32b_catalogs_yaml.md](./32b_catalogs_yaml.md)`                                     | `catalogs.yaml` grammar; `CatalogRef` reference syntax                                                                                                                                                                                                                                                                                                                                                |
 | SemanticManifest         | `[./33_semstrait_manifest.md](./33_semstrait_manifest.md)`                             | How the `SemanticModel` tree lowers to a `SemanticManifest`                                                                                                                                                                                                                                                                                                                                           |
-| Core I/O transport       | `[./31b_semstrait_core_io.md](./31b_semstrait_core_io.md)`                             | `Source` / `Sink` / `Location` / `IoErrorKind` that §10.4 composes                                                                                                                                                                                                                                                                                                                                    |
+| Core I/O transport       | `[./31b_semstrait_common_io.md](./31b_semstrait_common_io.md)`                             | `Source` / `Sink` / `Location` / `IoErrorKind` that §10.4 composes                                                                                                                                                                                                                                                                                                                                    |
 
 
 ---

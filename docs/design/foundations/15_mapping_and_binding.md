@@ -247,7 +247,7 @@ pub struct PartitionColumn {
 
 The Model's YAML surface places a Binding's sources under `extras.storage.paths:` and `extras.storage.tables:` (per `32 §4`). Each entry resolves at compile to one or more `PhysicalSource`s; the Binding's `sources: Vec<PhysicalSource>` is the concatenation of every entry's resolution in author order across both fields. Per `21 §3.2 / §4.5`, multiple `PhysicalSource`s in one Binding compose under `Union ALL` with optional per-source pre-aggregation as a planner optimization.
 
-A `PhysicalSource` is an **engine-level LogicalRelation** — one Substrait `ReadRel`, one DataFusion `TableScan`, one Spark `LogicalRelation`, one SQL `FROM` reference. Each resolved `PhysicalSource` carries a concrete identifier (path / FQN); engine-internal mechanics (Hive partition discovery, multi-file consolidation, schema merge for path sources; partition-spec consultation for catalog tables) live below the `PhysicalSource` boundary and are the adapter / engine's responsibility per `35 §4.2.1`.
+A `PhysicalSource` is an **engine-level LogicalRelation** — one Substrait `ReadRel`, one DataFusion `TableScan`, one Spark `LogicalRelation`, one SQL `FROM` reference. Each resolved `PhysicalSource` carries a concrete identifier (path / FQN); engine-internal mechanics (Hive partition discovery, multi-file consolidation, schema merge for path sources; partition-spec consultation for catalog tables) live below the `PhysicalSource` boundary and are the adapter / engine's responsibility per `35 §5.2.1`.
 
 #### 3.5.1 `paths:` resolution — `PhysicalSource::File`
 
@@ -261,7 +261,7 @@ A `PhysicalSource` is an **engine-level LogicalRelation** — one Substrait `Rea
 
 #### 3.5.4 `partition_def` carriage — manifest-side, runtime-dormant in v1
 
-`extras.storage.partition_def:` (per `32 §4`) is the canonical catalog-less partition declaration for file sources, in v1 form `Range { column }` / `List { column }`. The compile pass parses, schema-validates, and carries it verbatim onto each `PhysicalSource::File` it produces from a `paths:` entry. **No v1 plan-time logic consumes it** — adapters defer partition pruning to engine-side discovery from filter predicates per `35 §4.2.1`. The declaration is forward-compat for v2+ consumers (per-partition extraction per `Q-MAP-009`; partition-aware grain inference per `17`; planner pruning hints). This is a closure clause of `Q-MAP-002`.
+`extras.storage.partition_def:` (per `32 §4`) is the canonical catalog-less partition declaration for file sources, in v1 form `Range { column }` / `List { column }`. The compile pass parses, schema-validates, and carries it verbatim onto each `PhysicalSource::File` it produces from a `paths:` entry. **No v1 plan-time logic consumes it** — adapters defer partition pruning to engine-side discovery from filter predicates per `35 §5.2.1`. The declaration is forward-compat for v2+ consumers (per-partition extraction per `Q-MAP-009`; partition-aware grain inference per `17`; planner pruning hints). This is a closure clause of `Q-MAP-002`.
 
 #### 3.5.6 Expansion algorithm
 
@@ -1049,7 +1049,7 @@ The `CatalogUnavailable (COMP_E_0203)` code sits in the `COMP_E_0200-0299` catal
 
 `33`'s crate contract ratifies the SemanticManifest struct shape, including the persisted form of `ResolvedBinding` / `ResolvedColumnMapping`. Serialization format (whether `serde_json`, a custom binary, or both) is `33`'s choice; `15` only stipulates that the structural shape in §7.2 is preserved round-trip (per I4).
 
-The v1 design pencils in `serde` derivations on all `15`-ratified types (with the `serde` feature in `semstrait-core` per `31 §10`). The `PhysicalExpr` inside `ResolvedColumnMapping.computed` serializes through `14`'s `Expr` serialization (`31` / `14 §9`).
+The v1 design pencils in `serde` derivations on all `15`-ratified types (with the `serde` feature in `semstrait-common` per `31 §10`). The `PhysicalExpr` inside `ResolvedColumnMapping.computed` serializes through `14`'s `Expr` serialization (`31` / `14 §9`).
 
 ### 12.5 `37` — `CatalogProvider` integration
 

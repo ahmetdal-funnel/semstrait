@@ -63,7 +63,7 @@ The minimum set of types a fluent v1 author touches end-to-end, with their autho
 | `ColumnRef` / `SemanticsName` (identifier carriers) | newtype / newtype | `semstrait-ir` | `[14 §3.4 / §3.5](../foundations/14_expressions.md)` + `[35 §3.4](35_semstrait_ir.md)` |
 | `Accessor` family / `Parameter` / `Window` | enum / struct / struct | `semstrait-ir` | `[14 §4 / §5](../foundations/14_expressions.md)` |
 | `CanonicalFn` / `FunctionRegistry` / `FunctionSpec` | newtype / struct / struct | `semstrait-ir` | `[14a](../foundations/14a_function_catalog.md)` |
-| `ValidateError` / `CompileError` (narrow IR-emitted error kinds — trait-machinery / `ReturnTypeRule::Custom`) | enum / enum | `semstrait-ir` | `[35 §15.1 / §15.2](35_semstrait_ir.md)` |
+| `ValidateError` / `CompileError` (narrow IR-emitted error kinds — trait-machinery / `ReturnTypeRule::Custom`) | enum / enum | `semstrait-ir` | `[35 §16.1 / §15.2](35_semstrait_ir.md)` |
 | `SemanticManifest` (compile output) | struct | `semstrait-manifest` | `[33](33_semstrait_manifest.md)` |
 | `ResolvedExprTable` (per-(Semantics, Binding) PhysicalExpr) | struct | `semstrait-manifest` | `[19 §3.2](../foundations/19_expression_flow.md)` |
 | `Request` / `RequestDimensionRef` (query-time input) | struct / struct | `semstrait-planner` | `[34](34_semstrait_planner.md)` |
@@ -71,8 +71,8 @@ The minimum set of types a fluent v1 author touches end-to-end, with their autho
 | `EngineArtifact` (adapter output) | enum | `semstrait-ir` | `[35](35_semstrait_ir.md)` |
 | `EngineAdapter` (trait) | trait | `semstrait-adapter` | `[36](36_semstrait_adapter.md)` |
 | `CatalogProvider` / `FileSystem` (traits) | trait / trait | `semstrait-catalog` | `[37](37_semstrait_catalog.md)` |
-| `DataType` / `Grain` / `Schema` | enum / enum / struct | `semstrait-core` | `[13](../foundations/13_types_and_grain.md)` (shape) + `[31](31_semstrait_core.md)` (placement) |
-| `Diagnostic<K>` / `Diagnostics<K>` / `Severity` / `Diagnose` | struct / alias / enum / trait | `semstrait-core` | `[30 §5](30_api_contracts.md)` + `[31](31_semstrait_core.md)` |
+| `DataType` / `Grain` / `Schema` | enum / enum / struct | `semstrait-common` | `[13](../foundations/13_types_and_grain.md)` (shape) + `[31](31_semstrait_common.md)` (placement) |
+| `Diagnostic<K>` / `Diagnostics<K>` / `Severity` / `Diagnose` | struct / alias / enum / trait | `semstrait-common` | `[30 §5](30_api_contracts.md)` + `[31](31_semstrait_common.md)` |
 
 This is the v1 reservation roster. Any new top-level abstraction is a clause-level MINOR addition per `[30 §2.2](30_api_contracts.md)`.
 
@@ -84,7 +84,7 @@ A type lives in the crate that owns its **definition and v1 evolution**. A crate
 
 | Crate | Owns | Does NOT own |
 |---|---|---|
-| `semstrait-core` | Non-expression shared vocabulary only: logical-type primitives (`DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn`); constraint-DSL shapes (`MeasureConstraints`, `DimensionConstraints`, `AggregationConstraints`); diagnostic primitives (`Diagnostic<K>`, `Diagnostics<K>`, `Severity`, `Location`, `Span`, `SourceId`, `Diagnose`); byte-blob `io` transport | Any expression-tree vocabulary — no `Expr<L>`, no `PhysicalExpr` / `SemanticExpr`, no `Tree` / `Visitor` / `Rewriter` / `ExprLeaf`, no support enums (`BinaryOpKind`, …), no `Literal`, no identifier carriers (`ColumnRef`, `SemanticsName`), no `CanonicalFn` / `FunctionRegistry`, no `ValidateError` / `CompileError`; any model / manifest / plan type |
+| `semstrait-common` | Non-expression shared vocabulary only: logical-type primitives (`DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn`); constraint-DSL shapes (`MeasureConstraints`, `DimensionConstraints`, `AggregationConstraints`); diagnostic primitives (`Diagnostic<K>`, `Diagnostics<K>`, `Severity`, `Location`, `Span`, `SourceId`, `Diagnose`); byte-blob `io` transport | Any expression-tree vocabulary — no `Expr<L>`, no `PhysicalExpr` / `SemanticExpr`, no `Tree` / `Visitor` / `Rewriter` / `ExprLeaf`, no support enums (`BinaryOpKind`, …), no `Literal`, no identifier carriers (`ColumnRef`, `SemanticsName`), no `CanonicalFn` / `FunctionRegistry`, no `ValidateError` / `CompileError`; any model / manifest / plan type |
 | `semstrait-ir` | The **complete expression-vocabulary home** after the second-cascade landing (`STATUS.md` item Q): the canonical IR layer (`Expr<L>` + leaf sets + type aliases `PhysicalExpr` / `SemanticExpr`); the traversal trait family (`Tree`, `Visitor`, `Rewriter`, `ExprLeaf`); the structural-variant support enums (`BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`) and `Literal` typed-literal carrier; the identifier carriers (`ColumnRef`, `SemanticsName`); the `Accessor` family + `Parameter`; `CanonicalFn` + `FunctionRegistry`; the narrow `ValidateError` (trait-machinery) and `CompileError` (`ReturnTypeRule::Custom`); `PlanNode` + `SemanticPlan` + `EngineArtifact` containers; expression DSL (free constructors in `expr_fn`; `std::ops` impls; aggregate/window builder traits) | Parsing (no YAML, no inline DSL parser); compile resolution; planning algorithms; engine emission |
 | `semstrait-model` | **The YAML surface** (`ExprSource` with `Inline(String)` / `Block(Expr<L>)` variants — no separate `ExprBlock` parallel AST per `[14 §6.1](../foundations/14_expressions.md)`; parse-site dispatch via `parse_semantic` / `parse_physical`); **parse-time structural rules** (per-site shape gates, identifier syntax, reserved-tag catalog dispatched via `Expr<L>`'s serde shape); **entity types** (`SemanticModel`, `Dataset`, `Grainset`, `Unionset`, `Joinset`, `Dimension`, `Measure`, `Metric`, `Relationship`, `Filter`, `Keys`, `SemanticInterface`, `SemanticMapping`); validate-stage checks (cross-entity SR-* rules); the model-level `ValidateError` (embeds `Ir(ir::ValidateError)` via D.ii) | The canonical expression *semantics* (consumes `SemanticExpr` / `PhysicalExpr` from `semstrait-ir` as value types — does not own their shape evolution); compile-time resolution (no name lookup, no cross-DataKind path BFS); function-registry evolution |
 | `semstrait-manifest` | Compile-time resolution (`SemanticExpr` → `PhysicalExpr`); `ResolvedExprTable`; `SemanticManifest` (sealed artifact); the manifest-level `CompileError` (wider resolution-stage roster; embeds `Ir(ir::CompileError)` via D.ii); `Repository` trait + bundled impls; the `Compile` extension trait (build → compile transition) | Authoring (no YAML parsing); planning (no `Request` handling); definition of `Expr<L>` / `FunctionRegistry` / `PlanNode` (those are `semstrait-ir`'s) |
@@ -186,8 +186,8 @@ The facade prelude (`semstrait::prelude::*`) brings the following **categories**
 | **Engine-adapter trait** (`EngineAdapter`) | `semstrait-adapter` | **Yes** — required to bind a plan to an engine |
 | **Catalog-provider trait** (`CatalogProvider`) | `semstrait-catalog` | **Yes** — required as `.compile(&catalog)`'s argument type |
 | **Plan-tree types** (`SemanticPlan`, `PlanNode`, `EngineArtifact`) | `semstrait-ir` | **Yes** — required to inspect/manipulate plans between stages |
-| **Diagnostic primitives** (`Diagnostic`, `Diagnostics`, `Severity`, `Diagnose`) | `semstrait-core` | **Yes** — required to consume the canonical `(Output, Diagnostics<K>)` tuple |
-| **Logical type primitives** (`DataType`, `Grain`) | `semstrait-core` | **Yes** — required as field types on entities |
+| **Diagnostic primitives** (`Diagnostic`, `Diagnostics`, `Severity`, `Diagnose`) | `semstrait-common` | **Yes** — required to consume the canonical `(Output, Diagnostics<K>)` tuple |
+| **Logical type primitives** (`DataType`, `Grain`) | `semstrait-common` | **Yes** — required as field types on entities |
 | **Top-level convenience** (`semstrait::builder()` free function) | facade | **Yes** (function not re-exported but reachable at crate root) |
 
 **Categories explicitly NOT in the prelude** (reachable through `semstrait::<module>::*`):
