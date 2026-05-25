@@ -10,3 +10,9 @@ semstrait-common = { workspace = true, features = ["serde"] }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Substrait wire form per `35 §12.2`. `substrait::proto::Plan` is a
+# structural payload (engine-agnostic), not engine-identity. Permitted
+# per `35 §15.5`.
+substrait = { workspace = true }
+prost = { workspace = true }

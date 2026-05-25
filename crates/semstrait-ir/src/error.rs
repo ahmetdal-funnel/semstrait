@@ -10,6 +10,9 @@
 //! - [`CompileError`] — raised by `ReturnTypeRule::Custom` callbacks wired
 //!   into `FunctionSpec` and by registry self-consistency checks.
 //!   Per spec `35 §16.2` / `14a §2`.
+//! - [`IrErrorKind`] — plan-tree boundary diagnostics raised by
+//!   `SemanticPlan::validate`, `transform`, and the Substrait codec
+//!   (`EnginePlan::to_bytes`). Per spec `35 §16.3`.
 //!
 //! Downstream stages embed via D.ii kind-nesting per `30 §7.4` —
 //! `model::ValidateError` carries `Ir(ir::ValidateError)`;
@@ -58,6 +61,10 @@ pub enum ValidateError {
     /// `Case` requires at least one when-branch.
     #[error("Case requires at least one when-branch")]
     EmptyCase,
+
+    /// `Name::new` rejected an empty identifier. Per `35 §11.4`.
+    #[error("Name cannot be empty")]
+    EmptyName,
 
     /// `CanonicalFn::new` rejected the supplied name. Per `14 §6.5`
     /// identifier grammar `[A-Za-z_][A-Za-z0-9_]*`; canonical names are
@@ -111,6 +118,95 @@ pub enum CompileError {
 }
 
 impl Diagnose for CompileError {
+    fn message(&self) -> String {
+        format!("{}", self)
+    }
+
+    fn severity_default(&self) -> Severity {
+        Severity::Error
+    }
+}
+
+/// Plan-tree boundary diagnostic raised by `SemanticPlan::validate`,
+/// `PlanNode::transform`, and the Substrait codec
+/// (`EnginePlan::to_bytes`). Per spec `35 §16.3`.
+///
+/// **Scoping override (Q-PLAN-14, 2026-05-25).** The full §16.3 catalog
+/// lists 14 variants spanning structural shape, type-resolution, and
+/// schema-mismatch failures. Most of those (e.g. `JoinKeyTypeMismatch`,
+/// `UnresolvedType`, `DuplicateAggName`, `UnionSchemaMismatch`) are
+/// upstream-of-IR concerns: they describe planner / manifest-compile
+/// failures that should be caught before a `SemanticPlan` is constructed.
+/// `semstrait-ir` v1 carries only the three variants whose production
+/// site is structurally inside `35`:
+///
+/// - [`StructuralViolation`] — `validate()` post-order walk caught a
+///   shape-only invariant break that did not abort an earlier
+///   `with_new_children` call (e.g. `Union.inputs.len() < 2`,
+///   `Filter.predicate` non-Boolean as a structural fact, not a type
+///   diagnostic). Composite envelope; consumers read `kind` for
+///   sub-classification.
+/// - [`DanglingReference`] — a `Name` on a `JoinNode.on`,
+///   `AggNode.group_by`, or `SortNode.keys` does not resolve to any
+///   column in the corresponding child schema.
+/// - [`SubstraitCodecError`] — `EnginePlan::to_bytes` /
+///   `from_bytes` failed at the prost / Substrait boundary; wraps the
+///   underlying message context.
+///
+/// Adding variants is MINOR per `30 §2.2`; widening this enum is
+/// expected as planner / manifest layers re-route their own diagnostics
+/// up to caller boundaries instead of through `35`.
+///
+/// [`StructuralViolation`]: IrErrorKind::StructuralViolation
+/// [`DanglingReference`]: IrErrorKind::DanglingReference
+/// [`SubstraitCodecError`]: IrErrorKind::SubstraitCodecError
+#[non_exhaustive]
+#[derive(Debug, Error, Clone, PartialEq)]
+pub enum IrErrorKind {
+    /// Structural shape invariant violated by `SemanticPlan::validate`'s
+    /// post-order walk. Per `35 §14.3` / `§16.3`.
+    ///
+    /// `kind` is a stable `&'static str` discriminator — `"union_arity"`,
+    /// `"filter_predicate"`, etc. — so callers can branch without
+    /// re-parsing `reason`. Adding a new `kind` token is MINOR.
+    #[error("structural violation [{kind}]: {reason}")]
+    StructuralViolation {
+        kind: &'static str,
+        reason: String,
+    },
+
+    /// A column [`crate::primitives::Name`] referenced by `JoinNode.on`,
+    /// `AggNode.group_by`, or `SortNode.keys` does not resolve to any
+    /// column in the corresponding child schema. Per `35 §14.3` / `§16.3`.
+    ///
+    /// `available` lists the candidate names from the child schema for
+    /// diagnostic display. `node_kind` records which plan-node variant
+    /// raised the diagnostic (`"join"`, `"agg"`, `"sort"`).
+    #[error(
+        "dangling reference on {node_kind}: column `{}` not found in child schema (available: [{}])",
+        name.as_str(),
+        available.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", "),
+    )]
+    DanglingReference {
+        node_kind: &'static str,
+        name: crate::primitives::Name,
+        available: Vec<crate::primitives::Name>,
+    },
+
+    /// Substrait codec failure raised by `EnginePlan::to_bytes` /
+    /// `from_bytes`. Per `35 §16.3`. Wraps the underlying
+    /// `prost::EncodeError` / `prost::DecodeError` message — we hold a
+    /// `String` rather than the typed prost error so this enum can
+    /// remain `Clone + PartialEq` without leaking the prost dependency
+    /// shape into downstream consumers.
+    #[error("substrait codec error [{phase}]: {reason}")]
+    SubstraitCodecError {
+        phase: &'static str,
+        reason: String,
+    },
+}
+
+impl Diagnose for IrErrorKind {
     fn message(&self) -> String {
         format!("{}", self)
     }
@@ -200,6 +296,14 @@ mod tests {
     }
 
     #[test]
+    fn validate_error_displays_empty_name() {
+        let err = ValidateError::EmptyName;
+        let msg = format!("{}", err);
+        assert!(msg.contains("Name"));
+        assert!(msg.contains("empty"));
+    }
+
+    #[test]
     fn validate_error_displays_invalid_canonical_fn() {
         let err = ValidateError::InvalidCanonicalFn {
             supplied: "foo bar".to_string(),
@@ -260,5 +364,105 @@ mod tests {
             reason: "boom".to_string(),
         };
         assert_ne!(a, c);
+    }
+
+    // ── IrErrorKind ──────────────────────────────────────────────────
+
+    #[test]
+    fn ir_error_displays_structural_violation() {
+        let err = IrErrorKind::StructuralViolation {
+            kind: "union_arity",
+            reason: "expected ≥2 inputs, got 1".to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("structural violation"));
+        assert!(msg.contains("union_arity"));
+        assert!(msg.contains("expected ≥2 inputs"));
+    }
+
+    #[test]
+    fn ir_error_displays_dangling_reference() {
+        use crate::primitives::Name;
+        let err = IrErrorKind::DanglingReference {
+            node_kind: "join",
+            name: Name::new("xyz").unwrap(),
+            available: vec![
+                Name::new("order_id").unwrap(),
+                Name::new("amount").unwrap(),
+            ],
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("dangling reference"));
+        assert!(msg.contains("join"));
+        assert!(msg.contains("xyz"));
+        assert!(msg.contains("order_id"));
+        assert!(msg.contains("amount"));
+    }
+
+    #[test]
+    fn ir_error_displays_dangling_reference_with_empty_schema() {
+        use crate::primitives::Name;
+        let err = IrErrorKind::DanglingReference {
+            node_kind: "sort",
+            name: Name::new("missing").unwrap(),
+            available: vec![],
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("missing"));
+        assert!(msg.contains("[]") || msg.contains("available"));
+    }
+
+    #[test]
+    fn ir_error_displays_substrait_codec_error() {
+        let err = IrErrorKind::SubstraitCodecError {
+            phase: "encode",
+            reason: "buffer overflow".to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("substrait codec"));
+        assert!(msg.contains("encode"));
+        assert!(msg.contains("buffer overflow"));
+    }
+
+    #[test]
+    fn ir_error_implements_diagnose() {
+        let err = IrErrorKind::StructuralViolation {
+            kind: "filter_predicate",
+            reason: "non-Boolean".to_string(),
+        };
+        assert!(!err.message().is_empty());
+        assert_eq!(err.severity_default(), Severity::Error);
+        assert!(err.cause().is_none());
+    }
+
+    #[test]
+    fn ir_error_equality_and_clone() {
+        let a = IrErrorKind::StructuralViolation {
+            kind: "union_arity",
+            reason: "x".to_string(),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+        let c = IrErrorKind::StructuralViolation {
+            kind: "filter_predicate",
+            reason: "x".to_string(),
+        };
+        assert_ne!(a, c, "kind discriminator participates in equality");
+    }
+
+    #[test]
+    fn ir_error_variants_distinguish_by_identity() {
+        // Variant identity (not stringly-typed codes) drives equality
+        // per `30 §5.4`. Two structurally-different variants with the
+        // same `reason` MUST compare unequal.
+        let a = IrErrorKind::StructuralViolation {
+            kind: "union_arity",
+            reason: "boom".to_string(),
+        };
+        let b = IrErrorKind::SubstraitCodecError {
+            phase: "decode",
+            reason: "boom".to_string(),
+        };
+        assert_ne!(a, b);
     }
 }

@@ -4,9 +4,10 @@
 //! - [`DataType`] — 14 ANSI-aligned scalar variants per `35 §4.1`.
 //! - [`Grain`] — temporal granularity lattice per `35 §4.2`.
 //! - [`TypeClass`] — bounded type-class grouping per `35 §4.3`.
-//!
-//! `Schema` / `SchemaColumn` are out of scope for this iteration — no
-//! current consumer in the post-cascade IR needs them.
+//! - [`Schema`] / [`SchemaColumn`] — per-`PlanNode` output-shape carrier
+//!   per `35 §4.4`. Field-stable per shared-vocabulary policy; no
+//!   `#[non_exhaustive]`. Source-order is contract; consumers MAY
+//!   `Arc<Schema>`-share for pass-through nodes.
 
 use std::fmt;
 
@@ -202,6 +203,32 @@ impl TypeClass {
             Self::Any => true,
         }
     }
+}
+
+/// Per `35 §4.4`. Per-`PlanNode` output-shape carrier; also attached to
+/// `PhysicalSource` per `15 §3.2`. Field-stable per shared-vocabulary
+/// policy — `.columns` access is contract; no `#[non_exhaustive]`.
+///
+/// Column order is the source's native order (Parquet footer / Iceberg
+/// field order / CSV header / planner-derived projection order).
+/// Compile preserves it for determinism (I4); the planner does not
+/// semantically depend on ordering, but adapters do (Substrait
+/// `RelRoot.names` ordinal alignment, SQL emit column order).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Schema {
+    pub columns: Vec<SchemaColumn>,
+}
+
+/// Per `35 §4.4`. Single-column descriptor inside a [`Schema`].
+/// Field-stable per shared-vocabulary policy.
+///
+/// `nullable` is sourced from upstream metadata when available (Parquet
+/// stats, source schema declaration); it is not inferred from data.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SchemaColumn {
+    pub name: String,
+    pub data_type: DataType,
+    pub nullable: bool,
 }
 
 #[cfg(test)]
@@ -474,6 +501,148 @@ mod tests {
             let json = serde_json::to_string(c).unwrap();
             let back: TypeClass = serde_json::from_str(&json).unwrap();
             assert_eq!(c, &back);
+        }
+    }
+
+    // ── Schema / SchemaColumn ────────────────────────────────────────
+
+    fn col(name: &str, ty: DataType, nullable: bool) -> SchemaColumn {
+        SchemaColumn {
+            name: name.to_string(),
+            data_type: ty,
+            nullable,
+        }
+    }
+
+    #[test]
+    fn schema_column_construction_and_equality() {
+        let a = col("amount", DataType::Decimal { precision: 10, scale: 2 }, false);
+        let b = col("amount", DataType::Decimal { precision: 10, scale: 2 }, false);
+        assert_eq!(a, b);
+
+        let c = col("amount", DataType::Decimal { precision: 10, scale: 2 }, true);
+        assert_ne!(a, c, "nullable participates in equality");
+
+        let d = col("Amount", DataType::Decimal { precision: 10, scale: 2 }, false);
+        assert_ne!(a, d, "name is case-sensitive (no normalization)");
+    }
+
+    #[test]
+    fn schema_field_access_is_contract() {
+        let s = Schema {
+            columns: vec![
+                col("id", DataType::Long, false),
+                col("name", DataType::String, true),
+            ],
+        };
+        assert_eq!(s.columns.len(), 2);
+        assert_eq!(s.columns[0].name, "id");
+        assert_eq!(s.columns[1].data_type, DataType::String);
+        assert!(s.columns[1].nullable);
+    }
+
+    #[test]
+    fn schema_empty_columns_is_admissible() {
+        let s = Schema { columns: Vec::new() };
+        assert_eq!(s.columns.len(), 0);
+    }
+
+    #[test]
+    fn schema_preserves_source_order() {
+        let s = Schema {
+            columns: vec![
+                col("c0", DataType::Boolean, false),
+                col("c1", DataType::Integer, false),
+                col("c2", DataType::String, true),
+            ],
+        };
+        let names: Vec<&str> = s.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["c0", "c1", "c2"]);
+    }
+
+    #[test]
+    fn schema_admits_duplicate_column_names() {
+        // Plan-tree layer admits duplicates; uniqueness is a higher-layer
+        // invariant (planner/manifest), not a Schema constructor concern.
+        let s = Schema {
+            columns: vec![
+                col("x", DataType::Integer, false),
+                col("x", DataType::Integer, false),
+            ],
+        };
+        assert_eq!(s.columns.len(), 2);
+        assert_eq!(s.columns[0], s.columns[1]);
+    }
+
+    #[test]
+    fn schema_equality_is_structural_and_order_sensitive() {
+        let a = Schema {
+            columns: vec![
+                col("a", DataType::Integer, false),
+                col("b", DataType::String, true),
+            ],
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+
+        let reordered = Schema {
+            columns: vec![
+                col("b", DataType::String, true),
+                col("a", DataType::Integer, false),
+            ],
+        };
+        assert_ne!(a, reordered, "column order participates in equality");
+    }
+
+    #[test]
+    fn schema_hash_is_deterministic() {
+        use std::collections::HashSet;
+        let a = Schema {
+            columns: vec![col("x", DataType::Integer, false)],
+        };
+        let b = a.clone();
+        let mut set: HashSet<Schema> = HashSet::new();
+        set.insert(a);
+        assert!(set.contains(&b));
+    }
+
+    #[test]
+    fn schema_serde_json_roundtrip() {
+        let s = Schema {
+            columns: vec![
+                col("id", DataType::Long, false),
+                col("ts", DataType::Timestamp { precision: 6 }, true),
+                col("price", DataType::Decimal { precision: 12, scale: 4 }, false),
+            ],
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Schema = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+    }
+
+    #[test]
+    fn schema_column_serde_json_roundtrip_each_data_type() {
+        let roster = [
+            DataType::Boolean,
+            DataType::Byte,
+            DataType::Short,
+            DataType::Integer,
+            DataType::Long,
+            DataType::Float,
+            DataType::Double,
+            DataType::Decimal { precision: 10, scale: 2 },
+            DataType::String,
+            DataType::Binary,
+            DataType::Date,
+            DataType::Time { precision: 6 },
+            DataType::Timestamp { precision: 6 },
+            DataType::Interval,
+        ];
+        for dt in roster {
+            let c = col("c", dt.clone(), false);
+            let json = serde_json::to_string(&c).unwrap();
+            let back: SchemaColumn = serde_json::from_str(&json).unwrap();
+            assert_eq!(c, back, "roundtrip failed for column with type {dt}");
         }
     }
 }
