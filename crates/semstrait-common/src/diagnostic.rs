@@ -82,8 +82,14 @@ pub trait Diagnose {
     }
 }
 
-/// Per `31 §4.3`. Consumers construct via per-crate helpers; this crate
-/// exposes no [`Diagnostic::new`] or builder.
+/// Per `31 §4.3`. The struct is `#[non_exhaustive]` so future fields can
+/// be added without a breaking change (I10). Construction is via
+/// [`Diagnostic::new`], which seeds `severity` from
+/// [`Diagnose::severity_default`]; `location` and `notes` are attached
+/// via the chainable [`Diagnostic::with_severity`],
+/// [`Diagnostic::with_location`], [`Diagnostic::with_note`] mutators.
+/// Per-stage consumer crates typically wrap this in their own private
+/// `fn diag(kind: K) -> Diagnostic<K>` helper.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Diagnostic<K: Diagnose> {
@@ -91,6 +97,40 @@ pub struct Diagnostic<K: Diagnose> {
     pub severity: Severity,
     pub location: Option<Location>,
     pub notes: Vec<String>,
+}
+
+impl<K: Diagnose> Diagnostic<K> {
+    /// Construct an envelope around `kind` with `severity` defaulted to
+    /// `kind.severity_default()`, no location, and no notes. Per `31 §4.3`.
+    pub fn new(kind: K) -> Self {
+        let severity = kind.severity_default();
+        Self {
+            kind,
+            severity,
+            location: None,
+            notes: Vec::new(),
+        }
+    }
+
+    /// Override the default severity. Per `31 §4.3` (consumer-crate
+    /// helpers may upgrade or downgrade severity at construction).
+    pub fn with_severity(mut self, severity: Severity) -> Self {
+        self.severity = severity;
+        self
+    }
+
+    /// Attach a source [`Location`]. Per `31 §4.3`.
+    pub fn with_location(mut self, location: Location) -> Self {
+        self.location = Some(location);
+        self
+    }
+
+    /// Append a free-form note (renders as `note: <text>` after the
+    /// primary message). Per `31 §4.3`.
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.notes.push(note.into());
+        self
+    }
 }
 
 /// Transparent vector alias per `31 §4.3`.
@@ -223,6 +263,40 @@ mod tests {
         };
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.notes.len(), 1);
+    }
+
+    #[test]
+    fn diagnostic_new_seeds_severity_from_kind_default() {
+        let d = Diagnostic::new(TestKind::Warn);
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.location.is_none());
+        assert!(d.notes.is_empty());
+    }
+
+    #[test]
+    fn diagnostic_with_severity_overrides_default() {
+        let d = Diagnostic::new(TestKind::Bad).with_severity(Severity::Warning);
+        assert_eq!(d.severity, Severity::Warning);
+    }
+
+    #[test]
+    fn diagnostic_with_location_attaches_span() {
+        let loc = Location {
+            source: SourceId::unknown(),
+            span: Span { start: 7, end: 11 },
+        };
+        let d = Diagnostic::new(TestKind::Bad).with_location(loc);
+        let span = d.location.expect("location attached").span;
+        assert_eq!(span.start, 7);
+        assert_eq!(span.end, 11);
+    }
+
+    #[test]
+    fn diagnostic_with_note_appends_in_order() {
+        let d = Diagnostic::new(TestKind::Bad)
+            .with_note("first")
+            .with_note(String::from("second"));
+        assert_eq!(d.notes, vec!["first".to_string(), "second".to_string()]);
     }
 
     #[test]

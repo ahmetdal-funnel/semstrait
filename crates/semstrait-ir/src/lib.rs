@@ -40,16 +40,19 @@
 //!   built-in catalog (12 string + 11 math + 14 temporal + 2 logical +
 //!   8 aggregate).
 
+pub mod artifact;
 pub mod error;
 pub mod expr;
 pub mod expr_kinds;
 pub mod functions;
+pub mod plan;
+pub mod primitives;
 pub mod tree;
 pub mod types;
 
 // ── Phase 2a re-exports (spec-aligned) ─────────────────────────────────
 
-pub use error::{CompileError, ValidateError};
+pub use error::{CompileError, IrErrorKind, ValidateError};
 pub use expr_kinds::{
     AggregationOp, BinaryOpKind, CastFailure, ColumnRef, LikeKind, Literal, SemanticsName,
     UnaryOpKind, WindowBound, WindowFn, WindowFrame, WindowFrameKind,
@@ -75,4 +78,39 @@ pub use expr::{
     DimensionAccessor, Expr, KeyAccessor, MeasureAccessor, MetricAccessor, Parameter,
     ParameterKey, PhysicalExpr, PhysicalLeaf, SemanticExpr, SemanticLeaf,
 };
-pub use types::{DataType, Grain, TypeClass};
+pub use types::{DataType, Grain, Schema, SchemaColumn, TypeClass};
+
+// ── Phase 2d re-exports (plan-tree primitives) ─────────────────────────
+//
+// Plan-level identifiers and structural-variant carriers per `35 §11`.
+// Live alongside `types::DataType` rather than under a `plan::` namespace
+// because they are reused across the IR (e.g. `AggregateExpr` is referenced
+// from `expr::*` extension contexts) and the future plan-tree node types.
+
+pub use primitives::{
+    AggregateExpr, Cardinality, JoinType, KeyPair, Name, NullOrdering, ResolvedColumn, SortDir,
+    SourceRef,
+};
+
+// ── Phase 2d re-exports (plan/ subtree) ────────────────────────────────
+//
+// Plan-tree node sum + per-variant payload structs + per-node metadata
+// per `35 §10` / `§11.1`. Traversal helpers (P16) and the
+// `SemanticPlan` wrapper (P17) re-export at landing.
+
+pub use plan::{
+    AggNode, AnnotationClass, BoundaryPosition, FetchNode, FilterNode, JoinNode, NodeId,
+    NodeMeta, PlanNode, ProjectNode, ScanNode, SemAnnotation, SemanticPlan, SortNode, UnionNode,
+    ValuesNode,
+};
+
+// ── Phase 2e re-exports (artifact/ family) ─────────────────────────────
+//
+// Adapter-consumable artifacts per `35 §12`. `35` ratifies the
+// structural shape; `36` (`semstrait-adapter`) owns the emission
+// semantics. `DialectId` is the only engine-identity vocabulary in IR
+// per S7 — appears only on `SqlArtifact.dialect` and `Dialect::ID`.
+
+pub use artifact::{
+    Capability, Dialect, DialectId, EngineArtifact, EnginePlan, SqlArtifact,
+};
