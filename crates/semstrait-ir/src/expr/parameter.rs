@@ -15,7 +15,7 @@
 //! two keys needed by Family-B-sugar elimination (`14 §4.2`); future keys
 //! land via `#[non_exhaustive]` additions.
 
-use semstrait_core::DataType;
+use crate::types::DataType;
 
 /// Plan-bound parameter placeholder. Substituted by the planner during
 /// Phase B per `19 §6` / `34`. Per spec `14 §5.1`, `35 §5.2`.
@@ -103,7 +103,7 @@ mod tests {
         // Sanity sweep — `data_type` admits any canonical DataType.
         for dt in [
             DataType::Integer,
-            DataType::Number,
+            DataType::Double,
             DataType::String,
             DataType::Boolean,
             DataType::Date,

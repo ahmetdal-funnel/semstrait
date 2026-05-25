@@ -40,7 +40,7 @@ use crate::expr::parameter::Parameter;
 use crate::expr::tree::Expr;
 use crate::expr_kinds::{ColumnRef, Literal, SemanticsName};
 use crate::tree::ExprLeaf;
-use semstrait_core::DataType;
+use crate::types::DataType;
 
 /// Canonical-IR leaf set per spec `14 §3.4` / `35 §4.1`.
 ///

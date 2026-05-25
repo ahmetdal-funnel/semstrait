@@ -32,50 +32,39 @@
 //!   - [`expr::expr_fn`] — authoring DSL constructors, `std::ops` impls,
 //!     `ExprFunctionExt` and `SemanticExprAccessorExt` extension traits.
 //!
-//! ## Legacy modules (pre-spec-cascade)
+//! ## Phase 2c additions (this iteration)
 //!
-//! `annotation`, `artifact`, `plan`, `plan_builder`, `rewrite`, `schema`,
-//! `substrait` are pre-cascade modules consumed by the `substrait`
-//! subsystem. They reference `semstrait_core::expr` items that the
-//! second cascade moved out of `semstrait-core`; the `expr/` subtree in
-//! Phase 2b will replace those references. See
-//! `[docs/design/implementation/40_refactor_plan.md](../../docs/design/implementation/40_refactor_plan.md)`.
+//! - [`functions`] — canonical function catalog per spec `35 §8` /
+//!   `14a §2`–`§7`. Owns [`functions::CanonicalFn`], the sealed
+//!   [`functions::FunctionRegistry`] singleton, and the v1 47-entry
+//!   built-in catalog (12 string + 11 math + 14 temporal + 2 logical +
+//!   8 aggregate).
 
 pub mod error;
 pub mod expr;
 pub mod expr_kinds;
+pub mod functions;
 pub mod tree;
-
-// Legacy pre-cascade modules — to be replaced by Phase 2b's `expr/`
-// subtree. Currently disabled (`cfg(any())`) because Phase 1 removed
-// `semstrait_core::expr`, which these modules consume; Phase 2b will
-// stand up the replacement `expr/` subtree and either wire these legacy
-// modules to it or retire them entirely. The file contents remain on
-// disk untouched per Phase-2a scope rules; only the module declarations
-// here are gated.
-#[cfg(any())]
-pub mod annotation;
-#[cfg(any())]
-pub mod artifact;
-#[cfg(any())]
-pub mod plan;
-#[cfg(any())]
-pub mod plan_builder;
-#[cfg(any())]
-pub mod rewrite;
-#[cfg(any())]
-pub mod schema;
-#[cfg(any())]
-pub mod substrait;
+pub mod types;
 
 // ── Phase 2a re-exports (spec-aligned) ─────────────────────────────────
 
 pub use error::{CompileError, ValidateError};
 pub use expr_kinds::{
-    AggregationOp, BinaryOpKind, CanonicalFn, CastFailure, ColumnRef, LikeKind, Literal,
-    SemanticsName, UnaryOpKind, WindowBound, WindowFn, WindowFrame, WindowFrameKind,
+    AggregationOp, BinaryOpKind, CastFailure, ColumnRef, LikeKind, Literal, SemanticsName,
+    UnaryOpKind, WindowBound, WindowFn, WindowFrame, WindowFrameKind,
 };
 pub use tree::{ExprLeaf, Rewriter, Tree, Visitor};
+
+// ── Phase 2c re-exports (functions/ catalog) ───────────────────────────
+//
+// `CanonicalFn` lives here per `35 §8.2` / `14a §2`. The sealed registry
+// singleton is reached via `function_registry()`.
+
+pub use functions::{
+    function_registry, Additivity, CanonicalFn, DimensionAxis, FnSignature, FunctionCategory,
+    FunctionRegistry, FunctionSpec, ParamType, RegistryExtension, ReturnTypeRule,
+};
 
 // ── Phase 2b re-exports (expr/ subtree) ────────────────────────────────
 //
@@ -86,23 +75,4 @@ pub use expr::{
     DimensionAccessor, Expr, KeyAccessor, MeasureAccessor, MetricAccessor, Parameter,
     ParameterKey, PhysicalExpr, PhysicalLeaf, SemanticExpr, SemanticLeaf,
 };
-
-// ── Legacy re-exports (pre-spec-cascade) ───────────────────────────────
-
-// Legacy `error` re-exports from the pre-cascade substrait subsystem.
-// These remain active because the legacy error types live in this same
-// `error` module, which compiles independently of the gated legacy
-// modules above.
-pub use error::{ConvertError, DeserializeError, SerializeError};
-
-// The remaining legacy re-exports (`AdditivityAnnotation`,
-// `AggregateRole`, `FilterSource`, `SemAnnotation`, `PlanArtifact`,
-// `AggNode`, `AggregateMeasure`, `FetchNode`, `FilterNode`, `JoinNode`,
-// `JoinType`, `LogicalPlan`, `NodeMeta`, `PlanNode`, `PlannerWarning`,
-// `ProjectNode`, `ScanNode`, `SortDirection`, `SortKey`, `SortNode`,
-// `UnionNode`, `Aggregation`, `BinaryOp`, `DataType`, `Expr`,
-// `DefaultPlanBuilder`, `PlanBuilder`, `FunctionRewriter`,
-// `FunctionTarget`, `Field`, `Schema`, `ExprConverter`,
-// `FunctionRegistry`, `SubstraitSerializer`) are gated together with
-// their owning modules above (`#[cfg(any())]`). They restore in Phase 2b
-// once the `expr/` subtree is wired in.
+pub use types::{DataType, Grain, TypeClass};

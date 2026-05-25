@@ -43,11 +43,11 @@
 
 use crate::error::ValidateError;
 use crate::expr_kinds::{
-    AggregationOp, BinaryOpKind, CanonicalFn, CastFailure, LikeKind, UnaryOpKind, WindowFn,
-    WindowFrame,
+    AggregationOp, BinaryOpKind, CastFailure, LikeKind, UnaryOpKind, WindowFn, WindowFrame,
 };
+use crate::functions::CanonicalFn;
 use crate::tree::{ExprLeaf, Tree};
-use semstrait_core::DataType;
+use crate::types::DataType;
 
 /// Canonical structural expression tree, parameterized over leaf set `L`.
 /// Variant catalog per spec `14 §3.3`. Every variant is `#[non_exhaustive]`
@@ -77,8 +77,8 @@ pub enum Expr<L: ExprLeaf> {
         operand: Box<Self>,
     },
 
-    /// Canonical function call. `name` is a `CanonicalFn` resolved
-    /// against the sealed [`crate::expr_kinds::CanonicalFn`] registry per
+    /// Canonical function call. `name` is a [`CanonicalFn`] resolved
+    /// against the sealed [`crate::functions::FunctionRegistry`] per
     /// `14a`.
     FunctionCall {
         name: CanonicalFn,
@@ -494,11 +494,12 @@ fn check_well_formed<L: ExprLeaf>(expr: &Expr<L>) -> Result<(), ValidateError> {
 mod tests {
     use super::*;
     use crate::expr_kinds::{
-        AggregationOp, BinaryOpKind, CanonicalFn, CastFailure, LikeKind, Literal, UnaryOpKind,
-        WindowBound, WindowFn, WindowFrame, WindowFrameKind,
+        AggregationOp, BinaryOpKind, CastFailure, LikeKind, Literal, UnaryOpKind, WindowBound,
+        WindowFn, WindowFrame, WindowFrameKind,
     };
+    use crate::functions::CanonicalFn;
     use crate::tree::ExprLeaf;
-    use semstrait_core::DataType;
+    use crate::types::DataType;
 
     /// Minimal leaf set used only for tree-machinery tests. Represents a
     /// [`Literal`] payload — no semantic / column reference vocabulary.
@@ -550,7 +551,7 @@ mod tests {
     #[test]
     fn function_call_arity_matches_args() {
         let e = Expr::<TestLeaf>::FunctionCall {
-            name: CanonicalFn("upper".to_string()),
+            name: CanonicalFn::new("upper").unwrap(),
             args: vec![lit(1), lit(2), lit(3)],
         };
         assert_eq!(e.children().len(), 3);
@@ -770,7 +771,7 @@ mod tests {
         // FunctionCall: expects 2, supply 3.
         assert_arity_mismatch(
             Expr::<TestLeaf>::FunctionCall {
-                name: CanonicalFn("f".to_string()),
+                name: CanonicalFn::new("f").unwrap(),
                 args: vec![lit(1), lit(2)],
             },
             3,

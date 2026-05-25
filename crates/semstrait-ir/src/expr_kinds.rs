@@ -11,14 +11,7 @@
 //! public enum carries `#[non_exhaustive]` per invariant I10 (additive
 //! variant growth must not break exhaustively-matching consumers).
 //!
-//! ## Note on `CanonicalFn` placement
-//!
-//! `CanonicalFn` lives in this module pending `FunctionRegistry` stand-up.
-//! Spec `35 §2` allocates a dedicated `functions/` module that will own
-//! `CanonicalFn` once `[14a §2](../../docs/design/foundations/14a_function_catalog.md)`
-//! lands; the type relocates at that point. This iteration places it here
-//! because `Expr<L>::FunctionCall` (Phase 2b) carries it and we are not
-//! building the registry yet.
+//! `CanonicalFn` lives in [`crate::functions`] per `35 §8.2` / `14a §2`.
 
 // ── Operator discriminators ────────────────────────────────────────────
 
@@ -146,7 +139,7 @@ pub enum WindowBound {
 
 /// Typed literal value — single carrier shared by `PhysicalLeaf::Literal`
 /// and `SemanticLeaf::Literal`. Variant list aligns 1:1 with
-/// [`semstrait_core::DataType`] plus `Null`. Per spec `14 §3.3`,
+/// [`crate::types::DataType`] plus `Null`. Per spec `14 §3.3`,
 /// `35 §3.4`.
 ///
 /// `Float(f64)` makes this enum non-`Eq` / non-`Hash` (NaN inequality);
@@ -196,15 +189,8 @@ pub struct ColumnRef(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SemanticsName(pub String);
 
-/// Canonical function identity per `[14a §2](../../docs/design/foundations/14a_function_catalog.md)`.
-/// Newtype-over-stable per `30 §4.3` — `.0` access is intentional; no
-/// `#[non_exhaustive]`.
-///
-/// **Placement note.** Lives here pending `FunctionRegistry` stand-up;
-/// relocates to the `functions` module when `14a §2` lands. See module
-/// docs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CanonicalFn(pub String);
+// `CanonicalFn` lives in [`crate::functions`] per `14a §2` / `35 §8.2`.
+// See [`crate::functions::CanonicalFn`].
 
 #[cfg(test)]
 mod tests {
@@ -364,15 +350,6 @@ mod tests {
         assert!(set.contains(&b));
     }
 
-    #[test]
-    fn canonical_fn_equality_and_hash() {
-        let a = CanonicalFn("coalesce".to_string());
-        let b = CanonicalFn("coalesce".to_string());
-        assert_eq!(a, b);
-        let mut set = HashSet::new();
-        set.insert(a);
-        assert!(set.contains(&b));
-        let c = CanonicalFn("substring".to_string());
-        assert!(!set.contains(&c));
-    }
+    // `canonical_fn_*` test coverage moved to
+    // `crate::functions::canonical_fn::tests` per `35 §8.2`.
 }

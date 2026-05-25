@@ -24,7 +24,7 @@
 //! module lives in `semstrait-ir`, not `semstrait-core`.
 
 use crate::error::ValidateError;
-use semstrait_core::DataType;
+use crate::types::DataType;
 use std::ops::ControlFlow;
 
 /// Universal traversal contract. Implemented by `Expr<L>` and `PlanNode`.
