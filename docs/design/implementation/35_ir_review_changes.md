@@ -367,10 +367,10 @@ reshape. Bundle the migration with TD-REGISTRY-EXTENSION-WIRING.
 
 **Surgical edit (Option B):**
 
-- `docs/TECH_DEBT.md` (or equivalent tracker) — add `TD-IR-STRUCTURAL-PAYLOAD`
-  entry: "If `Diagnostic<K>` (semstrait-common) ever grows structured
-  plan-tree fields (node-id, expected/actual), revisit IR's
-  `StructuralViolation` payload."
+- Tech-debt tracker entry `TD-IR-STRUCTURAL-PAYLOAD` (filed in the
+  spec-tree tech-debt index): "If `Diagnostic<K>` (semstrait-common) ever
+  grows structured plan-tree fields (node-id, expected/actual), revisit
+  IR's `StructuralViolation` payload."
 - No code edit on `error.rs`.
 
 **Rationale.** `Diagnostic<K>` carries source-text Location only — no plan-

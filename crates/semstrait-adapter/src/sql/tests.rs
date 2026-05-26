@@ -998,7 +998,7 @@ fn union_empty_inputs_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// type_name() dialect tests — see docs/DATATYPE_CATALOG.md
+// type_name() dialect tests
 // ---------------------------------------------------------------------------
 
 mod type_name_tests {

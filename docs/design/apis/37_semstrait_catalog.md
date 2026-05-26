@@ -312,7 +312,7 @@ All methods are `async`. `Send + Sync` is required so `Arc<dyn CatalogProvider>`
 | Snapshot / partition support | None.                                                             |
 | Use cases               | Unit tests, stateless compilation paths, integration harnesses that only exercise file-based bindings. |
 
-Every method returns either `Ok(empty)` or `Err(CatalogProviderErrorKind::TableNotFound { .. })` (for `resolve_table` / `get_schema` / `get_partitions` / `get_snapshot` / `check_schema_drift`). This mirrors the legacy `NullCatalogProvider` behavior and preserves the "catalog-absent" graceful-degradation path from `docs/CATALOG_RESOLUTION.md §2`.
+Every method returns either `Ok(empty)` or `Err(CatalogProviderErrorKind::TableNotFound { .. })` (for `resolve_table` / `get_schema` / `get_partitions` / `get_snapshot` / `check_schema_drift`). This mirrors the legacy `NullCatalogProvider` behavior and preserves the "catalog-absent" graceful-degradation path.
 
 ### 4.2 `IcebergRestCatalogProvider`
 
@@ -326,7 +326,7 @@ Every method returns either `Ok(empty)` or `Err(CatalogProviderErrorKind::TableN
 | Supported formats       | Parquet (primary), ORC, Avro (as reported by catalog metadata).        |
 | Use cases               | Production deployments with Apache Polaris, Tabular, Iceberg REST Catalog service. |
 
-Partition transform resolution and field-id-to-name mapping follow `docs/CATALOG_RESOLUTION.md §4`. Snapshot pinning captures `metadata.current-snapshot-id`.
+Snapshot pinning captures `metadata.current-snapshot-id`.
 
 Limitations: REST API only — no direct metadata-file reads. Table data files are NOT listed by this provider (that is a `FileSystem` concern via the `location` returned in `ResolvedTable`).
 

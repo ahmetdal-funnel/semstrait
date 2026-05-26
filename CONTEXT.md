@@ -20,5 +20,5 @@ Project stage:
 ## Authority rule
 
 - `docs/design/` is authoritative for target-state architecture.
-- Other docs (including `DECISION_LOG.md`, root `README.md`, and legacy `docs/*.md` outside `docs/design/`) are **current-code reference only**.
+- Root `README.md` and crate `README.md` files are **current-code reference only**.
 - When current-state docs conflict with spec docs, follow `docs/design/` and reconcile through spec artifacts.
