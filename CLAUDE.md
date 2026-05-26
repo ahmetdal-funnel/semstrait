@@ -44,32 +44,9 @@ Then route by topic:
 | Questions for any doc `N`                                                                    | `docs/design/questions/open/N_questions.md` (active v1 backlog); ratified items in `docs/design/questions/closed/N_questions.md`; post-v1 items in `docs/design/questions/deferred/N_questions.md`. The same `N_questions.md` filename can appear in multiple directories — each carries only the Q-IDs in that state. See the question dashboard in `docs/design/INDEX.md`. |
 
 
-## Documentation Routing — Code & Refactor Work (legacy / reference-only)
-
-Legacy documentation describes the **current code state**, not the target spec. It remains useful for understanding what the code does today, but it is not authoritative for target-state decisions. The spec tree under `docs/design/` supersedes everything below as phases of the migration land.
-
-`DECISION_LOG.md` and root `README.md` are current-state context, not target-state architecture authority.
-
-Before modifying any crate, read its `README.md`. For cross-crate changes, also read `docs/ARCHITECTURE.md`.
-
-
-| Working on                                 | Read first                                    |
-| ------------------------------------------ | --------------------------------------------- |
-| Any single crate                           | That crate's `README.md`                      |
-| Cross-crate changes, constraints, DAG      | `docs/ARCHITECTURE.md`                        |
-| Grainset/Unionset/Joinset/Dataset planning | `docs/{GRAINSET,UNIONSET,JOINSET,DATASET}.md` |
-| Catalog, storage, source resolution        | `docs/CATALOG_RESOLUTION.md`                  |
-| Function mapping, expression rewriting     | `docs/FUNCTION_CATALOG.md`                    |
-| Semantic model scoping, ref/override       | `docs/SEMANTIC_RESOLUTION.md`                 |
-| Computed dimensions, expressions           | `docs/COMPUTED_EXPRESSIONS.md`                |
-| Known tech debt                            | `docs/TECH_DEBT.md`                           |
-
-
-When spec and legacy disagree, prefer the spec and file a note under `docs/design/STATUS.md` §2 (active reconciliation items).
-
 ## Documentation Update Rule
 
-Every code change that modifies types, adds/removes abstractions, or changes architectural patterns MUST update the relevant crate's `README.md` before the task is complete. Cross-cutting changes must also update `docs/ARCHITECTURE.md`. Stale docs cause future sessions to operate on removed abstractions.
+Every code change that modifies types, adds/removes abstractions, or changes architectural patterns MUST update the relevant spec docs under `docs/design/` before the task is complete. Stale specs cause future sessions to operate on removed abstractions.
 
 ## Rust Skills
 

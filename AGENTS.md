@@ -76,6 +76,5 @@ Human approval is required before writing final status updates.
 
 ## Do not
 
-- Rewrite legacy `docs/*.md` as part of spec work.
-- Treat `[README.md](README.md)` or `[DECISION_LOG.md](DECISION_LOG.md)` as target-state specification sources.
+- Treat `[README.md](README.md)` as a target-state specification source.
 - Introduce spec abstractions that do not ground in current code (unless explicitly marked as proposed extension).

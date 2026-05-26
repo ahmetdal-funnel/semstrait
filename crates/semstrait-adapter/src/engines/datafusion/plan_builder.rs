@@ -1,7 +1,7 @@
 //! DataFusion-specific plan builder with expression rewriting.
 //!
 //! Handles function name remaps and structural rewrites for DataFusion's
-//! Substrait consumer. See `docs/FUNCTION_CATALOG.md` for the complete mapping.
+//! Substrait consumer. See `docs/design/registry/functions_mapping.md` for the per-engine mapping.
 
 use std::collections::HashMap;
 

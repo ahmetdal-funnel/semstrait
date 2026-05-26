@@ -15,7 +15,7 @@ Primary output is `PlanArtifact` (SQL string or `substrait::proto::Plan`). Execu
 
 ## Architecture
 
-The system is organized as a layered crate workspace. Each layer depends only on the layers below it. See `docs/ARCHITECTURE.md` for the full architectural reference including constraints, design decisions, and the crate dependency DAG.
+The system is organized as a layered crate workspace. Each layer depends only on the layers below it. The authoritative target-state architecture lives under `docs/design/` (start at `docs/design/INDEX.md`).
 
 ### Crate Map
 
@@ -185,7 +185,7 @@ expr:
     group: 1
 ```
 
-69 YAML expression keys supported. See `docs/FUNCTION_CATALOG.md` for the full function mapping.
+69 YAML expression keys supported. See `docs/design/registry/functions_mapping.md` for the per-engine function mapping.
 
 ---
 
@@ -406,18 +406,10 @@ Larger models in `test_data/`:
 
 ## Design Documents
 
-| Topic | Document |
-|-------|----------|
-| Architecture, constraints, crate DAG | `docs/ARCHITECTURE.md` |
-| Catalog, storage, source resolution | `docs/CATALOG_RESOLUTION.md` |
-| Function mapping between IR and engines | `docs/FUNCTION_CATALOG.md` |
-| Grainset planning | `docs/GRAINSET.md` |
-| Unionset planning | `docs/UNIONSET.md` |
-| Joinset planning | `docs/JOINSET.md` |
-| Dataset (Simple) planning | `docs/DATASET.md` |
-| Semantic model scoping rules | `docs/SEMANTIC_RESOLUTION.md` |
-| Computed dimensions and expressions | `docs/COMPUTED_EXPRESSIONS.md` |
-| Data type catalog | `docs/DATATYPE_CATALOG.md` |
-| Known technical debt | `docs/TECH_DEBT.md` |
+The authoritative target-state specification lives under `docs/design/`. Start at:
+
+- `docs/design/00_overview.md` — spec contract, vocabulary, invariants
+- `docs/design/STATUS.md` — current phase and active items
+- `docs/design/INDEX.md` — navigation map (concepts + topic routing)
 
 Each crate also has its own `README.md` with module maps, key types, and control flows.

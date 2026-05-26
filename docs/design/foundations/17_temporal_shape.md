@@ -148,7 +148,7 @@ The variants are mutually exclusive per `SimpleDataKind`: a single `SimpleDataKi
 
 > **Canonical shape lives in [`18 §3`](./18_entities.md#3-temporalshape).** The v1 authoring-layer struct is `TemporalShape { kind: TemporalShapeKind, grain: Option<Grain> }`, per-variant payloads live in `TimeseriesBody` / `EventsBody` / `SnapshotBody` / `ScdBody`, and the v1 `ScdType` roster is trimmed to `{Type1, Type2}`. The full `Type0`–`Type6` Kimball taxonomy documented in §2.2 above is **post-v1 forward-reference** — it describes what each subtype *means* semantically, but only `Type1` / `Type2` are in the v1 enum roster. Readers who need the authoritative struct / enum shape for v1 authoring should go to `18 §3`.
 >
-> The Rust enum sketch that previously lived at this section level was removed on 2026-04-17 to eliminate the duplicate-struct-definition hazard the consolidation pass was chartered to close. Git history preserves the pre-consolidation sketch; callers who want to read it should `git log docs/design/foundations/17_temporal_shape.md` or consult `DECISION_LOG.md`.
+> The Rust enum sketch that previously lived at this section level was removed on 2026-04-17 to eliminate the duplicate-struct-definition hazard the consolidation pass was chartered to close. Git history preserves the pre-consolidation sketch; callers who want to read it should `git log docs/design/foundations/17_temporal_shape.md`.
 
 **Design rationale (still applicable to `18`'s shape).** These notes motivated the per-subtype struct-payload design and apply equally to the `18 §3` ratification:
 

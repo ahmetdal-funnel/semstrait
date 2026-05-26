@@ -65,7 +65,7 @@ depends-on:
 
 **Arguments for (A).** Layer-locality: L2's logic is uniform; optimizer handles elision as a general Project-pruning rule.
 
-**Arguments for (B).** Smaller pre-optimizer plan; fewer per-branch literals to carry around; matches the legacy implementation pattern (per `docs/DATASET.md §2.2` — only requested metadata is emitted).
+**Arguments for (B).** Smaller pre-optimizer plan; fewer per-branch literals to carry around; matches the legacy implementation pattern (only requested metadata is emitted).
 
 **Arguments for (C).** Finest-grained control; most complex to specify.
 

@@ -796,5 +796,4 @@ All `PLAN_E_24xx` are `Severity::Error`; they fail plan. All `PLAN_W_24xx` are `
 - `35` (pending) — `PlanNode::Join` with `from_relationship` and `from_joinset` tagging fields.
 - `questions/closed/24_questions.md` — Round-1 ratified Q-24-02..Q-24-08; `questions/deferred/24_questions.md` — Q-24-01 / Q-24-09 / Q-24-10 (deferred for post-v1).
 - `questions/open/16_questions.md` — composition-level deferrals that touch Joinset (`[TD-COMPOSITION-JOINSET-REUSE]`, `[TD-COMPOSITION-SELFJOIN]`, `[TD-COMPOSITION-ASOF]`).
-- Legacy: `docs/JOINSET.md` — early reference; superseded by this document and `16 §13`.
 

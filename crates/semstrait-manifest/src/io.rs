@@ -5,9 +5,8 @@
 //!
 //! S3 support requires the `aws` feature flag.
 //!
-//! NOTE: This module lives in semstrait-manifest pragmatically.
-//! See docs/TECH_DEBT.md TD-008 for the planned extraction to
-//! a dedicated `semstrait-io` crate.
+//! NOTE: This module lives in semstrait-manifest pragmatically;
+//! a dedicated `semstrait-io` crate is the planned extraction target.
 
 /// Errors from text loading operations.
 #[derive(Debug, thiserror::Error)]
