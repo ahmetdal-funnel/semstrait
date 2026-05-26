@@ -11,7 +11,9 @@ mod math;
 mod string;
 mod temporal;
 
-use crate::functions::spec::FunctionSpec;
+use crate::expr_kinds::AggregationOp;
+use crate::functions::spec::{Additivity, FunctionSpec};
+use crate::types::DataType;
 
 /// Build the v1 canonical catalog by family.
 pub(super) fn assemble_core_specs() -> Vec<FunctionSpec> {
@@ -22,6 +24,52 @@ pub(super) fn assemble_core_specs() -> Vec<FunctionSpec> {
     out.extend(logical::specs());
     out.extend(aggregate::specs());
     out
+}
+
+/// Closed-five additivity per `14a §4.7`. Reserved for Phase B Strategy
+/// consumption; held here so adapters do not re-hardcode the table.
+#[allow(dead_code)]
+pub(crate) fn closed_five_additivity(op: AggregationOp) -> Additivity {
+    match op {
+        AggregationOp::Sum | AggregationOp::Count | AggregationOp::Min | AggregationOp::Max => {
+            Additivity::Additive
+        }
+        AggregationOp::Avg => Additivity::NonAdditive,
+    }
+}
+
+/// Closed-five SQL:2016 return-type promotion per `14a §4.7`.
+///
+/// - Sum/Avg: integer-family widens to Long; floating-family widens to
+///   Double; Decimal(p,s) preserved.
+/// - Count: always Long.
+/// - Min/Max: same as input.
+///
+/// Non-numeric input to Sum/Avg falls back to the input type (the
+/// signature layer rejects unsupported pairings; this helper is a
+/// post-resolution lookup).
+///
+/// Reserved for Phase B Strategy consumption.
+#[allow(dead_code)]
+pub(crate) fn closed_five_return_type(op: AggregationOp, input: &DataType) -> DataType {
+    match op {
+        AggregationOp::Count => DataType::Long,
+        AggregationOp::Min | AggregationOp::Max => input.clone(),
+        AggregationOp::Sum | AggregationOp::Avg => promote_numeric(input),
+    }
+}
+
+#[allow(dead_code)]
+fn promote_numeric(input: &DataType) -> DataType {
+    match input {
+        DataType::Byte | DataType::Short | DataType::Integer | DataType::Long => DataType::Long,
+        DataType::Float | DataType::Double => DataType::Double,
+        DataType::Decimal { precision, scale } => DataType::Decimal {
+            precision: *precision,
+            scale: *scale,
+        },
+        other => other.clone(),
+    }
 }
 
 /// One-line constructors used by every family file. Each helper builds
@@ -37,7 +85,6 @@ mod dsl {
         name: &str,
         signatures: Vec<FnSignature>,
         return_type: ReturnTypeRule,
-        description: &'static str,
     ) -> FunctionSpec {
         FunctionSpec {
             name: CanonicalFn::new(name).expect("valid catalog name"),
@@ -45,7 +92,6 @@ mod dsl {
             signatures,
             return_type,
             additivity: None,
-            description,
         }
     }
 
@@ -54,7 +100,6 @@ mod dsl {
         signatures: Vec<FnSignature>,
         return_type: ReturnTypeRule,
         additivity: Additivity,
-        description: &'static str,
     ) -> FunctionSpec {
         FunctionSpec {
             name: CanonicalFn::new(name).expect("valid catalog name"),
@@ -62,7 +107,6 @@ mod dsl {
             signatures,
             return_type,
             additivity: Some(additivity),
-            description,
         }
     }
 
@@ -94,6 +138,10 @@ mod dsl {
 
     pub fn p_string() -> ParamType {
         ParamType::StringFamily
+    }
+
+    pub fn p_decimal() -> ParamType {
+        ParamType::DecimalFamily
     }
 }
 
@@ -155,6 +203,127 @@ mod tests {
                     spec.name.as_str()
                 );
             }
+        }
+    }
+
+    // ── P-9: closed-five lookup helpers ────────────────────────────────
+
+    #[test]
+    fn closed_five_additivity_avg_is_non_additive() {
+        assert_eq!(
+            closed_five_additivity(AggregationOp::Avg),
+            Additivity::NonAdditive
+        );
+    }
+
+    #[test]
+    fn closed_five_additivity_others_are_additive() {
+        for op in [
+            AggregationOp::Sum,
+            AggregationOp::Count,
+            AggregationOp::Min,
+            AggregationOp::Max,
+        ] {
+            assert_eq!(
+                closed_five_additivity(op),
+                Additivity::Additive,
+                "{:?} must be Additive",
+                op
+            );
+        }
+    }
+
+    #[test]
+    fn closed_five_return_type_count_is_long() {
+        for input in [
+            DataType::Integer,
+            DataType::String,
+            DataType::Boolean,
+            DataType::Date,
+        ] {
+            assert_eq!(
+                closed_five_return_type(AggregationOp::Count, &input),
+                DataType::Long,
+                "Count over {:?} must return Long",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn closed_five_return_type_min_max_preserve_input() {
+        for op in [AggregationOp::Min, AggregationOp::Max] {
+            for input in [
+                DataType::Byte,
+                DataType::Integer,
+                DataType::Long,
+                DataType::Double,
+                DataType::String,
+                DataType::Date,
+                DataType::Decimal {
+                    precision: 18,
+                    scale: 4,
+                },
+            ] {
+                assert_eq!(
+                    closed_five_return_type(op, &input),
+                    input,
+                    "{:?} over {:?} must preserve input",
+                    op,
+                    input
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn closed_five_return_type_sum_avg_promote_integer_family_to_long() {
+        for op in [AggregationOp::Sum, AggregationOp::Avg] {
+            for input in [
+                DataType::Byte,
+                DataType::Short,
+                DataType::Integer,
+                DataType::Long,
+            ] {
+                assert_eq!(
+                    closed_five_return_type(op, &input),
+                    DataType::Long,
+                    "{:?} over {:?} must promote to Long",
+                    op,
+                    input
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn closed_five_return_type_sum_avg_promote_floating_family_to_double() {
+        for op in [AggregationOp::Sum, AggregationOp::Avg] {
+            for input in [DataType::Float, DataType::Double] {
+                assert_eq!(
+                    closed_five_return_type(op, &input),
+                    DataType::Double,
+                    "{:?} over {:?} must promote to Double",
+                    op,
+                    input
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn closed_five_return_type_sum_avg_preserve_decimal() {
+        for op in [AggregationOp::Sum, AggregationOp::Avg] {
+            let input = DataType::Decimal {
+                precision: 18,
+                scale: 4,
+            };
+            assert_eq!(
+                closed_five_return_type(op, &input),
+                input,
+                "{:?} over Decimal must preserve precision/scale",
+                op
+            );
         }
     }
 }

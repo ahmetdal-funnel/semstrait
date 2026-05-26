@@ -92,7 +92,10 @@ impl Tree for PlanNode {
     }
 }
 
-fn take_one(mut new_children: Vec<PlanNode>, expected: usize) -> Result<[PlanNode; 1], ValidateError> {
+fn take_one(
+    mut new_children: Vec<PlanNode>,
+    expected: usize,
+) -> Result<[PlanNode; 1], ValidateError> {
     if new_children.len() != 1 {
         return Err(ValidateError::ChildCountMismatch {
             expected,
@@ -102,7 +105,10 @@ fn take_one(mut new_children: Vec<PlanNode>, expected: usize) -> Result<[PlanNod
     Ok([new_children.remove(0)])
 }
 
-fn take_two(mut new_children: Vec<PlanNode>, expected: usize) -> Result<[PlanNode; 2], ValidateError> {
+fn take_two(
+    mut new_children: Vec<PlanNode>,
+    expected: usize,
+) -> Result<[PlanNode; 2], ValidateError> {
     if new_children.len() != 2 {
         return Err(ValidateError::ChildCountMismatch {
             expected,
@@ -117,7 +123,9 @@ fn take_two(mut new_children: Vec<PlanNode>, expected: usize) -> Result<[PlanNod
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::expr::PhysicalExpr;
     use crate::expr::PhysicalLeaf;
+    use crate::expr_kinds::{AggregateKind, AggregationOp};
     use crate::expr_kinds::{ColumnRef, Literal};
     use crate::plan::meta::{NodeId, NodeMeta};
     use crate::plan::node::{
@@ -130,8 +138,6 @@ mod tests {
     use crate::tree::Visitor;
     use crate::types::{DataType, Schema, SchemaColumn};
     use crate::Expr;
-    use crate::expr::PhysicalExpr;
-    use crate::expr_kinds::AggregationOp;
     use std::ops::ControlFlow;
     use std::sync::Arc;
 
@@ -217,7 +223,10 @@ mod tests {
         let err = n.with_new_children(vec![scan(99)]).unwrap_err();
         assert!(matches!(
             err,
-            ValidateError::ChildCountMismatch { expected: 0, got: 1 }
+            ValidateError::ChildCountMismatch {
+                expected: 0,
+                got: 1
+            }
         ));
     }
 
@@ -238,7 +247,10 @@ mod tests {
         let err = n.with_new_children(vec![scan(99)]).unwrap_err();
         assert!(matches!(
             err,
-            ValidateError::ChildCountMismatch { expected: 0, got: 1 }
+            ValidateError::ChildCountMismatch {
+                expected: 0,
+                got: 1
+            }
         ));
     }
 
@@ -248,10 +260,7 @@ mod tests {
         let new_input = scan(99);
         let rebuilt = original.with_new_children(vec![new_input]).unwrap();
         // The new input's id propagates through.
-        assert_eq!(
-            rebuilt.children()[0].meta().node_id,
-            NodeId::from_raw(99)
-        );
+        assert_eq!(rebuilt.children()[0].meta().node_id, NodeId::from_raw(99));
     }
 
     #[test]
@@ -260,17 +269,25 @@ mod tests {
         let err = original.with_new_children(Vec::new()).unwrap_err();
         assert!(matches!(
             err,
-            ValidateError::ChildCountMismatch { expected: 1, got: 0 }
+            ValidateError::ChildCountMismatch {
+                expected: 1,
+                got: 0
+            }
         ));
     }
 
     #[test]
     fn with_new_children_filter_rejects_two() {
         let original = filter_over(2, scan(1));
-        let err = original.with_new_children(vec![scan(98), scan(99)]).unwrap_err();
+        let err = original
+            .with_new_children(vec![scan(98), scan(99)])
+            .unwrap_err();
         assert!(matches!(
             err,
-            ValidateError::ChildCountMismatch { expected: 1, got: 2 }
+            ValidateError::ChildCountMismatch {
+                expected: 1,
+                got: 2
+            }
         ));
     }
 
@@ -286,7 +303,11 @@ mod tests {
         match rebuilt {
             PlanNode::Project(p) => {
                 assert_eq!(p.input.meta().node_id, NodeId::from_raw(99));
-                assert_eq!(p.projections.len(), 1, "projections must persist through rebuild");
+                assert_eq!(
+                    p.projections.len(),
+                    1,
+                    "projections must persist through rebuild"
+                );
             }
             _ => panic!("expected Project"),
         }
@@ -296,8 +317,8 @@ mod tests {
     fn with_new_children_agg_swaps_input() {
         let s = schema(&[("total", DataType::Long, false)]);
         let agg_expr = AggregateExpr {
-            aggregation: AggregationOp::Sum,
-            input_expr: col_leaf("amount"),
+            aggregation: AggregateKind::Builtin(AggregationOp::Sum),
+            args: vec![col_leaf("amount")],
             distinct: false,
             filter: None,
             inferred_type: DataType::Long,
@@ -321,7 +342,9 @@ mod tests {
     #[test]
     fn with_new_children_join_swaps_left_and_right() {
         let original = join_over(3, scan(1), scan(2));
-        let rebuilt = original.with_new_children(vec![scan(98), scan(99)]).unwrap();
+        let rebuilt = original
+            .with_new_children(vec![scan(98), scan(99)])
+            .unwrap();
         match rebuilt {
             PlanNode::Join(j) => {
                 assert_eq!(j.left.meta().node_id, NodeId::from_raw(98));
@@ -341,7 +364,10 @@ mod tests {
         let err = original.with_new_children(vec![scan(99)]).unwrap_err();
         assert!(matches!(
             err,
-            ValidateError::ChildCountMismatch { expected: 2, got: 1 }
+            ValidateError::ChildCountMismatch {
+                expected: 2,
+                got: 1
+            }
         ));
     }
 
@@ -353,7 +379,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            ValidateError::ChildCountMismatch { expected: 2, got: 3 }
+            ValidateError::ChildCountMismatch {
+                expected: 2,
+                got: 3
+            }
         ));
     }
 
@@ -398,12 +427,7 @@ mod tests {
     #[test]
     fn with_new_children_fetch_swaps_input() {
         let s = schema(&[("x", DataType::Integer, false)]);
-        let original = PlanNode::Fetch(FetchNode::new(
-            meta_for(2, s),
-            scan(1),
-            Some(10),
-            Some(5),
-        ));
+        let original = PlanNode::Fetch(FetchNode::new(meta_for(2, s), scan(1), Some(10), Some(5)));
         let rebuilt = original.with_new_children(vec![scan(99)]).unwrap();
         match rebuilt {
             PlanNode::Fetch(f) => {
@@ -459,9 +483,7 @@ mod tests {
     fn transform_identity_preserves_tree() {
         let tree = filter_over(2, scan(1));
         let original = tree.clone();
-        let rebuilt = tree
-            .transform(&mut |n| Ok::<_, ValidateError>(n))
-            .unwrap();
+        let rebuilt = tree.transform(&mut |n| Ok::<_, ValidateError>(n)).unwrap();
         assert_eq!(rebuilt, original);
     }
 
@@ -471,7 +493,10 @@ mod tests {
         let result = tree.transform(&mut |n| {
             // Reject specifically the leaf scan.
             if n.children().is_empty() {
-                Err(ValidateError::ChildCountMismatch { expected: 0, got: 99 })
+                Err(ValidateError::ChildCountMismatch {
+                    expected: 0,
+                    got: 99,
+                })
             } else {
                 Ok(n)
             }

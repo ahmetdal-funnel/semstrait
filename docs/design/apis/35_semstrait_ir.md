@@ -5,7 +5,7 @@ authoritative-for:
   - the canonical type vocabulary — `DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn` (variant rosters and structural rules ratified by `13`; `35` is the crate-level home post-types-migration)
   - the universal-traversal trait family — `Tree`, `Visitor<N>`, `Rewriter<N>`, `ExprLeaf` (variant ratified by `14 §3.1 / §3.2`; `35` is the crate-level home post-second-cascade)
   - the `Expr<L>` structural enum implementation (variant catalog ratified by `14 §3.3`; `35` carries the crate-level home)
-  - the structural-variant support enums shared by every leaf set — `BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `WindowFrameKind`, `WindowBound`, `Literal` (rosters ratified by `14 §3.3`; `35` is the crate-level home post-second-cascade)
+  - the structural-variant support enums shared by every leaf set — `BinaryOpKind`, `UnaryOpKind`, `AggregateKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `WindowFrameKind`, `WindowBound`, `Literal`, `IntegerWidth`, `FloatWidth` (rosters ratified by `14 §3.3`; `35` is the crate-level home post-second-cascade)
   - the shared identifier carriers `ColumnRef` and `SemanticsName` (consumed by both leaf sets per `14 §3.4 / §3.5`; `35` is the crate-level home post-second-cascade)
   - the `PhysicalLeaf` and `SemanticLeaf` enums — canonical-IR leaf set and per-kind typed semantic leaf set per `14 §3.4 / §3.5`
   - the `PhysicalExpr = Expr<PhysicalLeaf>` and `SemanticExpr = Expr<SemanticLeaf>` type aliases per `14 §3.6`
@@ -47,8 +47,8 @@ refined-by:
 | Canonical type vocabulary — `DataType`, `Grain`, `TypeClass`, `Schema`, `SchemaColumn` | §4 | `[13](../foundations/13_types_and_grain.md)` |
 | Universal-traversal trait family — `Tree`, `Visitor<N>`, `Rewriter<N>`, `ExprLeaf` | §3.2 | `[14 §3.1](../foundations/14_expressions.md)` / `[§3.2](../foundations/14_expressions.md)` |
 | `Expr<L>` structural enum + `PhysicalLeaf` / `SemanticLeaf` + `PhysicalExpr` / `SemanticExpr` aliases + per-kind accessor enums + `Parameter` + `ParameterKey` | §3–§6 | `[14 §3](../foundations/14_expressions.md)` / `[§4](../foundations/14_expressions.md)` |
-| Structural-variant support enums — `BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `WindowFrameKind`, `WindowBound` | §3.4 | `[14 §3.3](../foundations/14_expressions.md)` |
-| Typed-literal carrier `Literal` | §3.4 | `[14 §3.3](../foundations/14_expressions.md)` |
+| Structural-variant support enums — `BinaryOpKind`, `UnaryOpKind`, `AggregateKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`, `WindowFrameKind`, `WindowBound` | §3.4 | `[14 §3.3](../foundations/14_expressions.md)` |
+| Typed-literal carrier `Literal` + `IntegerWidth` / `FloatWidth` width discriminators | §3.4 | `[14 §3.3](../foundations/14_expressions.md)` |
 | Shared identifier carriers `ColumnRef`, `SemanticsName` | §3.4 | `[14 §3.4 / §3.5](../foundations/14_expressions.md)` |
 | Authoring-surface DSL — `expr_fn` module, `std::ops` impls on `Expr<L>`, `ExprFunctionExt` | §7 | `[14 §9.2](../foundations/14_expressions.md)` |
 | `CanonicalFn` newtype + `FunctionRegistry` / `FunctionSpec` / `FnSignature` / `ParamType` / `ReturnTypeRule` / `FunctionCategory` / `RegistryExtension` / `function_registry()` | §8 | `[14a §2](../foundations/14a_function_catalog.md)` |
@@ -130,8 +130,9 @@ semstrait-ir
 ├── types                // DataType, Grain, TypeClass, Schema, SchemaColumn (13)
 ├── tree                 // Tree trait + Visitor<N> / Rewriter<N> / ExprLeaf companions (14 §3.1 / §3.2)
 ├── expr_kinds           // Structural-variant support enums: BinaryOpKind, UnaryOpKind,
-│                        //   AggregationOp, LikeKind, CastFailure, WindowFn, WindowFrame,
-│                        //   WindowFrameKind, WindowBound, Literal (14 §3.3); plus the
+│                        //   AggregateKind, AggregationOp, LikeKind, CastFailure, WindowFn,
+│                        //   WindowFrame, WindowFrameKind, WindowBound, Literal,
+│                        //   IntegerWidth, FloatWidth (14 §3.3); plus the
 │                        //   shared identifier carriers ColumnRef, SemanticsName
 ├── expr                 // Expr<L>, leaf sets, type aliases, accessor enums, Parameter, DSL
 │   ├── tree             //   Expr<L> structural enum (variant catalog owned by 14 §3.3)
@@ -252,7 +253,7 @@ pub enum Expr<L: ExprLeaf> {
     IsNull(Box<Self>),
     Coalesce(Vec<Self>),
     NullIf       { left: Box<Self>, right: Box<Self> },
-    Aggregate    { op: AggregationOp, args: Vec<Self>, distinct: bool, filter: Option<Box<Self>> },
+    Aggregate    { op: AggregateKind, args: Vec<Self>, distinct: bool, filter: Option<Box<Self>> },
     Window       { function: WindowFn, args: Vec<Self>, partition_by: Vec<Self>, order_by: Vec<Self>, frame: Option<WindowFrame> },
 }
 
@@ -284,8 +285,18 @@ pub enum BinaryOpKind {
 #[non_exhaustive]
 pub enum UnaryOpKind { Negate, Not }
 
-// Aggregation tag carried by Expr<L>::Aggregate. CountDistinct is encoded as
-// Aggregate { op: Count, distinct: true, ... }.
+// Aggregation carrier — closed-five `AggregationOp` is preserved as the type-driven
+// builtin form per 14a §3.6; engine-extension aggregates (e.g. `string_agg`,
+// `approx_count_distinct`) flow through `Extension(CanonicalFn)` so the registry
+// remains the single source of truth for non-closed-five identity.
+#[non_exhaustive]
+pub enum AggregateKind {
+    Builtin(AggregationOp),
+    Extension(CanonicalFn),
+}
+
+// Closed-five aggregation tag carried by `AggregateKind::Builtin`. `CountDistinct`
+// is encoded as `Aggregate { op: AggregateKind::Builtin(Count), distinct: true, ... }`.
 #[non_exhaustive]
 pub enum AggregationOp { Sum, Avg, Count, Min, Max }
 
@@ -318,13 +329,25 @@ pub enum WindowBound {
     UnboundedPreceding, Preceding(u64), CurrentRow, Following(u64), UnboundedFollowing,
 }
 
+// Width discriminators carried by `Literal::Integer` and `Literal::Float`. Map
+// to `DataType::Int` / `DataType::Long` and `DataType::Float` / `DataType::Double`
+// at construction time so a literal's logical width is unambiguous without
+// consulting the surrounding expression context.
+#[non_exhaustive]
+pub enum IntegerWidth { Int, Long }
+
+#[non_exhaustive]
+pub enum FloatWidth { Float, Double }
+
 // Typed literal value — single carrier shared by PhysicalLeaf::Literal and
 // SemanticLeaf::Literal. Variant list aligns 1:1 with DataType (13) plus Null.
+// Integer / Float / Null carry their data-type discriminator inline; the rest
+// pin their type by position in the variant list (see 14 §3.3).
 #[non_exhaustive]
 pub enum Literal {
     Boolean(bool),
-    Integer(i64),
-    Float(f64),
+    Integer  { value: i64, width: IntegerWidth },
+    Float    { value: f64, width: FloatWidth },
     Decimal  { value: String, precision: u8, scale: i8 },
     String(String),
     Date(String),
@@ -332,7 +355,7 @@ pub enum Literal {
     Timestamp{ value: String, precision: u8 },
     Interval(String),
     Binary(Vec<u8>),
-    Null,
+    Null     { data_type: DataType },
 }
 
 // Shared identifier carriers. Newtype-over-stable per 30 §4.3
@@ -705,7 +728,7 @@ pub trait ExprFunctionExt: Sized {
     // Aggregate constructor (admitted only at aggregate-admitting sites
     // per `14 §7`; the trait method exists on both `SemanticExpr` and
     // `PhysicalExpr`, with site-admission enforced at parse / compile)
-    fn aggregate(self, op: AggregationOp, distinct: bool) -> Self;     // Expr::Aggregate
+    fn aggregate(self, op: AggregateKind, distinct: bool) -> Self;     // Expr::Aggregate
 }
 
 impl ExprFunctionExt for SemanticExpr { /* full surface */ }
@@ -1367,8 +1390,8 @@ Keeping null-ordering on `SortDir` (rather than a separate `Sort::null_order: Nu
 /// `Expr::Aggregate` survives inside a predicate/projection slot.
 #[non_exhaustive]
 pub struct AggregateExpr {
-    pub aggregation:   AggregationOp,    // matches Expr::Aggregate.op (14 §3.3)
-    pub input_expr:    PhysicalExpr,     // inner argument (e.g. Column("amount") for sum(amount))
+    pub aggregation:   AggregateKind,    // matches Expr::Aggregate.op (14 §3.3); closed-five via Builtin, registry-extension via Extension
+    pub args:          Vec<PhysicalExpr>, // inner arguments; n-ary to admit extension aggregates (e.g. string_agg(expr, sep))
     pub distinct:      bool,             // matches Expr::Aggregate.distinct
     pub filter:        Option<PhysicalExpr>,  // FILTER (WHERE ...) clause; v1 adapters MUST accept None
     pub inferred_type: DataType,         // populated by Phase B; adapters MAY read directly
@@ -1534,7 +1557,7 @@ A **well-formed** `SemanticPlan` satisfies every invariant below. The planner (`
 
 ### 13.1 Expression-wrapper invariants
 
-- Every predicate-valued expression on a `PlanNode` is a `PhysicalExpr` — never a `SemanticExpr`. This applies to `FilterNode.predicate`, `ScanNode.filters_pushdown[*]`, `ProjectNode.projections[*].1`, `AggregateExpr.input_expr`, `AggregateExpr.filter`. Invariant rationale: per `[14 §3.7](../foundations/14_expressions.md)`, the leaf-set boundary makes this a type-level invariant — `PhysicalExpr = Expr<PhysicalLeaf>` literally cannot contain `Field` / `Dimension` / `Measure` / `Metric` / `Key` because those variants do not exist in `PhysicalLeaf` (§5.1). Semantic-leaf resolution completed at `compile` per `[19 §3](../foundations/19_expression_flow.md)`.
+- Every predicate-valued expression on a `PlanNode` is a `PhysicalExpr` — never a `SemanticExpr`. This applies to `FilterNode.predicate`, `ScanNode.filters_pushdown[*]`, `ProjectNode.projections[*].1`, `AggregateExpr.args[*]`, `AggregateExpr.filter`. Invariant rationale: per `[14 §3.7](../foundations/14_expressions.md)`, the leaf-set boundary makes this a type-level invariant — `PhysicalExpr = Expr<PhysicalLeaf>` literally cannot contain `Field` / `Dimension` / `Measure` / `Metric` / `Key` because those variants do not exist in `PhysicalLeaf` (§5.1). Semantic-leaf resolution completed at `compile` per `[19 §3](../foundations/19_expression_flow.md)`.
 - No `PhysicalExpr` stored on a `FilterNode.predicate`, `ProjectNode.projections[*].1`, `ScanNode.filters_pushdown[*]`, or future `JoinNode` residual carries an `Expr::Aggregate` node — aggregation is lifted into `AggNode.aggregates` as `AggregateExpr` (§11.7) by the planner's Phase B aggregate-lift per `[19 §7](../foundations/19_expression_flow.md)`. The `Expr::Aggregate` structural variant exists at the type level (per `[14 §3.3](../foundations/14_expressions.md)`); the no-aggregate-in-predicate rule is a plan-tree-level invariant enforced by `34`'s lift pass.
 - No `PhysicalExpr` reaching a `PlanNode` carries an `Expr::Window` node directly authored — `Window` is compile-emitted only per `[14 §3.3](../foundations/14_expressions.md)`, entering the tree exclusively through sugar-accessor elimination at compile. A `Window` node in a `PhysicalExpr` stored on a `PlanNode` predicate / projection slot is acceptable as long as it came from the canonical sugar-elimination path; planner-side window placement (e.g. wrapping window functions into a future `PlanNode::Window` variant) is post-v1.
 
@@ -1571,7 +1594,7 @@ A **well-formed** `SemanticPlan` satisfies every invariant below. The planner (`
 
 - Every `Name` in `AggNode.group_by` resolves to a column in `input.meta().output_schema`.
 - Every `(Name, AggregateExpr)` in `AggNode.aggregates` has a unique output `Name`. Duplicate output-name is `IrErrorKind::DuplicateAggName`.
-- The inner `input_expr` of each `AggregateExpr` references only columns in `input.meta().output_schema`.
+- Every `args[i]` of each `AggregateExpr` references only columns in `input.meta().output_schema`.
 - `AggNode.meta.output_schema` = one column per `group_by` entry (in that order) followed by one column per `aggregates` entry (in that order).
 
 ### 13.8 Sort invariants
@@ -2111,9 +2134,9 @@ pub use crate::artifact::{
 pub use crate::error::{IrErrorKind, ValidateError, CompileError};
 pub use crate::tree::{Tree, Visitor, Rewriter, ExprLeaf};
 pub use crate::expr_kinds::{
-    BinaryOpKind, UnaryOpKind, AggregationOp, LikeKind, CastFailure,
+    BinaryOpKind, UnaryOpKind, AggregateKind, AggregationOp, LikeKind, CastFailure,
     WindowFn, WindowFrame, WindowFrameKind, WindowBound,
-    Literal, ColumnRef, SemanticsName,
+    Literal, IntegerWidth, FloatWidth, ColumnRef, SemanticsName,
 };
 
 // Re-exports from semstrait-common that `35`-authoritative surfaces rely on:

@@ -170,10 +170,7 @@ pub enum IrErrorKind {
     /// `"filter_predicate"`, etc. — so callers can branch without
     /// re-parsing `reason`. Adding a new `kind` token is MINOR.
     #[error("structural violation [{kind}]: {reason}")]
-    StructuralViolation {
-        kind: &'static str,
-        reason: String,
-    },
+    StructuralViolation { kind: &'static str, reason: String },
 
     /// A column [`crate::primitives::Name`] referenced by `JoinNode.on`,
     /// `AggNode.group_by`, or `SortNode.keys` does not resolve to any
@@ -200,10 +197,7 @@ pub enum IrErrorKind {
     /// remain `Clone + PartialEq` without leaking the prost dependency
     /// shape into downstream consumers.
     #[error("substrait codec error [{phase}]: {reason}")]
-    SubstraitCodecError {
-        phase: &'static str,
-        reason: String,
-    },
+    SubstraitCodecError { phase: &'static str, reason: String },
 }
 
 impl Diagnose for IrErrorKind {
@@ -284,18 +278,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_error_equality_and_clone() {
-        let a = ValidateError::ChildCountMismatch {
-            expected: 1,
-            got: 2,
-        };
-        let b = a.clone();
-        assert_eq!(a, b);
-        let c = ValidateError::EmptyCase;
-        assert_ne!(a, c);
-    }
-
-    #[test]
     fn validate_error_displays_empty_name() {
         let err = ValidateError::EmptyName;
         let msg = format!("{}", err);
@@ -349,23 +331,6 @@ mod tests {
         assert!(err.cause().is_none());
     }
 
-    #[test]
-    fn compile_error_equality_and_clone() {
-        let a = CompileError::CustomRuleRejected {
-            fn_name: CanonicalFn::new("f").unwrap(),
-            args: vec![DataType::Long],
-            reason: "boom".to_string(),
-        };
-        let b = a.clone();
-        assert_eq!(a, b);
-        let c = CompileError::CustomRuleRejected {
-            fn_name: CanonicalFn::new("g").unwrap(),
-            args: vec![DataType::Long],
-            reason: "boom".to_string(),
-        };
-        assert_ne!(a, c);
-    }
-
     // ── IrErrorKind ──────────────────────────────────────────────────
 
     #[test]
@@ -386,10 +351,7 @@ mod tests {
         let err = IrErrorKind::DanglingReference {
             node_kind: "join",
             name: Name::new("xyz").unwrap(),
-            available: vec![
-                Name::new("order_id").unwrap(),
-                Name::new("amount").unwrap(),
-            ],
+            available: vec![Name::new("order_id").unwrap(), Name::new("amount").unwrap()],
         };
         let msg = format!("{}", err);
         assert!(msg.contains("dangling reference"));

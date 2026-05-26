@@ -19,8 +19,7 @@
 //! - [`expr_fn`] — authoring DSL: `col` / `field` / `dim` / `measure` /
 //!   `metric` / `key` / `lit` / `physical_col` constructors; `std::ops`
 //!   impls on `Expr<L>`; [`expr_fn::ExprFunctionExt`] comparison / predicate
-//!   sugar; [`expr_fn::SemanticExprAccessorExt`] best-effort accessor
-//!   builders. Per `14 §6.4.1` / `35 §6`.
+//!   sugar. Per `14 §6.4.1` / `35 §6`.
 
 pub mod accessor;
 pub mod expr_fn;

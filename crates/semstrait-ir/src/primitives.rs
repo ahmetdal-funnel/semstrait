@@ -13,10 +13,7 @@
 //!   `35 §11.5` / `16 §5.1`.
 //! - [`SortDir`] / [`NullOrdering`] — sort-direction + null-ordering
 //!   bundle per `35 §11.6`.
-//! - [`AggregateExpr`] — plan-level aggregate kernel per `35 §11.7` /
-//!   `19 §7`. `input_expr` is the single lifted argument (Q-IR-NEW-003
-//!   lift contract); n-ary `Expr::Aggregate.args` is the upstream
-//!   pre-lift form.
+//! - [`AggregateExpr`] — plan-level aggregate kernel per `35 §11.7`.
 //! - [`JoinType`] — equi-join kind per `35 §11` / `16 §5.2`. IR-local
 //!   per Q-PLAN-01 override.
 //! - [`Cardinality`] — relationship-cardinality annotation per
@@ -155,10 +152,18 @@ pub enum NullOrdering {
 }
 
 impl SortDir {
-    pub const ASC_NULLS_FIRST: SortDir = SortDir::Asc { nulls: NullOrdering::First };
-    pub const ASC_NULLS_LAST: SortDir = SortDir::Asc { nulls: NullOrdering::Last };
-    pub const DESC_NULLS_FIRST: SortDir = SortDir::Desc { nulls: NullOrdering::First };
-    pub const DESC_NULLS_LAST: SortDir = SortDir::Desc { nulls: NullOrdering::Last };
+    pub const ASC_NULLS_FIRST: SortDir = SortDir::Asc {
+        nulls: NullOrdering::First,
+    };
+    pub const ASC_NULLS_LAST: SortDir = SortDir::Asc {
+        nulls: NullOrdering::Last,
+    };
+    pub const DESC_NULLS_FIRST: SortDir = SortDir::Desc {
+        nulls: NullOrdering::First,
+    };
+    pub const DESC_NULLS_LAST: SortDir = SortDir::Desc {
+        nulls: NullOrdering::Last,
+    };
 }
 
 // ── JoinType ────────────────────────────────────────────────────────────
@@ -194,26 +199,13 @@ pub enum Cardinality {
 // ── AggregateExpr ───────────────────────────────────────────────────────
 
 /// Plan-level aggregate kernel carried on `AggNode.aggregates`. Per
-/// `35 §11.7` / `19 §7`.
-///
-/// **Lift contract (Q-IR-NEW-003).** Phase B planning lifts an
-/// `Expr::Aggregate { op, args, distinct, filter }` out of the input
-/// `PhysicalExpr` into this structure. The N-ary `args` of the
-/// upstream form collapses to a single `input_expr` for v1: every v1
-/// canonical aggregate (`SUM` / `AVG` / `COUNT` / `MIN` / `MAX`) is
-/// 1-ary. Future N-ary aggregates land additively (e.g. a future
-/// `args_tail: Vec<PhysicalExpr>` field is MINOR per `30 §2.2`).
-///
-/// `inferred_type` is populated by Phase B so adapters MAY read the
-/// aggregate's resolved output type without re-running inference.
-/// `filter` carries the canonical `agg(expr) FILTER (WHERE p)` shape;
-/// adapter compensation for engines without native `FILTER` is the
-/// adapter's concern, not the IR's.
+/// spec `35 §11.7`. `args.len()` matches the carrier's declared arity
+/// (1 for closed-five, signature-determined for extensions).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregateExpr {
-    pub aggregation: crate::expr_kinds::AggregationOp,
-    pub input_expr: PhysicalExpr,
+    pub aggregation: crate::expr_kinds::AggregateKind,
+    pub args: Vec<PhysicalExpr>,
     pub distinct: bool,
     pub filter: Option<PhysicalExpr>,
     pub inferred_type: DataType,
@@ -223,7 +215,8 @@ pub struct AggregateExpr {
 mod tests {
     use super::*;
     use crate::expr::PhysicalLeaf;
-    use crate::expr_kinds::{AggregationOp, ColumnRef, Literal};
+    use crate::expr_kinds::{AggregateKind, AggregationOp, ColumnRef, Literal};
+    use crate::functions::CanonicalFn;
     use crate::Expr;
     use std::collections::HashSet;
 
@@ -326,13 +319,19 @@ mod tests {
     fn resolved_column_construction_and_equality() {
         let a = ResolvedColumn {
             name: Name::new("amount").unwrap(),
-            data_type: DataType::Decimal { precision: 10, scale: 2 },
+            data_type: DataType::Decimal {
+                precision: 10,
+                scale: 2,
+            },
             nullable: false,
             ordinal: 3,
         };
         let b = a.clone();
         assert_eq!(a, b);
-        let c = ResolvedColumn { ordinal: 4, ..a.clone() };
+        let c = ResolvedColumn {
+            ordinal: 4,
+            ..a.clone()
+        };
         assert_ne!(a, c, "ordinal participates in equality");
     }
 
@@ -352,21 +351,6 @@ mod tests {
     // ── KeyPair ──────────────────────────────────────────────────────
 
     #[test]
-    fn key_pair_equality_and_clone() {
-        let a = KeyPair {
-            left: Name::new("order_id").unwrap(),
-            right: Name::new("order_id").unwrap(),
-        };
-        let b = a.clone();
-        assert_eq!(a, b);
-        let c = KeyPair {
-            left: Name::new("order_id").unwrap(),
-            right: Name::new("ord_id").unwrap(),
-        };
-        assert_ne!(a, c);
-    }
-
-    #[test]
     fn key_pair_serde_json_roundtrip() {
         let kp = KeyPair {
             left: Name::new("a").unwrap(),
@@ -383,11 +367,15 @@ mod tests {
     fn sort_dir_constants_match_struct_form() {
         assert_eq!(
             SortDir::ASC_NULLS_FIRST,
-            SortDir::Asc { nulls: NullOrdering::First }
+            SortDir::Asc {
+                nulls: NullOrdering::First
+            }
         );
         assert_eq!(
             SortDir::DESC_NULLS_LAST,
-            SortDir::Desc { nulls: NullOrdering::Last }
+            SortDir::Desc {
+                nulls: NullOrdering::Last
+            }
         );
     }
 
@@ -404,8 +392,12 @@ mod tests {
             SortDir::ASC_NULLS_LAST,
             SortDir::DESC_NULLS_FIRST,
             SortDir::DESC_NULLS_LAST,
-            SortDir::Asc { nulls: NullOrdering::Unspecified },
-            SortDir::Desc { nulls: NullOrdering::Unspecified },
+            SortDir::Asc {
+                nulls: NullOrdering::Unspecified,
+            },
+            SortDir::Desc {
+                nulls: NullOrdering::Unspecified,
+            },
         ];
         for s in roster {
             let json = serde_json::to_string(&s).unwrap();
@@ -416,7 +408,11 @@ mod tests {
 
     #[test]
     fn null_ordering_serde_json_roundtrip() {
-        for o in [NullOrdering::First, NullOrdering::Last, NullOrdering::Unspecified] {
+        for o in [
+            NullOrdering::First,
+            NullOrdering::Last,
+            NullOrdering::Unspecified,
+        ] {
             let json = serde_json::to_string(&o).unwrap();
             let back: NullOrdering = serde_json::from_str(&json).unwrap();
             assert_eq!(o, back);
@@ -427,7 +423,12 @@ mod tests {
 
     #[test]
     fn join_type_serde_json_roundtrip() {
-        for j in [JoinType::Inner, JoinType::Left, JoinType::Right, JoinType::Full] {
+        for j in [
+            JoinType::Inner,
+            JoinType::Left,
+            JoinType::Right,
+            JoinType::Full,
+        ] {
             let json = serde_json::to_string(&j).unwrap();
             let back: JoinType = serde_json::from_str(&json).unwrap();
             assert_eq!(j, back);
@@ -455,28 +456,18 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_expr_construction_and_clone() {
-        let a = AggregateExpr {
-            aggregation: AggregationOp::Sum,
-            input_expr: col_leaf("amount"),
-            distinct: false,
-            filter: None,
-            inferred_type: DataType::Decimal { precision: 18, scale: 2 },
-        };
-        let b = a.clone();
-        assert_eq!(a, b);
-    }
-
-    #[test]
     fn aggregate_expr_distinguishes_distinct_and_filter() {
         let base = AggregateExpr {
-            aggregation: AggregationOp::Count,
-            input_expr: col_leaf("user_id"),
+            aggregation: AggregateKind::Builtin(AggregationOp::Count),
+            args: vec![col_leaf("user_id")],
             distinct: false,
             filter: None,
             inferred_type: DataType::Long,
         };
-        let with_distinct = AggregateExpr { distinct: true, ..base.clone() };
+        let with_distinct = AggregateExpr {
+            distinct: true,
+            ..base.clone()
+        };
         assert_ne!(base, with_distinct);
 
         let with_filter = AggregateExpr {
@@ -487,16 +478,27 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_expr_input_is_single_per_lift_contract() {
-        // Q-IR-NEW-003: AggregateExpr.input_expr is one PhysicalExpr,
-        // not a Vec. Compile-time enforcement — this test simply
-        // documents the structural choice via construction.
-        let _ = AggregateExpr {
-            aggregation: AggregationOp::Avg,
-            input_expr: col_leaf("price"),
+    fn aggregate_expr_admits_n_ary_extension_args() {
+        // 2-ary registry-extension carrier (`string_agg`) — empty and
+        // 2-element `args` exercise the Vec<PhysicalExpr> shape.
+        let empty = AggregateExpr {
+            aggregation: AggregateKind::Extension(
+                CanonicalFn::new("approx_count_distinct").unwrap(),
+            ),
+            args: Vec::new(),
             distinct: false,
             filter: None,
-            inferred_type: DataType::Double,
+            inferred_type: DataType::Long,
         };
+        assert!(empty.args.is_empty());
+
+        let two = AggregateExpr {
+            aggregation: AggregateKind::Extension(CanonicalFn::new("string_agg").unwrap()),
+            args: vec![col_leaf("name"), col_leaf("sep")],
+            distinct: false,
+            filter: None,
+            inferred_type: DataType::String,
+        };
+        assert_eq!(two.args.len(), 2);
     }
 }

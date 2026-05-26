@@ -43,7 +43,7 @@
 
 use crate::error::ValidateError;
 use crate::expr_kinds::{
-    AggregationOp, BinaryOpKind, CastFailure, LikeKind, UnaryOpKind, WindowFn, WindowFrame,
+    AggregateKind, BinaryOpKind, CastFailure, LikeKind, UnaryOpKind, WindowFn, WindowFrame,
 };
 use crate::functions::CanonicalFn;
 use crate::tree::{ExprLeaf, Tree};
@@ -72,18 +72,12 @@ pub enum Expr<L: ExprLeaf> {
     },
 
     /// Unary operator over a single operand.
-    UnaryOp {
-        op: UnaryOpKind,
-        operand: Box<Self>,
-    },
+    UnaryOp { op: UnaryOpKind, operand: Box<Self> },
 
     /// Canonical function call. `name` is a [`CanonicalFn`] resolved
     /// against the sealed [`crate::functions::FunctionRegistry`] per
     /// `14a`.
-    FunctionCall {
-        name: CanonicalFn,
-        args: Vec<Self>,
-    },
+    FunctionCall { name: CanonicalFn, args: Vec<Self> },
 
     /// Type cast. `target` is canonical [`DataType`]; `on_failure`
     /// selects the engine-level failure profile per
@@ -135,17 +129,14 @@ pub enum Expr<L: ExprLeaf> {
     Coalesce(Vec<Self>),
 
     /// `NULLIF(left, right)`.
-    NullIf {
-        left: Box<Self>,
-        right: Box<Self>,
-    },
+    NullIf { left: Box<Self>, right: Box<Self> },
 
     /// Aggregate function. `filter` carries the canonical
     /// `agg(expr) FILTER (WHERE p)` shape per `14 §3.3`. Cannot directly
     /// contain another `Aggregate` per `14 §3.3` — the rule fires on
     /// rebuild via [`ValidateError::AggregateInAggregate`].
     Aggregate {
-        op: AggregationOp,
+        op: AggregateKind,
         args: Vec<Self>,
         distinct: bool,
         filter: Option<Box<Self>>,
@@ -325,9 +316,7 @@ impl<L: ExprLeaf> Tree for Expr<L> {
                     else_: new_else,
                 }
             }
-            Expr::InList {
-                list, negated, ..
-            } => {
+            Expr::InList { list, negated, .. } => {
                 let want = 1 + list.len();
                 let mut taken = drain(want);
                 let mut iter = taken.drain(..);
@@ -494,8 +483,8 @@ fn check_well_formed<L: ExprLeaf>(expr: &Expr<L>) -> Result<(), ValidateError> {
 mod tests {
     use super::*;
     use crate::expr_kinds::{
-        AggregationOp, BinaryOpKind, CastFailure, LikeKind, Literal, UnaryOpKind, WindowBound,
-        WindowFn, WindowFrame, WindowFrameKind,
+        AggregateKind, AggregationOp, BinaryOpKind, CastFailure, LikeKind, Literal, UnaryOpKind,
+        WindowBound, WindowFn, WindowFrame, WindowFrameKind,
     };
     use crate::functions::CanonicalFn;
     use crate::tree::ExprLeaf;
@@ -518,7 +507,10 @@ mod tests {
     }
 
     fn lit(i: i64) -> Expr<TestLeaf> {
-        Expr::Leaf(TestLeaf::Lit(Literal::Integer(i)))
+        Expr::Leaf(TestLeaf::Lit(Literal::Integer {
+            value: i,
+            width: crate::expr_kinds::IntegerWidth::Long,
+        }))
     }
 
     // ── children() arity per variant ─────────────────────────────────────
@@ -639,7 +631,7 @@ mod tests {
     #[test]
     fn aggregate_children_args_then_filter() {
         let e = Expr::<TestLeaf>::Aggregate {
-            op: AggregationOp::Sum,
+            op: AggregateKind::Builtin(AggregationOp::Sum),
             args: vec![lit(1), lit(2)],
             distinct: false,
             filter: Some(Box::new(lit(99))),
@@ -647,7 +639,7 @@ mod tests {
         assert_eq!(e.children().len(), 3);
 
         let no_filter = Expr::<TestLeaf>::Aggregate {
-            op: AggregationOp::Sum,
+            op: AggregateKind::Builtin(AggregationOp::Sum),
             args: vec![lit(1)],
             distinct: false,
             filter: None,
@@ -708,7 +700,7 @@ mod tests {
     #[test]
     fn round_trip_aggregate_with_filter() {
         let e = Expr::<TestLeaf>::Aggregate {
-            op: AggregationOp::Avg,
+            op: AggregateKind::Builtin(AggregationOp::Avg),
             args: vec![lit(1)],
             distinct: true,
             filter: Some(Box::new(lit(2))),
@@ -852,7 +844,7 @@ mod tests {
         // Aggregate: expects 2 (1 arg + filter), supply 1.
         assert_arity_mismatch(
             Expr::<TestLeaf>::Aggregate {
-                op: AggregationOp::Sum,
+                op: AggregateKind::Builtin(AggregationOp::Sum),
                 args: vec![lit(1)],
                 distinct: false,
                 filter: Some(Box::new(lit(2))),
@@ -882,13 +874,13 @@ mod tests {
         // Build a valid Aggregate via the enum, then rebuild it with an
         // inner Aggregate as one of its args via `with_new_children`.
         let outer = Expr::<TestLeaf>::Aggregate {
-            op: AggregationOp::Sum,
+            op: AggregateKind::Builtin(AggregationOp::Sum),
             args: vec![lit(1)],
             distinct: false,
             filter: None,
         };
         let inner = Expr::<TestLeaf>::Aggregate {
-            op: AggregationOp::Avg,
+            op: AggregateKind::Builtin(AggregationOp::Avg),
             args: vec![lit(2)],
             distinct: false,
             filter: None,
@@ -900,7 +892,7 @@ mod tests {
     #[test]
     fn aggregate_in_aggregate_is_rejected_via_filter() {
         let outer = Expr::<TestLeaf>::Aggregate {
-            op: AggregationOp::Sum,
+            op: AggregateKind::Builtin(AggregationOp::Sum),
             args: vec![lit(1)],
             distinct: false,
             filter: Some(Box::new(lit(2))),
@@ -909,7 +901,7 @@ mod tests {
         // count is 2 (1 arg + 1 filter); the rebuild should detect the
         // structural rule violation.
         let inner = Expr::<TestLeaf>::Aggregate {
-            op: AggregationOp::Count,
+            op: AggregateKind::Builtin(AggregationOp::Count),
             args: vec![lit(99)],
             distinct: false,
             filter: None,
@@ -928,7 +920,7 @@ mod tests {
             frame: None,
         };
         let inner_agg = Expr::<TestLeaf>::Aggregate {
-            op: AggregationOp::Sum,
+            op: AggregateKind::Builtin(AggregationOp::Sum),
             args: vec![lit(99)],
             distinct: false,
             filter: None,

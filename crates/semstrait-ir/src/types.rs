@@ -70,7 +70,8 @@ impl<'de> Deserialize<'de> for DataType {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        parse_data_type(&s).ok_or_else(|| serde::de::Error::custom(format!("unknown DataType: {s}")))
+        parse_data_type(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown DataType: {s}")))
     }
 }
 
@@ -284,10 +285,7 @@ mod tests {
             .to_string(),
             "decimal(10,2)"
         );
-        assert_eq!(
-            DataType::Time { precision: 0 }.to_string(),
-            "time(0)"
-        );
+        assert_eq!(DataType::Time { precision: 0 }.to_string(), "time(0)");
         assert_eq!(
             DataType::Timestamp { precision: 6 }.to_string(),
             "timestamp(6)"
@@ -516,14 +514,42 @@ mod tests {
 
     #[test]
     fn schema_column_construction_and_equality() {
-        let a = col("amount", DataType::Decimal { precision: 10, scale: 2 }, false);
-        let b = col("amount", DataType::Decimal { precision: 10, scale: 2 }, false);
+        let a = col(
+            "amount",
+            DataType::Decimal {
+                precision: 10,
+                scale: 2,
+            },
+            false,
+        );
+        let b = col(
+            "amount",
+            DataType::Decimal {
+                precision: 10,
+                scale: 2,
+            },
+            false,
+        );
         assert_eq!(a, b);
 
-        let c = col("amount", DataType::Decimal { precision: 10, scale: 2 }, true);
+        let c = col(
+            "amount",
+            DataType::Decimal {
+                precision: 10,
+                scale: 2,
+            },
+            true,
+        );
         assert_ne!(a, c, "nullable participates in equality");
 
-        let d = col("Amount", DataType::Decimal { precision: 10, scale: 2 }, false);
+        let d = col(
+            "Amount",
+            DataType::Decimal {
+                precision: 10,
+                scale: 2,
+            },
+            false,
+        );
         assert_ne!(a, d, "name is case-sensitive (no normalization)");
     }
 
@@ -543,7 +569,9 @@ mod tests {
 
     #[test]
     fn schema_empty_columns_is_admissible() {
-        let s = Schema { columns: Vec::new() };
+        let s = Schema {
+            columns: Vec::new(),
+        };
         assert_eq!(s.columns.len(), 0);
     }
 
@@ -612,7 +640,14 @@ mod tests {
             columns: vec![
                 col("id", DataType::Long, false),
                 col("ts", DataType::Timestamp { precision: 6 }, true),
-                col("price", DataType::Decimal { precision: 12, scale: 4 }, false),
+                col(
+                    "price",
+                    DataType::Decimal {
+                        precision: 12,
+                        scale: 4,
+                    },
+                    false,
+                ),
             ],
         };
         let json = serde_json::to_string(&s).unwrap();
@@ -630,7 +665,10 @@ mod tests {
             DataType::Long,
             DataType::Float,
             DataType::Double,
-            DataType::Decimal { precision: 10, scale: 2 },
+            DataType::Decimal {
+                precision: 10,
+                scale: 2,
+            },
             DataType::String,
             DataType::Binary,
             DataType::Date,

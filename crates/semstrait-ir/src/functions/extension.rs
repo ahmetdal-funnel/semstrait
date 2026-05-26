@@ -57,7 +57,6 @@ mod tests {
             }],
             return_type: ReturnTypeRule::SameAsFirstArg,
             additivity: None,
-            description: "sample",
         };
     }
 }

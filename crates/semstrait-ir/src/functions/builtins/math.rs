@@ -1,12 +1,9 @@
-//! Scalar — Math. Per `14a §4.3`.
-//!
-//! 11 entries. `mod` is NOT in the catalog — `BinaryOpKind::Mod` is the
-//! canonical form.
+//! Scalar — Math. Per `14a §4.3`. 11 entries; `mod` is `BinaryOpKind::Mod`.
 
-use crate::functions::builtins::dsl::{p, p_numeric, scalar, sig};
-use crate::functions::spec::{FunctionSpec, ReturnTypeRule};
+use crate::functions::builtins::dsl::{p, p_decimal, p_numeric, scalar, sig};
 #[cfg(test)]
 use crate::functions::spec::ParamType;
+use crate::functions::spec::{FunctionSpec, ReturnTypeRule};
 use crate::types::DataType;
 
 pub(super) fn specs() -> Vec<FunctionSpec> {
@@ -15,7 +12,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
             "abs",
             vec![sig(vec![p_numeric()])],
             ReturnTypeRule::SameAsFirstArg,
-            "Type-preserving absolute value over Numeric.",
         ),
         scalar(
             "round",
@@ -24,69 +20,63 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 sig(vec![p(DataType::Float), p(DataType::Integer)]),
                 sig(vec![p(DataType::Double)]),
                 sig(vec![p(DataType::Double), p(DataType::Integer)]),
+                sig(vec![p_decimal()]),
+                sig(vec![p_decimal(), p(DataType::Integer)]),
             ],
             ReturnTypeRule::SameAsFirstArg,
-            "Half-away-from-zero rounding. Decimal overloads thread through SameAsFirstArg.",
         ),
         scalar(
             "ceil",
             vec![
                 sig(vec![p(DataType::Float)]),
                 sig(vec![p(DataType::Double)]),
+                sig(vec![p_decimal()]),
             ],
-            ReturnTypeRule::SameAsFirstArg,
-            "Ceiling. v1 single-arg only.",
+            ReturnTypeRule::DecimalScaleZero,
         ),
         scalar(
             "floor",
             vec![
                 sig(vec![p(DataType::Float)]),
                 sig(vec![p(DataType::Double)]),
+                sig(vec![p_decimal()]),
             ],
-            ReturnTypeRule::SameAsFirstArg,
-            "Floor. v1 single-arg only.",
+            ReturnTypeRule::DecimalScaleZero,
         ),
         scalar(
             "sqrt",
             vec![sig(vec![p(DataType::Double)])],
             ReturnTypeRule::Fixed(DataType::Double),
-            "Square root.",
         ),
         scalar(
             "power",
             vec![sig(vec![p(DataType::Double), p(DataType::Double)])],
             ReturnTypeRule::Fixed(DataType::Double),
-            "Exponentiation.",
         ),
         scalar(
             "exp",
             vec![sig(vec![p(DataType::Double)])],
             ReturnTypeRule::Fixed(DataType::Double),
-            "Natural exponential.",
         ),
         scalar(
             "ln",
             vec![sig(vec![p(DataType::Double)])],
             ReturnTypeRule::Fixed(DataType::Double),
-            "Natural logarithm.",
         ),
         scalar(
             "log",
             vec![sig(vec![p(DataType::Double), p(DataType::Double)])],
             ReturnTypeRule::Fixed(DataType::Double),
-            "log(base, value); 1-arg form is NOT canonical (engines disagree).",
         ),
         scalar(
             "log10",
             vec![sig(vec![p(DataType::Double)])],
             ReturnTypeRule::Fixed(DataType::Double),
-            "Base-10 logarithm.",
         ),
         scalar(
             "sign",
             vec![sig(vec![p_numeric()])],
             ReturnTypeRule::Fixed(DataType::Integer),
-            "Returns -1, 0, 1; Integer for portability.",
         ),
     ]
 }
@@ -123,10 +113,34 @@ mod tests {
     }
 
     #[test]
-    fn round_has_four_overloads() {
+    fn round_has_six_overloads_including_decimal() {
         let v = specs();
         let r = v.iter().find(|s| s.name.as_str() == "round").unwrap();
-        assert_eq!(r.signatures.len(), 4);
+        assert_eq!(r.signatures.len(), 6);
+        // last two overloads thread Decimal through SameAsFirstArg
+        assert!(matches!(r.return_type, ReturnTypeRule::SameAsFirstArg));
+        assert!(matches!(
+            r.signatures[4].params[0],
+            ParamType::DecimalFamily
+        ));
+        assert!(matches!(
+            r.signatures[5].params[0],
+            ParamType::DecimalFamily
+        ));
+    }
+
+    #[test]
+    fn ceil_and_floor_use_decimal_scale_zero() {
+        let v = specs();
+        for name in ["ceil", "floor"] {
+            let s = v.iter().find(|s| s.name.as_str() == name).unwrap();
+            assert!(matches!(s.return_type, ReturnTypeRule::DecimalScaleZero));
+            assert_eq!(s.signatures.len(), 3);
+            assert!(matches!(
+                s.signatures[2].params[0],
+                ParamType::DecimalFamily
+            ));
+        }
     }
 
     #[test]

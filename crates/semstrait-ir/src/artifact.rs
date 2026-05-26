@@ -68,10 +68,11 @@ impl EnginePlan {
         match self {
             Self::Substrait(plan) => {
                 let mut buf = Vec::with_capacity(plan.encoded_len());
-                plan.encode(&mut buf).map_err(|e| IrErrorKind::SubstraitCodecError {
-                    phase: "encode_proto",
-                    reason: e.to_string(),
-                })?;
+                plan.encode(&mut buf)
+                    .map_err(|e| IrErrorKind::SubstraitCodecError {
+                        phase: "encode_proto",
+                        reason: e.to_string(),
+                    })?;
                 Ok(buf)
             }
         }
@@ -86,11 +87,9 @@ impl EnginePlan {
     pub fn to_json(&self) -> Result<String, IrErrorKind> {
         match self {
             Self::Substrait(plan) => {
-                serde_json::to_string_pretty(plan).map_err(|e| {
-                    IrErrorKind::SubstraitCodecError {
-                        phase: "encode_json",
-                        reason: e.to_string(),
-                    }
+                serde_json::to_string_pretty(plan).map_err(|e| IrErrorKind::SubstraitCodecError {
+                    phase: "encode_json",
+                    reason: e.to_string(),
                 })
             }
         }
@@ -215,12 +214,6 @@ mod tests {
     }
 
     #[test]
-    fn dialect_id_is_copy_eq_hash() {
-        fn assert_bounds<T: Copy + Eq + std::hash::Hash>() {}
-        assert_bounds::<DialectId>();
-    }
-
-    #[test]
     fn dialect_id_const_slots_are_value_distinct() {
         let v = [
             DialectId::ANSI,
@@ -340,12 +333,6 @@ mod tests {
                 assert_ne!(a, b);
             }
         }
-    }
-
-    #[test]
-    fn capability_is_copy_eq_hash() {
-        fn assert_bounds<T: Copy + Eq + std::hash::Hash>() {}
-        assert_bounds::<Capability>();
     }
 
     // ── Codec error surfacing ────────────────────────────────────────

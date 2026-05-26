@@ -1,7 +1,5 @@
-//! Scalar — Temporal. Per `14a §4.4`.
-//!
-//! 14 entries. `EXTRACT(part FROM source)` is parser sugar that lowers
-//! to `date_part`; not a registry entry.
+//! Scalar — Temporal. Per `14a §4.4`. 14 entries; `EXTRACT` lowers to
+//! `date_part` (parser sugar, not a registry entry).
 
 use crate::functions::builtins::dsl::{p, scalar, sig};
 use crate::functions::spec::{FunctionSpec, ReturnTypeRule};
@@ -9,8 +7,6 @@ use crate::types::DataType;
 
 pub(super) fn specs() -> Vec<FunctionSpec> {
     let ts_default = DataType::Timestamp { precision: 6 };
-    let time_default = DataType::Time { precision: 6 };
-    let _ = time_default;
 
     vec![
         scalar(
@@ -20,7 +16,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 sig(vec![p(DataType::String), p(ts_default.clone())]),
             ],
             ReturnTypeRule::Fixed(DataType::Long),
-            "Extract part from a Date / Timestamp by part-name literal.",
         ),
         scalar(
             "year",
@@ -29,7 +24,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 sig(vec![p(ts_default.clone())]),
             ],
             ReturnTypeRule::Fixed(DataType::Long),
-            "Convenience for date_part('year', x).",
         ),
         scalar(
             "month",
@@ -38,7 +32,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 sig(vec![p(ts_default.clone())]),
             ],
             ReturnTypeRule::Fixed(DataType::Long),
-            "Convenience for date_part('month', x).",
         ),
         scalar(
             "day",
@@ -47,25 +40,21 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 sig(vec![p(ts_default.clone())]),
             ],
             ReturnTypeRule::Fixed(DataType::Long),
-            "Convenience for date_part('day', x).",
         ),
         scalar(
             "hour",
             vec![sig(vec![p(ts_default.clone())])],
             ReturnTypeRule::Fixed(DataType::Long),
-            "Convenience for date_part('hour', x).",
         ),
         scalar(
             "minute",
             vec![sig(vec![p(ts_default.clone())])],
             ReturnTypeRule::Fixed(DataType::Long),
-            "Convenience for date_part('minute', x).",
         ),
         scalar(
             "second",
             vec![sig(vec![p(ts_default.clone())])],
             ReturnTypeRule::Fixed(DataType::Long),
-            "Integer seconds; sub-second via date_part.",
         ),
         scalar(
             "date_add",
@@ -74,7 +63,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 sig(vec![p(ts_default.clone()), p(DataType::Interval)]),
             ],
             ReturnTypeRule::SameAsFirstArg,
-            "Add an Interval to a Date / Timestamp.",
         ),
         scalar(
             "date_sub",
@@ -83,7 +71,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 sig(vec![p(ts_default.clone()), p(DataType::Interval)]),
             ],
             ReturnTypeRule::SameAsFirstArg,
-            "Subtract an Interval from a Date / Timestamp.",
         ),
         scalar(
             "date_diff",
@@ -100,31 +87,26 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 ]),
             ],
             ReturnTypeRule::Fixed(DataType::Long),
-            "date_diff(part, start, end); signed difference in `part` units.",
         ),
         scalar(
             "to_date",
             vec![sig(vec![p(DataType::String)])],
             ReturnTypeRule::Fixed(DataType::Date),
-            "Parse ISO-8601 'YYYY-MM-DD' into Date.",
         ),
         scalar(
             "to_timestamp",
             vec![sig(vec![p(DataType::String)])],
             ReturnTypeRule::Fixed(ts_default.clone()),
-            "Parse ISO-8601 string into Timestamp.",
         ),
         scalar(
             "current_date",
             vec![sig(vec![])],
             ReturnTypeRule::Fixed(DataType::Date),
-            "Per-query session date.",
         ),
         scalar(
             "current_timestamp",
             vec![sig(vec![])],
             ReturnTypeRule::Fixed(ts_default),
-            "Per-query session timestamp.",
         ),
     ]
 }
@@ -141,7 +123,10 @@ mod tests {
     #[test]
     fn current_date_is_zero_arg_returning_date() {
         let v = specs();
-        let cd = v.iter().find(|s| s.name.as_str() == "current_date").unwrap();
+        let cd = v
+            .iter()
+            .find(|s| s.name.as_str() == "current_date")
+            .unwrap();
         assert_eq!(cd.signatures.len(), 1);
         assert_eq!(cd.signatures[0].params.len(), 0);
         assert!(matches!(

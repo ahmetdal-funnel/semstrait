@@ -1,12 +1,7 @@
-//! Scalar — String. Per `14a §4.2`.
-//!
-//! 12 entries. v1 omits the `(Array<T>) -> ...` overloads from `length`
-//! / `reverse` because `DataType` has no `Array` variant yet — see
-//! `13 §2.5` (complex types out of scope for v1).
+//! Scalar — String. Per `14a §4.2`. 12 entries; v1 omits `Array<T>` overloads
+//! (`13 §2.5` complex types out of scope).
 
-use crate::functions::builtins::dsl::{
-    p, p_string, scalar, sig, variadic,
-};
+use crate::functions::builtins::dsl::{p, p_string, scalar, sig, variadic};
 use crate::functions::spec::{FunctionSpec, ReturnTypeRule};
 use crate::types::DataType;
 
@@ -16,19 +11,16 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
             "upper",
             vec![sig(vec![p(DataType::String)])],
             ReturnTypeRule::Fixed(DataType::String),
-            "Unicode-aware uppercase mapping.",
         ),
         scalar(
             "lower",
             vec![sig(vec![p(DataType::String)])],
             ReturnTypeRule::Fixed(DataType::String),
-            "Unicode-aware lowercase mapping.",
         ),
         scalar(
             "length",
             vec![sig(vec![p(DataType::String)])],
             ReturnTypeRule::Fixed(DataType::Integer),
-            "Character count of a String.",
         ),
         scalar(
             "substring",
@@ -41,7 +33,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 ]),
             ],
             ReturnTypeRule::Fixed(DataType::String),
-            "1-indexed substring; positive position only in v1.",
         ),
         scalar(
             "trim",
@@ -50,7 +41,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 sig(vec![p(DataType::String), p(DataType::String)]),
             ],
             ReturnTypeRule::Fixed(DataType::String),
-            "Strip ASCII space (1-arg) or set semantics (2-arg).",
         ),
         scalar(
             "ltrim",
@@ -59,7 +49,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 sig(vec![p(DataType::String), p(DataType::String)]),
             ],
             ReturnTypeRule::Fixed(DataType::String),
-            "Left-strip ASCII space or set semantics.",
         ),
         scalar(
             "rtrim",
@@ -68,16 +57,11 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 sig(vec![p(DataType::String), p(DataType::String)]),
             ],
             ReturnTypeRule::Fixed(DataType::String),
-            "Right-strip ASCII space or set semantics.",
         ),
         scalar(
             "concat",
-            vec![variadic(
-                vec![p(DataType::String)],
-                p_string(),
-            )],
+            vec![variadic(vec![p(DataType::String)], p_string())],
             ReturnTypeRule::Fixed(DataType::String),
-            "Concatenate strings; NULL-propagating.",
         ),
         scalar(
             "replace",
@@ -87,7 +71,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 p(DataType::String),
             ])],
             ReturnTypeRule::Fixed(DataType::String),
-            "Replace all occurrences of a literal substring.",
         ),
         scalar(
             "lpad",
@@ -100,7 +83,6 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 ]),
             ],
             ReturnTypeRule::Fixed(DataType::String),
-            "Left-pad to target length with ASCII space (2-arg) or supplied pad (3-arg).",
         ),
         scalar(
             "rpad",
@@ -113,13 +95,11 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
                 ]),
             ],
             ReturnTypeRule::Fixed(DataType::String),
-            "Right-pad to target length with ASCII space (2-arg) or supplied pad (3-arg).",
         ),
         scalar(
             "reverse",
             vec![sig(vec![p(DataType::String)])],
             ReturnTypeRule::Fixed(DataType::String),
-            "Reverse by code points.",
         ),
     ]
 }

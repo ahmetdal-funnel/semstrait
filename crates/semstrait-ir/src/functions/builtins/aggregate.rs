@@ -1,9 +1,7 @@
-//! Aggregate — non-closed. Per `14a §4.6`.
-//!
-//! 8 entries. The closed-five aggregates (Sum/Avg/Count/Min/Max) live
-//! on `Expr::Aggregate` per `14 §3.3` and are NOT registry entries.
+//! Aggregate — non-closed. Per `14a §4.6`. 8 entries; closed-five live on
+//! `Expr::Aggregate` per `14 §3.3`.
 
-use crate::functions::builtins::dsl::{aggregate, p, p_any, p_numeric, sig};
+use crate::functions::builtins::dsl::{aggregate, p, p_any, p_decimal, p_numeric, sig};
 use crate::functions::spec::{Additivity, FunctionSpec, ReturnTypeRule};
 use crate::types::DataType;
 
@@ -14,56 +12,48 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
             vec![sig(vec![p_numeric()])],
             ReturnTypeRule::Fixed(DataType::Double),
             Additivity::NonAdditive,
-            "Sample standard deviation; bare name is sample across engines.",
         ),
         aggregate(
             "stddev_pop",
             vec![sig(vec![p_numeric()])],
             ReturnTypeRule::Fixed(DataType::Double),
             Additivity::NonAdditive,
-            "Population standard deviation.",
         ),
         aggregate(
             "variance",
             vec![sig(vec![p_numeric()])],
             ReturnTypeRule::Fixed(DataType::Double),
             Additivity::NonAdditive,
-            "Sample variance; bare name is sample across engines.",
         ),
         aggregate(
             "var_pop",
             vec![sig(vec![p_numeric()])],
             ReturnTypeRule::Fixed(DataType::Double),
             Additivity::NonAdditive,
-            "Population variance.",
         ),
         aggregate(
             "median",
-            vec![sig(vec![p_numeric()])],
-            ReturnTypeRule::Fixed(DataType::Double),
+            vec![sig(vec![p_numeric()]), sig(vec![p_decimal()])],
+            ReturnTypeRule::SameAsFirstArg,
             Additivity::NonAdditive,
-            "Exact median.",
         ),
         aggregate(
             "string_agg",
             vec![sig(vec![p(DataType::String), p(DataType::String)])],
             ReturnTypeRule::Fixed(DataType::String),
             Additivity::NonAdditive,
-            "Concatenate non-NULL values with separator.",
         ),
         aggregate(
             "percentile_cont",
             vec![sig(vec![p(DataType::Double), p_numeric()])],
             ReturnTypeRule::Fixed(DataType::Double),
             Additivity::NonAdditive,
-            "Continuous percentile; first arg is fraction in [0.0, 1.0].",
         ),
         aggregate(
             "approx_count_distinct",
             vec![sig(vec![p_any()])],
             ReturnTypeRule::Fixed(DataType::Long),
             Additivity::NonAdditive,
-            "HyperLogLog-class approximate distinct count.",
         ),
     ]
 }
@@ -71,7 +61,7 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::functions::spec::FunctionCategory;
+    use crate::functions::spec::{FunctionCategory, ParamType};
 
     #[test]
     fn family_has_eight_entries() {
@@ -82,7 +72,7 @@ mod tests {
     fn every_entry_is_aggregate_non_additive() {
         for spec in specs() {
             assert_eq!(spec.category, FunctionCategory::Aggregate);
-            assert_eq!(spec.additivity, Some(Additivity::NonAdditive));
+            assert!(matches!(spec.additivity, Some(Additivity::NonAdditive)));
         }
     }
 
@@ -108,6 +98,18 @@ mod tests {
         assert!(matches!(
             acd.return_type,
             ReturnTypeRule::Fixed(DataType::Long)
+        ));
+    }
+
+    #[test]
+    fn median_threads_decimal_via_same_as_first_arg() {
+        let v = specs();
+        let m = v.iter().find(|s| s.name.as_str() == "median").unwrap();
+        assert!(matches!(m.return_type, ReturnTypeRule::SameAsFirstArg));
+        assert_eq!(m.signatures.len(), 2);
+        assert!(matches!(
+            m.signatures[1].params[0],
+            ParamType::DecimalFamily
         ));
     }
 }

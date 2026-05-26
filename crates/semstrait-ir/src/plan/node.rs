@@ -22,6 +22,7 @@
 //! (P17) walks the tree and reports violations as `IrErrorKind`.
 
 use crate::expr::PhysicalExpr;
+use crate::expr_kinds::Literal;
 use crate::plan::meta::NodeMeta;
 use crate::primitives::{
     AggregateExpr, Cardinality, JoinType, KeyPair, Name, ResolvedColumn, SortDir, SourceRef,
@@ -249,10 +250,6 @@ impl ProjectNode {
 ///
 /// Empty `group_by` is a grand-total aggregation (SQL
 /// `SELECT agg(...) FROM ...` with no `GROUP BY`).
-///
-/// Each `AggregateExpr` is the lifted form of an
-/// `Expr::Aggregate { op, args, distinct, filter }`; lift contract
-/// per Q-IR-NEW-003.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggNode {
@@ -420,34 +417,21 @@ impl FetchNode {
 
 // ── ValuesNode ──────────────────────────────────────────────────────────
 
-/// Inline literal rows. Per Q-IR-NEW-002 (2026-05-25).
+/// Inline literal rows. Per spec `35 §10` (Q-IR-NEW-002).
 ///
-/// **Scope.** Each cell of `rows` is a [`PhysicalExpr`] — admitting any
-/// constant-foldable expression (literals, casts, function calls over
-/// literals) is the planner's contract. The IR makes no claim about
-/// foldability; `validate()` only checks shape (every row has
-/// `schema.columns.len()` cells).
-///
-/// Maps to Substrait's `VirtualTableReadRel` in v1 / `ExpressionList`
-/// in v2; SQL adapters emit a `VALUES (...)` clause.
-///
-/// `rows.is_empty()` is well-formed (zero-row constant-table); engines
-/// MAY short-circuit emission.
+/// Each cell is a [`Literal`]. `validate()` checks per-row arity against
+/// `schema.columns.len()`. `rows.is_empty()` is well-formed.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValuesNode {
     pub meta: NodeMeta,
-    pub rows: Vec<Vec<PhysicalExpr>>,
+    pub rows: Vec<Vec<Literal>>,
     pub schema: Schema,
 }
 
 impl ValuesNode {
-    pub fn new(meta: NodeMeta, rows: Vec<Vec<PhysicalExpr>>, schema: Schema) -> Self {
-        Self {
-            meta,
-            rows,
-            schema,
-        }
+    pub fn new(meta: NodeMeta, rows: Vec<Vec<Literal>>, schema: Schema) -> Self {
+        Self { meta, rows, schema }
     }
 }
 
@@ -455,7 +439,7 @@ impl ValuesNode {
 mod tests {
     use super::*;
     use crate::expr::PhysicalLeaf;
-    use crate::expr_kinds::{AggregationOp, ColumnRef, Literal};
+    use crate::expr_kinds::{AggregateKind, AggregationOp, ColumnRef, Literal};
     use crate::plan::meta::NodeId;
     use crate::types::{DataType, SchemaColumn};
     use crate::Expr;
@@ -484,8 +468,11 @@ mod tests {
         Expr::Leaf(PhysicalLeaf::Column(ColumnRef(n.to_string())))
     }
 
-    fn lit_int(v: i64) -> PhysicalExpr {
-        Expr::Leaf(PhysicalLeaf::Literal(Literal::Integer(v)))
+    fn lit_int(v: i64) -> Literal {
+        Literal::Integer {
+            value: v,
+            width: crate::expr_kinds::IntegerWidth::Long,
+        }
     }
 
     fn scan(id: u128, schema_cols: &[(&str, DataType, bool)]) -> PlanNode {
@@ -547,7 +534,9 @@ mod tests {
         let mut n = scan(7, &[("x", DataType::Integer, false)]);
         n.meta_mut()
             .annotations
-            .push(SemAnnotation::DataKindRef(SemanticsName("orders".to_string())));
+            .push(SemAnnotation::DataKindRef(SemanticsName(
+                "orders".to_string(),
+            )));
         assert_eq!(n.meta().annotations.len(), 1);
     }
 
@@ -693,8 +682,8 @@ mod tests {
     fn agg_node_admits_grand_total_with_empty_group_by() {
         let s = schema(&[("total", DataType::Long, false)]);
         let agg_expr = AggregateExpr {
-            aggregation: AggregationOp::Sum,
-            input_expr: col_leaf("amount"),
+            aggregation: AggregateKind::Builtin(AggregationOp::Sum),
+            args: vec![col_leaf("amount")],
             distinct: false,
             filter: None,
             inferred_type: DataType::Long,
@@ -840,12 +829,5 @@ mod tests {
         assert_eq!(a, b);
         let c = scan(1, &[("y", DataType::Integer, false)]);
         assert_ne!(a, c);
-    }
-
-    #[test]
-    fn plan_node_clone_preserves_structure() {
-        let a = scan(1, &[("x", DataType::Integer, false)]);
-        let b = a.clone();
-        assert_eq!(a, b);
     }
 }

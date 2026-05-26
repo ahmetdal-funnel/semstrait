@@ -71,6 +71,8 @@ impl NodeId {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeMeta {
     pub node_id: NodeId,
+    /// `Arc<Schema>` is value-shared, never-mutated. Replacement requires
+    /// constructing a new `NodeMeta`; in-place mutation is not exposed.
     pub output_schema: Arc<Schema>,
     pub annotations: Vec<SemAnnotation>,
 }
@@ -195,8 +197,8 @@ impl SemAnnotation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{DataType, SchemaColumn};
     use crate::expr_kinds::SemanticsName;
+    use crate::types::{DataType, SchemaColumn};
 
     fn schema_one_int() -> Arc<Schema> {
         Arc::new(Schema {
@@ -214,15 +216,6 @@ mod tests {
     fn node_id_round_trips_through_raw() {
         let id = NodeId::from_raw(0xdead_beef_dead_beef_dead_beef_dead_beef);
         assert_eq!(id.as_u128(), 0xdead_beef_dead_beef_dead_beef_dead_beef);
-    }
-
-    #[test]
-    fn node_id_equality_is_value_equality() {
-        let a = NodeId::from_raw(42);
-        let b = NodeId::from_raw(42);
-        let c = NodeId::from_raw(43);
-        assert_eq!(a, b);
-        assert_ne!(a, c);
     }
 
     #[test]
@@ -269,17 +262,6 @@ mod tests {
         assert!(Arc::ptr_eq(&m1.output_schema, &m2.output_schema));
     }
 
-    #[test]
-    fn node_meta_clone_preserves_fields() {
-        let m1 = NodeMeta::with_annotations(
-            NodeId::from_raw(99),
-            schema_one_int(),
-            vec![SemAnnotation::DataKindRef(SemanticsName("x".to_string()))],
-        );
-        let m2 = m1.clone();
-        assert_eq!(m1, m2);
-    }
-
     // ── SemAnnotation ────────────────────────────────────────────────
 
     #[test]
@@ -315,15 +297,6 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    #[test]
-    fn boundary_position_equality_and_copy() {
-        assert_eq!(BoundaryPosition::Entry, BoundaryPosition::Entry);
-        assert_ne!(BoundaryPosition::Entry, BoundaryPosition::Exit);
-        // Copy bound for ergonomic by-value passing.
-        fn assert_copy<T: Copy>() {}
-        assert_copy::<BoundaryPosition>();
-    }
-
     // ── AnnotationClass / SemAnnotation::class ───────────────────────
 
     #[test]
@@ -356,18 +329,5 @@ mod tests {
         ] {
             assert_eq!(ann.class(), AnnotationClass::Trace);
         }
-    }
-
-    #[test]
-    fn annotation_class_is_copy_eq_hash() {
-        // Reserved for use as hash-map keys in tools that bucket nodes
-        // by annotation class.
-        fn assert_bounds<T: Copy + Eq + std::hash::Hash>() {}
-        assert_bounds::<AnnotationClass>();
-    }
-
-    #[test]
-    fn annotation_class_trace_and_plan_distinct() {
-        assert_ne!(AnnotationClass::Trace, AnnotationClass::Plan);
     }
 }

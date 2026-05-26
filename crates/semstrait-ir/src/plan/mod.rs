@@ -21,7 +21,7 @@ pub mod validate;
 
 pub use meta::{AnnotationClass, BoundaryPosition, NodeId, NodeMeta, SemAnnotation};
 pub use node::{
-    AggNode, FetchNode, FilterNode, JoinNode, PlanNode, ProjectNode, ScanNode, SortNode,
-    UnionNode, ValuesNode,
+    AggNode, FetchNode, FilterNode, JoinNode, PlanNode, ProjectNode, ScanNode, SortNode, UnionNode,
+    ValuesNode,
 };
 pub use validate::SemanticPlan;

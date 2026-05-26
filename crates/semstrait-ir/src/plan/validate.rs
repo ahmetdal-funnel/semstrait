@@ -11,9 +11,11 @@
 //!   `kind` discriminator. Variants currently produced:
 //!   - `output_names_arity` (§9.2 invariant 1)
 //!   - `project_empty` (§10.4 trivial-project rule)
+//!   - `values_row_arity` (Q-IR-NEW-002 — every row matches schema arity)
 //!   - `union_arity` (§13.6 — `inputs.len() >= 2`)
 //!   - `union_schema_mismatch` (§13.6 — structural compatibility)
 //!   - `join_empty_keys` (§13.5 — `on` non-empty)
+//!   - `join_nullability` (§13.7 — outer-join schema widening)
 //!   - `agg_duplicate_name` (§13.7 — unique output names)
 //!   - `pass_through_schema` (§13.8 / §13.9 / §13.10)
 //! - [`IrErrorKind::DanglingReference`] — column-name lookup against
@@ -37,11 +39,13 @@
 //! per spec §17.1 — consumers SHOULD treat any returned `Diagnostic` as
 //! a "plan is bad" signal, not a "first problem is X" guarantee.
 
+use std::collections::HashSet;
+
 use semstrait_common::diagnostic::Diagnostic;
 
 use crate::error::IrErrorKind;
 use crate::plan::node::PlanNode;
-use crate::primitives::Name;
+use crate::primitives::{JoinType, Name};
 use crate::types::{Schema, SchemaColumn};
 
 // ── SemanticPlan ────────────────────────────────────────────────────────
@@ -105,7 +109,22 @@ fn validate_node(node: &PlanNode) -> Result<(), Diagnostic<IrErrorKind>> {
         validate_node(child)?;
     }
     match node {
-        PlanNode::Scan(_) | PlanNode::Values(_) => Ok(()),
+        PlanNode::Scan(_) => Ok(()),
+        PlanNode::Values(v) => {
+            let expected = v.schema.columns.len();
+            for (i, row) in v.rows.iter().enumerate() {
+                if row.len() != expected {
+                    return Err(diag(IrErrorKind::StructuralViolation {
+                        kind: "values_row_arity",
+                        reason: format!(
+                            "row {i} has {} cells, schema has {expected} fields",
+                            row.len()
+                        ),
+                    }));
+                }
+            }
+            Ok(())
+        }
         PlanNode::Filter(f) => check_pass_through("filter", &f.input, &node.meta().output_schema),
         PlanNode::Project(p) => {
             if p.projections.is_empty() {
@@ -127,20 +146,22 @@ fn validate_node(node: &PlanNode) -> Result<(), Diagnostic<IrErrorKind>> {
                     }));
                 }
             }
-            // Unique aggregate output names.
-            for i in 0..a.aggregates.len() {
-                for j in (i + 1)..a.aggregates.len() {
-                    if a.aggregates[i].0 == a.aggregates[j].0 {
-                        return Err(diag(IrErrorKind::StructuralViolation {
-                            kind: "agg_duplicate_name",
-                            reason: format!(
-                                "duplicate aggregate output name `{}` at indices {} and {}",
-                                a.aggregates[i].0.as_str(),
-                                i,
-                                j
-                            ),
-                        }));
-                    }
+            // §13.7 — output names unique across `group_by ∪ aggregates`.
+            let mut seen: HashSet<&Name> = HashSet::new();
+            for k in &a.group_by {
+                if !seen.insert(k) {
+                    return Err(diag(IrErrorKind::StructuralViolation {
+                        kind: "agg_duplicate_name",
+                        reason: format!("duplicate name `{}`", k.as_str()),
+                    }));
+                }
+            }
+            for (name, _) in &a.aggregates {
+                if !seen.insert(name) {
+                    return Err(diag(IrErrorKind::StructuralViolation {
+                        kind: "agg_duplicate_name",
+                        reason: format!("duplicate name `{}`", name.as_str()),
+                    }));
                 }
             }
             Ok(())
@@ -170,6 +191,20 @@ fn validate_node(node: &PlanNode) -> Result<(), Diagnostic<IrErrorKind>> {
                     }));
                 }
             }
+            // §13.7 — outer joins widen the matching side's nullability.
+            let mut expected: Vec<SchemaColumn> =
+                widen_for_join(true, left_schema, j.join_type).columns;
+            expected.extend(widen_for_join(false, right_schema, j.join_type).columns);
+            let actual = &j.meta.output_schema.columns;
+            if *actual != expected {
+                return Err(diag(IrErrorKind::StructuralViolation {
+                    kind: "join_nullability",
+                    reason: format!(
+                        "{:?} join output_schema disagrees with widened (left ++ right) expectation",
+                        j.join_type
+                    ),
+                }));
+            }
             Ok(())
         }
         PlanNode::Union(u) => {
@@ -188,10 +223,7 @@ fn validate_node(node: &PlanNode) -> Result<(), Diagnostic<IrErrorKind>> {
                 if !structurally_compatible(head, here) {
                     return Err(diag(IrErrorKind::StructuralViolation {
                         kind: "union_schema_mismatch",
-                        reason: format!(
-                            "input[0] arity/types disagree with input[{}]",
-                            idx
-                        ),
+                        reason: format!("input[0] arity/types disagree with input[{}]", idx),
                     }));
                 }
             }
@@ -244,6 +276,33 @@ fn check_pass_through(
     }))
 }
 
+/// §13.7 — outer-join nullability widening. The "matching side" of a one-sided
+/// outer join produces rows where the other side is absent, so the absent
+/// side's columns become nullable. `Full` widens both sides; `Inner` widens
+/// neither.
+fn widen_for_join(is_left: bool, schema: &Schema, jt: JoinType) -> Schema {
+    let nullify = match jt {
+        JoinType::Inner => false,
+        JoinType::Left => !is_left,
+        JoinType::Right => is_left,
+        JoinType::Full => true,
+    };
+    if !nullify {
+        return schema.clone();
+    }
+    Schema {
+        columns: schema
+            .columns
+            .iter()
+            .map(|c| SchemaColumn {
+                name: c.name.clone(),
+                data_type: c.data_type.clone(),
+                nullable: true,
+            })
+            .collect(),
+    }
+}
+
 fn structurally_compatible(a: &Schema, b: &Schema) -> bool {
     if a.columns.len() != b.columns.len() {
         return false;
@@ -270,7 +329,7 @@ fn schema_names(schema: &Schema) -> Vec<Name> {
 mod tests {
     use super::*;
     use crate::expr::{PhysicalExpr, PhysicalLeaf};
-    use crate::expr_kinds::{AggregationOp, ColumnRef, Literal};
+    use crate::expr_kinds::{AggregateKind, AggregationOp, ColumnRef, Literal};
     use crate::plan::meta::{NodeId, NodeMeta};
     use crate::plan::node::{
         AggNode, FetchNode, FilterNode, JoinNode, ProjectNode, ScanNode, SortNode, UnionNode,
@@ -343,14 +402,15 @@ mod tests {
                 ordinal: i as u32,
             })
             .collect();
-        PlanNode::Scan(ScanNode::new(meta_for(id, s), SourceRef::new("t"), resolved))
+        PlanNode::Scan(ScanNode::new(
+            meta_for(id, s),
+            SourceRef::new("t"),
+            resolved,
+        ))
     }
 
     fn ok_plan(root: PlanNode, names: &[&str]) -> SemanticPlan {
-        SemanticPlan::new(
-            root,
-            names.iter().map(|n| Name::new(*n).unwrap()).collect(),
-        )
+        SemanticPlan::new(root, names.iter().map(|n| Name::new(*n).unwrap()).collect())
     }
 
     // ── Output-names arity ──────────────────────────────────────────
@@ -464,11 +524,45 @@ mod tests {
     }
 
     #[test]
+    fn validate_agg_rejects_group_by_collision_with_aggregate_name() {
+        // group_by `total` collides with aggregate output `total` per §13.7.
+        let s = schema(&[("total", DataType::Long, false)]);
+        let scan = scan_with(
+            10,
+            &[
+                ("total", DataType::Long, false),
+                ("amount", DataType::Long, false),
+            ],
+        );
+        let agg_expr = AggregateExpr {
+            aggregation: AggregateKind::Builtin(AggregationOp::Sum),
+            args: vec![col_leaf("amount")],
+            distinct: false,
+            filter: None,
+            inferred_type: DataType::Long,
+        };
+        let agg = PlanNode::Agg(AggNode::new(
+            NodeMeta::new(NodeId::from_raw(2), s),
+            scan,
+            vec![Name::new("total").unwrap()],
+            vec![(Name::new("total").unwrap(), agg_expr)],
+        ));
+        let plan = ok_plan(agg, &["total"]);
+        let err = plan.validate().unwrap_err();
+        match err.kind {
+            IrErrorKind::StructuralViolation { kind, .. } => {
+                assert_eq!(kind, "agg_duplicate_name");
+            }
+            other => panic!("expected agg_duplicate_name, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn validate_agg_rejects_duplicate_aggregate_output_name() {
         let s = schema(&[("total", DataType::Long, false)]);
         let agg_expr = || AggregateExpr {
-            aggregation: AggregationOp::Sum,
-            input_expr: col_leaf("x"),
+            aggregation: AggregateKind::Builtin(AggregationOp::Sum),
+            args: vec![col_leaf("x")],
             distinct: false,
             filter: None,
             inferred_type: DataType::Long,
@@ -538,7 +632,9 @@ mod tests {
         let plan = ok_plan(join, &["x", "y"]);
         let err = plan.validate().unwrap_err();
         match err.kind {
-            IrErrorKind::DanglingReference { node_kind, name, .. } => {
+            IrErrorKind::DanglingReference {
+                node_kind, name, ..
+            } => {
                 assert_eq!(node_kind, "join");
                 assert_eq!(name.as_str(), "missing");
             }
@@ -565,6 +661,102 @@ mod tests {
         ));
         let plan = ok_plan(join, &["x", "y"]);
         plan.validate().expect("well-formed join");
+    }
+
+    // ── Join nullability (§13.7 widening) ─────────────────────────
+
+    fn make_join(jt: JoinType, out_schema_cols: &[(&str, DataType, bool)]) -> PlanNode {
+        PlanNode::Join(JoinNode::new(
+            NodeMeta::new(NodeId::from_raw(3), schema(out_schema_cols)),
+            scan_with(10, &[("x", DataType::Integer, false)]),
+            scan_with(11, &[("y", DataType::Integer, false)]),
+            jt,
+            Cardinality::OneToOne,
+            vec![KeyPair {
+                left: Name::new("x").unwrap(),
+                right: Name::new("y").unwrap(),
+            }],
+        ))
+    }
+
+    #[test]
+    fn validate_inner_join_rejects_spurious_nullable_widening() {
+        // Inner widens neither side; declaring the right column nullable is wrong.
+        let join = make_join(
+            JoinType::Inner,
+            &[
+                ("x", DataType::Integer, false),
+                ("y", DataType::Integer, true), // should be false
+            ],
+        );
+        let plan = ok_plan(join, &["x", "y"]);
+        let err = plan.validate().unwrap_err();
+        match err.kind {
+            IrErrorKind::StructuralViolation { kind, .. } => {
+                assert_eq!(kind, "join_nullability");
+            }
+            other => panic!("expected join_nullability, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_left_join_rejects_missing_right_widening() {
+        // Left widens the right side; declaring it non-nullable is wrong.
+        let join = make_join(
+            JoinType::Left,
+            &[
+                ("x", DataType::Integer, false),
+                ("y", DataType::Integer, false), // should be true
+            ],
+        );
+        let plan = ok_plan(join, &["x", "y"]);
+        let err = plan.validate().unwrap_err();
+        match err.kind {
+            IrErrorKind::StructuralViolation { kind, .. } => {
+                assert_eq!(kind, "join_nullability");
+            }
+            other => panic!("expected join_nullability, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_right_join_rejects_missing_left_widening() {
+        // Right widens the left side; declaring it non-nullable is wrong.
+        let join = make_join(
+            JoinType::Right,
+            &[
+                ("x", DataType::Integer, false), // should be true
+                ("y", DataType::Integer, false),
+            ],
+        );
+        let plan = ok_plan(join, &["x", "y"]);
+        let err = plan.validate().unwrap_err();
+        match err.kind {
+            IrErrorKind::StructuralViolation { kind, .. } => {
+                assert_eq!(kind, "join_nullability");
+            }
+            other => panic!("expected join_nullability, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_full_join_rejects_missing_both_side_widening() {
+        // Full widens both sides; declaring either non-nullable is wrong.
+        let join = make_join(
+            JoinType::Full,
+            &[
+                ("x", DataType::Integer, true),
+                ("y", DataType::Integer, false), // should be true
+            ],
+        );
+        let plan = ok_plan(join, &["x", "y"]);
+        let err = plan.validate().unwrap_err();
+        match err.kind {
+            IrErrorKind::StructuralViolation { kind, .. } => {
+                assert_eq!(kind, "join_nullability");
+            }
+            other => panic!("expected join_nullability, got {:?}", other),
+        }
     }
 
     // ── Union (arity, schema compat) ──────────────────────────────
@@ -635,7 +827,9 @@ mod tests {
         let plan = ok_plan(sort, &["x", "y"]);
         let err = plan.validate().unwrap_err();
         match err.kind {
-            IrErrorKind::DanglingReference { node_kind, name, .. } => {
+            IrErrorKind::DanglingReference {
+                node_kind, name, ..
+            } => {
                 assert_eq!(node_kind, "sort");
                 assert_eq!(name.as_str(), "zzz");
             }
@@ -705,11 +899,49 @@ mod tests {
         };
         let node = PlanNode::Values(ValuesNode::new(
             meta_for(1, Arc::new(s.clone())),
-            vec![vec![Expr::Leaf(PhysicalLeaf::Literal(Literal::Integer(1)))]],
+            vec![vec![Literal::Integer {
+                value: 1,
+                width: crate::expr_kinds::IntegerWidth::Long,
+            }]],
             s,
         ));
         let plan = ok_plan(node, &["x"]);
         plan.validate().expect("values is a well-formed leaf");
+    }
+
+    #[test]
+    fn validate_values_node_rejects_row_arity_mismatch() {
+        let s = Schema {
+            columns: vec![
+                SchemaColumn {
+                    name: "x".into(),
+                    data_type: DataType::Integer,
+                    nullable: false,
+                },
+                SchemaColumn {
+                    name: "y".into(),
+                    data_type: DataType::Integer,
+                    nullable: false,
+                },
+            ],
+        };
+        let lit_int = |v: i64| Literal::Integer {
+            value: v,
+            width: crate::expr_kinds::IntegerWidth::Long,
+        };
+        let node = PlanNode::Values(ValuesNode::new(
+            meta_for(1, Arc::new(s.clone())),
+            vec![vec![lit_int(1)]], // schema has 2 cols, row has 1
+            s,
+        ));
+        let plan = ok_plan(node, &["x", "y"]);
+        let err = plan.validate().unwrap_err();
+        match err.kind {
+            IrErrorKind::StructuralViolation { kind, .. } => {
+                assert_eq!(kind, "values_row_arity");
+            }
+            other => panic!("expected values_row_arity, got {:?}", other),
+        }
     }
 
     // ── Post-order: child errors surface before parent errors ────

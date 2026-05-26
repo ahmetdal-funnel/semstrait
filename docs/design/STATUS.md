@@ -30,6 +30,7 @@ Long-form narrative archive: `[_archive/STATUS_HISTORY.md](_archive/STATUS_HISTO
 | Grainset cross-grain LEFT OUTER JOIN composition (G-2) | Ratified 2026-05-03 |
 | Expression-flow `foundations/19_expression_flow.md` | Promoted 2026-05-12 |
 | Builder ergonomic facade (`32 §9.7.8`) | Landed 2026-05-13 |
+| IR implementation review (post-Q cascade) — `AggregateKind` carrier + n-ary `AggregateExpr.args` + typed `Literal` width discriminators + structural validation extensions + decimal-family catalog | Complete 2026-05-26 (item S) |
 
 **Active:**
 
@@ -69,6 +70,7 @@ Long-form narrative archive: `[_archive/STATUS_HISTORY.md](_archive/STATUS_HISTO
 | P | Expression architecture cleanup, first cascade — non-coercion rule at `14 §5.4`; ~15 dangling `14 §5.6` retargets; Aggregate synthesis at `32 §5.4`; Option A confirmed (no `ExprBlock` parallel AST) | Complete 2026-05-18 (superseded-in-spirit by Q) | `14 §5.4`, `32 §5.4`, ref retargets across `10`/`11`/`13`/`14a`/`19`/`23` |
 | Q | Expression architecture, second cascade (full Option A landing) — every expression-tree-tied type moved to `semstrait-ir` (trait family, structural support enums, `Literal`, identifier carriers, narrow `ValidateError`/`CompileError`); `ExprBlock` deleted; `ExprSource::Block(Expr<L>)` carries `Expr<L>` directly. `*ErrorKind` global rename remains a separate post-v1 sweep. | Complete 2026-05-19 | `31`, `35`, `14 §9`, `32`, `33`, `19`, `30`, `37`, `38`, `39`, `39b`, `INDEX.md`, `questions/closed/31_questions.md` |
 | R | IR redesign Phase 0–6 — Phase-0/1 ratified S1–S8 (`35 §1.5`) + R1–R4 (`§1.6`); `§10.1.1` `SemAnnotation` inventory; `§14.3` annotation Substrait carrier; Q4.A–Q4.F ratified; Q4.G withdrawn. Phase-2: closed Q-IR-002/006/007/010/014. Phase-3: `35` consistency sweep (RegistryExtension declarative shape; `IR_E_3510`→`IrErrorKind::FetchValueOutOfRange`; `BindingId` stripped from public surface). Phase-4: 47 canonical functions ratified at `14a §4.2`–`§4.6`; per-engine rows in `registry/functions_mapping.md`; Spark floor 3.4+. Phase-5: `Capability` split — adapter-internal rewrite strategies removed (CTE/GROUPING SETS/DISTINCT-aggregate); kept irreducible cross-boundary features (RegexpMatch/RegexpExtract/IntervalLiteral/AsOfJoin/StructAccess); `Q-ADAPT-002` closed. Phase-6: 8 verification cleanups (INDEX +5 rows; `Expr<L>` body deduplicated to forward pointer in `14 §3.3`; `36 §12.4` Delta deletion; opening-status compression in `35`/`31`/`19`/`14a`). | Complete 2026-05-21 | `35`, `36`, `14`, `14a`, `19`, `31`, `INDEX.md`, `questions/{open,closed}/{35,36}_questions.md`, `registry/functions_mapping.md` |
+| S | IR implementation review (post-Q cascade) — three tactical waves landed in `crates/semstrait-ir`: (W1) `AggregateKind { Builtin, Extension }` hybrid carrier preserving closed-five `AggregationOp`; `AggregateExpr.args: Vec<PhysicalExpr>` (n-ary admits extension aggregates); typed `Literal::{Null, Integer, Float}` with `IntegerWidth` / `FloatWidth` discriminators; `closed_five_*` lookup helpers reserved for Phase B Strategy. (W2) `ValuesNode.rows: Vec<Vec<Literal>>` narrowed; new structural validations: `values_row_arity`, `agg_duplicate_name` across `group_by ∪ aggregates`, `join_nullability` widening on outer joins (metadata-only, V-7 preserved); `SemanticExprAccessorExt` deleted; dead `time_default` removed; `RegistryExtension` removed from crate-root re-export. (W3) `ReturnTypeRule::DecimalScaleZero` + `ParamType::DecimalFamily` for ceil/floor/round/median Decimal overloads; `PartialEq` dropped from `ReturnTypeRule` and `FunctionSpec` (fn-pointer non-comparability); `FunctionSpec.description` field removed; `Arc<Schema>` value-shared invariant doc on `NodeMeta.output_schema`; 41 derive-driven tests deleted with no behavior loss. Spec sync: `35 §3.4 / §11.7` and `14a §3.1 / §3.4 / §3.5 / §4.3` reconciled. Cumulative state: 303 lib tests pass, clippy clean, V-5 / V-7 hold; 10 deferred `Q-IR-IMPL-*` / `Q-IR-SPEC-*` items opened in `questions/deferred/35_questions.md`. | Complete 2026-05-26 | `crates/semstrait-ir`, `35`, `14a`, `questions/deferred/35_questions.md`, `docs/design/implementation/35_ir_review*.md` |
 
 ---
 
@@ -94,7 +96,7 @@ Footprint after balanced pruning:
 | --- | --- | --- |
 | `open/` | 23 | ~2580 |
 | `closed/` | 19 | ~1430 |
-| `deferred/` | 18 | 797 |
+| `deferred/` | 18 | ~970 |
 
 Recent moves:
 
@@ -105,6 +107,7 @@ Recent moves:
 - `21` Q-DS-001 + `23` Q-UNI-003/-005/-007/-008/-010/-011 → closed (variant rebases, 2026-05-03).
 - `22` Q-GRN-001/-002/-005 → closed (Grainset rebase); `Q-COMP-006` opened for `16` cleanup.
 - `Q-COMP-007` (directionality) and `Q-COMP-017` (`join_type` default) → closed under item K. `Q-COMP-016` (m:m policy) updated.
+- `Q-IR-IMPL-01..06` + `Q-IR-SPEC-01..04` → opened in `deferred/35_questions.md` 2026-05-26 covering W1-N-2/W2-N-1/W2-N-2/W3-N-1/W3-N-2/XC-1/XC-2 surface and the post-impl spec drift. Code-side already reconciled into `35` and `14a`; deferred questions track open shape choices (e.g. `IntoLiteral for f32`, `RegistryExtension` re-export hiding, `widen_for_join` allocation).
 
 Focused v1 questions in `open/` should remain: architecture-impacting (`30`/`36`/`37`); compile/plan correctness-critical (`15`, `32`, `33`, parts of `22`/`23`); cross-stage primitive decisions (`38` Q-API-012). Non-blocking ergonomics and adapter empirics → deferred.
 

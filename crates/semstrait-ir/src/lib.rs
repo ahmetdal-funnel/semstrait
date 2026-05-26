@@ -30,7 +30,7 @@
 //!     `MetricAccessor`, `KeyAccessor`.
 //!   - [`expr::parameter`] — `Parameter`, `ParameterKey`.
 //!   - [`expr::expr_fn`] — authoring DSL constructors, `std::ops` impls,
-//!     `ExprFunctionExt` and `SemanticExprAccessorExt` extension traits.
+//!     `ExprFunctionExt` extension trait.
 //!
 //! ## Phase 2c additions (this iteration)
 //!
@@ -54,8 +54,9 @@ pub mod types;
 
 pub use error::{CompileError, IrErrorKind, ValidateError};
 pub use expr_kinds::{
-    AggregationOp, BinaryOpKind, CastFailure, ColumnRef, LikeKind, Literal, SemanticsName,
-    UnaryOpKind, WindowBound, WindowFn, WindowFrame, WindowFrameKind,
+    AggregateKind, AggregationOp, BinaryOpKind, CastFailure, ColumnRef, FloatWidth, IntegerWidth,
+    LikeKind, Literal, SemanticsName, UnaryOpKind, WindowBound, WindowFn, WindowFrame,
+    WindowFrameKind,
 };
 pub use tree::{ExprLeaf, Rewriter, Tree, Visitor};
 
@@ -66,8 +67,10 @@ pub use tree::{ExprLeaf, Rewriter, Tree, Visitor};
 
 pub use functions::{
     function_registry, Additivity, CanonicalFn, DimensionAxis, FnSignature, FunctionCategory,
-    FunctionRegistry, FunctionSpec, ParamType, RegistryExtension, ReturnTypeRule,
+    FunctionRegistry, FunctionSpec, ParamType, ReturnTypeRule,
 };
+// `RegistryExtension` is wired in `functions::extension`; not re-exported at
+// crate root until TD-REGISTRY-EXTENSION-WIRING ships (P-7).
 
 // ── Phase 2b re-exports (expr/ subtree) ────────────────────────────────
 //
@@ -75,8 +78,8 @@ pub use functions::{
 // (busy namespace; consumers do `use semstrait_ir::expr::expr_fn::*;`).
 
 pub use expr::{
-    DimensionAccessor, Expr, KeyAccessor, MeasureAccessor, MetricAccessor, Parameter,
-    ParameterKey, PhysicalExpr, PhysicalLeaf, SemanticExpr, SemanticLeaf,
+    DimensionAccessor, Expr, KeyAccessor, MeasureAccessor, MetricAccessor, Parameter, ParameterKey,
+    PhysicalExpr, PhysicalLeaf, SemanticExpr, SemanticLeaf,
 };
 pub use types::{DataType, Grain, Schema, SchemaColumn, TypeClass};
 
@@ -99,9 +102,8 @@ pub use primitives::{
 // `SemanticPlan` wrapper (P17) re-export at landing.
 
 pub use plan::{
-    AggNode, AnnotationClass, BoundaryPosition, FetchNode, FilterNode, JoinNode, NodeId,
-    NodeMeta, PlanNode, ProjectNode, ScanNode, SemAnnotation, SemanticPlan, SortNode, UnionNode,
-    ValuesNode,
+    AggNode, AnnotationClass, BoundaryPosition, FetchNode, FilterNode, JoinNode, NodeId, NodeMeta,
+    PlanNode, ProjectNode, ScanNode, SemAnnotation, SemanticPlan, SortNode, UnionNode, ValuesNode,
 };
 
 // ── Phase 2e re-exports (artifact/ family) ─────────────────────────────
@@ -111,6 +113,4 @@ pub use plan::{
 // semantics. `DialectId` is the only engine-identity vocabulary in IR
 // per S7 — appears only on `SqlArtifact.dialect` and `Dialect::ID`.
 
-pub use artifact::{
-    Capability, Dialect, DialectId, EngineArtifact, EnginePlan, SqlArtifact,
-};
+pub use artifact::{Capability, Dialect, DialectId, EngineArtifact, EnginePlan, SqlArtifact};

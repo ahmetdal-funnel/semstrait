@@ -1,16 +1,11 @@
-//! Scalar — Logical / Conditional helpers. Per `14a §4.5`.
+//! Scalar — Logical / Conditional helpers. Per `14a §4.5`. 2 entries;
+//! reserved AST variants (`Case`, `Coalesce`, `NullIf`, `IsNull`) are not
+//! registry entries.
 //!
-//! 2 entries. Reserved AST variants (`Case`, `Coalesce`, `NullIf`,
-//! `IsNull`) are NOT registry entries.
-//!
-//! Open point per the implementation plan: `greatest`/`least` are
-//! variadic with arbitrary-arity common-supertype promotion. The
-//! `ReturnTypeRule::Promoted(&'static [usize])` variant cannot
-//! enumerate variadic indices statically, so we record
-//! [`ReturnTypeRule::SameAsFirstArg`] here as the v1 approximation —
-//! every overload arg must share a comparable common type per spec.
-//! Compile-time promotion logic lives in the manifest pipeline; this
-//! catalog only carries the resolution shape. Tracked under
+//! `greatest` / `least` use `SameAsFirstArg` as a v1 approximation —
+//! `Promoted(&'static [usize])` cannot enumerate variadic indices
+//! statically. Compile-time promotion lives in the manifest pipeline; this
+//! catalog only records resolution shape. Tracked as
 //! `[TD-REGISTRY-VARIADIC-PROMOTED]`.
 
 use crate::functions::builtins::dsl::{p_any, scalar, variadic};
@@ -22,13 +17,11 @@ pub(super) fn specs() -> Vec<FunctionSpec> {
             "greatest",
             vec![variadic(vec![p_any()], p_any())],
             ReturnTypeRule::SameAsFirstArg,
-            "Greatest non-NULL value; args must share a comparable common type.",
         ),
         scalar(
             "least",
             vec![variadic(vec![p_any()], p_any())],
             ReturnTypeRule::SameAsFirstArg,
-            "Least non-NULL value; args must share a comparable common type.",
         ),
     ]
 }
