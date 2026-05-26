@@ -125,7 +125,7 @@ pub fn function_for_tag(tag: &str) -> Option<CanonicalFn> {
     FUNCTION_TABLE
         .iter()
         .find(|spec| spec.tag == tag)
-        .map(|spec| CanonicalFn(spec.canonical.to_owned()))
+        .and_then(|spec| CanonicalFn::new(spec.canonical).ok())
 }
 
 #[cfg(test)]

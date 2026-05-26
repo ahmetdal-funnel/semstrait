@@ -1,42 +1,18 @@
 //! Authoring-surface DSL per spec `14 §6.4.1` / `35 §6`.
 //!
-//! Provides the six canonical free-function constructors (`col`, `field`,
-//! `dim`, `measure`, `metric`, `key`) plus `lit`, `physical_col`, `std::ops`
-//! impls on `Expr<L>`, and the [`ExprFunctionExt`] extension trait for
-//! comparison / predicate sugar plus best-effort accessor builders.
-//!
-//! ## Scope decisions for this iteration
-//!
-//! - The six canonical constructors `col` / `field` / `dim` / `measure` /
-//!   `metric` / `key` are **semantic-only** — they return [`SemanticExpr`].
-//!   Per spec `14 §6.4.1` the `col` tag is also legal at physical-mapping
-//!   sites; this iteration exposes a separate [`physical_col`] helper for
-//!   that case. A unified `col` constructor that dispatches to either leaf
-//!   set via a sealed trait (per `35 §6.1`) is deferred to a future
-//!   iteration — the spec ratifies "both target types are constructible
-//!   from a single name surface", and the `physical_col` helper plus
-//!   `Expr::Leaf(PhysicalLeaf::Column(...))` direct construction satisfy
-//!   that obligation while keeping this iteration's surface small.
-//!
-//! - `lit` is **semantic-only** for the same reasons. Physical-mapping
-//!   authors construct `Expr::Leaf(PhysicalLeaf::Literal(...))` directly.
-//!
-//! - The accessor builder methods on [`ExprFunctionExt`] (`first` / `last`
-//!   / `previous` / `next` / `delta` / `percent_change` / `lag` / `lead`)
-//!   are **best-effort** at v1 per spec `35 §6.3` — they pattern-match on
-//!   the inner [`crate::expr::leaves::SemanticLeaf`] variant when the
-//!   `Expr` root is a leaf, and otherwise return the expression unchanged
-//!   plus a `debug_assert` (so dev builds catch misuse). Spec `19 §3.3` is
-//!   the source of truth at compile; the DSL is opt-in ergonomic sugar.
-//!
-//! - Comparison and predicate methods (`eq` / `neq` / `lt` / `lt_eq` /
-//!   `gt` / `gt_eq` / `is_null`) are generic over `L: ExprLeaf` and apply
-//!   to both `SemanticExpr` and `PhysicalExpr` per spec `35 §6.3`.
+//! Six canonical semantic constructors (`col`, `field`, `dim`, `measure`,
+//! `metric`, `key`), `lit` literal coercion, `physical_col`, `std::ops`
+//! impls on `Expr<L>`, and the [`ExprFunctionExt`] trait for comparison /
+//! predicate sugar (`eq`, `neq`, `lt`, `lt_eq`, `gt`, `gt_eq`, `is_null`)
+//! generic over `L: ExprLeaf`. Authors that need accessors construct typed
+//! leaves directly via the `Dimension { accessor: Some(..) }` literal
+//! shape per `14 §4.1`.
 
-use crate::expr::accessor::{DimensionAccessor, KeyAccessor, MeasureAccessor, MetricAccessor};
 use crate::expr::leaves::{PhysicalExpr, PhysicalLeaf, SemanticExpr, SemanticLeaf};
 use crate::expr::tree::Expr;
-use crate::expr_kinds::{BinaryOpKind, ColumnRef, Literal, SemanticsName, UnaryOpKind};
+use crate::expr_kinds::{
+    BinaryOpKind, ColumnRef, FloatWidth, IntegerWidth, Literal, SemanticsName, UnaryOpKind,
+};
 use crate::tree::ExprLeaf;
 use std::ops::{Add, BitAnd, BitOr, Div, Mul, Neg, Not, Rem, Sub};
 
@@ -58,19 +34,28 @@ impl IntoLiteral for bool {
 
 impl IntoLiteral for i64 {
     fn into_literal(self) -> Literal {
-        Literal::Integer(self)
+        Literal::Integer {
+            value: self,
+            width: IntegerWidth::Long,
+        }
     }
 }
 
 impl IntoLiteral for i32 {
     fn into_literal(self) -> Literal {
-        Literal::Integer(self as i64)
+        Literal::Integer {
+            value: self as i64,
+            width: IntegerWidth::Int,
+        }
     }
 }
 
 impl IntoLiteral for f64 {
     fn into_literal(self) -> Literal {
-        Literal::Float(self)
+        Literal::Float {
+            value: self,
+            width: FloatWidth::Double,
+        }
     }
 }
 
@@ -259,15 +244,12 @@ impl<L: ExprLeaf> Not for Expr<L> {
     }
 }
 
-// ── ExprFunctionExt — comparison / predicate / accessor builders ────────
+// ── ExprFunctionExt — comparison / predicate sugar ──────────────────────
 
-/// Builder-style sugar on `Expr<L>` for operations that `std::ops`
-/// cannot directly model. Per spec `14 §9.2` / `35 §6.3`.
-///
-/// The comparison and predicate methods are generic and apply to any
-/// `Expr<L>` (both `SemanticExpr` and `PhysicalExpr`). The accessor
-/// builders on [`SemanticExprAccessorExt`] are best-effort and pattern-match
-/// on the inner `SemanticLeaf` root.
+/// Builder-style sugar on `Expr<L>` for comparison / predicate operations
+/// that `std::ops` cannot directly model. Per spec `14 §9.2` / `35 §6.3`.
+/// Generic over `L: ExprLeaf` — applies to both `SemanticExpr` and
+/// `PhysicalExpr`.
 pub trait ExprFunctionExt: Sized {
     /// `self == other` — produces `Expr::BinaryOp { op: Eq, .. }`.
     fn eq(self, other: Self) -> Self;
@@ -331,200 +313,6 @@ impl<L: ExprLeaf> ExprFunctionExt for Expr<L> {
     }
     fn is_null(self) -> Self {
         Expr::IsNull(Box::new(self))
-    }
-}
-
-// ── SemanticExpr accessor builders (best-effort) ────────────────────────
-
-/// Best-effort accessor-builder sugar on [`SemanticExpr`]. Per spec
-/// `35 §6.3`. The methods pattern-match on the inner [`SemanticLeaf`] and
-/// fill the matching accessor slot when the root is the right kind;
-/// mismatched roots return the expression unchanged with a `debug_assert`.
-///
-/// Authors that need rigorous compile-time kind enforcement should
-/// construct typed leaves directly via the `Dimension { .. }` literal
-/// shape; this trait is the ergonomic layer.
-pub trait SemanticExprAccessorExt: Sized {
-    /// `dim(name).first()` / `key(name).first()`. No-op when the root is
-    /// not a `Dimension` or `Key` leaf.
-    fn first(self) -> Self;
-    /// `dim(name).last()` / `key(name).last()`. No-op when the root is
-    /// not a `Dimension` or `Key` leaf.
-    fn last(self) -> Self;
-    /// `measure(name).previous()` / `metric(name).previous()`. No-op when
-    /// the root is not a `Measure` or `Metric` leaf.
-    fn previous(self) -> Self;
-    /// `measure(name).next()` / `metric(name).next()`. No-op when the root
-    /// is not a `Measure` or `Metric` leaf.
-    fn next(self) -> Self;
-    /// `measure(name).delta()` / `metric(name).delta()`. No-op when the
-    /// root is not a `Measure` or `Metric` leaf.
-    fn delta(self) -> Self;
-    /// `measure(name).percent_change()` / `metric(name).percent_change()`.
-    /// No-op when the root is not a `Measure` or `Metric` leaf.
-    fn percent_change(self) -> Self;
-    /// `dim/measure/metric/key(name).lag(n)`. No-op when the root is not a
-    /// typed semantic leaf.
-    fn lag(self, n: u32) -> Self;
-    /// `dim/measure/metric/key(name).lead(n)`. No-op when the root is not
-    /// a typed semantic leaf.
-    fn lead(self, n: u32) -> Self;
-}
-
-impl SemanticExprAccessorExt for SemanticExpr {
-    fn first(self) -> Self {
-        match self {
-            Expr::Leaf(SemanticLeaf::Dimension { name, .. }) => Expr::Leaf(SemanticLeaf::Dimension {
-                name,
-                accessor: Some(DimensionAccessor::First),
-            }),
-            Expr::Leaf(SemanticLeaf::Key { name, .. }) => Expr::Leaf(SemanticLeaf::Key {
-                name,
-                accessor: Some(KeyAccessor::First),
-            }),
-            other => {
-                debug_assert!(false, "first() called on non-Dimension / non-Key root");
-                other
-            }
-        }
-    }
-
-    fn last(self) -> Self {
-        match self {
-            Expr::Leaf(SemanticLeaf::Dimension { name, .. }) => Expr::Leaf(SemanticLeaf::Dimension {
-                name,
-                accessor: Some(DimensionAccessor::Last),
-            }),
-            Expr::Leaf(SemanticLeaf::Key { name, .. }) => Expr::Leaf(SemanticLeaf::Key {
-                name,
-                accessor: Some(KeyAccessor::Last),
-            }),
-            other => {
-                debug_assert!(false, "last() called on non-Dimension / non-Key root");
-                other
-            }
-        }
-    }
-
-    fn previous(self) -> Self {
-        match self {
-            Expr::Leaf(SemanticLeaf::Measure { name, .. }) => Expr::Leaf(SemanticLeaf::Measure {
-                name,
-                accessor: Some(MeasureAccessor::Previous),
-            }),
-            Expr::Leaf(SemanticLeaf::Metric { name, .. }) => Expr::Leaf(SemanticLeaf::Metric {
-                name,
-                accessor: Some(MetricAccessor::Previous),
-            }),
-            other => {
-                debug_assert!(false, "previous() called on non-Measure / non-Metric root");
-                other
-            }
-        }
-    }
-
-    fn next(self) -> Self {
-        match self {
-            Expr::Leaf(SemanticLeaf::Measure { name, .. }) => Expr::Leaf(SemanticLeaf::Measure {
-                name,
-                accessor: Some(MeasureAccessor::Next),
-            }),
-            Expr::Leaf(SemanticLeaf::Metric { name, .. }) => Expr::Leaf(SemanticLeaf::Metric {
-                name,
-                accessor: Some(MetricAccessor::Next),
-            }),
-            other => {
-                debug_assert!(false, "next() called on non-Measure / non-Metric root");
-                other
-            }
-        }
-    }
-
-    fn delta(self) -> Self {
-        match self {
-            Expr::Leaf(SemanticLeaf::Measure { name, .. }) => Expr::Leaf(SemanticLeaf::Measure {
-                name,
-                accessor: Some(MeasureAccessor::Delta),
-            }),
-            Expr::Leaf(SemanticLeaf::Metric { name, .. }) => Expr::Leaf(SemanticLeaf::Metric {
-                name,
-                accessor: Some(MetricAccessor::Delta),
-            }),
-            other => {
-                debug_assert!(false, "delta() called on non-Measure / non-Metric root");
-                other
-            }
-        }
-    }
-
-    fn percent_change(self) -> Self {
-        match self {
-            Expr::Leaf(SemanticLeaf::Measure { name, .. }) => Expr::Leaf(SemanticLeaf::Measure {
-                name,
-                accessor: Some(MeasureAccessor::PercentChange),
-            }),
-            Expr::Leaf(SemanticLeaf::Metric { name, .. }) => Expr::Leaf(SemanticLeaf::Metric {
-                name,
-                accessor: Some(MetricAccessor::PercentChange),
-            }),
-            other => {
-                debug_assert!(
-                    false,
-                    "percent_change() called on non-Measure / non-Metric root"
-                );
-                other
-            }
-        }
-    }
-
-    fn lag(self, n: u32) -> Self {
-        match self {
-            Expr::Leaf(SemanticLeaf::Dimension { name, .. }) => Expr::Leaf(SemanticLeaf::Dimension {
-                name,
-                accessor: Some(DimensionAccessor::Lag(n)),
-            }),
-            Expr::Leaf(SemanticLeaf::Measure { name, .. }) => Expr::Leaf(SemanticLeaf::Measure {
-                name,
-                accessor: Some(MeasureAccessor::Lag(n)),
-            }),
-            Expr::Leaf(SemanticLeaf::Metric { name, .. }) => Expr::Leaf(SemanticLeaf::Metric {
-                name,
-                accessor: Some(MetricAccessor::Lag(n)),
-            }),
-            Expr::Leaf(SemanticLeaf::Key { name, .. }) => Expr::Leaf(SemanticLeaf::Key {
-                name,
-                accessor: Some(KeyAccessor::Lag(n)),
-            }),
-            other => {
-                debug_assert!(false, "lag() called on non-typed-semantic-leaf root");
-                other
-            }
-        }
-    }
-
-    fn lead(self, n: u32) -> Self {
-        match self {
-            Expr::Leaf(SemanticLeaf::Dimension { name, .. }) => Expr::Leaf(SemanticLeaf::Dimension {
-                name,
-                accessor: Some(DimensionAccessor::Lead(n)),
-            }),
-            Expr::Leaf(SemanticLeaf::Measure { name, .. }) => Expr::Leaf(SemanticLeaf::Measure {
-                name,
-                accessor: Some(MeasureAccessor::Lead(n)),
-            }),
-            Expr::Leaf(SemanticLeaf::Metric { name, .. }) => Expr::Leaf(SemanticLeaf::Metric {
-                name,
-                accessor: Some(MetricAccessor::Lead(n)),
-            }),
-            Expr::Leaf(SemanticLeaf::Key { name, .. }) => Expr::Leaf(SemanticLeaf::Key {
-                name,
-                accessor: Some(KeyAccessor::Lead(n)),
-            }),
-            other => {
-                debug_assert!(false, "lead() called on non-typed-semantic-leaf root");
-                other
-            }
-        }
     }
 }
 
@@ -614,7 +402,10 @@ mod tests {
     #[test]
     fn lit_integer_produces_integer_literal() {
         match lit(42i64) {
-            Expr::Leaf(SemanticLeaf::Literal(Literal::Integer(n))) => assert_eq!(n, 42),
+            Expr::Leaf(SemanticLeaf::Literal(Literal::Integer { value, width })) => {
+                assert_eq!(value, 42);
+                assert_eq!(width, IntegerWidth::Long);
+            }
             other => panic!("expected Literal::Integer, got {:?}", other),
         }
     }
@@ -622,7 +413,10 @@ mod tests {
     #[test]
     fn lit_i32_widens_to_integer() {
         match lit(7i32) {
-            Expr::Leaf(SemanticLeaf::Literal(Literal::Integer(n))) => assert_eq!(n, 7),
+            Expr::Leaf(SemanticLeaf::Literal(Literal::Integer { value, width })) => {
+                assert_eq!(value, 7);
+                assert_eq!(width, IntegerWidth::Int);
+            }
             other => panic!("expected Literal::Integer, got {:?}", other),
         }
     }
@@ -630,7 +424,10 @@ mod tests {
     #[test]
     fn lit_f64_produces_float_literal() {
         match lit(2.5f64) {
-            Expr::Leaf(SemanticLeaf::Literal(Literal::Float(f))) => assert_eq!(f, 2.5),
+            Expr::Leaf(SemanticLeaf::Literal(Literal::Float { value, width })) => {
+                assert_eq!(value, 2.5);
+                assert_eq!(width, FloatWidth::Double);
+            }
             other => panic!("expected Literal::Float, got {:?}", other),
         }
     }
@@ -661,8 +458,15 @@ mod tests {
 
     #[test]
     fn lit_passes_through_existing_literal() {
-        match lit(Literal::Integer(99)) {
-            Expr::Leaf(SemanticLeaf::Literal(Literal::Integer(n))) => assert_eq!(n, 99),
+        let input = Literal::Integer {
+            value: 99,
+            width: IntegerWidth::Long,
+        };
+        match lit(input) {
+            Expr::Leaf(SemanticLeaf::Literal(Literal::Integer { value, width })) => {
+                assert_eq!(value, 99);
+                assert_eq!(width, IntegerWidth::Long);
+            }
             other => panic!("expected Literal::Integer pass-through, got {:?}", other),
         }
     }
@@ -833,98 +637,6 @@ mod tests {
         match e {
             Expr::IsNull(_) => {}
             other => panic!("expected IsNull on PhysicalExpr, got {:?}", other),
-        }
-    }
-
-    // ── SemanticExprAccessorExt sugar ───────────────────────────────────
-
-    #[test]
-    fn dim_first_attaches_dimension_accessor_first() {
-        let e = dim("order_date").first();
-        match e {
-            Expr::Leaf(SemanticLeaf::Dimension {
-                accessor: Some(DimensionAccessor::First),
-                ..
-            }) => {}
-            other => panic!("expected Dimension::First, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn dim_lag_attaches_dimension_accessor_lag() {
-        let e = dim("order_date").lag(2);
-        match e {
-            Expr::Leaf(SemanticLeaf::Dimension {
-                accessor: Some(DimensionAccessor::Lag(2)),
-                ..
-            }) => {}
-            other => panic!("expected Dimension::Lag(2), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn measure_previous_attaches_measure_accessor_previous() {
-        let e = measure("revenue").previous();
-        match e {
-            Expr::Leaf(SemanticLeaf::Measure {
-                accessor: Some(MeasureAccessor::Previous),
-                ..
-            }) => {}
-            other => panic!("expected Measure::Previous, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn measure_delta_and_percent_change() {
-        match measure("revenue").delta() {
-            Expr::Leaf(SemanticLeaf::Measure {
-                accessor: Some(MeasureAccessor::Delta),
-                ..
-            }) => {}
-            other => panic!("expected Measure::Delta, got {:?}", other),
-        }
-        match measure("revenue").percent_change() {
-            Expr::Leaf(SemanticLeaf::Measure {
-                accessor: Some(MeasureAccessor::PercentChange),
-                ..
-            }) => {}
-            other => panic!("expected Measure::PercentChange, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn metric_previous_attaches_metric_accessor_previous() {
-        let e = metric("conv_rate").previous();
-        match e {
-            Expr::Leaf(SemanticLeaf::Metric {
-                accessor: Some(MetricAccessor::Previous),
-                ..
-            }) => {}
-            other => panic!("expected Metric::Previous, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn key_first_attaches_key_accessor_first() {
-        let e = key("order_id").first();
-        match e {
-            Expr::Leaf(SemanticLeaf::Key {
-                accessor: Some(KeyAccessor::First),
-                ..
-            }) => {}
-            other => panic!("expected Key::First, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn key_lead_attaches_key_accessor_lead() {
-        let e = key("order_id").lead(3);
-        match e {
-            Expr::Leaf(SemanticLeaf::Key {
-                accessor: Some(KeyAccessor::Lead(3)),
-                ..
-            }) => {}
-            other => panic!("expected Key::Lead(3), got {:?}", other),
         }
     }
 

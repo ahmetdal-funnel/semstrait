@@ -158,7 +158,20 @@ pub struct Diagnostic<K: Diagnose> {
 pub type Diagnostics<K> = Vec<Diagnostic<K>>;
 ```
 
-Construction is via per-crate helpers; `semstrait-common` does not expose a `Diagnostic::new` or builder. Each consumer crate's helper sets `severity` from `K::severity_default()` (overridable) and attaches `location` / `notes` as appropriate.
+Construction goes through a minimal primitive pair on `Diagnostic<K>`:
+
+```rust
+impl<K: Diagnose> Diagnostic<K> {
+    /// Seeds severity from `kind.severity_default()`, location = None, notes = vec![].
+    pub fn new(kind: K) -> Self;
+
+    pub fn with_severity(self, severity: Severity) -> Self;   // override default
+    pub fn with_location(self, location: Location) -> Self;   // attach span
+    pub fn with_note(self, note: impl Into<String>) -> Self;  // append note
+}
+```
+
+`semstrait-common` exposes no further builder. Per-stage consumer crates wrap this primitive in their own private helper (typically `fn diag(kind: K) -> Diagnostic<K>` for fail-fast sites, or a small builder for accumulating sites) so the call site stays idiomatic to each stage. The chainable `with_*` mutators are the *only* mechanism for attaching `location` / `notes` / overriding severity from outside this crate; the struct stays `#[non_exhaustive]` so future fields remain additive (I10).
 
 ### 4.4 `Diagnose` trait
 

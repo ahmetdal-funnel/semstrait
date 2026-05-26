@@ -1,0 +1,28 @@
+[package]
+name = "semstrait-common"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.79"
+license = "Apache-2.0"
+
+[dependencies]
+thiserror = { workspace = true }
+
+serde = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+dashmap = { workspace = true, optional = true }
+object_store = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+default  = ["io"]
+serde    = ["dep:serde"]
+schemars = ["dep:schemars", "serde"]
+io       = ["dep:tokio", "dep:bytes", "dep:dashmap", "dep:object_store", "object_store/fs"]
+io-aws   = ["io", "object_store/aws"]

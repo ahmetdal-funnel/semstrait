@@ -30,52 +30,47 @@
 //!     `MetricAccessor`, `KeyAccessor`.
 //!   - [`expr::parameter`] — `Parameter`, `ParameterKey`.
 //!   - [`expr::expr_fn`] — authoring DSL constructors, `std::ops` impls,
-//!     `ExprFunctionExt` and `SemanticExprAccessorExt` extension traits.
+//!     `ExprFunctionExt` extension trait.
 //!
-//! ## Legacy modules (pre-spec-cascade)
+//! ## Phase 2c additions (this iteration)
 //!
-//! `annotation`, `artifact`, `plan`, `plan_builder`, `rewrite`, `schema`,
-//! `substrait` are pre-cascade modules consumed by the `substrait`
-//! subsystem. They reference `semstrait_core::expr` items that the
-//! second cascade moved out of `semstrait-core`; the `expr/` subtree in
-//! Phase 2b will replace those references. See
-//! `[docs/design/implementation/40_refactor_plan.md](../../docs/design/implementation/40_refactor_plan.md)`.
+//! - [`functions`] — canonical function catalog per spec `35 §8` /
+//!   `14a §2`–`§7`. Owns [`functions::CanonicalFn`], the sealed
+//!   [`functions::FunctionRegistry`] singleton, and the v1 47-entry
+//!   built-in catalog (12 string + 11 math + 14 temporal + 2 logical +
+//!   8 aggregate).
 
+pub mod artifact;
 pub mod error;
 pub mod expr;
 pub mod expr_kinds;
-pub mod tree;
-
-// Legacy pre-cascade modules — to be replaced by Phase 2b's `expr/`
-// subtree. Currently disabled (`cfg(any())`) because Phase 1 removed
-// `semstrait_core::expr`, which these modules consume; Phase 2b will
-// stand up the replacement `expr/` subtree and either wire these legacy
-// modules to it or retire them entirely. The file contents remain on
-// disk untouched per Phase-2a scope rules; only the module declarations
-// here are gated.
-#[cfg(any())]
-pub mod annotation;
-#[cfg(any())]
-pub mod artifact;
-#[cfg(any())]
+pub mod functions;
 pub mod plan;
-#[cfg(any())]
-pub mod plan_builder;
-#[cfg(any())]
-pub mod rewrite;
-#[cfg(any())]
-pub mod schema;
-#[cfg(any())]
-pub mod substrait;
+pub mod primitives;
+pub mod tree;
+pub mod types;
 
 // ── Phase 2a re-exports (spec-aligned) ─────────────────────────────────
 
-pub use error::{CompileError, ValidateError};
+pub use error::{CompileError, IrErrorKind, ValidateError};
 pub use expr_kinds::{
-    AggregationOp, BinaryOpKind, CanonicalFn, CastFailure, ColumnRef, LikeKind, Literal,
-    SemanticsName, UnaryOpKind, WindowBound, WindowFn, WindowFrame, WindowFrameKind,
+    AggregateKind, AggregationOp, BinaryOpKind, CastFailure, ColumnRef, FloatWidth, IntegerWidth,
+    LikeKind, Literal, SemanticsName, UnaryOpKind, WindowBound, WindowFn, WindowFrame,
+    WindowFrameKind,
 };
 pub use tree::{ExprLeaf, Rewriter, Tree, Visitor};
+
+// ── Phase 2c re-exports (functions/ catalog) ───────────────────────────
+//
+// `CanonicalFn` lives here per `35 §8.2` / `14a §2`. The sealed registry
+// singleton is reached via `function_registry()`.
+
+pub use functions::{
+    function_registry, Additivity, CanonicalFn, DimensionAxis, FnSignature, FunctionCategory,
+    FunctionRegistry, FunctionSpec, ParamType, ReturnTypeRule,
+};
+// `RegistryExtension` is wired in `functions::extension`; not re-exported at
+// crate root until TD-REGISTRY-EXTENSION-WIRING ships (P-7).
 
 // ── Phase 2b re-exports (expr/ subtree) ────────────────────────────────
 //
@@ -83,26 +78,39 @@ pub use tree::{ExprLeaf, Rewriter, Tree, Visitor};
 // (busy namespace; consumers do `use semstrait_ir::expr::expr_fn::*;`).
 
 pub use expr::{
-    DimensionAccessor, Expr, KeyAccessor, MeasureAccessor, MetricAccessor, Parameter,
-    ParameterKey, PhysicalExpr, PhysicalLeaf, SemanticExpr, SemanticLeaf,
+    DimensionAccessor, Expr, KeyAccessor, MeasureAccessor, MetricAccessor, Parameter, ParameterKey,
+    PhysicalExpr, PhysicalLeaf, SemanticExpr, SemanticLeaf,
+};
+pub use types::{DataType, Grain, Schema, SchemaColumn, TypeClass};
+
+// ── Phase 2d re-exports (plan-tree primitives) ─────────────────────────
+//
+// Plan-level identifiers and structural-variant carriers per `35 §11`.
+// Live alongside `types::DataType` rather than under a `plan::` namespace
+// because they are reused across the IR (e.g. `AggregateExpr` is referenced
+// from `expr::*` extension contexts) and the future plan-tree node types.
+
+pub use primitives::{
+    AggregateExpr, Cardinality, JoinType, KeyPair, Name, NullOrdering, ResolvedColumn, SortDir,
+    SourceRef,
 };
 
-// ── Legacy re-exports (pre-spec-cascade) ───────────────────────────────
+// ── Phase 2d re-exports (plan/ subtree) ────────────────────────────────
+//
+// Plan-tree node sum + per-variant payload structs + per-node metadata
+// per `35 §10` / `§11.1`. Traversal helpers (P16) and the
+// `SemanticPlan` wrapper (P17) re-export at landing.
 
-// Legacy `error` re-exports from the pre-cascade substrait subsystem.
-// These remain active because the legacy error types live in this same
-// `error` module, which compiles independently of the gated legacy
-// modules above.
-pub use error::{ConvertError, DeserializeError, SerializeError};
+pub use plan::{
+    AggNode, AnnotationClass, BoundaryPosition, FetchNode, FilterNode, JoinNode, NodeId, NodeMeta,
+    PlanNode, ProjectNode, ScanNode, SemAnnotation, SemanticPlan, SortNode, UnionNode, ValuesNode,
+};
 
-// The remaining legacy re-exports (`AdditivityAnnotation`,
-// `AggregateRole`, `FilterSource`, `SemAnnotation`, `PlanArtifact`,
-// `AggNode`, `AggregateMeasure`, `FetchNode`, `FilterNode`, `JoinNode`,
-// `JoinType`, `LogicalPlan`, `NodeMeta`, `PlanNode`, `PlannerWarning`,
-// `ProjectNode`, `ScanNode`, `SortDirection`, `SortKey`, `SortNode`,
-// `UnionNode`, `Aggregation`, `BinaryOp`, `DataType`, `Expr`,
-// `DefaultPlanBuilder`, `PlanBuilder`, `FunctionRewriter`,
-// `FunctionTarget`, `Field`, `Schema`, `ExprConverter`,
-// `FunctionRegistry`, `SubstraitSerializer`) are gated together with
-// their owning modules above (`#[cfg(any())]`). They restore in Phase 2b
-// once the `expr/` subtree is wired in.
+// ── Phase 2e re-exports (artifact/ family) ─────────────────────────────
+//
+// Adapter-consumable artifacts per `35 §12`. `35` ratifies the
+// structural shape; `36` (`semstrait-adapter`) owns the emission
+// semantics. `DialectId` is the only engine-identity vocabulary in IR
+// per S7 — appears only on `SqlArtifact.dialect` and `Dialect::ID`.
+
+pub use artifact::{Capability, Dialect, DialectId, EngineArtifact, EnginePlan, SqlArtifact};

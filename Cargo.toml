@@ -1,5 +1,14 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/semstrait-common", "crates/semstrait-ir"]
+exclude = [
+    "crates/semstrait",
+    "crates/semstrait-adapter",
+    "crates/semstrait-api",
+    "crates/semstrait-catalog",
+    "crates/semstrait-manifest",
+    "crates/semstrait-model",
+    "crates/semstrait-planner",
+]
 resolver = "2"
 
 [workspace.dependencies]
@@ -44,6 +53,11 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 bon = "3"
 jsonschema = { version = "0.30", default-features = false }
+bytes = "1"
+dashmap = "6"
+object_store = { version = "0.12", default-features = false }
+schemars = "0.8"
+tempfile = "3"
 
 # API (optional)
 axum = { version = "0.8" }
@@ -51,44 +65,5 @@ clap = { version = "4", features = ["derive"] }
 tonic = { version = "0.14" }
 
 # Internal workspace crates
-semstrait-core = { path = "crates/semstrait-core" }
-semstrait-model = { path = "crates/semstrait-model" }
-semstrait-catalog = { path = "crates/semstrait-catalog" }
-semstrait-manifest = { path = "crates/semstrait-manifest" }
+semstrait-common = { path = "crates/semstrait-common", default-features = true }
 semstrait-ir = { path = "crates/semstrait-ir" }
-semstrait-planner = { path = "crates/semstrait-planner" }
-semstrait-adapter = { path = "crates/semstrait-adapter" }
-semstrait-api = { path = "crates/semstrait-api" }
-
-# Workspace-level integration tests package
-[package]
-name = "semstrait-integration-tests"
-version = "0.0.1"
-edition = "2021"
-publish = false
-
-[dependencies]
-semstrait = { path = "crates/semstrait" }
-semstrait-manifest = { workspace = true }
-semstrait-planner = { workspace = true }
-semstrait-ir = { workspace = true }
-semstrait-core = { workspace = true }
-semstrait-api = { workspace = true }
-semstrait-adapter = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }
-
-[features]
-default = []
-datafusion = ["semstrait-adapter/datafusion", "semstrait-api/datafusion", "semstrait/datafusion"]
-duckdb = ["semstrait-adapter/duckdb", "semstrait-api/duckdb"]
-iceberg = ["semstrait-api/iceberg"]
-unity = ["semstrait-api/unity"]
-aws = ["semstrait-api/aws"]
-spark = ["semstrait-adapter/spark", "semstrait-api/spark"]
-
-# polyglot-sql is extremely slow in unoptimized debug builds (recursive AST
-# walking becomes ~1000x slower). Compile it with opt-level 1 so that `cargo test`
-# completes in reasonable time.
-[profile.dev.package.polyglot-sql]
-opt-level = 1

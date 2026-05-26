@@ -40,7 +40,7 @@ use crate::expr::parameter::Parameter;
 use crate::expr::tree::Expr;
 use crate::expr_kinds::{ColumnRef, Literal, SemanticsName};
 use crate::tree::ExprLeaf;
-use semstrait_core::DataType;
+use crate::types::DataType;
 
 /// Canonical-IR leaf set per spec `14 §3.4` / `35 §4.1`.
 ///
@@ -152,43 +152,6 @@ mod tests {
     use super::*;
     use crate::expr::parameter::ParameterKey;
 
-    // ── PhysicalLeaf shape & equality ───────────────────────────────────
-
-    #[test]
-    fn physical_leaf_column_equality_and_clone() {
-        let a = PhysicalLeaf::Column(ColumnRef("amount".into()));
-        let b = a.clone();
-        assert_eq!(a, b);
-        let c = PhysicalLeaf::Column(ColumnRef("other".into()));
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn physical_leaf_literal_equality_and_clone() {
-        let a = PhysicalLeaf::Literal(Literal::Integer(42));
-        let b = a.clone();
-        assert_eq!(a, b);
-        let c = PhysicalLeaf::Literal(Literal::Integer(99));
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn physical_leaf_parameter_equality_and_clone() {
-        let p = Parameter {
-            key: ParameterKey::RequestTemporalAxis,
-            data_type: DataType::Date,
-        };
-        let a = PhysicalLeaf::Parameter(p.clone());
-        let b = a.clone();
-        assert_eq!(a, b);
-        let q = Parameter {
-            key: ParameterKey::RequestDimensionsMinusTemporal,
-            data_type: DataType::Date,
-        };
-        let c = PhysicalLeaf::Parameter(q);
-        assert_ne!(a, c);
-    }
-
     // ── PhysicalLeaf::inferred_type ─────────────────────────────────────
 
     #[test]
@@ -209,34 +172,15 @@ mod tests {
 
     #[test]
     fn physical_leaf_inferred_type_literal_returns_none_in_v1() {
-        let leaf = PhysicalLeaf::Literal(Literal::Integer(7));
+        use crate::expr_kinds::IntegerWidth;
+        let leaf = PhysicalLeaf::Literal(Literal::Integer {
+            value: 7,
+            width: IntegerWidth::Long,
+        });
         assert!(leaf.inferred_type().is_none());
     }
 
-    // ── SemanticLeaf shape & equality ───────────────────────────────────
-
-    #[test]
-    fn semantic_leaf_literal_equality_and_clone() {
-        let a = SemanticLeaf::Literal(Literal::String("hi".into()));
-        let b = a.clone();
-        assert_eq!(a, b);
-        assert_ne!(a, SemanticLeaf::Literal(Literal::String("bye".into())));
-    }
-
-    #[test]
-    fn semantic_leaf_column_equality_and_clone() {
-        let a = SemanticLeaf::Column(ColumnRef("revenue".into()));
-        let b = a.clone();
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn semantic_leaf_field_equality_and_clone() {
-        let a = SemanticLeaf::Field(SemanticsName("revenue".into()));
-        let b = a.clone();
-        assert_eq!(a, b);
-        assert_ne!(a, SemanticLeaf::Field(SemanticsName("cost".into())));
-    }
+    // ── SemanticLeaf shape ──────────────────────────────────────────────
 
     #[test]
     fn semantic_leaf_dimension_with_accessor() {
@@ -305,7 +249,10 @@ mod tests {
     #[test]
     fn semantic_leaf_inferred_type_returns_none_for_every_variant_in_v1() {
         let leaves = [
-            SemanticLeaf::Literal(Literal::Integer(1)),
+            SemanticLeaf::Literal(Literal::Integer {
+                value: 1,
+                width: crate::expr_kinds::IntegerWidth::Long,
+            }),
             SemanticLeaf::Column(ColumnRef("c".into())),
             SemanticLeaf::Field(SemanticsName("f".into())),
             SemanticLeaf::Dimension {

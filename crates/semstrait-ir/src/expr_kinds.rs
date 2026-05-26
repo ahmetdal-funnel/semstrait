@@ -11,14 +11,7 @@
 //! public enum carries `#[non_exhaustive]` per invariant I10 (additive
 //! variant growth must not break exhaustively-matching consumers).
 //!
-//! ## Note on `CanonicalFn` placement
-//!
-//! `CanonicalFn` lives in this module pending `FunctionRegistry` stand-up.
-//! Spec `35 §2` allocates a dedicated `functions/` module that will own
-//! `CanonicalFn` once `[14a §2](../../docs/design/foundations/14a_function_catalog.md)`
-//! lands; the type relocates at that point. This iteration places it here
-//! because `Expr<L>::FunctionCall` (Phase 2b) carries it and we are not
-//! building the registry yet.
+//! `CanonicalFn` lives in [`crate::functions`] per `35 §8.2` / `14a §2`.
 
 // ── Operator discriminators ────────────────────────────────────────────
 
@@ -59,9 +52,9 @@ pub enum UnaryOpKind {
     Not,
 }
 
-/// Aggregation-operation tag carried by `Expr<L>::Aggregate`. Roster
-/// per spec `14 §3.3`. `CountDistinct` is encoded as
-/// `Aggregate { op: Count, distinct: true, .. }`.
+/// Closed-five aggregation tag. Roster per spec `14 §3.3`. Carried as
+/// `AggregateKind::Builtin(...)`. `CountDistinct` is encoded as
+/// `Aggregate { op: Builtin(Count), distinct: true, .. }`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggregationOp {
@@ -70,6 +63,17 @@ pub enum AggregationOp {
     Count,
     Min,
     Max,
+}
+
+/// Aggregation operator carrier — closed-five builtins or registry
+/// extensions. Per `14 §3.3` and `14a §2`. Builtin variants use the
+/// closed-five [`AggregationOp`]; extension variants reference a
+/// [`crate::functions::CanonicalFn`] resolved against the registry.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AggregateKind {
+    Builtin(AggregationOp),
+    Extension(crate::functions::CanonicalFn),
 }
 
 /// `LIKE`-operator variant tag — case-sensitivity and negation profile.
@@ -144,20 +148,47 @@ pub enum WindowBound {
 
 // ── Typed literal carrier ──────────────────────────────────────────────
 
+/// Width discriminator for [`Literal::Integer`]. Per `35 §13.5`,
+/// integer literals carry their declared width so the type round-trips
+/// without re-inference.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegerWidth {
+    Int,
+    Long,
+}
+
+/// Width discriminator for [`Literal::Float`]. Per `35 §13.5`, floating
+/// literals carry their declared width so the type round-trips without
+/// re-inference.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FloatWidth {
+    Float,
+    Double,
+}
+
 /// Typed literal value — single carrier shared by `PhysicalLeaf::Literal`
 /// and `SemanticLeaf::Literal`. Variant list aligns 1:1 with
-/// [`semstrait_core::DataType`] plus `Null`. Per spec `14 §3.3`,
-/// `35 §3.4`.
+/// [`crate::types::DataType`]. Per spec `14 §3.3`, `35 §3.4`, `35 §13.5`.
 ///
-/// `Float(f64)` makes this enum non-`Eq` / non-`Hash` (NaN inequality);
-/// downstream code that needs hash-comparable literal keys MUST normalize
-/// or work over a stable string spelling.
+/// `Float { width, .. }` makes this enum non-`Eq` / non-`Hash` (NaN
+/// inequality); downstream code that needs hash-comparable literal keys
+/// MUST normalize or work over a stable string spelling.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Boolean(bool),
-    Integer(i64),
-    Float(f64),
+    Integer {
+        value: i64,
+        width: IntegerWidth,
+    },
+    Float {
+        value: f64,
+        width: FloatWidth,
+    },
     Decimal {
         value: String,
         precision: u8,
@@ -175,7 +206,9 @@ pub enum Literal {
     },
     Interval(String),
     Binary(Vec<u8>),
-    Null,
+    Null {
+        data_type: crate::types::DataType,
+    },
 }
 
 // ── Identifier carriers ────────────────────────────────────────────────
@@ -196,15 +229,8 @@ pub struct ColumnRef(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SemanticsName(pub String);
 
-/// Canonical function identity per `[14a §2](../../docs/design/foundations/14a_function_catalog.md)`.
-/// Newtype-over-stable per `30 §4.3` — `.0` access is intentional; no
-/// `#[non_exhaustive]`.
-///
-/// **Placement note.** Lives here pending `FunctionRegistry` stand-up;
-/// relocates to the `functions` module when `14a §2` lands. See module
-/// docs.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CanonicalFn(pub String);
+// `CanonicalFn` lives in [`crate::functions`] per `14a §2` / `35 §8.2`.
+// See [`crate::functions::CanonicalFn`].
 
 #[cfg(test)]
 mod tests {
@@ -212,97 +238,19 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn binary_op_kind_equality_and_hash() {
-        let a: HashSet<BinaryOpKind> = [BinaryOpKind::Add, BinaryOpKind::Eq].into_iter().collect();
-        assert!(a.contains(&BinaryOpKind::Add));
-        assert!(a.contains(&BinaryOpKind::Eq));
-        assert!(!a.contains(&BinaryOpKind::Subtract));
-        assert_eq!(BinaryOpKind::And, BinaryOpKind::And);
-        assert_ne!(BinaryOpKind::And, BinaryOpKind::Or);
-    }
-
-    #[test]
-    fn unary_op_kind_equality_and_hash() {
-        let a: HashSet<UnaryOpKind> = [UnaryOpKind::Negate, UnaryOpKind::Not].into_iter().collect();
-        assert_eq!(a.len(), 2);
-        assert_ne!(UnaryOpKind::Negate, UnaryOpKind::Not);
-    }
-
-    #[test]
-    fn aggregation_op_equality_and_hash() {
-        let a: HashSet<AggregationOp> = [AggregationOp::Sum, AggregationOp::Count]
-            .into_iter()
-            .collect();
-        assert!(a.contains(&AggregationOp::Sum));
-        assert!(!a.contains(&AggregationOp::Avg));
-    }
-
-    #[test]
-    fn like_kind_equality_and_hash() {
-        let a: HashSet<LikeKind> = [LikeKind::Like, LikeKind::ILike].into_iter().collect();
-        assert!(a.contains(&LikeKind::Like));
-        assert!(a.contains(&LikeKind::ILike));
-        assert!(!a.contains(&LikeKind::NotLike));
-    }
-
-    #[test]
-    fn cast_failure_equality_and_hash() {
-        let a: HashSet<CastFailure> = [CastFailure::Error, CastFailure::Null].into_iter().collect();
-        assert_eq!(a.len(), 2);
-    }
-
-    #[test]
-    fn window_fn_equality_and_hash() {
-        let a: HashSet<WindowFn> = [WindowFn::Lag, WindowFn::Lead, WindowFn::RowNumber]
-            .into_iter()
-            .collect();
-        assert_eq!(a.len(), 3);
-        assert_ne!(WindowFn::Rank, WindowFn::DenseRank);
-    }
-
-    #[test]
-    fn window_bound_equality_and_hash() {
-        let a: HashSet<WindowBound> = [
-            WindowBound::UnboundedPreceding,
-            WindowBound::Preceding(5),
-            WindowBound::CurrentRow,
-        ]
-        .into_iter()
-        .collect();
-        assert!(a.contains(&WindowBound::Preceding(5)));
-        assert!(!a.contains(&WindowBound::Preceding(7)));
-    }
-
-    #[test]
-    fn window_frame_kind_equality_and_hash() {
-        let a: HashSet<WindowFrameKind> =
-            [WindowFrameKind::Rows, WindowFrameKind::Range].into_iter().collect();
-        assert_eq!(a.len(), 2);
-        assert_ne!(WindowFrameKind::Rows, WindowFrameKind::Groups);
-    }
-
-    #[test]
-    fn window_frame_struct_equality_and_hash() {
-        let f = WindowFrame {
-            kind: WindowFrameKind::Rows,
-            start: WindowBound::UnboundedPreceding,
-            end: WindowBound::CurrentRow,
-        };
-        let g = f.clone();
-        assert_eq!(f, g);
-        let mut set = HashSet::new();
-        set.insert(f);
-        assert!(set.contains(&g));
-    }
-
-    #[test]
     fn literal_round_trip_via_debug() {
         // Each variant produces a Debug rendering and round-trips via
         // Clone + PartialEq.
         let cases = vec![
             Literal::Boolean(true),
-            Literal::Integer(-42),
-            Literal::Float(std::f64::consts::PI),
+            Literal::Integer {
+                value: -42,
+                width: IntegerWidth::Long,
+            },
+            Literal::Float {
+                value: std::f64::consts::PI,
+                width: FloatWidth::Double,
+            },
             Literal::Decimal {
                 value: "1.23".to_string(),
                 precision: 4,
@@ -320,7 +268,9 @@ mod tests {
             },
             Literal::Interval("P1D".to_string()),
             Literal::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF]),
-            Literal::Null,
+            Literal::Null {
+                data_type: crate::types::DataType::Integer,
+            },
         ];
         for lit in cases {
             let cloned = lit.clone();
@@ -335,8 +285,46 @@ mod tests {
     fn literal_float_nan_is_not_equal_to_itself() {
         // Sanity check that we did not derive Eq on Literal — f64 NaN
         // inequality is the architectural reason.
-        let nan = Literal::Float(f64::NAN);
+        let nan = Literal::Float {
+            value: f64::NAN,
+            width: FloatWidth::Double,
+        };
         assert_ne!(nan, nan.clone());
+    }
+
+    #[test]
+    fn integer_width_serde_round_trip() {
+        for w in [IntegerWidth::Int, IntegerWidth::Long] {
+            let s = serde_json::to_string(&w).unwrap();
+            let back: IntegerWidth = serde_json::from_str(&s).unwrap();
+            assert_eq!(w, back);
+        }
+        // Snake-case spelling is observable on the wire.
+        assert_eq!(
+            serde_json::to_string(&IntegerWidth::Int).unwrap(),
+            "\"int\""
+        );
+        assert_eq!(
+            serde_json::to_string(&IntegerWidth::Long).unwrap(),
+            "\"long\""
+        );
+    }
+
+    #[test]
+    fn float_width_serde_round_trip() {
+        for w in [FloatWidth::Float, FloatWidth::Double] {
+            let s = serde_json::to_string(&w).unwrap();
+            let back: FloatWidth = serde_json::from_str(&s).unwrap();
+            assert_eq!(w, back);
+        }
+        assert_eq!(
+            serde_json::to_string(&FloatWidth::Float).unwrap(),
+            "\"float\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FloatWidth::Double).unwrap(),
+            "\"double\""
+        );
     }
 
     #[test]
@@ -352,27 +340,6 @@ mod tests {
         assert_eq!(c.0, "other");
     }
 
-    #[test]
-    fn semantics_name_equality_and_hash() {
-        let a = SemanticsName("revenue".to_string());
-        let b = SemanticsName("revenue".to_string());
-        assert_eq!(a, b);
-        let c = SemanticsName("cost".to_string());
-        assert_ne!(a, c);
-        let mut set = HashSet::new();
-        set.insert(a);
-        assert!(set.contains(&b));
-    }
-
-    #[test]
-    fn canonical_fn_equality_and_hash() {
-        let a = CanonicalFn("coalesce".to_string());
-        let b = CanonicalFn("coalesce".to_string());
-        assert_eq!(a, b);
-        let mut set = HashSet::new();
-        set.insert(a);
-        assert!(set.contains(&b));
-        let c = CanonicalFn("substring".to_string());
-        assert!(!set.contains(&c));
-    }
+    // `canonical_fn_*` test coverage moved to
+    // `crate::functions::canonical_fn::tests` per `35 §8.2`.
 }

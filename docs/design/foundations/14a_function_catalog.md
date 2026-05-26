@@ -62,11 +62,10 @@ pub struct FunctionSpec {
     pub category:       FunctionCategory,
     pub signatures:     NonEmpty<FnSignature>,
     pub additivity:     Option<Additivity>,  // §3.6; None for scalar / non-aggregate
-    pub description:    &'static str,
 }
 ```
 
-No `null_handling` (NULL-in/out delegated to engine per `14 §5.4`). No `deterministic` (`[TD-REGISTRY-DETERMINISM]`). No `aliases` / `since_version` / `stability` (versioning lives in `apis/30`). Per-engine portability carriage lives entirely in `registry/functions_mapping.md` (§6).
+No `description` field — author-facing prose lives in this catalog document (§4), not on the runtime spec; the canonical name is sufficient routing for adapters and the registry. No `null_handling` (NULL-in/out delegated to engine per `14 §5.4`). No `deterministic` (`[TD-REGISTRY-DETERMINISM]`). No `aliases` / `since_version` / `stability` (versioning lives in `apis/30`). Per-engine portability carriage lives entirely in `registry/functions_mapping.md` (§6).
 
 ### 3.2 `FunctionCategory`
 
@@ -107,12 +106,19 @@ pub enum ReturnTypeRule {
     SameAs(usize),
     /// Common-supertype promotion of the listed arg indices per `13 §2.6`.
     Promoted(&'static [usize]),
+    /// Decimal scale-zero collapse: `Decimal(p, s) → Decimal(p, 0)`. For
+    /// integer-rounding kernels (`ceil`, `floor`) on Decimal inputs.
+    DecimalScaleZero,
     /// Escape hatch for width-sensitive / literal-driven rules (e.g. `cast(x, T) -> T`).
     Custom(fn(&[DataType]) -> Result<DataType, CompileError>),
 }
 ```
 
 Nullability is pass-through per `13`'s NULL model; no `NullableOf` variant. Per-engine nullability tightening lives in `registry/types_mapping.md`.
+
+`ReturnTypeRule` does not implement `PartialEq` — `Custom` carries a function pointer, and pointer equality is implementation-defined. Inspection sites (signature lookup, registry assertions) compare by the surrounding `FnSignature.args` instead.
+
+`DecimalScaleZero` is restricted to overloads whose first argument is `ParamType::DecimalFamily` (§3.5). Float / Double overloads of the same canonical name use `SameAs(0)`.
 
 ### 3.5 `ParamType`
 
@@ -122,13 +128,14 @@ pub enum ParamType {
     Concrete(DataType),
     AnyOf(Vec<DataType>),
     NumericFamily,
+    DecimalFamily,
     StringFamily,
     TemporalFamily,
     Any,
 }
 ```
 
-Family variants ground in `[13 §4](13_types_and_grain.md)`'s `TypeClass` vocabulary. Family use is restricted to declared overloads in v1; full TypeClass generics still deferred under `[TD-REGISTRY-TYPECLASS]`.
+Family variants ground in `[13 §4](13_types_and_grain.md)`'s `TypeClass` vocabulary. Family use is restricted to declared overloads in v1; full TypeClass generics still deferred under `[TD-REGISTRY-TYPECLASS]`. `DecimalFamily` is the additive variant for decimal-precision-sensitive overloads (e.g. `ceil` / `floor` / `round` / `median` on Decimal); it pairs with `ReturnTypeRule::DecimalScaleZero` (§3.4) for scale-zero collapse.
 
 ### 3.6 `Additivity` (function-level)
 
@@ -190,9 +197,9 @@ Ratified Round-2 (2026-05-21). `mod(x, y)` is NOT in the catalog — `BinaryOpKi
 | Canonical | Signatures | Notes |
 |---|---|---|
 | `abs` | `(Numeric) -> same` | Type-preserving across all numeric types. Signed-integer minimum (e.g. `abs(INT_MIN)`) is engine-visible overflow. |
-| `round` | `(Float) -> Float`, `(Float, Integer) -> Float`, `(Decimal(p,s)) -> Decimal(p,s)`, `(Decimal(p,s), Integer) -> Decimal(p,s)` | Half-away-from-zero. Integer arg form: rounds to N decimal places (negative = left of decimal). Integer inputs are rejected at compile — authors cast explicitly. |
-| `ceil` | `(Float) -> Float`, `(Decimal(p,s)) -> Decimal(p,0)` | Single-arg only in v1. 2-arg with `scale` deferred. |
-| `floor` | `(Float) -> Float`, `(Decimal(p,s)) -> Decimal(p,0)` | Same as `ceil` mirrored. |
+| `round` | `(Float) -> Float`, `(Float, Integer) -> Float`, `(Double) -> Double`, `(Double, Integer) -> Double`, `(Decimal(p,s)) -> Decimal(p,s)`, `(Decimal(p,s), Integer) -> Decimal(p,s)` | Half-away-from-zero. Integer arg form: rounds to N decimal places (negative = left of decimal). Integer inputs are rejected at compile — authors cast explicitly. |
+| `ceil` | `(Float) -> Float`, `(Double) -> Double`, `(Decimal(p,s)) -> Decimal(p,0)` | Single-arg only in v1. 2-arg with `scale` deferred. Decimal overload uses `ReturnTypeRule::DecimalScaleZero` (§3.4); Float / Double use `SameAs(0)`. |
+| `floor` | `(Float) -> Float`, `(Double) -> Double`, `(Decimal(p,s)) -> Decimal(p,0)` | Same as `ceil` mirrored. |
 | `sqrt` | `(Float) -> Float` | Negative input is engine-visible (DuckDB errors, DF/Spark return NaN). |
 | `power` | `(Float, Float) -> Float` | Out-of-domain behavior (`power(0, neg)`, `power(neg, 0.5)`) is engine-visible. |
 | `exp` | `(Float) -> Float` | |

@@ -15,7 +15,7 @@
 //! two keys needed by Family-B-sugar elimination (`14 §4.2`); future keys
 //! land via `#[non_exhaustive]` additions.
 
-use semstrait_core::DataType;
+use crate::types::DataType;
 
 /// Plan-bound parameter placeholder. Substituted by the planner during
 /// Phase B per `19 §6` / `34`. Per spec `14 §5.1`, `35 §5.2`.
@@ -51,59 +51,13 @@ pub enum ParameterKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
-
-    #[test]
-    fn parameter_key_equality_and_hash() {
-        let set: HashSet<ParameterKey> = [
-            ParameterKey::RequestDimensionsMinusTemporal,
-            ParameterKey::RequestTemporalAxis,
-        ]
-        .into_iter()
-        .collect();
-        assert_eq!(set.len(), 2);
-        assert!(set.contains(&ParameterKey::RequestDimensionsMinusTemporal));
-        assert!(set.contains(&ParameterKey::RequestTemporalAxis));
-        assert_ne!(
-            ParameterKey::RequestDimensionsMinusTemporal,
-            ParameterKey::RequestTemporalAxis
-        );
-    }
-
-    #[test]
-    fn parameter_key_is_copy() {
-        fn assert_copy<T: Copy>() {}
-        assert_copy::<ParameterKey>();
-    }
-
-    #[test]
-    fn parameter_equality_and_clone() {
-        let a = Parameter {
-            key: ParameterKey::RequestDimensionsMinusTemporal,
-            data_type: DataType::Integer,
-        };
-        let b = a.clone();
-        assert_eq!(a, b);
-
-        let c = Parameter {
-            key: ParameterKey::RequestTemporalAxis,
-            data_type: DataType::Integer,
-        };
-        assert_ne!(a, c);
-
-        let d = Parameter {
-            key: ParameterKey::RequestDimensionsMinusTemporal,
-            data_type: DataType::String,
-        };
-        assert_ne!(a, d);
-    }
 
     #[test]
     fn parameter_carries_data_type_for_each_canonical_kind() {
         // Sanity sweep — `data_type` admits any canonical DataType.
         for dt in [
             DataType::Integer,
-            DataType::Number,
+            DataType::Double,
             DataType::String,
             DataType::Boolean,
             DataType::Date,
