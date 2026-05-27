@@ -2,6 +2,9 @@
 prereqs: [10, 11, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 30, 31, 33, 35]
 authoritative-for:
   - the `semstrait-planner` public-API surface (types, traits, free functions)
+  - runtime `SemanticGraph` segment lifecycle in planner (build, cache, invalidate) using canonical graph types from `35`
+  - planner-owned cache policy (`ttl`, `lru`, memory bounds) and segment-store contracts
+  - planner-time drift policy contract (`Strict`, `Warn`, `TrustManifest`) over touched sources
   - the `plan` free-function signature using the fail-fast typed-kind shape per `30 §7.1` (`Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>`) and its seven pipeline sub-steps
   - the `optimize` free-function signature (parallel fail-fast shape over `OptimizeErrorKind`) and the canonical-pass roster
   - the `Request` type and its fields (dimensions, measures, metrics, filters, order, limit, offset, from, temporal, session)
@@ -18,7 +21,7 @@ refined-by:
   - 23 (`data-kinds/23_unionset.md` — `UnionsetStrategy` per-variant algorithm)
   - 24 (`data-kinds/24_joinset.md` — `JoinsetStrategy` per-variant algorithm)
   - 25 (`data-kinds/25_applicability_matrix.md` — per-variant cross-cut consumed at dispatch)
-  - 35 (`apis/35_semstrait_ir.md` — `SemanticPlan` and `PlanNode` tree the planner emits)
+  - 35 (`apis/35_semstrait_ir.md` — `SemanticPlan` / `PlanNode` and canonical `semantic_graph` types the planner emits/consumes)
   - 36 (`apis/36_semstrait_adapter.md` — consumes the `SemanticPlan` produced by this crate)
   - 40 (`implementation/40_refactor_plan.md` — current code-vs-target delta for the planner crate)
 ---
@@ -37,6 +40,10 @@ refined-by:
 > `OptimizerPass` trait shapes, and the `PlanErrorKind` / `OptimizeErrorKind`
 > typed-kind enums (per `30 §5`) that flow across the stage boundary.
 > Round-1 open items parked in `questions/open/34_questions.md`.
+>
+> **Ratified addendum (2026-05-27).** Planner now owns runtime semantic-graph lifecycle:
+> segment-key construction, cache lookup, on-demand segment build, planner-time drift policy,
+> and graph-to-plan lowering. Canonical graph types live in ir (`35`); persisted seeds live in manifest (`33`).
 
 ## 1. Purpose, scope, layering
 
@@ -48,17 +55,20 @@ refined-by:
 - The `Strategy` trait (§8) — the dispatch surface ratified structurally in `20 §5.2` and concretized here.
 - The four built-in strategies: `SimpleStrategy`, `GrainsetStrategy`, `UnionsetStrategy`, `JoinsetStrategy` (§9) — crate-public wrappers whose algorithms are ratified in `21`–`24`.
 - Field-first resolution (§10) — the planner-side realization of the algorithm ratified in `16 §11`.
+- Runtime `SemanticGraph` segment construction from manifest seeds (builder + lowerer contracts).
+- Segment cache lifecycle (`ttl`, `lru`, memory bounds, explicit invalidation hooks).
+- Drift policy evaluation on touched sources (`Strict`, `Warn`, `TrustManifest`) before segment admission.
 - The `OptimizerPass` trait (§12) — the pluggable v1 optimizer interface.
 - The `PlanErrorKind` and `OptimizeErrorKind` typed-kind enums (§13), their `Diagnose` impls per `30 §5.4`, and the variant rosters wrapping per-DataKind `Simple` / `Grainset` / `Unionset` / `Joinset` errors.
 - The `StrategyRegistry` and `StrategyContext` (§8.3 / §8.4) — internal wiring types exposed to adapter-level extensions and test doubles only.
 
 ### 1.2 What `semstrait-planner` does NOT own
 
-- **Expression / type vocabulary.** `Expr`, `PhysicalExpr`, `Aggregation`, `DataType`, `Grain`, `Diagnostic<K>`, `Severity`, `Diagnose` all live in `semstrait-common` (`31`). `34` consumes them.
+- **Expression and graph type vocabulary.** `Expr`, `SemanticExpr`, `PhysicalExpr`, `SemanticGraph`, `GraphNode`, `GraphEdge`, `SegmentKey`, `DataType`, `Grain`, and diagnostics primitives live in `semstrait-ir`/`semstrait-common` (`35`, `31`). `34` consumes them.
 - **Plan-tree shape.** `SemanticPlan`, `PlanNode`, `NodeMeta`, `SourceRef`, `Name` all live in `semstrait-ir` (`35`). `34` emits and consumes them.
-- **SemanticManifest shape.** `SemanticManifest`, `ResolvedDataKind`, `ResolvedBinding`, `ResolvedExprTable`, `CoverageIndex`, `CompositionIndex` all live in `semstrait-manifest` (`33`). `34` reads them — never mutates, never re-resolves (I5 / I8).
+- **SemanticManifest shape.** `SemanticManifest` seed/index contracts live in `semstrait-manifest` (`33`). `34` reads them, builds runtime segments, and never mutates persisted artifacts.
 - **YAML parsing / structural validation.** Lives in `semstrait-model` (`32`). The `Request` the planner accepts is already a Rust value — the API layer (`semstrait-api`) is responsible for converting user-facing JSON / gRPC / protobuf into `Request`.
-- **Catalog / filesystem access.** `CatalogProvider` / `FileSystem` (`37`) are consumed at `compile` time only; no planner surface accepts them (I11).
+- **Catalog / filesystem ownership.** `CatalogProvider` / `FileSystem` trait ownership remains in `37`; planner may consume explicit drift probes/results but does not own provider contracts.
 - **SQL / engine emission.** `semstrait-adapter` (`36`) consumes the `SemanticPlan` and produces engine-specific artifacts; no planner API touches a dialect.
 
 ### 1.3 Design posture — sync-only dispatch crate
@@ -66,7 +76,7 @@ refined-by:
 The planner is the workspace's widest dispatch site — the `plan` entry point fans out across every `ResolvedDataKind` variant — but it is **not** the crate with the most runtime weight. The hot path is a single tree walk over pre-resolved SemanticManifest indices (§7). Three properties shape the design:
 
 - **Synchronous end-to-end.** Per I6, there is no `async fn` anywhere on the public surface. `plan` and `optimize` are ordinary fallible functions; every strategy method is sync. The `async` wrapper on `compile` (`10 §3.3`) is the last async boundary in the pipeline; everything the planner reads has already been resolved.
-- **Pure transformations over pre-built indices.** Per I5 / I8, the planner does no name resolution, no catalog fetch, no expression recompilation. It performs O(1) / O(log n) index lookups on the `SemanticManifest` (`19 §3.2.3`, `33 §3.4`) and emits `PlanNode`s carrying pre-resolved `PhysicalExpr`s.
+- **Manifest-seeded, runtime-realized planning.** Per I5 / I8, the planner does no semantic name resolution. It performs O(1)/O(log n) lookups on manifest indices, builds/touches graph segments, realizes runtime physical expressions for touched fragments, then lowers to `PlanNode`s.
 - **Strategy dispatch is the one variant-match site.** Per `20 §5.3`, the only place the planner branches on a `ResolvedDataKind` variant tag is the dispatch function (§8.5). Every other planner site consumes `&dyn Strategy`. Adding a new `Complex` variant per I10 is a MINOR change that forces a new match arm in one place, not a scatter of edits.
 
 ### 1.4 Invariants upheld by the crate
@@ -76,11 +86,83 @@ The planner is the workspace's widest dispatch site — the `plan` entry point f
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **I5** — name resolution is compile-time   | The planner performs **lookup only** (`19 §3.2.3`, `33 §3.4`). No `resolve`_* method walks names to Semantics or columns; every such walk was performed at `compile`. A CI lint forbids `EntityRef` leaves in any `PhysicalExpr` a plan node carries.                                                                                                            |
 | **I6** — plan hot path is synchronous      | **No `pub async fn` exists on `semstrait-planner`.** The `Strategy` trait's `plan` method is sync; so is every `OptimizerPass::apply`. A CI audit (`cargo clippy -- -D clippy::async_fn_in_trait`) enforces.                                                                                                                                                    |
-| **I8** — planner-complete SemanticManifest | Every `(SemanticsName, BindingId)` the planner might ask for is already in `manifest.expr_table` (`19 §3.2.3`). Every `Relationship` the planner walks is in `manifest.resolved_relationships`. A SemanticManifest whose indices fail this completeness guarantee triggers `PlanErrorKind::SemanticManifestIndexInconsistent` at dispatch (`20 §8.2`).           |
+| **I8** — planner-complete SemanticManifest | Every lookup needed for candidate selection and segment build is present in manifest seeds/indices (`33 §3`). Missing ids/edges/seeds trigger `PlanErrorKind::SemanticManifestIndexInconsistent` before lowering.           |
 | **I10** — non-exhaustive public sum types  | `Request`, `SessionContext`, `ResolvedQueryRequest`, `PlanErrorKind`, `OptimizeErrorKind`, `StrategyId` are all `#[non_exhaustive]`. An integration test over `cargo public-api` enforces.                                                                                                                                                                      |
 | **I11** — no I/O in hot path               | No `std::fs`, no `std::net`, no `tokio`, no `reqwest` in the crate's dependency graph. The `Cargo.toml` audit (§16.2) is CI-enforced.                                                                                                                                                                                                                           |
 | **I12** — first-class diagnostics          | `PlanErrorKind` and `OptimizeErrorKind` implement `Diagnose` per `30 §5.4`; identification is by variant identity per `30 §5.4` (no string-code surface). Warnings accumulate through both success and failure arms per `30 §7.2` / `§7.3`. The `tracing` channel (`30 §6`) carries library-internal observability events orthogonally to returned diagnostics. |
 
+
+### 1.4A Runtime contract: `manifest -> graph -> planning -> plan`
+
+Planner executes a segmented runtime path:
+
+1. select candidates from manifest indices (`33 §3`);
+2. build a canonical `SegmentKey` (`35`);
+3. attempt segment cache hit (exact/superset);
+4. build missing fragment from manifest seeds (including semantic expression realization for touched bindings);
+5. apply drift policy over touched sources;
+6. lower graph fragment to canonical `SemanticPlan`.
+
+Contract types:
+
+```rust
+pub enum DriftPolicy {
+    Strict,
+    Warn,
+    TrustManifest,
+}
+
+pub struct GraphSegmentStoreConfig {
+    pub ttl: Duration,
+    pub max_segments: usize,
+    pub max_memory_bytes: usize,
+}
+
+pub struct SourceDriftProbe {
+    pub observed_fingerprint: Option<[u8; 32]>,
+}
+
+pub struct DriftProbeSet {
+    pub by_source: BTreeMap<SourceId, SourceDriftProbe>,
+}
+
+pub enum DriftDecision {
+    Accept,
+    AcceptWithWarnings(Vec<Diagnostic<PlanErrorKind>>),
+    Reject(PlanErrorKind),
+}
+
+pub trait GraphSegmentStore {
+    fn get_exact(&self, key: &SegmentKey) -> Option<Arc<GraphFragment>>;
+    fn get_covering(&self, key: &SegmentKey) -> Option<Arc<GraphFragment>>;
+    fn put(&self, key: SegmentKey, fragment: Arc<GraphFragment>);
+    fn invalidate_epoch(&self, manifest_epoch: u64);
+}
+
+pub trait GraphSegmentBuilder {
+    fn build(&self, manifest: &SemanticManifest, key: &SegmentKey) -> Result<GraphFragment, PlanErrorKind>;
+}
+
+pub trait DriftPolicyEvaluator {
+    fn evaluate(
+        &self,
+        policy: DriftPolicy,
+        touched_sources: &[SourceId],
+        manifest: &SemanticManifest,
+        probes: &DriftProbeSet,
+    ) -> Result<DriftDecision, PlanErrorKind>;
+}
+
+pub trait GraphToPlanLowerer {
+    fn lower(
+        &self,
+        fragment: &GraphFragment,
+        request: &ResolvedQueryRequest,
+    ) -> Result<SemanticPlan, PlanErrorKind>;
+}
+```
+
+`SegmentKey`, graph node/edge vocabulary, and read contracts are owned by ir (`35`). Cache policy and segment lifecycle are planner-owned and never persisted in manifest.
 
 ### 1.5 Constraint validation precedes Strategy dispatch
 
@@ -102,6 +184,10 @@ semstrait-planner
 ├── plan                 // pub fn plan, PlanErrorKind, plan-pipeline internals
 ├── optimize             // pub fn optimize, OptimizerPass, OptimizeErrorKind,
 │                        //   canonical v1 passes
+├── graph_build          // GraphSegmentBuilder, GraphFragment build-time realization
+├── graph_store          // GraphSegmentStore, GraphSegmentStoreConfig, cache lifecycle
+├── drift                // DriftPolicy, DriftPolicyEvaluator, DriftDecision
+├── lowering             // GraphToPlanLowerer, graph-fragment -> SemanticPlan lowering
 ├── strategy             // Strategy trait, StrategyId, StrategyContext,
 │                        //   StrategyRegistry, dispatch_strategy
 ├── strategies           // SimpleStrategy, GrainsetStrategy, UnionsetStrategy,
@@ -110,7 +196,7 @@ semstrait-planner
                          //   helpers; relationship-traversal wrappers
 ```
 
-Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root re-exports are forbidden — consumers either import `semstrait_planner::plan` or `semstrait_planner::plan::plan`, never both.
+Crate-root re-exports expose the stable convenience surface. Non-root re-exports are forbidden — consumers either import `semstrait_planner::plan` or `semstrait_planner::plan::plan`, never both.
 
 **Surface roster (one line per item; full shapes in later sections):**
 
@@ -119,6 +205,12 @@ Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root r
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------- |
 | (crate root) | `pub fn plan(...) -> Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>`                 | free fn                            | §6      |
 | (crate root) | `pub fn optimize(...) -> Result<(SemanticPlan, Diagnostics<OptimizeErrorKind>), (Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>)>` | free fn                            | §11     |
+| `graph_store` | `pub trait GraphSegmentStore`                                                                                                                      | runtime cache contract             | §1.4A   |
+| `graph_store` | `pub struct GraphSegmentStoreConfig`                                                                                                               | cache policy                       | §1.4A   |
+| `graph_build` | `pub trait GraphSegmentBuilder`                                                                                                                    | segment build contract             | §1.4A   |
+| `drift`       | `pub enum DriftPolicy`                                                                                                                             | policy enum                        | §1.4A   |
+| `drift`       | `pub trait DriftPolicyEvaluator`                                                                                                                   | drift decision contract            | §1.4A   |
+| `lowering`    | `pub trait GraphToPlanLowerer`                                                                                                                     | lowering contract                  | §1.4A   |
 | `request`    | `pub struct Request`                                                                                                                              | value type                         | §3      |
 | `request`    | `pub struct SessionContext`                                                                                                                       | value type                         | §4      |
 | `request`    | `pub struct ResolvedQueryRequest`                                                                                                                 | value type                         | §5      |
@@ -137,12 +229,14 @@ Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root r
 | `strategy`   | `pub struct StrategyId`                                                                                                                           | newtype                            | §8.2    |
 | `strategy`   | `pub struct StrategyContext<'a>`                                                                                                                  | per-invocation context             | §8.4    |
 | `strategy`   | `pub struct StrategyRegistry`                                                                                                                     | dispatch table                     | §8.3    |
-| `strategy`   | `pub fn dispatch_strategy(...) -> &dyn Strategy`                                                                                                  | free fn                            | §8.5    |
+| `strategy`   | `pub fn dispatch_strategy(...) -> Result<&dyn Strategy, PlanErrorKind>`                                                                          | free fn                            | §8.5    |
 | `strategies` | `pub struct SimpleStrategy`                                                                                                                       | v1 strategy                        | §9.1    |
 | `strategies` | `pub struct GrainsetStrategy`                                                                                                                     | v1 strategy                        | §9.2    |
 | `strategies` | `pub struct UnionsetStrategy`                                                                                                                     | v1 strategy                        | §9.3    |
 | `strategies` | `pub struct JoinsetStrategy`                                                                                                                      | v1 strategy                        | §9.4    |
 
+
+> **Legacy detail note.** Sections `§3+` retain extensive pre-split planner details. The split contract ratified in `§1.4A` (runtime graph lifecycle) and `§2` (public surface roster) is authoritative when names/flows differ (for example `expr_table` vs `ExprBank`/segment realization).
 
 ## 3. The `Request` type
 
@@ -490,9 +584,9 @@ The SemanticManifest must satisfy every invariant in `33 §3.1` — in particula
 
 `plan` is `Send` on the invoking thread and reentrant under concurrent invocations against the same SemanticManifest (reads only; no interior mutability across calls).
 
-## 7. Plan pipeline sub-steps
+## 7. Legacy direct-plan pipeline notes (transitional)
 
-Per `10 §3.4`, `plan` executes seven sub-steps in fixed order. The ordering is binding — a strategy MAY NOT reorder sub-steps, and a caller cannot influence ordering. Each sub-step has a defined input, output, and error surface. A failure at any step short-circuits the remaining steps (fail-fast, `30 §7`).
+This section preserves pre-split direct-plan wording for migration context. The authoritative planner pipeline is `§1.4A` plus `10 §3.4`. Any conflict between this section and `§1.4A` is resolved in favor of `§1.4A`.
 
 ### 7.1 Step 0 — Constraint validation (`11 §8.6`)
 
@@ -671,17 +765,18 @@ impl<'a> StrategyContext<'a> {
 pub fn dispatch_strategy<'r>(
     kind: &ResolvedDataKind,
     registry: &'r StrategyRegistry,
-) -> &'r dyn Strategy {
+) -> Result<&'r dyn Strategy, PlanErrorKind> {
     match kind {
-        ResolvedDataKind::Simple(_) => registry.simple(),
-        ResolvedDataKind::Complex(ResolvedComplexDataKind::Unionset(_)) => registry.unionset(),
-        ResolvedDataKind::Complex(ResolvedComplexDataKind::Grainset(_)) => registry.grainset(),
-        ResolvedDataKind::Complex(ResolvedComplexDataKind::Joinset(_))  => registry.joinset(),
+        ResolvedDataKind::Simple(_) => Ok(registry.simple()),
+        ResolvedDataKind::Complex(ResolvedComplexDataKind::Unionset(_)) => Ok(registry.unionset()),
+        ResolvedDataKind::Complex(ResolvedComplexDataKind::Grainset(_)) => Ok(registry.grainset()),
+        ResolvedDataKind::Complex(ResolvedComplexDataKind::Joinset(_))  => Ok(registry.joinset()),
+        _ => Err(PlanErrorKind::StrategyMissingForVariant),
     }
 }
 ```
 
-The single variant-tag match site in the planner's hot path (per `20 §5.3`). `#[non_exhaustive]` on `ResolvedDataKind` / `ResolvedComplexDataKind` forces a new arm when a future Complex variant lands — a MINOR bump per `30 §2`. O(1) per dispatch; every other planner site consumes `&dyn Strategy` from here or from `ctx.plan_datakind` recursion.
+The single variant-tag match site in the planner's hot path (per `20 §5.3`). `#[non_exhaustive]` on `ResolvedDataKind` / `ResolvedComplexDataKind` requires a defensive fallback arm for forward-compatible builds. O(1) for known variants; every other planner site consumes the returned `&dyn Strategy` from here or from `ctx.plan_datakind` recursion.
 
 ## 9. Built-in strategies (v1 roster)
 

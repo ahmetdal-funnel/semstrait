@@ -2,6 +2,7 @@
 prereqs: [00]
 authoritative-for:
   - per-stage pipeline contract (inputs, outputs, invariants upheld, error types)
+  - runtime transition contract `manifest -> graph -> planning -> plan` at query time
   - compile-time vs query-time boundary
   - I/O permission matrix per stage (refines I11)
   - sync/async posture per stage (refines I6)
@@ -61,8 +62,8 @@ Six stages. Compile-time = `parse`, `validate`, `compile`. Query-time = `plan`, 
 | 1 | `parse` | YAML bytes | `SemanticModel` | 32 |
 | 2 | `validate` | `&SemanticModel` | `Result<(), Vec<ValidateError>>` (pure predicate) | 32 |
 | 3 | `compile` | `SemanticModel` + `CatalogProvider` + `FileSystem` | `SemanticManifest` | 33 (orchestrator), 37 (metadata), 32 (AST source) |
-| 4 | `plan` | `&SemanticManifest` + `Request` + optional injected `EngineAdapter` hooks | `SemanticPlan` | 34, 36 |
-| 5 | `optimize` | `SemanticPlan` + optional injected `EngineAdapter` hooks | `SemanticPlan` | 34, 36 |
+| 4 | `plan` | `&SemanticManifest` + `Request` + planner graph-runtime context (segment store/builder/drift policy) + optional injected `EngineAdapter` hooks | `SemanticPlan` | 34 |
+| 5 | `optimize` | `SemanticPlan` + optional injected `EngineAdapter` hooks | `SemanticPlan` | 34 |
 | 6 | `adapt` | `SemanticPlan` | `EngineArtifact` (`Sql(SqlArtifact)` via `emit` sub-form, or `Plan(EnginePlan)`) | 36 |
 
 ```mermaid
@@ -76,10 +77,11 @@ flowchart LR
         C --> M[(SemanticManifest)]
     end
 
-    subgraph QT["Query-time (synchronous, I6 hot path)"]
+    subgraph QT["Query-time (synchronous hot path; explicit drift gates)"]
         direction LR
-        R[Request] --> PL(plan)
-        M --> PL
+        R[Request] --> G(graph segment build/lookup)
+        M --> G
+        G --> PL(plan/lower)
         PL --> SP1[SemanticPlan]
         SP1 --> O(optimize)
         O --> SP2[SemanticPlan]
@@ -99,6 +101,7 @@ flowchart LR
 
 - `SemanticModel` is shown once; `validate` borrows it and returns `Result<(), Vec<ValidateError>>` (pure predicate, no new type). The `V → C` edge represents pipeline ordering (validation-passed precedes compile), not a data transformation.
 - `CatalogProvider` and `FileSystem` are hexagons (traits per 00 §7.2 legend) and appear as dashed async-I/O dependencies on `compile` only — no other stage touches them.
+- Query-time graph handling is explicit: planner may build/reuse graph segments from manifest seeds before lowering to a `SemanticPlan`.
 - `EngineAdapter` has two arrow styles: dashed (injection mode — optional, replaces canonical choices in `plan`/`optimize` for near-canonical engines) and solid (terminal — every adapter owns `adapt`).
 - Two I/O entry points from §6 are **not** on this diagram because they are outside the pipeline stages; see the phase-boundary diagram in §7.
 
@@ -162,7 +165,7 @@ Every subsection in §3 uses this fixed template. Fields are authoritative for t
 
 ### 3.3 `compile`
 
-- **Purpose** — Produce a planner-complete `SemanticManifest` from a validated `SemanticModel`, performing all resolution, catalog fetching, expression compilation, and indexing in a single pass.
+- **Purpose** — Produce a planner-complete lightweight `SemanticManifest` from a validated `SemanticModel`, performing semantic resolution, catalog fetching, expression-seed compilation, and index construction in a single pass.
 - **Input** — owned `SemanticModel` + `impl CatalogProvider` + `impl FileSystem`. (The caller has already invoked `validate`; `compile` does not re-run structural Preconditions.)
 - **Output** — `SemanticManifest` (structural shape ratified in `33`).
 - **Owning crate** — `semstrait-manifest` (orchestrator) + `semstrait-catalog` (metadata I/O) + `semstrait-model` (AST source).
@@ -171,16 +174,16 @@ Every subsection in §3 uses this fixed template. Fields are authoritative for t
   2. Catalog metadata fetch — via `CatalogProvider` for each Binding's declared source: schema (columns + types), catalog-supplied metadata.
   3. `FileSystem` glob expansion — a single declared Binding pattern can resolve to **one or more** `PhysicalSource`s (00 §4.1 `PhysicalSource`).
   4. Reference-level Preconditions — function-registry coverage (every `CanonicalFn` used exists in the registry with compatible arity and argument types), target existence (every referenced DataKind / Semantics / source / column actually exists in the resolved context).
-  5. `ExprSource` → `Expr` compilation — using the `FunctionRegistry` for function identity, the resolved name scope for identifier resolution, and the resolved schema for type inference (I1 boundary).
+  5. `ExprSource` → semantic-expression seed compilation — using the `FunctionRegistry` for function identity, resolved name scope for semantic references, and resolved schema for declared/inferred typing metadata (I1 boundary).
   6. Relationship graph resolution — resolving the top-level `Relationship` block's endpoints, validating `Cardinality`, preparing the graph for `ComposedSemanticInterface` construction (I5, `16`).
   7. `TemporalShape` resolution — binding shape-specific columns (`valid_from`, `valid_to`, `occurred_at`, `snapshotted_at`, …) to physical columns; shape-gated resolution rules (`17`).
-  8. SemanticManifest index construction — name indices, Coverage indices, `Relationship` adjacency, per-DataKind Semantics lookup tables (I8).
-  9. Denormalization and `Resolved*` type construction — manifest-layer types that diverge structurally from model-layer counterparts (00 §4.1 naming note, I8).
+  8. SemanticManifest index construction — name registries, coverage masks, path-hash indices, relation adjacency, provider/source reverse lookup tables (I8).
+  9. Denormalization and seed construction — manifest-layer seed/index types used for planner segment build (`33`), excluding persisted runtime graph objects.
 - **Invariants upheld** —
   - I1 — the `ExprSource` → `Expr` boundary. After `compile`, no `ExprSource` survives into the SemanticManifest or anything downstream.
   - I4 — canonical IR only in the output (`Expr`, `DataType`, `CanonicalFn`).
-  - I5 — all name resolution is performed here and captured in the SemanticManifest as direct references; nothing resolvable is deferred to `plan`.
-  - I8 — the SemanticManifest is planner-complete; every pre-computed index, every flattened denormalization, every `Resolved*` type that the planner expects is constructed here.
+  - I5 — semantic name/source/relationship resolution is performed here and captured as direct ids/seeds; planner does not reopen semantic name resolution.
+  - I8 — the SemanticManifest is planner-complete for lookup and segment build; runtime graph lifecycle and cache policy are deferred to planner (`34`) by design.
   - I11 — all I/O is through the permitted provider traits (`CatalogProvider`, `FileSystem`), never direct filesystem or network calls.
 - **Error type** — `CompileError`. Typical variant families (exact list ratified in `33`):
   - `UnresolvedReference` — a name reference did not resolve in its scope.
@@ -204,24 +207,24 @@ Every subsection in §3 uses this fixed template. Fields are authoritative for t
 
 ### 3.4 `plan`
 
-- **Purpose** — Construct a canonical `SemanticPlan` from a `SemanticManifest` and a `Request`, performing Constraint evaluation, from-resolution, per-DataKind strategy dispatch, PlanNode construction, and SessionContext materialization.
+- **Purpose** — Construct a canonical `SemanticPlan` from a `SemanticManifest` and a `Request` by composing planner runtime graph segments and lowering them to plan nodes.
 - **Input** — `&SemanticManifest` + owned `Request` (which carries an embedded `SessionContext`). Optional injected `EngineAdapter` in **injection mode** (see §3.4.1 below).
 - **Output** — `SemanticPlan` (structural shape ratified in `35`; strategy-specific construction rules in `20`–`25`; algorithm detail in `34`).
 - **Owning crate** — `semstrait-planner`.
-- **Sub-steps (contract level).** Enumerated; exact algorithms deferred to `34` and the DataKind strategy docs.
-  1. **Constraint check (pre-resolution, step 0).** `ConstraintValidator::check()` (per `11 §8.6`) runs as the planner's first action — BEFORE any of the sub-steps numbered below. For v1 realized carriers (Measure, Metric per `11 §8.4`), it evaluates every `constraints:` block on each Measure / Metric named in the Request against the Request's *query scope* (`request.dimensions` ∪ filter-field Dimensions). Failure returns `PlannerError::ConstraintViolation { entity, message }` immediately — fail-fast. This precedes dataset routing, Relationship traversal, and PlanNode construction by design; Constraints can forbid combinations ("this Measure cannot be grouped by that Dimension") that would otherwise make all downstream work meaningless. (Future reserved carriers per `11 §8.5` may select other stages; the per-carrier + per-kind stage matrix is `11 §8.6`.) The sub-steps below assume this check has already passed.
-  2. **From-resolution.** If `Request.from` is set, the target DataKind is looked up directly (from-first). If `Request.from` is omitted, **field-first resolution** runs: the planner maps each requested Semantics back to its owning DataKind(s) via SemanticManifest indices and, if the fields span multiple DataKinds, traverses the Relationship graph to form a `ComposedSemanticInterface` over the constituents (00 §4.1 `Request`, `ComposedSemanticInterface`; detailed rules in `16` and `34`).
-  3. **Strategy dispatch.** The resolved target DataKind's variant selects the planner strategy: Simple (`21`), Grainset (`22`), Unionset (`23`), Joinset (`24`). `Compose`d targets dispatch per `16` / `24` rules. Each strategy's PlanNode construction is documented in its own data-kind spec; `10` treats the dispatch as opaque here.
-  4. **PlanNode construction.** The strategy emits a canonical PlanNode tree (`35`). Adapter **injection hooks** (§3.4.1) may override specific nodes at defined extension points.
-  5. **Expression inlining.** Semantics-level `Expr`s (computed Dimensions, Metrics, Filters) are inlined into their use sites on the PlanNode tree. Expressions are already typed (compiled from `ExprSource` in `compile`); no type inference happens at plan time.
-  6. **SessionContext materialization.** Time-sensitive values from `SessionContext` (query clock, caller timezone) are substituted into the PlanNode tree as concrete literals at this stage, not threaded through. After this sub-step, the `SemanticPlan` is self-contained and SessionContext-free (b5).
-  7. **SemanticPlan assembly.** Final PlanNode tree + SemanticManifest reference + optional lineage metadata are packaged into the returned `SemanticPlan`.
+- **Sub-steps (contract level).** Enumerated; exact algorithms deferred to `34` and DataKind strategy docs.
+  1. **Constraint check (pre-resolution, step 0).** `ConstraintValidator::check()` (per `11 §8.6`) runs first and fail-fast.
+  2. **Request lookup and target resolution.** Resolve request semantics against manifest registries; perform explicit-`from` or field-first routing.
+  3. **Segment key construction and cache lookup.** Build canonical `SegmentKey` and query planner segment store for exact or covering fragment.
+  4. **Segment build on miss.** Build runtime graph fragment from manifest seeds, including semantic-expression realization for touched bindings.
+  5. **Touched-source drift policy evaluation.** Apply `Strict` / `Warn` / `TrustManifest` to touched sources before segment admission/reuse.
+  6. **Strategy dispatch and graph-to-plan lowering.** Dispatch DataKind strategy and lower graph fragment to canonical `PlanNode` tree.
+  7. **Session materialization and assembly.** Materialize session-sensitive literals, then assemble final `SemanticPlan`.
 
 - **Invariants upheld** —
   - I4 — canonical IR only in the output (`PlanNode`, `Expr`, `DataType`, `CanonicalFn`); no engine-specific types leak in.
   - I5 — planner performs only **Semantics lookup** via SemanticManifest indices; no name resolution, no scope walking. Any identifier unknown to the index is `PlanError::UnknownReference`.
   - I6 — synchronous; no `.await`.
-  - I8 — operates through the `SemanticManifest` alone; no YAML parsing, no catalog queries (except the I11 out-of-band drift check, which is done **before** `plan` begins by the caller).
+  - I8 — operates from `SemanticManifest` seeds/indices plus planner runtime graph state; no YAML parsing or hidden re-resolution.
   - Determinism — given `(SemanticManifest, Request)`, `plan`'s output is deterministic. SessionContext-sourced values are materialized as concrete literals (§3.4 sub-step 6), so any non-determinism is bounded to the SessionContext supplied by the caller; the planner itself introduces none.
 - **Error type** — `PlanError`. Typical variant families (exact list ratified in `34`):
   - `ConstraintViolation { entity, message }` — a `constraints:` block on a requested Measure / Metric rejected the Request (v1 realized carriers per `11 §8.4`). Single typed variant; the free-form `message` field encodes which rule (`one_of` / `none_of` / `all` / `allowed` / `prohibited`) fired. Typed enum fan-out per rule is deferred per `11 §8.7` (`[TD-CONSTRAINT-ERROR-FANOUT]`).
@@ -231,7 +234,8 @@ Every subsection in §3 uses this fixed template. Fields are authoritative for t
   - `StrategyDispatchFailed` — internal; indicates a bug in strategy dispatch (should not arise from well-formed inputs).
 - **Error policy** — `fail-fast`.
 - **I/O permitted** —
-  - None directly. May call **injected** `EngineAdapter` hooks per §3.4.1; those hooks themselves must be pure (no I/O).
+  - None on the synchronous hot path.
+  - Explicit drift probes are allowed only through planner-gated policy entrypoints (`34`), never as hidden lookups in pure plan assembly.
 - **Sync/async** — `sync`. I6 hot path.
 - **EngineAdapter interaction** — see §3.4.1.
 - **Forward-refs** — `34` (`PlanError` variants, algorithm detail, injection-hook exact method list), `35` (`SemanticPlan` and `PlanNode` shape), `20`–`25` (per-DataKind strategy detail), `16` (composition / field-first resolution detail), `36` (adapter injection-hook trait surface).
@@ -334,123 +338,49 @@ This section cements the layering implied by §3's per-stage Owning-crate fields
 
 ## 5. Error Model
 
-**Internal carrier: typed per-stage error enums.** Each stage has its own Rust `enum` named `<Stage>Error`: `ParseError`, `ValidateError`, `CompileError`, `PlanError`, `OptimizeError`, `AdaptError`. Variants carry enough structured context to render a human-readable message and to be matched programmatically.
+Typed-kind diagnostics are mandatory across all stages (see `30` and `31`):
 
-**User-facing form: `Diagnostic`.** At public API boundaries, typed errors convert into `Diagnostic` (see 00 §4.1). `Diagnostic` is a render of a typed error — it flattens type-specific payload into `{severity, location, message, source-chain}` for uniform consumption by callers that do not want to pattern-match on the internal enum. Field layout is ratified in §5.1.
+- each stage defines a typed `*ErrorKind` enum;
+- diagnostics cross crate boundaries as `Diagnostic<K>` / `Diagnostics<K>`;
+- kind-to-rendering behavior is carried by `Diagnose`;
+- identity is by stage + variant type, not by global string-code tables.
 
-**No centralized code registry.** Stages do not share a global error-code namespace. Each typed enum is self-contained. Reporting tools key on the enum variant itself; human-readable messages are produced by each enum's `Display` impl.
+`10` does not redefine `Diagnostic<K>` field layout; that contract lives in `31`/`30`.
 
-**Error policy per stage.** Two policies exist. Each stage commits to exactly one in its §3 contract:
+**Error policy per stage.** Two policies exist. Each stage commits to exactly one in §3:
 
-- **`accumulate`** — the stage collects all independent errors in one pass and returns them together as `Vec<<Stage>Error>` (or a named wrapper). Best for author-facing passes where surfacing every problem at once improves authoring UX.
-- **`fail-fast`** — the stage returns the first error and stops. Best when dependency chains make continuation unreliable (downstream work depends on the failing artifact's validity).
+- **`accumulate`** — stage collects independent violations and returns all.
+- **`fail-fast`** — stage returns the first fatal violation and stops.
 
 Uniform policy across stages:
 
-| Stage | Policy | Rationale |
-|---|---|---|
-| `parse` | `accumulate` | YAML syntax errors are independent; batch-reporting improves authoring UX |
-| `validate` | `accumulate` | Preconditions are independent structural checks; batch-reporting is the whole point of validate |
-| `compile` | `fail-fast` | resolution, catalog I/O, and Expr compilation form dependency chains; continuing past a failure produces unreliable cascades |
-| `plan` | `fail-fast` | the plan is a cohesive structure; partial plans are meaningless |
-| `optimize` | `fail-fast` | same as plan |
-| `adapt` | `fail-fast` | artifact production is atomic |
+| Stage | Kind enum | Policy | Rationale |
+|---|---|---|---|
+| `parse` | `ParseErrorKind` | `accumulate` | syntax/schema issues are mostly independent |
+| `validate` | `ValidateErrorKind` | `accumulate` | precondition checks are author-feedback oriented |
+| `compile` | `CompileErrorKind` | `fail-fast` | resolution/I-O/type dependencies are chained |
+| `plan` | `PlanErrorKind` | `fail-fast` | partial plans are semantically invalid |
+| `optimize` | `OptimizeErrorKind` | `fail-fast` | rewrite pass chain expects valid plan state |
+| `adapt` | `AdaptErrorKind` | `fail-fast` | artifact emission is atomic |
 
-### 5.1 `Diagnostic` layout
+### 5.1 Boundary shape
 
-`Diagnostic` is the user-facing render of a typed stage error. Layout is fixed here so every API boundary across crates surfaces errors in a uniform shape; typed internals remain crate-local.
-
-**Struct.**
+For fail-fast stages, the canonical boundary shape is:
 
 ```rust
-/// User-facing render of a typed stage error. Uniform across all stages.
-struct Diagnostic {
-    /// Stable, kebab-case identifier derived from the originating stage and
-    /// enum variant by convention, e.g. "parse.unknown-top-level-key",
-    /// "validate.disallowed-nesting", "compile.unresolved-reference",
-    /// "plan.constraint-violation", "adapt.unsupported-feature".
-    ///
-    /// The `<stage>` prefix is one of: parse, validate, compile, plan,
-    /// optimize, adapt. The suffix is the enum variant's kebab-case name.
-    /// No central code registry; this string is a derivation, not an
-    /// enumeration.
-    code: String,
-
-    severity: Severity,
-
-    /// Where in the input the error originated. `None` is valid for errors
-    /// that are context-free (e.g. a catalog-unavailable error has no
-    /// source-document location).
-    location: Option<Location>,
-
-    /// Human-readable message; produced by the typed error's `Display` impl
-    /// at conversion time.
-    message: String,
-
-    /// Nested causes, most-specific-first. Example: a
-    /// `CompileError::ExprCompilationFailed` may carry an inner diagnostic
-    /// for the underlying `FunctionRegistry::UnknownFunction`.
-    source_chain: Vec<Diagnostic>,
-}
+Result<
+    (Output, Diagnostics<StageErrorKind>),
+    (Diagnostic<StageErrorKind>, Diagnostics<StageErrorKind>),
+>
 ```
 
-**`Severity`.**
+For accumulate stages, the boundary may expose:
 
 ```rust
-enum Severity {
-    /// The stage cannot proceed. In fail-fast stages, the first Error
-    /// aborts. In accumulate stages, Errors are collected and the stage
-    /// returns all of them at end-of-pass.
-    Error,
-
-    /// The stage proceeds; the condition is surfaced to the caller but
-    /// does not halt compilation or planning. Warnings MUST NOT be
-    /// silently dropped at API boundaries — they travel in the same
-    /// `Vec<Diagnostic>` the caller receives.
-    Warning,
-
-    /// Informational; not a problem. Used sparingly for default
-    /// substitutions, auto-applied migrations, and similar caller-visible
-    /// decisions the stage made.
-    Note,
-}
+Result<Output, Diagnostics<StageErrorKind>>
 ```
 
-Initial design: every typed error variant carries `Severity::Error`. `Warning` and `Note` exist in the enum so future non-halting surfaces (e.g. deprecation notices during `parse`, coverage-gap hints during `plan`) can be added without widening the Diagnostic shape.
-
-**`Location`.**
-
-```rust
-/// Minimal source-level location. Shape is deliberately narrow at the
-/// 10 layer; richer location types (YAML line/column, expression span,
-/// JSON pointer) live in the stage-owning crate and convert into this
-/// form at Diagnostic construction.
-struct Location {
-    source: SourceId,   // identifies the document/buffer; shape in 32
-    span: ByteSpan,     // byte offsets into the source
-}
-```
-
-`SourceId` and `ByteSpan` exact shapes are ratified in `32` (since Model YAML is the primary source of locations). For errors originating later in the pipeline (e.g. a `CompileError` on a specific Binding), the location is derived from the originating `SemanticModel` node's recorded location.
-
-**Conversion contract.**
-
-```rust
-/// Every typed stage error converts into a Diagnostic at the public API
-/// boundary. Implementations are straightforward and mechanical:
-///   - `code` = kebab-case of the enum variant, prefixed by the stage name.
-///   - `severity` = Error (initial design).
-///   - `location` = variant-specific span (None when context-free).
-///   - `message` = Display output.
-///   - `source_chain` = nested converted errors, if any.
-trait IntoDiagnostic {
-    fn into_diagnostic(self) -> Diagnostic;
-}
-```
-
-`IntoDiagnostic` is implemented for each `<Stage>Error` enum and for `Vec<<Stage>Error>` (via a blanket impl that maps each element). Crates that publish API surface (`32`, `33`, `34`, `36`) convert at the public boundary; internal callers continue to match on the typed enum when they need to.
-
-**Placement.** The `Diagnostic`, `Severity`, and `Location` types are **crate-layer primitives**; their canonical home is almost certainly `semstrait-common` (pending ratification in `31`). Stage crates import and construct them; they do not define competing local types.
+Warnings and notes remain typed (`Diagnostic<StageErrorKind>`) and travel alongside success or failure per stage contract.
 
 ## 6. I/O Permission Matrix
 
@@ -468,9 +398,9 @@ This matrix refines `00 §9 I11`. Every cell is either a permitted trait method 
 **Out-of-pipeline I/O entries** (per I11, outside every `§3.x` stage):
 
 - `Repository::load` — fetching a SemanticManifest from persistent storage before the first `Request`. Awaited before `plan` begins. Not a pipeline stage.
-- `CatalogProvider::check_schema_drift` — narrow drift validation against a previously-compiled SemanticManifest. Awaited before `plan` begins. Not a pipeline stage.
+- explicit drift probes (`CatalogProvider`-backed) — optional source-fingerprint checks consumed by planner drift policy (`34`). May run pre-plan or immediately before segment admission; they are explicit gates, not hidden hot-path I/O.
 
-Both entries are explicit, synchronous from the caller's perspective, and outside the `plan → optimize → adapt` synchronous chain.
+Both entries are explicit, caller-controlled gates and outside the `plan → optimize → adapt` synchronous chain.
 
 **Deferred.** Per-trait method-level sub-tables (which specific `CatalogProvider` / `FileSystem` / `EngineAdapter` methods each stage may call) are blocked on finalizing those trait surfaces in `36` and `37`. Once those docs ratify their trait signatures, this section will be extended with tables keyed on method names. Until then, the trait-level matrix above is authoritative: any method on a trait permitted in a stage is in-scope for that stage; any method on a trait marked `∅` is out of scope entirely.
 
