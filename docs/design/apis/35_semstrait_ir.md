@@ -14,8 +14,8 @@ authoritative-for:
   - the authoring-surface DSL — the `expr_fn` module with `col`, `field`, `dim`, `measure`, `metric`, `key` free constructors; `std::ops` impls on `SemanticExpr` and `PhysicalExpr`; the `ExprFunctionExt` extension trait — per `14 §9.2`
   - the `CanonicalFn` newtype and the `FunctionRegistry` / `FunctionSpec` / `FnSignature` / `ParamType` / `ReturnTypeRule` / `FunctionCategory` / `RegistryExtension` / `function_registry()` surface, moved from `semstrait-common` per `14a §2`
   - the narrow ir-emitted error kinds — `ValidateError` (raised by `Tree::with_new_children` and `Rewriter<N>::f_*`) and `CompileError` (raised by `ReturnTypeRule::Custom` callbacks wired into `FunctionSpec`); each implements `Diagnose` per `30 §5`. Downstream stages embed via D.ii kind-nesting (`30 §7.4`)
-  - canonical semantic-graph types (`SemanticGraph`, `GraphNode`, `GraphEdge`, `GraphFragment`, `SegmentKey`, coverage masks) used by planner runtime assembly
-  - semantic-graph read contracts (`SemanticGraphRead`, `GraphFragmentRead`, mask-operation traits); IR owns shape/contracts only, not runtime cache lifecycle
+  - canonical semantic-graph types (`SemanticGraph`, `SemanticNode`, `SemanticEdge`, `SemanticGraphFragment`, `SegmentKey`, `SemanticInterfaceBitmap`) used by planner runtime assembly
+  - semantic-graph read contracts (`SemanticGraphRead`, `SemanticGraphFragmentRead`, bitmap-operation traits); IR owns shape/contracts only, not runtime cache lifecycle
   - `SemanticPlan` — the canonical, engine-agnostic query plan tree
   - `PlanNode` sum type — variant roster (`Scan`, `Filter`, `Project`, `Agg`, `Join`, `Union`, `Sort`, `Fetch`) and per-variant shape
   - `EngineArtifact` / `EnginePlan` / `SqlArtifact` adapter-consumable output types (structural shape owned here; emission semantics in `36`)
@@ -28,7 +28,7 @@ authoritative-for:
 refined-by:
   - 14 (`Expr<L>`, leaf-set catalogs, accessor catalogs, `Parameter` shape, DSL constructor list, trait scaffolding, support-enum rosters — the type-architecture contract `35` implements)
   - 14a (`CanonicalFn` semantics, signature polymorphism, return-type rules, registry sealing protocol)
-  - 19 (compile-pipeline — Phase A `SemanticExpr::resolve` produces the `PhysicalExpr`s `35` stores in `PlanNode`s; Phase B placement consumes them)
+  - 19 (expression-flow contract — semantic expression forms and runtime realization boundary consumed by planner)
   - 34 (`semstrait-planner` produces `SemanticPlan` values; consumes `PhysicalExpr`, canonical graph types, and owns graph lifecycle/cache policy)
   - 36 (`semstrait-adapter` consumes `SemanticPlan` and produces `EngineArtifact`; owns the Substrait / SQL emission logic referenced here as a mapping only)
   - 40 (`implementation/40_refactor_plan.md` — current `crates/semstrait-ir/src/plan` vs target layout delta is tracked here)
@@ -54,7 +54,7 @@ refined-by:
 | Shared identifier carriers `ColumnRef`, `SemanticsName` | §3.4 | `[14 §3.4 / §3.5](../foundations/14_expressions.md)` |
 | Authoring-surface DSL — `expr_fn` module, `std::ops` impls on `Expr<L>`, `ExprFunctionExt` | §7 | `[14 §9.2](../foundations/14_expressions.md)` |
 | `CanonicalFn` newtype + `FunctionRegistry` / `FunctionSpec` / `FnSignature` / `ParamType` / `ReturnTypeRule` / `FunctionCategory` / `RegistryExtension` / `function_registry()` | §8 | `[14a §2](../foundations/14a_function_catalog.md)` |
-| Canonical semantic-graph types — `SemanticGraph`, `GraphNode`, `GraphEdge`, `GraphFragment`, `SegmentKey`, `CoverageMask` + read traits | §2A | `33` / `34` split contract (shape in ir, lifecycle in planner) |
+| Canonical semantic-graph types — `SemanticGraph`, `SemanticNode`, `SemanticEdge`, `SemanticGraphFragment`, `SegmentKey`, `SemanticInterfaceBitmap` + read traits | §2A | `33` / `34` split contract (shape in ir, lifecycle in planner) |
 | Narrow ir-emitted error kinds — `ValidateError`, `CompileError` | §16 | `[14 §3.1](../foundations/14_expressions.md)` / `[14a §3.5](../foundations/14a_function_catalog.md)` |
 | `SemanticPlan` root + `PlanNode` sum (8 variants) + well-formedness invariants | §9 / §10 / §13 | `[00 §4.1](../00_overview.md)` |
 | Plan-level primitives — `SourceRef`, `ResolvedColumn`, `Name`, `KeyPair`, `SortDir`, `NullOrdering`, `AggregateExpr`, `NodeMeta` | §11 | `[15](../foundations/15_mapping_and_binding.md)` / `[16 §5](../foundations/16_composition.md)` |
@@ -72,7 +72,7 @@ refined-by:
 - **SemanticManifest shape.** `SemanticPlan` refers to the SemanticManifest through the opaque `SourceRef` handle (§11.2). SemanticManifest types live in `semstrait-manifest` per `33`; `35` never embeds them inline.
 - **Runtime graph lifecycle policy.** TTL/LRU cache ownership, segment admission/eviction, memory-budget enforcement, and drift-policy execution live in planner (`34`). `35` owns graph *shape and read contracts* only.
 - **Expression-type variant catalogs and structural invariants.** While `semstrait-ir` now OWNS the *crate-level* placement of the expression types per §1.1, the **variant rosters** for each enum, the **structural invariants** between leaf sets, the **type aliases** discipline, and the **accessor catalogs** are ratified by `[14 §3](../foundations/14_expressions.md)` and `[14 §4](../foundations/14_expressions.md)`. `35`'s §3–§6 reference those rosters rather than re-ratifying them; per `[DOCS_MAINTENANCE.md §3](../DOCS_MAINTENANCE.md)`, the variant catalogs and structural rules live in `14` alone.
-- **Compile-time `SemanticExpr` → `PhysicalExpr` resolution.** The algorithm that lowers `SemanticExpr` into `PhysicalExpr` (`SemanticExpr::resolve`, `ResolvedExprTable` keying, cross-DataKind path resolution, sugar-accessor elimination, type inference, Semantics-boundary reconciliation) lives in `semstrait-manifest::compile` per `[19 §3](../foundations/19_expression_flow.md)`. `35` owns the types that flow through that algorithm; it does not own the algorithm.
+- **Planner-time `SemanticExpr` → `PhysicalExpr` realization policy.** The runtime algorithm that realizes `SemanticExpr` into `PhysicalExpr` for touched graph fragments is owned by planner runtime (`34` TODO/provisional section). `35` owns only the expression and graph types flowing through that algorithm.
 - **Phase B placement and `Parameter` binding.** The `Strategy`-driven plan-tree construction (filter splitting, `Aggregate` lift into `PlanNode::Agg`, `Parameter` binding against the `Request`, advisory channel) lives in `semstrait-planner` per `[19 §6](../foundations/19_expression_flow.md)` and `[34](34_semstrait_planner.md)`. `35` owns the `PlanNode` and `PhysicalExpr` types that the planner produces; the planning algorithm itself is `34`'s contract.
 - **Canonical-function semantics and per-engine mapping.** What `coalesce` does to nulls, which engines support `regexp_match` natively, how `add` maps to DataFusion's `Add` operator — `[14a](../foundations/14a_function_catalog.md)` and `registry/functions_mapping.md` are authoritative. `35` owns the registry's *shape*, not its *contents*.
 - **Engine / dialect identity outside the artifact family.** `DialectId` MUST appear only on `SqlArtifact.dialect` (§12.3), `Dialect::ID` (§12.5), and `Capability` membership where capability is dialect-keyed (§12.6). It MUST NOT appear on `SemanticPlan`, `SemanticPlan.meta`, any `PlanNode` variant, any `Expr<L>` variant, any leaf-set variant, `NodeMeta`, or any registry-side type. Per S7 (§1.5) and Q4.A (2026-05-21).
@@ -148,8 +148,9 @@ semstrait-ir
 ├── functions            // CanonicalFn, FunctionRegistry, FunctionSpec, FnSignature,
 │                        //   ParamType, ReturnTypeRule, FunctionCategory,
 │                        //   RegistryExtension trait, function_registry() accessor (14a §2 / §3 / §8)
-├── semantic_graph       // SemanticGraph, GraphNode, GraphEdge, GraphFragment,
-│                        //   SegmentKey, CoverageMask, read-only graph contracts
+├── semantic_graph       // SemanticGraph, SemanticNode, SemanticEdge,
+│                        //   SemanticGraphFragment, SegmentKey,
+│                        //   SemanticInterfaceBitmap, read-only graph contracts
 ├── plan                 // SemanticPlan, PlanNode, per-variant structs, NodeMeta
 │   ├── node             //   PlanNode enum + variant-struct shapes
 │   └── traversal        //   PlanVisitor, walk_pre / walk_post / transform
@@ -172,11 +173,11 @@ semstrait-ir
 | `expr` | Referenced by `plan` but not vice-versa; consumers needing only expressions skip the plan-tree surface. |
 | `expr::{tree, leaves, accessor, parameter, expr_fn}` | Per-type-family split for `cargo public-api` audit clarity; `expr_fn` isolates DSL from structural types. |
 | `functions` | Adjacent to `expr` because every `FunctionCall` consumer resolves `name` against the registry. |
-| `semantic_graph` | Canonical graph vocabulary shared by planner/runtime boundaries; keeps graph-shape evolution independent from planner cache policy. |
+| `semantic_graph` | Canonical graph vocabulary shared by manifest/planner boundaries; keeps graph-shape evolution independent from planner cache policy. |
 | `plan` vs `primitives` | `PlanNode` references every primitive but not vice-versa; primitives can be consumed without the full `PlanNode` surface. |
 | `plan::node` vs `plan::traversal` | Traversal-API method count scales with variant count; isolating it limits I10 blast radius. |
 | `artifact` | Output shape, decoupled from input shape; consumed by the engine layer above `semstrait-adapter`. |
-| `error` | Co-locates `ValidateError`, `CompileError`, `IrErrorKind`. Distinct from manifest's wider `CompileError` (per `33 §10`), which embeds via D.ii. |
+| `error` | Co-locates `ValidateError`, `CompileError`, `IrErrorKind`. Distinct from manifest's wider compile error surface (`33` compile/error boundary), which embeds via D.ii. |
 | `substrait_map` | Table reference only; conversion code lives in `[36](36_semstrait_adapter.md)`. |
 
 **Re-exports.** The crate root re-exports a curated surface (§20). Non-root re-exports of internal helpers are forbidden.
@@ -188,28 +189,73 @@ semstrait-ir
 ```rust
 #[non_exhaustive]
 pub struct SemanticGraph {
-    pub nodes: Vec<GraphNode>,
-    pub edges: Vec<GraphEdge>,
+    pub nodes: BTreeMap<SemanticNodeId, SemanticNode>,
+    pub edges: BTreeMap<SemanticEdgeId, SemanticEdge>,
+    pub outgoing_edges: BTreeMap<SemanticNodeId, Vec<SemanticEdgeId>>,
 }
 
 #[non_exhaustive]
-pub enum GraphNode {
-    DataKind { id: DataKindId, coverage: CoverageMaskSet },
-    SemanticField { id: SemanticsId },
-    Binding { id: BindingId },
-    Expr { id: ExprId },
-    Source { id: SourceId },
+pub struct SemanticNode {
+    pub payload: SemanticNodePayload,
+    pub interface_id: Option<SemanticInterfaceId>,
 }
 
 #[non_exhaustive]
-pub struct GraphEdge {
-    pub from: GraphNodeId,
-    pub to: GraphNodeId,
-    pub kind: GraphEdgeKind,
+pub enum SemanticNodePayload {
+    DataKind {
+        data_kind_id: DataKindId,
+        name: DataKindName,
+        role: DataKindRole,
+    },
+    Semantic {
+        semantic_id: SemanticsId,
+        name: SemanticsName,
+        role: SemanticRole,
+        data_type: Option<DataType>,
+    },
+    Expression {
+        expr_id: ExprId,
+    },
+    Source {
+        source_id: SourceId,
+    },
 }
 
 #[non_exhaustive]
-pub struct GraphFragment {
+pub enum DataKindRole {
+    Dataset,
+    Grainset,
+    Unionset,
+    Joinset,
+}
+
+#[non_exhaustive]
+pub enum SemanticRole {
+    Dimension,
+    Measure,
+    Metric,
+    Key,
+    Field,
+}
+
+#[non_exhaustive]
+pub struct SemanticEdge {
+    pub from: SemanticNodeId,
+    pub to: SemanticNodeId,
+    pub edge_type: SemanticEdgeType,
+    pub predicate_expr: Option<ExprId>,
+}
+
+#[non_exhaustive]
+pub enum SemanticEdgeType {
+    Relationship,
+    Composition,
+    Binding,
+    DependsOn,
+}
+
+#[non_exhaustive]
+pub struct SemanticGraphFragment {
     pub key: SegmentKey,
     pub graph: SemanticGraph,
     pub touched_sources: Vec<SourceId>,
@@ -222,29 +268,43 @@ pub struct SegmentKey {
     pub requested_semantics: BTreeSet<SemanticsId>,
     pub constraints_fingerprint: [u8; 32],
 }
+
+#[non_exhaustive]
+pub struct SemanticInterfaceBitmap {
+    pub words: Vec<u64>,
+}
 ```
 
 Read contracts:
 
 ```rust
 pub trait SemanticGraphRead {
-    fn node(&self, id: GraphNodeId) -> Option<&GraphNode>;
-    fn outgoing(&self, id: GraphNodeId) -> &[GraphEdge];
+    fn node(&self, id: SemanticNodeId) -> Option<&SemanticNode>;
+    fn edge(&self, id: SemanticEdgeId) -> Option<&SemanticEdge>;
+    fn outgoing(&self, id: SemanticNodeId) -> &[SemanticEdgeId];
 }
 
-pub trait GraphFragmentRead {
+pub trait SemanticGraphFragmentRead {
     fn key(&self) -> &SegmentKey;
     fn graph(&self) -> &SemanticGraph;
     fn touched_sources(&self) -> &[SourceId];
 }
 
-pub trait CoverageMaskOps {
+pub trait SemanticInterfaceBitmapOps {
     fn is_subset_of(&self, other: &Self) -> bool;
     fn intersects(&self, other: &Self) -> bool;
 }
 ```
 
-Boundary rule: IR owns shape and read semantics only. Runtime mutability, TTL/LRU policy, segment-store indexing, and drift-policy execution are planner contracts (`34`), never IR contracts.
+Graph invariant:
+
+- `SemanticGraphFragment` is a DAG.
+- Introducing a cycle is an error at planner graph-build time.
+- Planner runtime DAG backend target is `daggy` (per `34 §1.4A`); IR remains backend-agnostic and exposes no backend-specific graph types.
+- Node/edge collections are stable-id keyed maps; adjacency is explicit via `outgoing_edges`.
+- `outgoing_edges[node]` is sorted by `SemanticEdgeId` for deterministic traversal.
+
+Boundary rule: IR owns shape and read semantics only. Runtime mutability, cache policy, cycle-check strategy, and drift-policy execution are planner contracts (`34`), never IR contracts.
 
 ## 3. `Expr<L>` Structural Type — Owned Here, Specified by `14`
 
@@ -513,7 +573,7 @@ pub enum TypeClass {
 ```rust
 /// The compile-time snapshot of physical columns exposed by a source.
 /// Per `15 §3.2`. Referenced by:
-/// - `15 §3.1 PhysicalSource::{File, Stream, Table, Snapshot}` for the
+/// - `15 §3.1 PhysicalSource::{File, Stream, Table, ObjectStore}` for the
 ///   resolved schema attached to every `PhysicalSource` variant.
 /// - §11.1 `NodeMeta.output_schema` for the per-`PlanNode` output
 ///   schema (via plan-level `Schema`, which has the same shape).
@@ -1854,7 +1914,7 @@ pub enum CompileError {
 impl Diagnose for CompileError { /* per-variant message / severity */ }
 ```
 
-`CompileError` is the narrow function-resolution diagnostic. The wider compile-stage error surface (unknown references, ambiguous paths, cycles, type-inference failures, …) lives in `semstrait-manifest::CompileError` per `[33 §10](33_semstrait_manifest.md)` and embeds `Ir(ir::CompileError)` via D.ii kind-nesting (`[30 §7.4](30_api_contracts.md)`).
+`CompileError` is the narrow function-resolution diagnostic. The wider compile-stage error surface (unknown references, ambiguous paths, cycles, type-inference failures, …) lives in `semstrait-manifest::CompileError` per `33`'s compile/error boundary and embeds `Ir(ir::CompileError)` via D.ii kind-nesting (`[30 §7.4](30_api_contracts.md)`).
 
 ### 16.3 `IrErrorKind`
 
