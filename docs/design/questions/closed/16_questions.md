@@ -292,3 +292,23 @@ Both cases were previously thought of as "ambiguity errors"; the 2026-04-29 unif
 - `16 §16` — Q18 added to ratified-decisions index.
 
 **Round-1 framing retained for historical reference.**
+
+---
+
+## Q-COMP-010 — `CompositionCoverage` — serialize per-constituent or collapsed? — CLOSED (2026-05-28)
+
+**Status: CLOSED.** Settled by manifest ratification clause CCK.3 (Coverage Kernel; see `_research/manifest/RATIFICATION_LOG.md`, 2026-05-28).
+
+**Resolution.** Per-constituent local masks live on the variant struct (Dataset / Grainset / Joinset / Unionset) — not at the top-level DataKind layer. The `CompositionCoverage` map is **tuple-keyed** by `(ConstituentRef, SemanticsName)`, preserving symmetry with `15 §6` binding-level Coverage. Round-1 default (per-constituent serialization) is upheld — collapsed serialization was rejected because it would erase the per-constituent provenance that planner strategies (composition-aware pushdown, per-constituent NullFill discipline) need at lookup time.
+
+**Refs.**
+
+- `_research/manifest/RATIFICATION_LOG.md` — CCK clause group, in particular CCK.3 (per-constituent local masks; tuple-keyed map shape).
+- `16 §8.2` — `CompositionCoverage` keying.
+- `15 §6` — binding-level `Coverage` parallel structure.
+
+**Resolution rationale.** Per-constituent serialization keeps the composition-side coverage shape parallel to the binding-side coverage shape (`SemanticBinding::coverage`, keyed per source). The collapsed alternative (a flat `BTreeMap<SemanticsName, CoverageVariant>`) would have required the planner to re-derive provenance via constituent-level lookups on every consumer call — unwarranted overhead given the small tuple-key footprint.
+
+**Question (closed scope).** `16 §8.2` ratifies `CompositionCoverage` carrying `(ConstituentRef, SemanticsName) → CoverageVariant`. Does the SemanticManifest serialize this per-constituent (preserving the tuple-key structure) or as a single collapsed `BTreeMap<SemanticsName, CoverageVariant>` with collision-merge semantics?
+
+**Round-1 framing retained for historical reference.**

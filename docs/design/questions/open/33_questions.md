@@ -190,24 +190,9 @@ Unresolved items arising while drafting `docs/design/apis/33_semstrait_manifest.
 
 ---
 
-## Q9 — `ResolvedRelationshipGraph` public-field vs accessor
+## Q9 — `ResolvedRelationshipGraph` public-field vs accessor — CLOSED (2026-05-28)
 
-**Question.** Should `ResolvedRelationshipGraph` be a public field on `SemanticManifest` (promoted from `33 §8.2`'s accessor-only posture) or remain behind the accessor?
-
-**Refs.**
-- `33 §8.2` — current ratification: accessor-only; `pub(crate)` field.
-
-**Arguments pro public field.**
-- Consistency with other `SemanticManifest` fields.
-- One fewer indirection for planner code.
-
-**Arguments pro accessor-only.**
-- Lets `33` evolve the graph's internal representation without MAJOR churn.
-- Future MINOR additions to the graph (transitive closure cache, bidirectional adjacency index) can happen behind the accessor.
-
-**Current position in `33`.** Accessor-only per `33 §8.2`.
-
-**Next step.** Keep accessor-only through v1. If planner hot-path profiling shows the accessor is a meaningful cost, promote to a public field as MINOR.
+> **Moved to [`../closed/33_questions.md`](../closed/33_questions.md).** Dissolved by C17(d) + C9.6 (Manifest Ratification Log, 2026-05-28): manifest carries primitives only; relationship-graph topology is constructed in the planner runtime (daggy per `34 §1.4A`). No graph object on the manifest, hence no field-vs-accessor choice.
 
 ---
 

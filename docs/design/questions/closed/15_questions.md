@@ -160,3 +160,24 @@ purpose: Resolved questions originally raised against `foundations/15_mapping_an
 **Resolution rationale.** Path structures vary (`year=2024`, `y2024`, `2024`); a `=`-split-baked-in extraction would fail on the latter two. Returning the whole segment keeps the layer-3 contract narrow and makes the value-extraction parse behavior explicit and auditable in author code.
 
 **v2 consideration.** If early-usage feedback shows authors routinely wrap the raw extraction with `substring_after`, a `path.token_value: N` variant can be ratified additively as MINOR per `30 §6.3` (the `MetadataExtraction` enum is `#[non_exhaustive]`).
+
+---
+
+## Q-MAP-006 — `ResolvedColumnMapping.computed` storage: duplicate or alias? — CLOSED (2026-05-28)
+
+**Status: CLOSED.** Settled by manifest ratification clauses C11 + C12 (see `_research/manifest/RATIFICATION_LOG.md`, 2026-05-28).
+
+**Resolution.** SemanticManifest persists expressions in `ManifestExpressions` as split typed pools — `semantic: BTreeMap<SemanticExprId, SemanticExpr>` + `physical: BTreeMap<PhysicalExprId, PhysicalExpr>`. Per C11, both forms are first-class persisted artifacts; per C12.2 / C12.3, pools are split with strongly-typed `SemanticExprId` / `PhysicalExprId` newtypes preserving IR type-level discipline (35:698 / 35:702). Per C12.4, content dedup runs at compile time per pool. Per C12.5, no cross-pool linkage at expression level.
+
+`SemanticBinding` no longer owns `PhysicalExpr` trees: per the C2.4 / C11 cascade, mappings reference the typed pool via `SemanticMappingValue::Expr(PhysicalExprId)`. The Round-1 "duplicate vs alias" axis is dissolved — bindings hold ID references, not owned trees, so neither duplication nor `Arc`-aliasing applies. Single source of truth lives in the typed pool.
+
+**Question (closed scope).** `19 §3.4`'s `ResolvedExprTable` is a global `(SemanticsName, BindingId) → PhysicalExpr` map. `15 §7.5`'s per-Binding `computed: HashMap<SemanticsName, PhysicalExpr>` serves the same data for per-Binding lookup. Does the SemanticManifest store the `PhysicalExpr` twice (duplicated), or do the per-Binding values alias into the global table?
+
+**Refs.**
+
+- `_research/manifest/RATIFICATION_LOG.md` C11, C12 — ratifications.
+- `33 §4.6` (Phase 3) — `ManifestExpressions` shape.
+- `19 §3.4` — original `ResolvedExprTable` framing (now superseded by pool-keyed lookup).
+- `15 §7.5` — original per-Binding denormalization (now ID-referenced).
+
+**Resolution rationale.** A manifest-level enum tagging Semantic / Physical was rejected (C12 P2 alternative) because it would regress on IR's type-level invariant per 35:698 / 35:702 — every binding-side lookup would re-introduce a runtime match. Split pools preserve the static-type discipline at every reference site.

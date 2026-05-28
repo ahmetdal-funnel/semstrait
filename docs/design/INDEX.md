@@ -142,9 +142,9 @@ Current snapshot:
 
 | Directory | Files | Lines |
 |---|---:|---:|
-| `open/` | 23 | ~2630 |
-| `closed/` | 20 | ~1450 |
-| `deferred/` | 18 | 797 |
+| `open/` | 23 | ~2140 |
+| `closed/` | 21 | ~1740 |
+| `deferred/` | 20 | ~1225 |
 
 For registry-specific questions, use the aggregate navigator:
 - [`questions/open/registry_questions.md`](questions/open/registry_questions.md)

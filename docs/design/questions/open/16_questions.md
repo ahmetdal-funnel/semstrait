@@ -17,7 +17,7 @@ depends-on:
 
 # Open Questions — `foundations/16_composition.md`
 
-> **Status (relationship-block rebase, 2026-05-12).** Six framework-level questions remain open after item K's closures. Carried-over: Q-COMP-006 (post-rebase Unionset-retirement structural cleanup of §9.3 / §10.5 / §13 + downstream cross-refs), Q-COMP-009 (composite-key shape alternatives), Q-COMP-010 (CompositionCoverage serialization shape), Q-COMP-014 (PLAN_E_0505 candidate suggestions), Q-COMP-015 (FieldOwnership::Derived distinctness), Q-COMP-016 (ManyToMany reject-by-default — narrowed by SR-E-14 in Round 3). Closed 2026-05-12 with item K: Q-COMP-007 (Directionality granularity), Q-COMP-008 (compile-time reverse-traversal detection — both moot after Directionality retired), Q-COMP-017 (YAML default for JoinType — moot since JoinType is no longer authored). Closed items moved to [`../closed/16_questions.md`](../closed/16_questions.md). None of the items below block the headline ratifications in `16 §16` (note: §16 itself may need re-numbering when Q-COMP-006 lands).
+> **Status (manifest ratification cascade, 2026-05-28).** Five framework-level questions remain open after the manifest ratification cascade: Q-COMP-006 (post-rebase Unionset-retirement structural cleanup of §9.3 / §10.5 / §13 + downstream cross-refs), Q-COMP-009 (composite-key shape alternatives), Q-COMP-014 (PLAN_E_0505 candidate suggestions), Q-COMP-015 (FieldOwnership::Derived distinctness), Q-COMP-016 (ManyToMany reject-by-default — narrowed by SR-E-14 in Round 3). Closed 2026-05-28 with manifest cascade: Q-COMP-010 (CompositionCoverage serialization shape — settled by CCK.3 tuple-keyed ratification). Earlier 2026-05-12 closures (item K): Q-COMP-007 / Q-COMP-008 / Q-COMP-017. Closed items moved to [`../closed/16_questions.md`](../closed/16_questions.md). None of the items below block the headline ratifications in `16 §16` (note: §16 itself may need re-numbering when Q-COMP-006 lands).
 
 ---
 
@@ -96,31 +96,9 @@ Should these sections be:
 
 ---
 
-## Q-COMP-010 — `CompositionCoverage` — serialize per-constituent or collapsed?
+## Q-COMP-010 — `CompositionCoverage` — serialize per-constituent or collapsed? — CLOSED (2026-05-28)
 
-**Question.** `16 §8.2`'s `CompositionCoverage` is keyed by `(DataKindRef, UnifiedName)` — one entry per constituent per name. An alternative would be a per-name entry with a `HashMap<DataKindRef, CoverageVariant>` value. Should Round-1 use the collapsed shape?
-
-**Refs.**
-
-- `16 §8.2` — keyed-by-tuple ratification.
-- `15 §6` — Binding-level Coverage (flat `HashMap<(SourceIndex, SemanticsName), CoverageVariant>`).
-
-**Proposed (Round 1):** Keyed by `(DataKindRef, UnifiedName)`. Matches `15 §6`'s shape for consistency.
-
-**Arguments for tuple-keyed (current).**
-
-- Symmetric with `15 §6`.
-- Simple lookup.
-- Empty entries cost nothing extra in a `HashMap`.
-
-**Arguments for nested.**
-
-- Slightly smaller on-wire footprint when serializing (one nested map vs flat tuples).
-- "All constituents for this name" query is cheaper.
-
-**Current position in `16`.** Tuple-keyed.
-
-**Next step.** Revisit if SemanticManifest on-disk size becomes material (unlikely for the composition-coverage index specifically).
+> **Moved to [`../closed/16_questions.md`](../closed/16_questions.md).** Settled by manifest ratification clause CCK.3 (Manifest Ratification Log, 2026-05-28): per-constituent local masks live on the variant struct (not top-level DataKind); symmetric with `CompositionCoverage` keyed by `(ConstituentRef, SemanticsName)` — tuple-keyed shape confirmed.
 
 ---
 

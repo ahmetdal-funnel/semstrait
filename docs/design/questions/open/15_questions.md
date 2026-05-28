@@ -76,30 +76,9 @@ depends-on:
 
 ---
 
-## Q-MAP-006 — `ResolvedColumnMapping.computed` storage: duplicate or alias?
+## Q-MAP-006 — `ResolvedColumnMapping.computed` storage: duplicate or alias? — CLOSED (2026-05-28)
 
-**Question.** `19 §3.4`'s `ResolvedExprTable` is a global `(SemanticsName, BindingId) → PhysicalExpr` map. `15 §7.5`'s per-Binding `computed: HashMap<SemanticsName, PhysicalExpr>` serves the same data for per-Binding lookup. Does the SemanticManifest store the `PhysicalExpr` twice (duplicated), or do the per-Binding values alias into the global table?
-
-**Refs.**
-
-- `19 §3.4` — global `ResolvedExprTable`.
-- `15 §7.5` — per-Binding denormalization.
-- `33` (pending) — SemanticManifest storage strategy.
-
-**Arguments for duplication (Round-1 default).**
-
-- Simpler. The planner always reads from the per-Binding map; no pointer-following, no lifetime gymnastics.
-- `PhysicalExpr` is an owned tree — duplicate storage has a real-but-small overhead.
-- Rust's ownership model is simpler without `Arc<PhysicalExpr>` / indirect lookups.
-
-**Arguments for aliasing.**
-
-- Memory overhead on huge Models (thousands of Semantics × many Bindings) could matter.
-- Single source of truth: editing the expression in one place updates both views.
-
-**Current position.** Duplicate storage by default; `33` may override.
-
-**Next step.** `33` benchmarks the SemanticManifest's in-memory footprint; if duplication is material, switch to `Arc<PhysicalExpr>` shared between table and per-Binding map.
+> **Moved to [`../closed/15_questions.md`](../closed/15_questions.md).** Settled by C11 + C12 (Manifest Ratification Log, 2026-05-28): expressions live in `ManifestExpressions` as split typed pools (`semantic: BTreeMap<SemanticExprId, SemanticExpr>` + `physical: BTreeMap<PhysicalExprId, PhysicalExpr>`); bindings reference into the physical pool by `PhysicalExprId`. Neither duplicated nor aliased — single source of truth via typed-id reference.
 
 ---
 

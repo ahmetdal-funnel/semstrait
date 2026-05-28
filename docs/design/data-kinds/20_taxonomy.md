@@ -65,6 +65,8 @@ The `DataKind` abstraction is exposed as a **sealed trait hierarchy**, not a pub
 
 The sealed-trait declarations (`mod sealed`, base `DataKind`, the four sub-traits, the `DataKindVariant` / `DataKindForm` tag enums, and the per-form view enums for heterogeneous iteration) are ratified at [`32 §3.4`](../apis/32_semstrait_model.md). At the SemanticManifest layer (`33`), the same two-axis hierarchy appears as `ResolvedSimpleDataKind` / `ResolvedComplexDataKind`.
 
+> **Phase 3 amendment (2026-05-28; cascade from CCK + C9.5).** [`../apis/33_semstrait_manifest.md §6`](../apis/33_semstrait_manifest.md) persists a **flat closed `DataKindVariant { Dataset, Unionset, Grainset, Joinset }`** that mirrors D9 (variant-to-strategy total mapping). `33` owns the manifest-resident `DataKind` primitive shape (id + name + role + origin + coverage + variant); `20` owns the canonical taxonomy and the sealed-trait authoring surface. The two are intentional duals: the model layer uses sealed traits for type-level discipline; the manifest layer uses a closed enum mirror for serialisation and id-keyed collection storage. Per C9.5, the manifest's `DataKind` carries an `origin: DataKindOrigin { Explicit, Implicit }` discriminator distinguishing author-declared kinds from compile-synthesised kinds (notably the multi-source-Dataset auto-Unionset of `21 §3.2` / `23 §2.1` row A). `Origin` is diagnostic-only; runtime semantics are identical across the two values.
+
 #### 2.1.1 Diagram — the `DataKind` taxonomy tree
 
 The behavioral axis (`PublicDataKind` / `NestedDataKind`) is orthogonal — every concrete leaf appears in two forms (Public top-level, Nested structural shell); the trait implementation matrix at `32 §3.5` is the canonical 8-row × 3-axis cross-product.
@@ -126,6 +128,8 @@ Per `00 §4.1`:
 
 `ComposedSemanticInterface` is structurally distinct from `SemanticInterface` (`16 §5.1`); both implement a `SemanticsView` trait. The model-layer `PublicDataKind::semantic_interface()` accessor returns `&SemanticInterface` for every Public variant; the variant-specific composed-interface materialization is a SemanticManifest-layer concept produced at compile per `16 §5` / `§10.1`.
 
+> **Phase 3 amendment (2026-05-28; cascade from C7.4 + C8.2).** The persistence contract in [`../apis/33_semstrait_manifest.md`](../apis/33_semstrait_manifest.md) carries **coverage primitives only** for Complex variants — per-Joinset-hop `hop_coverage`, per-Grainset-level `level_coverage`, per-Unionset-branch `branch_coverage`, plus the universal top-level `coverage: SemanticBitmask` (CCK.1). The composed `ComposedSemanticInterface` (`UnifiedSemantics` + `FieldProvenance` + `CompositionCoverage`) is **not** persisted; `SemanticGraph` synthesises it at build time from the manifest's primitives. Spec `20`'s D5 invariant remains canonical at the taxonomy level — Complex variants conceptually expose a `ComposedSemanticInterface` — but the materialisation site is graph build, not manifest load. See `33 §6.6` (Grainset variant) and `33 §6.7` (Joinset variant) for the cascaded notes.
+
 #### 2.3.3 Composer-without-own-Semantics rule
 
 Per `11 §2` / `11 §10`, nested DataKinds do **not** declare their own Semantics; only the top-level DataKind's interface is authoritative. A nested `ComplexDataKind` (e.g. a `NestedUnionset` inside a `Grainset` body) implements `NestedDataKind`, not `PublicDataKind` — it has no `semantic_interface()` accessor; the access path is through its parent's composed interface.
@@ -183,6 +187,8 @@ Every variant participates in the six-stage pipeline ratified in `10 §2`:
 | `Unionset` / `Grainset` / `Joinset` | Composition-level `CompositionCoverage` keyed by `(ConstituentRef, SemanticsName)`. | `16 §8`. |
 
 > **Invariant D4 — coverage is always present.** Every `ResolvedDataKind` carries a coverage surface. A `ResolvedDataKind` with no coverage surface is malformed — `COMP_E_2005 MissingCoverage`.
+
+> **Phase 3 amendment (2026-05-28; cascade from CCK.1).** The manifest-resident realization of D4 is the universal top-level `coverage: SemanticBitmask` field on every `DataKind` per [`../apis/33_semstrait_manifest.md §6.1`](../apis/33_semstrait_manifest.md). `33` owns the persisted shape (id-keyed `data_kinds: BTreeMap<DataKindId, DataKind>` plus per-variant local coverage masks on `DataKindVariant`); `20` owns the canonical taxonomy and the coverage-always-present invariant. The persisted `coverage` is the union view; per-constituent `*Bitmask` (e.g., `branch_coverage`, `level_coverage`, `hop_coverage`) live on the variant struct per CCK.3.
 
 ### 4.4 Interface exposure
 

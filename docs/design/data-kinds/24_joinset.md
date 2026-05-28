@@ -18,7 +18,7 @@ refined-by:
   - 17 (`foundations/17_temporal_shape.md` — `TemporalShape`, as-of activation matrix for `JoinType::AsOf`)
   - 25 (cross-kind strategy catalog — Joinset × Grainset, Joinset × Unionset composition rules)
   - 32 (`apis/32_semstrait_model.md` — YAML surface for the `joinsets:` top-level block and `path:` sub-block)
-  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedJoinset`, the SemanticManifest entry carrying the materialized `ComposedSemanticInterface`)
+  - 33 (`apis/33_semstrait_manifest.md` — `DataKindVariant::Joinset` and `JoinsetHop` shapes, anchor + members + cumulative `hop_coverage` + `path_origin` + `scope_local_relationships`; `ComposedSemanticInterface` synthesis is deferred to graph build per C7.4 cascade)
   - 34 (`apis/34_semstrait_planner.md` — `JoinsetStrategy` implementation, path-resolve entry points)
   - 35 (`PlanNode::Join` consumption of `Joinset`-derived join sequences; `JoinNode.from_relationship` + `from_joinset` tagging)
 ---
@@ -96,7 +96,9 @@ A `Joinset` is what the author reaches for when they need (a) a named surface, (
 - **I4 — determinism.** For a fixed SemanticManifest and a fixed `Joinset`, the materialized `ComposedSemanticInterface` is bit-identical; the planner's `JoinsetStrategy` emits the same `PlanNode::Join` sequence on every invocation. Implicit-path resolution uses `16 §11.4`'s deterministic neighbor order (extended for anchor bias in §4.1.3).
 - **I5 — compile-time resolution.** `Joinset.path` (whether implicit or explicit) is fully resolved to `Vec<RelationshipId>` at `compile`. The `plan` stage never re-walks the Relationship graph for a `Joinset`.
 - **I7 — strict crate DAG.** `Joinset` resolution lives in `semstrait-manifest`; `JoinsetStrategy` lives in `semstrait-planner`; `PlanNode::Join` construction consumes the resolved `Joinset` without re-resolution.
-- **I8 — SemanticManifest is planner-complete.** A `ResolvedJoinset` carries everything the planner needs: resolved anchor, resolved `RelationshipId` sequence with forward/reverse direction per hop, the resolved Relationship at each hop (root-level or scope-local shadow per `18 §2.10`) from which `JoinType` is derived at plan emission, resolved `ComposedSemanticInterface`.
+- **I8 — SemanticManifest is planner-complete.** `ResolvedJoinset`'s **manifest contract** persists the anchor (`DataKindId`), the binary-v1 `members: Vec<DataKindId>`, `Vec<JoinsetHop>` (each hop carrying `from` / `to` / `relationship: RelationshipId` / `direction: HopDirection` / `hop_coverage: SemanticBitmask` with cumulative semantics per `33 §6.7`), `path_origin: PathOrigin { Explicit, Implicit }`, and `scope_local_relationships: Vec<Relationship>` for `18 §2.10` shadowing. The resolved `ComposedSemanticInterface` (`UnifiedSemantics` + `FieldProvenance` + `CompositionCoverage`) is **deferred to graph build** (see Phase 3 amendment below); planner-completeness is preserved because `SemanticGraph` synthesises the unified surface deterministically from manifest primitives (anchor + per-hop coverage + members' interfaces) at build time. `JoinType` is still derived at plan emission from the resolved Relationship's `optional` field per `18 §2.9`.
+
+> **Phase 3 amendment (2026-05-28; cascade from C7.4).** Earlier drafts of `ResolvedJoinset`'s manifest contract included the resolved `ComposedSemanticInterface` (`UnifiedSemantics`, `FieldProvenance`, `CompositionCoverage`, `traversed_paths`) as a persisted field. Per ratified clause C7.4 (manifest-pass `RATIFICATION_LOG.md`), these are dropped from the manifest contract and re-classified as **graph-build outputs**. The manifest now persists only the path primitives — anchor, members, `Vec<JoinsetHop>` with cumulative `hop_coverage`, `path_origin`, and `scope_local_relationships` — plus the universal top-level `coverage: SemanticBitmask` (which equals `hops.last().hop_coverage` per CCK.1 and `33 §6.7`). The `ComposedSemanticInterface` synthesis at graph build time uses (a) per-hop `hop_coverage` for first-cut path search and (b) the members' canonical `SemanticInterface`s for the unified-surface merge per `16 §6`. The cross-references for the manifest-resident shape are [`../apis/33_semstrait_manifest.md §6.7`](../apis/33_semstrait_manifest.md) (`DataKindVariant::Joinset` + `JoinsetHop`) and `33 §10` (CX1 load-time integrity). The plan-time observable behaviour in `24 §5` is unchanged — `JoinsetStrategy::lower` still consumes a fully-resolved hops sequence; the difference is that the unified-interface materialisation is synthesised into the graph during build, not loaded from the manifest. `§2.4`'s pseudo-shape and `§8`'s `ComposedSemanticInterface`-on-Joinset narrative are recast accordingly: the same content exists, but at graph-build time, not at manifest-load time.
 - **I10 — non-exhaustive extensibility.** `JoinsetDataKind`, `JoinHop`, `ExplicitPath`, `JoinsetStrategy`'s inputs / outputs are all `#[non_exhaustive]`. N-ary lift (`TD-NESTING-NARY-JOIN`) and `JoinType::AsOf` activation (pending `17`) are MINOR additions.
 - **I12 — first-class diagnostics.** Every `Joinset` Precondition has a stable error code in the `*_E_24xx` / `PLAN_W_24xx` ranges (§§9–11).
 
@@ -215,23 +217,21 @@ Round 1 uses `HopDirection` explicitly rather than inferring direction from the 
 
 ### 2.4 Composition via `CompositionKind::Joinset`
 
-Per `16 §10.1`, an explicit `ComplexDataKind` is materialized at `compile` as a `ResolvedComplexDataKind` carrying its `ComposedSemanticInterface`. For `Joinset`:
+Per `16 §10.1`, an explicit `ComplexDataKind` is materialized at `compile` as a `ResolvedComplexDataKind`. For `Joinset` under the manifest-resident shape (per C7.4 cascade), `compile` produces a manifest entry carrying anchor + members + per-hop coverage + scope-local relationships; the `ComposedSemanticInterface` is synthesised by `SemanticGraph` at build time, not persisted on the manifest:
 
 ```text
 compile(JoinsetDataKind) → ResolvedJoinset {
     name, anchor, members, hops: Vec<ResolvedJoinHop>, relationships,
-    interface: ComposedSemanticInterface {
-        composition_kind: CompositionKind::Joinset,
-        constituents: <members, canonicalised anchor-first>,
-        interface: UnifiedSemantics <per §8.2>,
-        provenance: FieldProvenance <per §8.3>,
-        coverage: CompositionCoverage <per §8.4>,
-        traversed_paths: Vec<RelationshipPath> <recorded for audit/debug>,
-    },
+    // interface: ComposedSemanticInterface { ... }  — RETIRED at the manifest layer (C7.4).
+    //   Synthesised by SemanticGraph at build time from anchor + per-hop coverage +
+    //   members' SemanticInterfaces. See `33 §6.7` for the persisted shape and the
+    //   Phase 3 amendment under §1.4 above for the cascade rationale.
 }
 ```
 
-`33` ratifies the exact `ResolvedJoinset` struct roster. `24` fixes only the semantic content: the `ComposedSemanticInterface` carried by a `ResolvedJoinset` MUST have `composition_kind == CompositionKind::Joinset` and MUST populate `constituents` in anchor-first order (see §3.2 for why).
+> **Retired at the manifest layer (2026-05-28; cascade from C7.4).** The `interface: ComposedSemanticInterface { … }` member of the pseudo-shape above is removed from the manifest contract per ratified clause C7.4. The semantic content (composition kind, anchor-first constituents, `UnifiedSemantics`, `FieldProvenance`, `CompositionCoverage`, `traversed_paths`) is unchanged; the materialisation site moves from compile to graph build. `33 §6.7` ratifies the manifest-resident `DataKindVariant::Joinset` and `JoinsetHop` struct roster ([`../apis/33_semstrait_manifest.md`](../apis/33_semstrait_manifest.md)). `24 §8` (the `ComposedSemanticInterface`-on-Joinset narrative) remains correct as a description of the graph-build output; the only shift is the lifecycle stage at which the unified surface materialises.
+
+`24` continues to fix the semantic content: the `ComposedSemanticInterface` synthesised at graph build for a Joinset MUST have `composition_kind == CompositionKind::Joinset` and MUST populate `constituents` in anchor-first order (see §3.2 for why).
 
 ### 2.5 v1 arity — binary only (restatement)
 
