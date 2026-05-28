@@ -28,6 +28,7 @@ depends-on:
 | Q-IR-SPEC-02 | spec `35 §3.4` carries `Literal::{Integer(i64), Float(f64), Null}` tuple-form | code now uses struct-form variants with `IntegerWidth` / `FloatWidth` |
 | Q-IR-SPEC-03 | spec `14a §3.4` / `§3.5` does not declare `DecimalScaleZero` / `DecimalFamily` | code adds both for ceil/floor/round/median Decimal overloads |
 | Q-IR-SPEC-04 | spec `14a §3.1` line 65 declares `pub description: &'static str` on `FunctionSpec` | code removed the field |
+| Q-IR-SPEC-05 | accessor enum dedup (`MetricAccessor` vs `MeasureAccessor`, `KeyAccessor` vs `DimensionAccessor`) | keep explicit mirrored enums for now |
 
 Re-open when optimizer/adapter implementation needs any of these shape choices to ship behavior.
 
@@ -140,4 +141,21 @@ helper.
 
 **Default.** Keep — name documents the promotion semantic; inlining adds
 match noise to a 5-arm table that should stay scannable.
+
+---
+
+## Q-IR-SPEC-05 — Accessor enum dedup posture
+
+**Source:** manifest/graph post-ratification verification pass (2026-05-28).
+
+**Finding.** `35 §6.1` currently carries four accessor enums where two pairs are structurally mirrored:
+
+- `MetricAccessor` mirrors `MeasureAccessor`
+- `KeyAccessor` mirrors `DimensionAccessor`
+
+The mirrored shape is intentional for explicit API readability, but it is a DRY trade-off.
+
+**Decision needed.** Keep four explicit enums, or collapse mirrored pairs into aliases/shared enums.
+
+**Default.** Keep explicit mirrored enums for now. They preserve kind-local readability and avoid a wider cascade into `14` docs and DSL examples. Revisit when expression-DSL simplification becomes an active stream.
 

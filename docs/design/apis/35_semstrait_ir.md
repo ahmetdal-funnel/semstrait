@@ -17,7 +17,7 @@ authoritative-for:
   - the authoring-surface DSL — the `expr_fn` module with `col`, `field`, `dim`, `measure`, `metric`, `key` free constructors; `std::ops` impls on `SemanticExpr` and `PhysicalExpr`; the `ExprFunctionExt` extension trait — per `14 §9.2`
   - the `CanonicalFn` newtype and the `FunctionRegistry` / `FunctionSpec` / `FnSignature` / `ParamType` / `ReturnTypeRule` / `FunctionCategory` / `RegistryExtension` / `function_registry()` surface, moved from `semstrait-common` per `14a §2`
   - the narrow ir-emitted error kinds — `ValidateError` (raised by `Tree::with_new_children` and `Rewriter<N>::f_*`) and `CompileError` (raised by `ReturnTypeRule::Custom` callbacks wired into `FunctionSpec`); each implements `Diagnose` per `30 §5`. Downstream stages embed via D.ii kind-nesting (`30 §7.4`)
-  - canonical semantic-graph types (`SemanticGraph`, `SemanticNode`, `SemanticEdge`, `SemanticGraphFragment`, `SegmentKey`, `SemanticInterfaceBitmap`) used by planner runtime assembly
+  - canonical semantic-graph types (`SemanticGraph`, `SemanticNode`, `SemanticEdge`, `SemanticGraphFragment`, `SegmentKey`, `SemanticInterfaceBitmask`) used by planner runtime assembly
   - semantic-graph read contracts (`SemanticGraphRead`, `SemanticGraphFragmentRead`, bitmap-operation traits); IR owns shape/contracts only, not runtime cache lifecycle
   - `SemanticPlan` — the canonical, engine-agnostic query plan tree
   - `PlanNode` sum type — variant roster (`Scan`, `Filter`, `Project`, `Agg`, `Join`, `Union`, `Sort`, `Fetch`) and per-variant shape
@@ -57,7 +57,7 @@ refined-by:
 | Shared identifier carriers `ColumnRef`, `SemanticsName` | §3.4 | `[14 §3.4 / §3.5](../foundations/14_expressions.md)` |
 | Authoring-surface DSL — `expr_fn` module, `std::ops` impls on `Expr<L>`, `ExprFunctionExt` | §7 | `[14 §9.2](../foundations/14_expressions.md)` |
 | `CanonicalFn` newtype + `FunctionRegistry` / `FunctionSpec` / `FnSignature` / `ParamType` / `ReturnTypeRule` / `FunctionCategory` / `RegistryExtension` / `function_registry()` | §8 | `[14a §2](../foundations/14a_function_catalog.md)` |
-| Canonical semantic-graph types — `SemanticGraph`, `SemanticNode`, `SemanticEdge`, `SemanticGraphFragment`, `SegmentKey`, `SemanticInterfaceBitmap` + read traits | §2A | `33` / `34` split contract (shape in ir, lifecycle in planner) |
+| Canonical semantic-graph types — `SemanticGraph`, `SemanticNode`, `SemanticEdge`, `SemanticGraphFragment`, `SegmentKey`, `SemanticInterfaceBitmask` + read traits | §2A | `33` / `34` split contract (shape in ir, lifecycle in planner) |
 | Narrow ir-emitted error kinds — `ValidateError`, `CompileError` | §16 | `[14 §3.1](../foundations/14_expressions.md)` / `[14a §3.5](../foundations/14a_function_catalog.md)` |
 | `SemanticPlan` root + `PlanNode` sum (8 variants) + well-formedness invariants | §9 / §10 / §13 | `[00 §4.1](../00_overview.md)` |
 | Plan-level primitives — `SourceRef`, `ResolvedColumn`, `Name`, `KeyPair`, `SortDir`, `NullOrdering`, `AggregateExpr`, `NodeMeta` | §11 | `[15](../foundations/15_mapping_and_binding.md)` / `[16 §5](../foundations/16_composition.md)` |
@@ -151,9 +151,9 @@ semstrait-ir
 ├── functions            // CanonicalFn, FunctionRegistry, FunctionSpec, FnSignature,
 │                        //   ParamType, ReturnTypeRule, FunctionCategory,
 │                        //   RegistryExtension trait, function_registry() accessor (14a §2 / §3 / §8)
-├── semantic_graph       // SemanticGraph, SemanticNode, SemanticEdge,
+├── semantic_graph       // SemanticGraph, SemanticNode, SemanticEdge, GraphExprRef,
 │                        //   SemanticGraphFragment, SegmentKey,
-│                        //   SemanticInterfaceBitmap, read-only graph contracts
+│                        //   SemanticInterfaceBitmask, read-only graph contracts
 ├── plan                 // SemanticPlan, PlanNode, per-variant structs, NodeMeta
 │   ├── node             //   PlanNode enum + variant-struct shapes
 │   └── traversal        //   PlanVisitor, walk_pre / walk_post / transform
@@ -208,16 +208,12 @@ pub enum SemanticNodePayload {
     DataKind {
         data_kind_id: DataKindId,
         name: DataKindName,
-        role: DataKindRole,
     },
     Semantic {
         semantic_id: SemanticsId,
-        name: SemanticsName,
-        role: SemanticRole,
-        data_type: Option<DataType>,
     },
     Expression {
-        expr_id: ExprId,
+        expr_ref: GraphExprRef,
     },
     Source {
         source_id: SourceId,
@@ -225,20 +221,9 @@ pub enum SemanticNodePayload {
 }
 
 #[non_exhaustive]
-pub enum DataKindRole {
-    Dataset,
-    Grainset,
-    Unionset,
-    Joinset,
-}
-
-#[non_exhaustive]
-pub enum SemanticRole {
-    Dimension,
-    Measure,
-    Metric,
-    Key,
-    Field,
+pub enum GraphExprRef {
+    Semantic(SemanticExprId),
+    Physical(PhysicalExprId),
 }
 
 #[non_exhaustive]
@@ -246,7 +231,7 @@ pub struct SemanticEdge {
     pub from: SemanticNodeId,
     pub to: SemanticNodeId,
     pub edge_type: SemanticEdgeType,
-    pub predicate_expr: Option<ExprId>,
+    pub predicate_expr: Option<GraphExprRef>,
 }
 
 #[non_exhaustive]
@@ -273,10 +258,12 @@ pub struct SegmentKey {
 }
 
 #[non_exhaustive]
-pub struct SemanticInterfaceBitmap {
+pub struct SemanticInterfaceBitmask {
     pub words: Vec<u64>,
 }
 ```
+
+`SemanticInterfaceBitmask` is a local coverage view only. The global semantic registry stays in manifest (`33`) as `SemanticBitmap`; graph structures never duplicate registry ownership.
 
 Read contracts:
 
@@ -293,7 +280,7 @@ pub trait SemanticGraphFragmentRead {
     fn touched_sources(&self) -> &[SourceId];
 }
 
-pub trait SemanticInterfaceBitmapOps {
+pub trait SemanticInterfaceBitmaskOps {
     fn is_subset_of(&self, other: &Self) -> bool;
     fn intersects(&self, other: &Self) -> bool;
 }
@@ -306,6 +293,9 @@ Graph invariant:
 - Planner runtime DAG backend target is `daggy` (per `34 §1.4A`); IR remains backend-agnostic and exposes no backend-specific graph types.
 - Node/edge collections are stable-id keyed maps; adjacency is explicit via `outgoing_edges`.
 - `outgoing_edges[node]` is sorted by `SemanticEdgeId` for deterministic traversal.
+- `SemanticNodePayload::{DataKind, Semantic}` carry identity only; full semantic metadata remains owned by manifest (`33` `SemanticBitmap`).
+- Graph-held expression references are pool-typed via `GraphExprRef`; runtime pool dispatch by untyped `ExprId` is forbidden.
+- Every `GraphExprRef` must resolve to an existing pool entry in its declared pool before the fragment is admitted.
 
 Boundary rule: IR owns shape and read semantics only. Runtime mutability, cache policy, cycle-check strategy, and drift-policy execution are planner contracts (`34`), never IR contracts.
 
@@ -714,9 +704,18 @@ pub struct SemanticExprId(pub ExprId);
 pub struct PhysicalExprId(pub ExprId);
 ```
 
-`ExprId` is the underlying content-keyed identifier carrier; `SemanticExprId` and `PhysicalExprId` wrap it without altering its representation. The wrappers exist solely to type-check reference sites — every binding lookup, mapping value, and graph-payload `expr_id` field declares which pool it targets, and the static type system rejects cross-pool mix-ups at compile.
+`ExprId` is the underlying content-keyed identifier carrier; `SemanticExprId` and `PhysicalExprId` wrap it without altering its representation. The wrappers exist solely to type-check reference sites — every binding lookup, mapping value, and graph expression reference (`GraphExprRef`) declares which pool it targets, and the static type system rejects cross-pool mix-ups at compile.
 
-**Rationale.** This preserves the leaf-set boundary at *reference* sites the same way §5.4's "Type-enforced forbidden combinations" preserves it at *content* sites: the static type system, not a runtime check, upholds the rule. A manifest-level untyped `ExprId` keying a tagged `ManifestExpr { Semantic, Physical }` enum would regress on the §698 / §702 invariant ("the static type system, not a runtime check, upholds this"; "no `try_into_physical` runtime check, no defensive panic"), forcing a runtime match at every binding lookup. The newtypes carry the same discipline through the manifest's id-keyed wire form. Aligns with `00 §9` I5 ("name resolution occurs at compile time; planner performs lookup only").
+**Rationale.** Typed IDs keep pool selection (`semantic` vs `physical`) in the type system. An untyped `ExprId` plus tagged runtime enum would force per-lookup branching and break the lookup-only discipline (`00 §9` I5).
+
+#### 5.3.2 Expression resolvability path (authoring -> graph -> plan)
+
+The expression lifecycle is intentionally two-stage and lookup-only after compile:
+
+1. **Authoring.** Parse produces `SemanticExpr` at semantic sites (or `PhysicalExpr` for physical-mapping sites) per `14` / `19`.
+2. **Compile.** `semstrait-manifest::compile` resolves semantic leaves, runs gates G1-G5, and emits pool entries keyed by `SemanticExprId` / `PhysicalExprId` (`33` C11/C13).
+3. **Graph build.** `SemanticGraph` references pool entries through `GraphExprRef::{Semantic, Physical}`; unresolved ids fail graph build and no untyped `ExprId` dispatch is allowed.
+4. **Planning.** Planner consumes graph/manifest references by lookup only; no re-resolution pass mutates expression identity.
 
 ### 5.4 Type-enforced forbidden combinations
 
@@ -1910,7 +1909,7 @@ The adapter is free to emit Substrait proto plans with extra hints (capacity, pa
 
 Per the manifest ratification clause CX1 (`_research/manifest/RATIFICATION_LOG.md`), every cross-reference threading IR-typed identifiers through the manifest wire form is integrity-checked at load. `35` owns the structural shape of the IR-typed reference vocabulary that participates in this check (`SemanticExprId`, `PhysicalExprId` per §5.3.1); the load-time validation pass itself is performed by the consumer (`33`'s deserializer). The IR-side contract is:
 
-1. **Single integrity pass on load.** Manifest deserialization performs one integrity walk over every IR-typed cross-reference. Every `SemanticExprId` referenced from outside `ManifestExpressions` (e.g. from `SemanticBinding.mapping` per `33` C2.4) MUST resolve to an existing entry in `expressions.semantic`; every `PhysicalExprId` referenced (e.g. from `SemanticBinding.mapping[SemanticsId] = SemanticMappingValue::Expr(PhysicalExprId)` per C11) MUST resolve to an existing entry in `expressions.physical`.
+1. **Single integrity pass on load.** Manifest deserialization performs one integrity walk over every IR-typed cross-reference. In v1 wire form, the required external site is `SemanticBinding.mapping[SemanticsId] = SemanticMappingValue::Expr(PhysicalExprId)` and each referenced `PhysicalExprId` MUST resolve in `expressions.physical`. If an external `SemanticExprId` reference site is added later, it MUST resolve in `expressions.semantic`.
 2. **Failure shape.** A reference whose target is absent from its pool surfaces as `LoadError::DanglingReference{ from, to_kind, target_id }`. The `from` field carries the referencing site (binding id, hop, mapping key); `to_kind` discriminates the target pool (`SemanticExpr` vs `PhysicalExpr` vs other manifest collections); `target_id` is the unresolved newtype value. Per `30 §5.4`, identification is by variant identity.
 3. **Hardens compile-time gates.** This pass extends C13's compile-time gates G1 / G2 / G4 (`_research/manifest/RATIFICATION_LOG.md`) from "compile-time only" to "compile-time + load-time defense in depth." A hand-edited or repository-corrupted manifest cannot slip a dangling IR-typed reference past load.
 4. **No JSON `$ref` indirection.** This contract was ratified in lieu of OpenAPI-style `$ref` JSON pointers. The wire format remains the id-keyed map plus newtype-wrapped id reference (less verbose than `$ref`, no inline-vs-pointer ambiguity, no serde-side `$ref` resolver complexity). Integrity is preserved by the load-time pass, not by the wire form's structural shape.

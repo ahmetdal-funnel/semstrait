@@ -32,11 +32,19 @@ refined-by:
 
 # 18. Canonical Entity Types
 
-`18` is the consolidated specification for the ratified entity types that populate a `SemanticModel`: shared Semantics pools, relationships, temporal shapes, dimensions / measures / metrics, filters, AI context, keys, and the model-authoring `SemanticMapping` value shape. `32` fixes the root YAML shape and the `DataKind` hierarchy (an apis-layer concern); `18` fixes the entity shapes nested inside (a foundations-layer concern — these types cross-cut every DataKind variant, SemanticManifest, Planner, and IR surface).
-
-> **Reader's note (structural placement).** This doc originally landed as `apis/32c_entities.md` in the late-April 2026 entity-ratification pass. It was promoted to the foundations layer (`foundations/18_entities.md`) in the 2026-04-17 consolidation pass because the types it defines are structurally foundational — they cross-cut every `2x` data-kind variant, every `3x` api surface, and every planner/adapter consumer. Per the directionality rule in `00 §8`, canonical definitions belong in the lowest-numbered doc that owns them; the promotion places entity types in their correct layer. Section numbering is unchanged from `32c` — every `18 §N` was `32c §N` in the prior revision.
+`18` is the canonical specification for entity payload types that populate a `SemanticModel`: shared Semantics pools, relationships, temporal shapes, dimensions / measures / metrics, filters, AI context, keys, and model-authoring `SemanticMapping` value shapes. `32` owns root YAML shape and DataKind hierarchy; `18` owns the entity payloads embedded in those structures.
 
 Every struct in this document is `#[non_exhaustive]` and every enum is `#[non_exhaustive]` per I10, unless a specific note overrides.
+
+### Scope note — payload shape vs identity metadata
+
+`18` owns canonical **entity payload shapes** only. Named-entity identity metadata is routed as follows:
+
+- model authoring boundary (`id` optional string, UUIDv7 canonical form; strict/convenience missing-id profiles) — `32 §1.4` and `32 §9.0.1`;
+- model parse/build identity sidecar — `32 §2.3`;
+- manifest propagation map (`stable_ids`) — `33 §4.3.1`.
+
+These identity lanes are additive metadata and do not alter the entity payload structs ratified in this document.
 
 ## 1. Shared Semantics Pools & Reference Grammar
 
@@ -189,7 +197,9 @@ pub struct RelationshipId(pub u32);
 
 `RelationshipId` is allocated at `compile` in declaration order over the root-level `relationships:` list. It is the key type for the `SemanticManifest.relationship_index`, for `RelationshipGraph` traversal in `19 §3.4.2`, and for `RelationshipPath` in `16 §6`. `PartialOrd` / `Ord` are derived so downstream code (`19 §3.4.3`'s BFS neighbor iteration, `SemanticManifest` indices keyed by `(DataKindId, RelationshipId)`) can rely on natural `u32` ordering without unwrapping the newtype. Its one-copy-only home is this doc; `19`, `16`, and `33` all reference it from here.
 
-**Authored vs derived.** `JoinType` is **not** an authoring-layer field. It is derived at compile from `optional` per `§2.9` and carried on the manifest-layer `ResolvedRelationship` (`33 §8.1`). This is a deliberate semantic-first stance: the relationship's shape is the contract; the SQL-level join kind is a consequence.
+`RelationshipId` is the compile/runtime lookup lane. It is intentionally separate from model-boundary UUID string identity metadata (`EntityId` in `32 §2.3` and `33 §4.3.1`).
+
+**Authored vs derived.** `JoinType` is **not** an authoring-layer field. It is derived at compile from `optional` per `§2.9` and carried on the manifest-layer `ResolvedRelationship` (`33 §8.1`).
 
 **No parallel override surface.** Authors who need different join semantics inside a specific Joinset declare a **scope-local Relationship** in that Joinset's `relationships:` block with the divergent fields directly. The scope-shadow rule in `§2.10` resolves the visibility. There is no per-hop override map and no per-edge override mechanism.
 
@@ -228,7 +238,7 @@ pub enum Cardinality {
 
 `cardinality:` is required on every `Relationship`, at every authoring site. Authors MUST declare the cardinality they intend; the planner does not infer it. Missing cardinality is `parse.relationship-missing-cardinality` (SR-E-4).
 
-`Cardinality` is **planning metadata, not runtime enforcement** — `semstrait` does not scan data to verify the declared multiplicity. Authors assert; the planner trusts. Misdeclaration produces arithmetically incorrect aggregations without a runtime error. This trade-off is explicit (verification would require a scan, violating compile-time-resolution posture I5). See `16 §3` for fanout consequences per variant.
+`Cardinality` is **planning metadata, not runtime enforcement**. `semstrait` does not scan data to verify declared multiplicity. See `16 §3` for fanout consequences per variant.
 
 ### 2.4 `Optional` — preserved-side enum
 
@@ -302,9 +312,7 @@ impl Default for Integrity {
 }
 ```
 
-**Author assertion (α stance).** `integrity:` is informational — `semstrait` does not verify the claim at compile time, against the catalog, or against declared `Key::Foreign` entries (`§9.1`). The same trust posture as `cardinality` (`§2.3`): authors assert; the planner shapes the plan accordingly; misdeclaration produces silent wrong results.
-
-**Why no compile-time cross-check in v1.** Three plausible sources for verifying `Enforced` (author assertion only / catalog-driven / FK-declaration-driven) were considered. v1 commits to the simplest: author assertion. The reservation `Enforced` vs. `Assumed` as distinct variants leaves headroom to add catalog-driven or FK-declaration-driven verification in a future MINOR without authoring-surface churn.
+`integrity:` is informational in v1. `semstrait` does not verify it at compile time against catalog metadata or declared `Key::Foreign` entries (`§9.1`).
 
 ### 2.7 Defaults & requirements matrix
 
@@ -329,7 +337,7 @@ Reading conventions:
 Validation rules:
 - `optional` and `cross_filter` required when `cardinality ∈ {OneToOne, ManyToMany}` — `validate.relationship-symmetric-cardinality-incomplete` (SR-E-13).
 - `cross_filter ∈ {Left, Right}` rejected when `cardinality == ManyToMany` — `validate.relationship-many-to-many-cross-filter-directional` (SR-E-14).
-- `integrity: Enforced` is **not** cross-checked at compile (deliberate non-rule per α stance).
+- `integrity: Enforced` is **not** cross-checked at compile in v1.
 
 ### 2.8 `JoinKeyExprPair` — hybrid equi-key grammar
 
@@ -345,7 +353,7 @@ pub struct JoinKeyExprPair {
 
 Authors list one `JoinKeyExprPair` per equi-predicate. The planner emits `left.<from_expr> = right.<to_expr>` per pair and ANDs the residual `filter:` predicate (if any) on top.
 
-**Why a hybrid `keys` + `filter` grammar.** The v1 expected traffic is simple equi-joins; `keys:` makes that common case readable. Non-equi residuals (e.g. `from.valid_from <= to.event_ts`) need a `filter:` escape. Splitting the two keeps equi-joins short and lets the planner still know which predicates are join-structural (for hash-join eligibility, partition pruning, etc.) vs post-join residual.
+`keys` carries equi-join predicates. `filter` carries residual non-equi predicates (for example `from.valid_from <= to.event_ts`).
 
 ### 2.9 `JoinType` — derived at compile, manifest-only
 

@@ -112,7 +112,7 @@ Footprint after balanced pruning:
 | --- | --- | --- |
 | `open/` | 23 | ~2140 |
 | `closed/` | 21 | ~1740 |
-| `deferred/` | 20 | ~1225 |
+| `deferred/` | 21 | ~1287 |
 
 Recent moves:
 
@@ -124,7 +124,8 @@ Recent moves:
 - `22` Q-GRN-001/-002/-005 → closed (Grainset rebase); `Q-COMP-006` opened for `16` cleanup.
 - `Q-COMP-007` (directionality) and `Q-COMP-017` (`join_type` default) → closed under item K. `Q-COMP-016` (m:m policy) updated.
 - `Q-IR-IMPL-01..06` + `Q-IR-SPEC-01..04` → opened in `deferred/35_questions.md` 2026-05-26 covering W1-N-2/W2-N-1/W2-N-2/W3-N-1/W3-N-2/XC-1/XC-2 surface and the post-impl spec drift. Code-side already reconciled into `35` and `14a`; deferred questions track open shape choices (e.g. `IntoLiteral for f32`, `RegistryExtension` re-export hiding, `widen_for_join` allocation).
-- Manifest ratification (item T, 2026-05-28): 3 questions ratified-and-closed citing clause IDs in new `closed/33_questions.md`, `closed/15_questions.md`, `closed/16_questions.md`. Deferred threads + Phase 2 research candidates landed in new `deferred/33_questions.md`, new `deferred/16_questions.md`, appended to `deferred/15_questions.md`, appended to `deferred/32_questions.md`. INDEX.md dashboard counts refreshed (open 23, closed 21, deferred 20).
+- Manifest ratification (item T, 2026-05-28): 3 questions ratified-and-closed citing clause IDs in new `closed/33_questions.md`, `closed/15_questions.md`, `closed/16_questions.md`. Deferred threads + Phase 2 research candidates landed in new `deferred/33_questions.md`, new `deferred/16_questions.md`, appended to `deferred/15_questions.md`, appended to `deferred/32_questions.md`. INDEX.md dashboard counts refreshed (open 23, closed 21, deferred 21).
+- Semstrait-model round follow-up (2026-05-28): added deferred `Q-MODEL-D04` in `deferred/32_questions.md` to park core-contract OpenAPI/JSON Pointer/decorator adoption pending a dedicated interoperability ratification pass.
 
 Focused v1 questions in `open/` should remain: architecture-impacting (`30`/`36`/`37`); compile/plan correctness-critical (`15`, `32`, `33`, parts of `22`/`23`); cross-stage primitive decisions (`38` Q-API-012). Non-blocking ergonomics and adapter empirics → deferred.
 
@@ -143,7 +144,7 @@ Focused v1 questions in `open/` should remain: architecture-impacting (`30`/`36`
 | Phase 3 Wave 2D | `data-kinds/20_taxonomy.md` CCK skeleton cross-references; `data-kinds/22_grainset.md §1.3` I8 amendment (C8.2 — JOIN-tree deferred to graph build); `data-kinds/23_unionset.md §2.1` row A confirmation of implicit-Unionset top-level (C6.5/C9.4); `data-kinds/24_joinset.md §1.4 / §2.4` I8 + C7.4 amendment (ComposedSemanticInterface deferred). |
 | Phase 3 Wave 2E | `foundations/16_composition.md §9.1 / §10.4 / §11.4` — C9.2 + C10.2 amendments (implicit-composition enumeration moves to graph build). |
 | Question hygiene | 3 questions ratified-and-closed citing clause IDs (`closed/15`, `closed/16`, new `closed/33`). Deferred threads + Phase 2 research candidates: new `deferred/33`, new `deferred/16`, appended `deferred/15`, appended `deferred/32`. |
-| Dashboard | `INDEX.md` snapshot table refreshed (open 23 / closed 21 / deferred 20). |
+| Dashboard | `INDEX.md` snapshot table refreshed (open 23 / closed 21 / deferred 21). |
 
 **Open follow-up.** Phase 3.5b spec-16 structural drift sweep — Wave 2 Agent E flagged broader prose drift outside the targeted-amendment scope (§10 preamble L1417-1423, §10.1 L1430, §10.2 L1446-1460, §11 preamble L1626-1630, §11.1 inputs, §15.5 L2250-2253, frontmatter `refined-by:` L27 still says 33 "persists Relationship, Joinset, ComposedSemanticInterface"). Targeted amendment notes (C9.2 / C10.2) landed at §9.1, §10.4, §11.4 only; full sweep needed. Phase 2 research (Targets A–E) queued in RATIFICATION_LOG.md, not yet launched.
 

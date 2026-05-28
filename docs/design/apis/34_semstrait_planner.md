@@ -105,6 +105,7 @@ Current contract at this stage:
 
 - `33` is authoritative for persisted manifest seed/index shape.
 - `35` is authoritative for canonical graph and expression types.
+- Graph-fragment admission validates DAG-ness and typed expression-reference resolvability (`GraphExprRef`) before planning/lowering.
 - planner runtime store/build/eviction/drift interfaces are pending dedicated planner design pass.
 - planner runtime DAG backend target is `daggy`; backend-specific types do not leak through `33`/`35` public contracts.
 
@@ -451,28 +452,27 @@ pub struct ResolvedQueryRequest {
 pub enum ResolvedTarget {
     Explicit(DataKindRef),                            // Request.from = Some(d)
     Implicit(DataKindRef),                            // `16 §11.3` single-kind fast path
-    Composition(DataKindRef),                         // `16 §11.4` — pre-built explicit or implicit
-                                                      //   composition resolved by constituent-set
-                                                      //   lookup (`33 §7.2`); origin is on the
-                                                      //   resolved kind itself
+    Composition(DataKindRef),                         // `16 §11.4` — graph-index lookup
+                                                      //   hit by constituent-set; origin is on
+                                                      //   the resolved kind itself
 }
 
 #[non_exhaustive]
 pub struct ResolvedSemanticRef {
     pub owner:      DataKindRef,
     pub element:    SemanticElement,
-    pub binding_id: BindingId,                        // entry key into manifest.expr_table
+    pub binding_id: BindingId,                        // key into manifest `bindings`
 }
 
 #[non_exhaustive]
 pub enum SemanticElement { Dimension, Measure, Metric, Filter, Key }
 ```
 
-For `ResolvedTarget::Composition(name)`, the planner consumes the resolved kind through `manifest.datakind(&name)`; the kind's `composed_interface.traversed_paths` and `constituents` are already materialized at compile per `16 §10`. Strategies treat `Origin::Explicit` and `Origin::Implicit { id }` uniformly. For Complex-owned fields, `binding_id` points at the constituent Binding the field resolves through per `16 §7`'s `FieldOwnership`.
+For `ResolvedTarget::Composition(name)`, the planner consumes the resolved kind through the runtime graph composition index (`graph.composition_index(name)`); traversed paths and constituent sets are graph-build products derived from manifest primitives (`16 §10` / `§11`). Strategies treat `Origin::Explicit` and `Origin::Implicit { id }` uniformly. For Complex-owned fields, `binding_id` points at the constituent Binding the field resolves through per `16 §7`'s `FieldOwnership`.
 
 ### 5.2 Invariants
 
-A well-formed `ResolvedQueryRequest` satisfies: every `owner` names a `ResolvedDataKind` in `manifest.resolved_datakinds`; every `binding_id` is present in `manifest.expr_table` (I8 / `19 §3.2.3`); `target` is consistent with all `owner` fields; `dimensions` / `measures` / `metrics` entries have `element` matching the field they appear in; `filters` preserve caller order. Violation is a planner-internal bug; step 1 constructs only well-formed instances and consumers MAY `debug_assert!` in test builds.
+A well-formed `ResolvedQueryRequest` satisfies: every `owner` resolves through graph/manifest lookup (`graph.name_index` + `manifest.data_kinds`); every `binding_id` is present in `manifest.bindings` (I8 / `19 §3.2.3`); `target` is consistent with all `owner` fields; `dimensions` / `measures` / `metrics` entries have `element` matching the field they appear in; `filters` preserve caller order. Violation is a planner-internal bug; step 1 constructs only well-formed instances and consumers MAY `debug_assert!` in test builds.
 
 ## 6. The `plan` function signature
 
@@ -508,7 +508,7 @@ pub fn plan(
 
 ### 6.2 Preconditions on `manifest`
 
-The SemanticManifest must satisfy every invariant in `33 §3.1` — in particular, `expr_table` must be populated for every exposed `(name, binding_id)` pair, and every referenced `RelationshipId` must be present in `resolved_relationships`. Feeding a partially-built SemanticManifest is a caller error; the planner's index-inconsistency checks raise `PlanErrorKind::SemanticManifestIndexInconsistent` where possible but are not exhaustive. Multi-thread access is safe per `33 §12` — a single `SemanticManifest` may back concurrent `plan` calls.
+The SemanticManifest must satisfy every invariant in `33 §4` / `§10` / `§12` — in particular, `bindings`, `data_kinds`, `relationships`, and typed expression pools must be internally consistent so graph build can derive indices before planning. Feeding a partially-built SemanticManifest is a caller error; planner graph/index checks raise `PlanErrorKind::SemanticManifestIndexInconsistent` where possible but are not exhaustive. Multi-thread access is safe per `33 §12` — a single `SemanticManifest` may back concurrent `plan` calls.
 
 ### 6.3 Postconditions
 
@@ -549,17 +549,17 @@ No name resolution beyond the pre-built index (I5). Complexity is O(names × log
 
 Two-branch decision:
 
-- **Explicit (`request.from == Some(d)`).** Per `16 §11.6`: look up `d` in `manifest.resolved_datakinds`. Absent → `PLAN_E_2040`. For every resolved Semantics, assert the owner equals `d` (Simple) or appears in `d`'s constituents (Complex); violation → `PLAN_E_0507 SemanticsNotOnSurface`. Set `target = Explicit(d)`.
+- **Explicit (`request.from == Some(d)`).** Per `16 §11.6`: look up `d` in the graph/manifest DataKind index (`graph.datakind_index`). Absent → `PLAN_E_2040`. For every resolved Semantics, assert the owner equals `d` (Simple) or appears in `d`'s constituents (Complex); violation → `PLAN_E_0507 SemanticsNotOnSurface`. Set `target = Explicit(d)`.
 - **Implicit (`request.from == None`).** Invoke field-first resolution (§10 / `16 §11`). Output is `ResolvedTarget::Implicit(d)` (single-kind fast path) or `ResolvedTarget::Composition(d)` (constituent-set lookup hit per §10.2 step 4). Errors: `PLAN_E_0500` / `PLAN_E_0501` / `PLAN_E_0502` / `PLAN_E_0503` / `PLAN_E_0508`.
 
 ### 7.4 Step 3 — Composition consistency check
 
-For composition targets (`ResolvedTarget::Explicit(d)` where `d` is Complex, or `ResolvedTarget::Composition(d)`), the planner consumes the pre-built `composed_interface` from `manifest.datakind(&d)`:
+For composition targets (`ResolvedTarget::Explicit(d)` where `d` is Complex, or `ResolvedTarget::Composition(d)`), the planner consumes the graph-built composition entry from `graph.composition_index(d)`:
 
-- **Composition target (explicit or implicit-pre-built):** `composed_interface.traversed_paths` is already materialized at compile per `16 §10`. Step 3 walks the path edges to confirm every `RelationshipId` resolves in `manifest.resolved_relationships` (a SemanticManifest-integrity check) and packages the per-edge `JoinKeyExprPair` shape strategies consume.
+- **Composition target (explicit or implicit):** `traversed_paths` is materialized during graph build per `16 §10`. Step 3 walks the path edges to confirm every `RelationshipId` resolves in the manifest relationship scope (`manifest.relationships` plus Joinset-local shadows) and packages the per-edge `JoinKeyExprPair` shape strategies consume.
 - **Simple target:** step 3 is a no-op.
 
-`PLAN_E_2052 SemanticManifestIndexInconsistent` surfaces here when a recorded `RelationshipId` is missing from `manifest.resolved_relationships` — a SemanticManifest-integrity bug, not a plan-time failure mode under valid inputs.
+`PLAN_E_2052 SemanticManifestIndexInconsistent` surfaces here when a recorded `RelationshipId` is missing from the expected relationship scope — a manifest/graph integrity bug, not a plan-time failure mode under valid inputs.
 
 ### 7.5 Step 4 — Strategy dispatch (`20 §5.3`)
 
@@ -780,46 +780,46 @@ impl JoinsetStrategy { pub fn new() -> Self; }
 
 Step 2 of the pipeline (§7.3) invokes field-first resolution when `request.from == None`. When `request.from` is `Some(d)`, step 2 takes the explicit-routing branch per `16 §11.6` and field-first resolution is skipped entirely.
 
-### 10.2 Algorithm — lookup-only over compiled compositions (from `16 §11`)
+### 10.2 Algorithm — lookup-only over `SemanticGraph` build-time indices (`16 §11`)
 
-The algorithm's canonical ratification is `16 §11`; §10 here records the planner-side realization. Per `16 §10`, every Joinset and Unionset (explicit and implicit) is **eagerly materialized at compile** with stable `Origin` carriage; plan-time is a pure lookup over `33`'s `CompositionIndex`. There is no plan-time BFS / Steiner walk and no on-demand synthesis.
+The algorithm's canonical ratification is `16 §11`; §10 here records the planner-side realization. Per `33 §4.1` / `§6.8` and `16 §10`, the manifest persists primitives only, while explicit and implicit compositions are synthesized into `SemanticGraph` at graph-build time. Plan-time resolution is therefore lookup-only over graph-held indices — no plan-time BFS / Steiner walk and no on-demand synthesis.
 
-1. **Name-to-kind map (`16 §11.2`).** For each `SemanticsName` in `request.dimensions ∪ request.measures ∪ request.metrics ∪ request.filters.field`, consult `manifest.name_index(name)`:
-  - `None` → `PLAN_E_0508 UnknownSemantics { name }` (re-raised from step 1 if the lookup missed there) per `16 §14.3`.
+1. **Name-to-kind map (`16 §11.2`).** For each `SemanticsName` in `request.dimensions ∪ request.measures ∪ request.metrics ∪ request.filters.field`, consult `graph.name_index(name)`:
+  - `None` → `PLAN_E_0508 UnknownSemantics { name }`.
   - `Some(owning)` → record the `Vec<DataKindRef>`.
-2. **Candidate kind set `T`.** Deduplicate `⋃ owning` across selected names. If `|T| == 0`, emit `PLAN_E_0508` (unreachable here because step 1 already enforced non-empty owners).
-3. **Single-kind fast path (`16 §11.3`).** If `|T| == 1`, return `ResolvedTarget::Implicit(T[0])`. The planner treats the Request as if `from: Some(T[0])` had been declared.
-4. **Multi-target lookup over `CompositionIndex` (`16 §11.4`).** If `|T| >= 2`:
-  - Form the canonical `ConstituentSet` (lex-sorted `Vec<DataKindName>`) per `33 §7.2` from `T`.
-  - Query `manifest.composition_index.by_constituent_set(&set)` (`33 §7.2`) → `&[DataKindName]`.
-  - **Single match** → fast-path: pick the unique pre-built `ResolvedJoinset` or `ResolvedUnionset` (whose `origin` is either `Origin::Explicit` or `Origin::Implicit { id }`), package as `ResolvedTarget::Composition(name)`. Strategy dispatch (§9.2's table) routes by the resolved variant; explicit and implicit are uniform downstream.
-  - **Multi match** → ambiguity. The constituent set was reachable via more than one canonical form (e.g. directional Joinsets that differ in path ordering, or both an implicit Joinset and an implicit Unionset for the same set). Emit `PLAN_E_0500 AmbiguousImplicitComposition { constituent_set, candidates }` (per `16 §14.3` shape) — the author must explicitly name a Joinset or refine the Request.
-  - **No match** → no composition was materialized at compile for this set. Two sub-cases:
-    - Inspect `MAX_IMPLICIT_COMPOSITION_DEPTH` policy: if the constituent set is reachable in the relationship graph but exceeded the depth bound at compile, emit `PLAN_E_0502 CompositionDepthExceeded { from_kinds, max_depth }` (per `16 §14.3` shape) with a hint suggesting an explicit Joinset.
-    - Otherwise emit `PLAN_E_0501 NoCompositionPath { from, to }` (per `16 §14.3` shape) with a hint listing the kinds and the missing relationship.
-5. **Return.** `ResolvedTarget::{Implicit | Composition(name)}`. The planner consumes the resolved composition through `manifest.datakind(&name)` (`33 §3.4`); strategies see a uniform `ResolvedDataKind::Complex(...)` payload regardless of `origin`.
+2. **Candidate kind set `T`.** Deduplicate `⋃ owning` across selected names.
+3. **Single-kind fast path (`16 §11.3`).** If `|T| == 1`, return `ResolvedTarget::Implicit(T[0])`.
+4. **Multi-target lookup (`16 §11.4`).** If `|T| >= 2`, query `graph.composition_by_constituent_set(&T)`:
+  - **Single match** → `ResolvedTarget::Composition(name)`.
+  - **Multi match** → `PLAN_E_0500 AmbiguousImplicitComposition`.
+  - **No match** → `PLAN_E_0501 NoCompositionPath` or `PLAN_E_0502 CompositionDepthExceeded` (when the graph build recorded a cap hit).
+5. **Return.** `ResolvedTarget::{Implicit | Composition(name)}`; strategy dispatch remains variant-driven and origin-agnostic.
 
-### 10.3 Integration with SemanticManifest indices
+### 10.3 Integration with graph-build indices
 
-The algorithm is a thin reader of two pre-built indices: `manifest.name_index: BTreeMap<SemanticsName, Vec<DataKindRef>>` (`33 §5`) and `manifest.composition_index.by_constituent_set: BTreeMap<ConstituentSet, Vec<DataKindName>>` (`33 §7.2`). Every lookup is O(log n); the constituent-set map is materialized at compile per `33 §9.1`'s sub-pass 9. No relationship-graph traversal at plan time (the graph is consumed only at compile, by `33 §9.1`'s sub-pass 7). No name resolution at plan time (I5).
+The planner reads graph-build indices reconstructed from manifest primitives:
 
-The `MAX_IMPLICIT_COMPOSITION_DEPTH` constant remains a **compile-side bound** consumed by `33 §9.1`'s sub-pass 7 (implicit-Joinset enumeration); it is referenced here only for the §10.2 step-4 error message that explains why a constituent set was not enumerated at compile.
+- `graph.name_index: BTreeMap<SemanticsName, Vec<DataKindRef>>`
+- `graph.composition_index: BTreeMap<DataKindName, ResolvedComplexDataKind>`
+- `graph.composition_by_constituent_set: BTreeMap<BTreeSet<DataKindRef>, Vec<DataKindName>>`
 
-### 10.4 Depth bound (compile-side reference)
+These indices are built during `SemanticGraph` construction from `SemanticBitmap`, `DataKind` coverage, and `relationships` (`33 §4.1`, `§6.8`; `16 §10`/`§11`). Planner hot path performs lookup only (I5/I6/I11).
+
+### 10.4 Depth bound (graph-build reference)
 
 ```rust
 pub const MAX_IMPLICIT_COMPOSITION_DEPTH: usize = 4;
 ```
 
-Per `16 §10.4` (Q-COMP-001 closed 2026-04-28). The constant is exported from `semstrait-manifest` (`33 §9.1` step 7) and re-exported here for cross-doc readability and for the §10.2 step-4 error-hint rendering. Plan-time does not enforce the bound — enforcement is a compile-time invariant per `33 §3.1` ("Implicit-cap discipline"). A Request that hits the depth bound at compile produces no entry in `composition_index.by_constituent_set`, and §10.2 step-4 surfaces `PLAN_E_0502` accordingly.
+Per `16 §10.4` (Q-COMP-001 closed 2026-04-28). The constant is a code-level invariant used by implicit-composition enumeration during graph build. Plan-time does not enforce the bound; it only consumes graph-build outcomes (for example `PLAN_E_0502` when no composition candidate was materialized due to cap limits).
 
-The companion cap `MAX_IMPLICIT_ENUMERATION_COUNT = 2000` (Q-COMP-005 closed 2026-04-29; `16 §10.4`) is also compile-side; if exceeded, compile fails with `CompileError::ImplicitEnumerationExploded` (`33 §10.1`) and no SemanticManifest is produced — plan-time never observes the breach.
+The companion cap `MAX_IMPLICIT_ENUMERATION_COUNT = 2000` (Q-COMP-005 closed 2026-04-29; `16 §10.4`) is also graph-build-side; if exceeded, graph construction fails before any request planning starts.
 
 ### 10.5 Interaction with Joinsets and `19 §3.4` path resolution
 
 A `Request` with explicit `from: Some(joinset)` skips §10 entirely. A `Request` with `from: None` whose constituent set hits a pre-built `Origin::Explicit` Joinset returns it directly — there is no "implicit composition shadows Joinset" advisory because the canonical form is uniquely the explicit Joinset's by construction (per `16 §10.6` clash rejection — an implicit composition with the same canonical form would have failed compile with `COMP_E_0414` `ExplicitImplicitCompositionClash`).
 
-Per `16 §11.7`, plan-time field-first resolution and compile-time cross-kind path resolution (`19 §3.4`) operate on different timing layers but share the same SemanticManifest indices. `19 §3.4` runs at compile and materializes `PathSignature` entries inside `ResolvedExprTable`; `34 §10` runs at plan and looks up pre-built compositions by constituent set. The depth-bound and tie-break policy are now compile-side discipline (`16 §10.4` / `§10.6`) — no shared plan-time BFS helper exists.
+Per `16 §11.7`, plan-time field-first resolution and compile-time cross-kind path resolution (`19 §3.4`) operate on different timing layers and share manifest primitives, but not the same runtime indices. `19 §3.4` runs at compile and materializes `PathSignature` entries inside `ResolvedExprTable`; `34 §10` runs at plan and looks up graph-build composition indices by constituent set. Depth-bound and tie-break policy are graph-build discipline (`16 §10.4` / `§10.6`) — no shared plan-time BFS helper exists.
 
 ## 11. The `optimize` function
 

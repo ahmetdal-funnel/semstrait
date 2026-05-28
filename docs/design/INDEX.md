@@ -144,7 +144,7 @@ Current snapshot:
 |---|---:|---:|
 | `open/` | 23 | ~2140 |
 | `closed/` | 21 | ~1740 |
-| `deferred/` | 20 | ~1225 |
+| `deferred/` | 21 | ~1287 |
 
 For registry-specific questions, use the aggregate navigator:
 - [`questions/open/registry_questions.md`](questions/open/registry_questions.md)

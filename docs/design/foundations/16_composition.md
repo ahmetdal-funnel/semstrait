@@ -1788,7 +1788,7 @@ documented path-ambiguity error (§11.4).
 For each `name` in `request.select`:
 
 ```text
-let owning = manifest.name_index.get(&name)
+let owning = graph.name_index.get(&name)
     .ok_or(PlannerError::UnknownSemantics { name })?;
 ```
 
@@ -1823,18 +1823,15 @@ target a single fact-like `DataKind` with co-located dimensions.
 > (per C4), per-DataKind `coverage` masks (per CCK), and the root-scope
 > `relationships:` map (plus Joinset-local shadow Relationships per
 > `33 §6.7`) — by running §10.4's BFS over the open Relationship graph
-> at graph-build time. The pseudocode below is preserved; references
-> to `manifest.composition_*` and `manifest.name_index` indices
-> (here and at §11.2 step input) read as `graph.composition_*`
-> and `graph.name_index` under the cascade — both indices are
-> reconstructed by `SemanticGraph` at build time from manifest
-> primitives, never carried as top-level manifest fields.
+> at graph-build time. The pseudocode below uses `graph.*` indices
+> directly; they are reconstructed by `SemanticGraph` at build time
+> from manifest primitives and are never top-level manifest fields.
 
 If `|T| >= 2`: look up the implicit / explicit composition that
 covers `T`.
 
 ```text
-let candidates = manifest.composition_by_constituent_set
+let candidates = graph.composition_by_constituent_set
     .get(&BTreeSet::from(T))
     .cloned()
     .unwrap_or_default();

@@ -212,3 +212,23 @@ purpose: Manifest questions parked for post-v1 ratification or follow-up researc
 - **Performance.** O(V + E) is achievable; for dense relationship graphs, the constant factor matters at compile-time.
 
 **Next step.** Reactivate if and when Q-MAN-D03 (G6 governance) reactivates.
+
+---
+
+## Q-MAN-D11 — `NestedDataKindVariant` consolidation shape — DEFERRED
+
+**Status: DEFERRED.** The manifest verification pass (2026-05-28, post-ratification cleanup) removed duplicate single-use tags (`DataKindRole`, standalone `PathOrigin`) but intentionally kept an explicit `NestedDataKindVariant` subset in `33 §6.3`. The open question is whether nested and top-level variant carriers should share one enum shape with a legality guard (`Joinset` forbidden in nested context) or remain split.
+
+**Refs.**
+
+- `33 §6.2` / `§6.3` — top-level vs nested variant rosters.
+- `26` nesting rules R2/R3 — why nested Joinset is forbidden.
+
+**Why deferred.**
+
+- The current split makes nesting constraints explicit and keeps load-time checks simple.
+- A shared enum shape would reduce duplicated variant text but introduces context-dependent validity rules and larger cascade surface across planner/model docs.
+
+**Current default.** Keep explicit `NestedDataKindVariant` in v1 docs; revisit if a third nested-only form appears or if code-level duplication becomes measurable.
+
+**Next step.** Revisit during post-v1 shape simplification after `24` and `34` rebases settle.

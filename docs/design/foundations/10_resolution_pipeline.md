@@ -59,7 +59,7 @@ Six stages. Compile-time = `parse`, `validate`, `compile`. Query-time = `plan`, 
 
 | # | Stage | Input | Output | Owner (forward-ref) |
 |---|---|---|---|---|
-| 1 | `parse` | YAML bytes | `SemanticModel` | 32 |
+| 1 | `parse` | YAML bytes | `SemanticModelBuilder` | 32 |
 | 2 | `validate` | `&SemanticModel` | `Result<(), Vec<ValidateError>>` (pure predicate) | 32 |
 | 3 | `compile` | `SemanticModel` + `CatalogProvider` + `FileSystem` | `SemanticManifest` | 33 (orchestrator), 37 (metadata), 32 (AST source) |
 | 4 | `plan` | `&SemanticManifest` + `Request` + planner graph-runtime context (segment store/builder/drift policy) + optional injected `EngineAdapter` hooks | `SemanticPlan` | 34 |
@@ -71,7 +71,9 @@ flowchart LR
     subgraph CT["Compile-time (compile is async)"]
         direction LR
         Y[Model YAML] --> P(parse)
-        P --> SM[SemanticModel]
+        P --> SMB[SemanticModelBuilder]
+        SMB --> B(build/materialize)
+        B --> SM[SemanticModel]
         SM --> V(validate)
         V --> C(compile)
         C --> M[(SemanticManifest)]
@@ -99,7 +101,7 @@ flowchart LR
 
 **Notes on the diagram.**
 
-- `SemanticModel` is shown once; `validate` borrows it and returns `Result<(), Vec<ValidateError>>` (pure predicate, no new type). The `V → C` edge represents pipeline ordering (validation-passed precedes compile), not a data transformation.
+- `parse` returns `SemanticModelBuilder`; builder materialization (`.build()`) yields `SemanticModel`. `validate` borrows that model and returns `Result<(), Vec<ValidateError>>` (pure predicate, no new type). The `V → C` edge represents pipeline ordering (validation-passed precedes compile), not a data transformation.
 - `CatalogProvider` and `FileSystem` are hexagons (traits per 00 §7.2 legend) and appear as dashed async-I/O dependencies on `compile` only — no other stage touches them.
 - Query-time graph handling is explicit: planner may build/reuse graph segments from manifest seeds before lowering to a `SemanticPlan`.
 - `EngineAdapter` has two arrow styles: dashed (injection mode — optional, replaces canonical choices in `plan`/`optimize` for near-canonical engines) and solid (terminal — every adapter owns `adapt`).
@@ -125,9 +127,9 @@ Every subsection in §3 uses this fixed template. Fields are authoritative for t
 
 ### 3.1 `parse`
 
-- **Purpose** — Deserialize Model YAML text into a typed, in-memory `SemanticModel`.
+- **Purpose** — Deserialize Model YAML text into an appendable `SemanticModelBuilder`.
 - **Input** — YAML text (bytes or `&str`). A single-file Model (multi-file / include-directive support is deferred — §9).
-- **Output** — `SemanticModel` (structural shape ratified in `32`).
+- **Output** — `SemanticModelBuilder` (materialized to `SemanticModel` by `.build()` per `32`).
 - **Owning crate** — `semstrait-model`.
 - **Invariants upheld** —
   - Preserves `ExprSource` verbatim (inline DSL strings and declarative YAML blocks). `parse` does **not** compile expressions; the `ExprSource` → `Expr` transition is `compile`'s boundary (I1).
@@ -408,7 +410,7 @@ Both entries are explicit, caller-controlled gates and outside the `plan → opt
 
 The pipeline is split into two phases with distinct posture:
 
-- **Compile-time phase** — `parse` → `validate` → `compile`. Async permitted at `compile` (catalog / filesystem I/O). Produces the SemanticManifest. Runs once per Model revision.
+- **Compile-time phase** — `parse` → `.build()` materialization → `validate` → `compile`. Async permitted at `compile` (catalog / filesystem I/O). Produces the SemanticManifest. Runs once per Model revision.
 - **Query-time phase** — `plan` → `optimize` → `adapt`. Fully synchronous (I6). Runs once per `Request`. Consumes the SemanticManifest by reference.
 
 The boundary artifact is the `SemanticManifest`. Once it is in memory (either freshly compiled or loaded via `Repository::load`), the query-time phase is guaranteed synchronous and I/O-free except for the two I11 out-of-band entries listed in §6.
@@ -418,7 +420,9 @@ flowchart TD
     subgraph P1["Compile-time phase (async permitted; once per Model revision)"]
         direction LR
         Y[Model YAML] --> parse(parse)
-        parse --> SM[SemanticModel]
+        parse --> SMB[SemanticModelBuilder]
+        SMB --> build(build/materialize)
+        build --> SM[SemanticModel]
         SM --> validate(validate)
         validate --> compile(compile)
         compile --> M[(SemanticManifest - fresh)]

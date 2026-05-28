@@ -4,6 +4,7 @@ authoritative-for:
   - the root YAML shape for a `semstrait` model — `semantic_model:` wrapper, per-variant plural arrays, shared Semantics pools, `relationships:`
   - the in-memory `SemanticModel` root type — per-variant typed maps, shared pools as `BTreeMap`, `relationships` as `Vec`
   - the DataKind type hierarchy — `DataKindBase<E>` common-fields struct generic over the per-axis extras flavor, per-variant `*Body` structs, `Public*` / `Nested*` concrete types, sealed `DataKind` trait hierarchy on structural + behavioral axes, and view enums for heterogeneous iteration
+  - the named-entity identity policy at model boundary — optional authored `id` (UUIDv7 string), profile-controlled missing-id handling, and parse/build materialization into a non-public identity sidecar consumed by `33`
   - the per-axis extras shapes — `LeafExtras` (full set) and `ComplexExtras` (`temporal:` only)
   - structural rules (SR-*) that govern a valid root-level document
   - the `parse` and `validate` free-function signatures, the `ParseErrorKind` and `ValidateError` rosters (per `30 §5`), and their `Diagnose` impls
@@ -85,6 +86,34 @@ extras:
 
 `CatalogRef` is a transparent newtype around the alias; resolution against `catalogs.yaml` happens at compile. Full grammar lives in `32b §4`.
 
+### 1.4 Optional named-entity `id`
+
+Model authoring may include an optional `id` field on named-entity blocks:
+
+- top-level and nested DataKinds,
+- shared Semantics entries (`dimensions`, `measures`, `metrics`),
+- `relationships` entries.
+
+`id` is a string and, when present, MUST be a canonical UUIDv7 text form (lowercase, hyphenated). When omitted, missing-id behavior is profile-controlled (`§9.0.1`).
+
+```yaml
+semantic_model:
+  name: analytics-v1
+  datasets:
+    - id: "0197cb6e-a63a-7d53-8d6f-35f4b1d67d4e"
+      name: orders
+      extras: { ... }
+  relationships:
+    - id: "0197cb6e-a63a-7d53-9e77-17f07341da5c"
+      name: orders_to_customers
+      from: orders
+      to: customers
+      keys: [{ from: customer_id, to: id }]
+      cardinality: many_to_one
+```
+
+The `id` field is accepted at authoring boundary but is not part of the public semantic payload structs in `SemanticModel` (§2.3).
+
 ---
 
 ## 2. `SemanticModel` Root Type
@@ -113,7 +142,7 @@ pub struct SemanticModel {
 }
 ```
 
-All fields are `pub` so that consumers can destructure without getter boilerplate. Construction outside `parse` is permitted (test harnesses, tooling).
+All semantic-payload fields in the public roster are `pub` so consumers can destructure without getter boilerplate. Construction outside `parse` is permitted (test harnesses, tooling).
 
 ### 2.1 Global name uniqueness
 
@@ -139,6 +168,26 @@ impl SemanticModel {
 ```
 
 `iter_all` walks only top-level public data kinds (it does not descend into bodies); nested data kinds are reached through `ComplexDataKind::children_ref` on each visited public composer. All view enums are defined in §3.6.
+
+### 2.3 Non-public identity sidecar
+
+`SemanticModel` semantic payload remains name-keyed and shape-stable. Named-entity IDs are carried in a non-public sidecar attached by parse/build:
+
+```rust
+pub type EntityId = String; // canonical UUIDv7 text
+
+#[non_exhaustive]
+pub struct SemanticModelIdentityIndex {
+    pub model_id: EntityId,
+    pub data_kinds: BTreeMap<StructuralPath, EntityId>,
+    pub semantics: BTreeMap<SemanticPath, EntityId>,
+    pub relationships: BTreeMap<RelationshipPath, EntityId>,
+}
+```
+
+`StructuralPath` / `SemanticPath` / `RelationshipPath` are canonical, deterministic path keys owned by `semstrait-model` internals. They are never authored directly and never used as semantic reference syntax.
+
+This sidecar is consumed by compile (`33`) for stable-id propagation into manifest (`33 §4.3.1`) and is not part of the public field roster shown in §2.
 
 ---
 
@@ -373,6 +422,7 @@ Every view method dispatches via `match` to the underlying concrete type. Views 
 
 - `SemanticModel.{datasets, grainsets, unionsets, joinsets}` — `BTreeMap<String, _>` keyed by name, holding the four **Public** concrete types.
 - `*Body.{datasets, grainsets, unionsets, joinsets}` — `Vec<Nested*>` holding the four **Nested** concrete types, constrained by each body's declared child set.
+- `SemanticModelBuilder` uses an internal accumulation layout (§9.0) that may be id-indexed (`EntityHandle` → pending entry) with a name index for dedup bookkeeping before final materialization.
 
 The Public / Nested split is enforced at the type level: no Public-form value can appear inside a body's child vector, and no Nested-form value can appear at the top-level map.
 
@@ -598,9 +648,11 @@ Root-level invariants enforced at `parse` and the `validate` stage. Each rule ma
 | **SR-5**  | `catalog`, `storage`, `semantic_mapping` are leaf-only — they live on `LeafExtras` and have no slot in `ComplexExtras`. Authoring any of them under a Complex variant's `extras:` block is a parse error. Cascade-from-ancestor does not apply to these fields (R-6 / §4.1).                                                                                                                                  | `ParseErrorKind::UnknownField`                           |
 | **SR-6**  | _Retired._ Per-variant required-extras rules live in `21 §7` / `22` / `23` / `24` (each chapter owns its own `VALID_E_2[1-4]xx` code band); the Grainset-child-temporal case is covered end-to-end by SR-E-8 (`18 §11`).                                                                                                                                                                                      | —                                                        |
 | **SR-7**  | `deny_unknown_fields` is applied at every struct parse site (model root, data-kind blocks, extras, relationships, semantic elements).                                                                                                                                                                                                                                                                         | `ParseErrorKind::UnknownField`                           |
-| **SR-8**  | Identifier rules: data-kind names and semantic-element names follow `11 §4`.                                                                                                                                                                                                                                                                                                                                  | `ParseErrorKind::InvalidIdentifier`                      |
+| **SR-8**  | Identifier rules: data-kind names and semantic-element names follow `11 §13`.                                                                                                                                                                                                                                                                                                                                 | `ParseErrorKind::InvalidIdentifier`                      |
 | **SR-9**  | `${VAR}` substitution is applied before YAML decoding; unset variables are fatal parse errors (§8).                                                                                                                                                                                                                                                                                                           | `ParseErrorKind::UnsetEnvVar`                            |
 | **SR-10** | Every `ComplexDataKind` (`Grainset` / `Unionset` / `Joinset`, Public or Nested) MUST have at least **2 children** across its allowed child-variant arrays. A composer with 0 or 1 children is degenerate — 0 collapses to nothing; 1 collapses to the single child's interface and should be authored as that child directly. Enforced at `validate`.                                                         | `ValidateError::ComplexDataKindInsufficientChildren` |
+| **SR-11** | Optional named-entity `id`, when authored, MUST be canonical UUIDv7 text (`xxxxxxxx-xxxx-7xxx-xxxx-xxxxxxxxxxxx`, lowercase).                                                                                                                                                                                                                                                                               | `ParseErrorKind::InvalidEntityId`                        |
+| **SR-12** | Named-entity `id` values are globally unique across the model (`data kinds + semantics + relationships`). Duplicate ids are rejected at build/validate boundary.                                                                                                                                                                                                                                             | `ValidateError::DuplicateEntityId`                       |
 
 
 SR-* numbering is append-only. Adding a rule is a MINOR change per `30 §2`.
@@ -632,6 +684,11 @@ Given the same input YAML plus the same environment, `parse` produces a byte-ide
 | `iter_all` / `iter_public` / `iter_simple` / `iter_complex` | iterators                     | Alphabetical by `(variant-tag, name)`; variants in fixed order: Dataset, Grainset, Unionset, Joinset |
 
 
+Identity determinism by profile (`§9.0.1`):
+
+- **Strict deterministic** — all named entities carry authored ids; repeated parses of identical source produce byte-identical identity sidecars.
+- **Convenience** — missing ids are auto-generated as UUIDv7; semantic payload ordering remains deterministic, but generated ids vary across fresh parses unless persisted and reused from manifest.
+
 `HashMap` is banned from the entire public surface. A CI check fails on any public `HashMap<_, _>` reachable from `SemanticModel`.
 
 ---
@@ -656,7 +713,63 @@ Syntax: only `${IDENT}` is recognized. Bare `$VAR` is treated as literal text. I
 
 ## 9. Stage APIs: `parse` and `validate`
 
-The model crate hosts two accumulating stages per `30 §7.1`: `parse` (YAML → `SemanticModel`) and `validate` (structural-precondition pass over a parsed `SemanticModel`). Each owns its own kind enum (`ParseErrorKind`, `ValidateError`), each implements `Diagnose` per `30 §5.4`, and each uses the accumulating return shape per `30 §7.2`. The fluent loader (§9.6) composes the two behind one async-or-sync entry point.
+The model crate hosts two accumulating stages per `30 §7.1`: `parse` (YAML → `SemanticModelBuilder`) and `validate` (structural-precondition pass over a parsed `SemanticModel`). Each owns its own kind enum (`ParseErrorKind`, `ValidateError`), each implements `Diagnose` per `30 §5.4`, and each uses the accumulating return shape per `30 §7.2`. The fluent loader (§9.6) composes the two behind one async-or-sync entry point.
+
+### 9.0 Parse/build materialization pipeline (internal; shape-preserving)
+
+`semstrait-model` separates authoring decode from canonical model materialization:
+
+1. `${VAR}` substitution on raw YAML text (§8).
+2. A single `serde` decode pass into parse-layer DTOs (`YamlRoot` and nested serde carriers).
+3. Lowering into `SemanticModelBuilder` accumulation storage and extracting optional named-entity `id` fields.
+4. Resolving missing named-entity IDs according to `IdentityProfile` (`§9.0.1`).
+5. `.build()` materializes canonical `SemanticModel` maps, seals the identity sidecar (§2.3), and runs validate-stage checks.
+
+Builder internals may maintain id-indexed bookkeeping to stabilize merges and duplicate tracking:
+
+```rust
+pub type EntityId = String; // canonical UUIDv7 text
+
+// Internal only (pub(crate)); not serialized, not authored in YAML.
+pub struct EntityHandle(UuidV7); // transient builder pointer; not the stable entity id
+
+pub struct SemanticModelStorage {
+    pub entities: BTreeMap<EntityHandle, PendingEntity>,
+    pub entity_ids: BTreeMap<EntityHandle, EntityId>,
+    pub name_index: BTreeMap<String, EntityHandle>,
+    pub occurrences: BTreeMap<String, Vec<Location>>,
+    // relationships remain sequence-ordered; source order is preserved.
+}
+```
+
+Rules:
+
+- `EntityId` is a boundary string. Canonical form is lowercase, hyphenated UUIDv7 text.
+- `EntityHandle` is an internal builder handle only. It is never a public `SemanticModel` field and never part of YAML grammar.
+- Named-entity IDs may be authored (`id`) or generated; generated IDs MUST still satisfy UUIDv7 canonical format.
+- Dedup identity remains name-based (`SR-3` / `SR-E-3`), not UUID-based.
+- Public/nested structural envelopes (§3.3) and nesting rules (`26`) remain unchanged.
+- Compile-owned IDs (`DataKindId`, `RelationshipId`, `SemanticsId`, …) remain out of `semstrait-model` scope; this section does not move those boundaries.
+
+### 9.0.1 Identity profiles
+
+`semstrait-model` defines two profiles for missing named-entity IDs:
+
+```rust
+#[non_exhaustive]
+pub enum IdentityProfile {
+    /// Missing `id` is generated as UUIDv7.
+    ConvenienceGenerateMissing,
+    /// Every named entity must provide `id`; missing is an error.
+    StrictRequireProvided,
+}
+```
+
+Default profile is `ConvenienceGenerateMissing` for `parse(&str)` and `SemanticModel::loader()`.
+
+- **Strict deterministic profile** (`StrictRequireProvided`) requires authored `id` for every named entity.
+- **Convenience profile** (`ConvenienceGenerateMissing`) generates UUIDv7 for missing named-entity `id`.
+- Cross-run identity stability from source alone requires `StrictRequireProvided` or persisted id reuse from manifest (`33 §4.3.1`).
 
 ### 9.1 `parse` signature
 
@@ -674,11 +787,16 @@ use semstrait_common::diagnostic::{Diagnostic, Diagnostics};
 pub fn parse(
     input: &str,
 ) -> Result<SemanticModelBuilder, Diagnostics<ParseErrorKind>>;
+
+pub fn parse_with_profile(
+    input: &str,
+    profile: IdentityProfile,
+) -> Result<SemanticModelBuilder, Diagnostics<ParseErrorKind>>;
 ```
 
-One entry point. No options, no context, no engine / catalog handle.
+`parse` is shorthand for `parse_with_profile(input, IdentityProfile::ConvenienceGenerateMissing)`.
 
-Per D-10, dup-name detection (SR-3 / SR-E-3) does **not** run at parse — it runs uniformly over the builder's Vec storage at `.build()` time so the same diagnostic surfaces regardless of construction path.
+Per D-10, dup-name diagnostics (SR-3 / SR-E-3) are emitted at `.build()` so single-source, multi-source, and code-built paths share one output contract. Implementations may maintain incremental duplicate bookkeeping during append in id-indexed storage (§9.0), but they must not surface final `Duplicate*` diagnostics before `.build()`.
 
 ### 9.2 `ParseErrorKind` roster
 
@@ -695,6 +813,7 @@ pub enum ParseErrorKind {
 
     // — Structural rules (SR-*) —
     InvalidIdentifier             { raw: String, reason: String },           // SR-8
+    InvalidEntityId               { raw: String, reason: String },           // SR-11
 
     // — Entity-level invariants (SR-E-*) — fired at parse —
     RelationshipMissingCardinality { relationship: String },                 // SR-E-4
@@ -739,7 +858,7 @@ pub fn validate(
 ) -> Result<Diagnostics<ValidateError>, Diagnostics<ValidateError>>;
 ```
 
-`validate` runs the SR-* rules whose enforcement column in §6 reads "Enforced at `validate`" (SR-6, SR-10) plus the entity-level `SR-E-`* invariants from `18 §11`. It does not transform the model; it is a pure precondition checker. Call it as a separate step before `compile` (`33`) when per-stage error routing matters; the fluent loader (§9.6) chains `parse` and `validate` for callers that don't need that granularity.
+`validate` runs the SR-* rules whose enforcement column in §6 reads "Enforced at `validate`" (SR-10, SR-12) plus the entity-level `SR-E-`* invariants from `18 §11`. It does not transform the model; it is a pure precondition checker. Call it as a separate step before `compile` (`33`) when per-stage error routing matters; the fluent loader (§9.6) chains `parse` and `validate` for callers that don't need that granularity.
 
 ### 9.5 `ValidateError` roster
 
@@ -755,6 +874,8 @@ pub enum ValidateError {
     // — Cross-source / single-file dup detection (SR-3, D-10) —
     DuplicateDataKindName            { name: String, occurrences: Vec<Location> },
     DuplicateSharedSemanticsName     { carrier: String, name: String, occurrences: Vec<Location> },
+    DuplicateEntityId                { id: String, occurrences: Vec<Location> },   // SR-12
+    MissingEntityId                  { path: String },                              // strict profile only
 
     // — Entity-level invariants (SR-E-*) per `18 §11` —
     OrphanSharedSemantics            { carrier: String, name: String },
@@ -783,7 +904,9 @@ impl From<ir::ValidateError> for ValidateError {
 }
 ```
 
-The `Duplicate*` variants migrated from `ParseErrorKind` per D-10: dedup runs uniformly over `SemanticModelBuilder`'s Vec-backed storage at `.build()` time, so single-source, code-built, and cross-source accumulations all surface the same diagnostic with every occurrence's `Location`.
+The `Duplicate*` variants migrated from `ParseErrorKind` per D-10: dedup runs uniformly at `.build()` over builder accumulation storage (§9.0), so single-source, code-built, and cross-source accumulations all surface the same diagnostic with every occurrence's `Location`.
+
+`DuplicateEntityId` is emitted by the same `.build()` pass over resolved named-entity IDs. `MissingEntityId` is emitted only under `IdentityProfile::StrictRequireProvided`.
 
 The `SemanticsShadowRootPool` variant carries `Severity::Warning` (the only warning-class variant in v1) and rides through on the `Ok` arm.
 
@@ -793,7 +916,7 @@ The full `SR-E-*` variant roster is enumerated alongside the entity-level invari
 
 ### 9.6 Fluent loader: `SemanticModel::loader()`
 
-`parse` and `validate` are the primitives — pure inputs, pure outputs, no config. Most callers want **parse + validate** together, returning a `SemanticModel` ready for `compile` consumption. The fluent loader is the ergonomic entry that fuses the two **plus** filesystem reads.
+`parse` / `parse_with_profile` and `validate` are the primitives — pure inputs, pure outputs, with explicit profile control only for missing-id policy. Most callers want **parse + validate** together, returning a `SemanticModel` ready for `compile` consumption. The fluent loader is the ergonomic entry that fuses the two **plus** filesystem reads.
 
 The loader is parametrized by a **filesystem strategy** (not a phase marker). The type parameter `F: SourceFs` selects how the loader reads source bytes — `LocalFs` for production, `InMemoryFs` for tests. This matches Rust idiom for I/O-strategy parametrization (see `figment`, `config-rs`, `tower`). Compile-time enforcement of "did the caller attach a source?" is dropped in favour of a runtime `ModelBuildErrorKind::NoSource` diagnostic; the cost (one extra runtime check) buys real testability via `InMemoryFs`.
 
@@ -847,6 +970,10 @@ impl<F: SourceFs> SemanticModelLoader<F> {
     /// for inspector / round-trip tooling.
     pub fn skip_validate(self) -> Self;
 
+    /// Configure missing-id policy for named entities (§9.0.1).
+    /// Default is `IdentityProfile::ConvenienceGenerateMissing`.
+    pub fn with_identity_profile(self, profile: IdentityProfile) -> Self;
+
     /// Run the configured pipeline.
     pub fn build(self) -> Result<
         (SemanticModel, Diagnostics<ModelBuildErrorKind>),
@@ -887,9 +1014,10 @@ impl Diagnose for ModelBuildErrorKind { /* delegates to wrapped variant */ }
 **Stages composed by `build`** (in order, fail-fast across stages, accumulating within each stage):
 
 1. **Read** — for each `from_yaml_file`/`from_catalogs_yaml_file` source, call `self.fs.read(path)`. `Err` ⇒ `ModelBuildErrorKind::SourceIo`.
-2. **Parse model** — `parse(&yaml, source)` per attached model source(s). `Err` ⇒ `ModelBuildErrorKind::Parse(_)`.
+2. **Parse model** — `parse_with_profile(&yaml, self.identity_profile)` per attached model source(s). `Err` ⇒ `ModelBuildErrorKind::Parse(_)`.
 3. **Parse catalogs** — when present, `parse_catalogs(&yaml, source)`. `Err` ⇒ `ModelBuildErrorKind::CatalogsParse(_)`.
-4. **Validate** — when `skip_validate()` was NOT called, run the structural-precondition pass (§9.4–§9.5). `Err` ⇒ `ModelBuildErrorKind::Validate(_)`.
+4. **Identity finalize** — seal `SemanticModelIdentityIndex` with generated/provided IDs and enforce profile-specific constraints (`DuplicateEntityId`, strict `MissingEntityId`).
+5. **Validate** — when `skip_validate()` was NOT called, run the structural-precondition pass (§9.4–§9.5). `Err` ⇒ `ModelBuildErrorKind::Validate(_)`.
 
 Within a stage, every diagnostic the stage produces is collected (parse / validate are accumulating per `30 §7.1`); across stages, the loader halts at the first stage whose Err arm fires and lifts that stage's accumulated set into `ModelBuildErrorKind`. Warnings from earlier stages that completed successfully ride through on the failing stage's Err vector — never silently dropped per `30 §7.3`.
 
@@ -911,17 +1039,17 @@ let (model, _) = SemanticModelLoader::<InMemoryFs>::new()
     .build()?;
 ```
 
-**Why FS-strategy parametrization (not typestate)?** A loader without a source attached is still a programming error, but it surfaces as `ModelBuildErrorKind::NoSource` at `build()` time rather than as a compile-time error. The trade-off buys: (a) `with_fs(InMemoryFs)` testability with no `#[cfg(test)]` plumbing, (b) a single `SemanticModelLoader<F>` type instead of a state-machine of marker structs, (c) idiomatic alignment with the broader Rust ecosystem (`figment`, `config-rs`, `tower`). The loss (compile-time "did you attach a source?") is small — every loader call site is a public API entry, and missing a source is a user-evident error at first run.
+**FS-strategy contract.** Source attachment is runtime-checked; empty loader build returns `ModelBuildErrorKind::NoSource`. `SourceFs` is the filesystem abstraction, with `LocalFs` and `InMemoryFs` as built-ins.
 
-**Why retain `parse` and `validate` as primary?** The fluent loader is ergonomic sugar. Callers needing per-stage control (custom error routing per stage, cached parse tree reuse, programmatic post-parse mutations before validate) continue to call `parse(&str, source)` and `validate(&model)` directly. The two surfaces coexist as primitives (`parse`, `validate`) + ergonomic-fused (`loader().from_yaml_*().build()`).
+**Stage API contract.** `parse` / `parse_with_profile` and `validate` remain primary stage APIs. The fluent loader is an additive wrapper that composes them without changing stage semantics.
 
 **Composition with `semstrait-api`.** `SemStrait::compile_from_yaml` (`38 §3.3`) is the parallel API at the orchestration layer (it adds compile on top). The two lanes don't compete: in-process callers reach for `SemanticModel::loader()` to obtain a `SemanticModel` they can pass to a separate compile call (e.g. for caching mid-pipeline); end-to-end callers reach for `SemStrait::compile_from_yaml` to skip the intermediate handle. The fused `SemStraitErrorKind` (`30 §5.6`) at `semstrait-api` is parallel to `ModelBuildErrorKind` here — same cross-stage aggregation pattern, broader scope.
 
 #### 9.6.2 Stability
 
-- `SemanticModelLoader<F>`, the `SourceFs` trait, `LocalFs`, `InMemoryFs`, the `SemanticModel::loader()` entry, the `from_yaml_*` / `from_catalogs_yaml_*` / `with_fs` / `with_catalogs` / `skip_validate` setters, and `build` are **Stable in v1**.
+- `SemanticModelLoader<F>`, the `SourceFs` trait, `LocalFs`, `InMemoryFs`, the `SemanticModel::loader()` entry, the `from_yaml_*` / `from_catalogs_yaml_*` / `with_fs` / `with_catalogs` / `with_identity_profile` / `skip_validate` setters, and `build` are **Stable in v1**.
 - `ModelBuildErrorKind` is `#[non_exhaustive]`; new stage variants land as MINOR per `30 §2.2`. Removing or renaming a variant is MAJOR per `30 §2.1`.
-- The relationship "loader is sugar over `parse + parse_catalogs + validate`" is a public contract — `build` MUST NOT alter parse / validate semantics; any divergence is a v1 bug.
+- The relationship "loader composes `parse_with_profile + parse_catalogs + validate`" is a public contract — `build` MUST NOT alter parse / validate semantics; any divergence is a v1 bug.
 - `LocalFs` is the documented default and is intended to remain so. Adding new built-in `SourceFs` implementations (e.g. an `S3Fs` behind a feature flag) is MINOR.
 
 ### 9.7 Builder API
@@ -1136,7 +1264,7 @@ let model = SemanticModel::builder()
 
 #### 9.7.6.1 Same model authored via the ergonomic facade
 
-Both forms produce identical `SemanticModel` values. The facade (§9.7.8) is sugar over the primary surface above; round-trip and code-gen tools continue to use the primary surface.
+Both forms produce identical `SemanticModel` values. The facade (§9.7.8) is an additive wrapper over the primary surface above; round-trip and code-gen tools continue to use the primary surface.
 
 ```rust
 use semstrait_common::{DataType, Grain};
@@ -1247,6 +1375,17 @@ The following facade additions are landed in v1:
 
 Adding a facade method is MINOR per `§9.7.8.4`. The roster grows append-only.
 
+#### 9.7.9 Internal entity handles and builders
+
+Builder internals assign a transient `EntityHandle` per appended entity and maintain a resolved `EntityId` (authored or generated) sidecar entry.
+
+- Scope: `SemanticModelBuilder` / loader internals only.
+- Non-goal: replacing logical names as dedup identity in the public model.
+- Dedup: still keyed by logical names and reported through `Duplicate*` validate variants; `DuplicateEntityId` is additive, not a replacement.
+- Ordering: `EntityHandle` does not participate in canonical ordering; `I4` remains name-ordered maps + author-ordered vectors per §7.
+- Builder surface posture: primary builders remain structurally faithful to public payload fields and do not expose `.id(...)` setters; explicit id authoring is YAML-side (`§1.4`) while code-built identity assignment uses builder-internal sidecar hooks.
+- Stability: this is an internal implementation contract; no public semantic payload field addition is implied.
+
 ---
 
 ## 10. Crate Boundaries
@@ -1276,6 +1415,7 @@ The optional `::io` submodule (§10.4) adds async load / dump wrappers. It does 
 ### 10.2 No resolution
 
 Name resolution, reference expansion, and cross-kind path resolution are `compile`'s responsibility (`33`, `11 §7`). `parse` records identifiers verbatim.
+Internal builder handles (`EntityHandle`, §9.0/§9.7.9) are bookkeeping IDs only and are not semantic IDs. Named-entity `EntityId` values are identity metadata propagated to manifest stability maps (`33 §4.3.1`), not semantic-name resolution keys.
 
 ### 10.3 No planning
 
@@ -1339,7 +1479,7 @@ pub mod io {
 }
 ```
 
-`load_model` is sugar over `src.read::<String>().await.and_then(|text| parse(&text))` — the UTF-8 validation (`FromIoBytes for String`, `31b §5`) surfaces as `Diagnostic<ModelLoadErrorKind>` whose kind is `Io(IoErrorKind::Malformed)` when the source emits non-UTF-8 bytes. `dump_model` is sugar over `sink.write(canonical_render(m)).await` where `canonical_render` yields a `String` (`IntoIoBytes for String`). The value is a single ergonomic entry point that unifies transport (`31b`) with the format-specific parser / serializer owned by this crate. Per `30 §7.1`, `load_*` are accumulating fused helpers (the `parse` / `parse_catalogs` stage they wrap is accumulating); `dump_*` are fail-fast (one I/O failure or round-trip rejection halts the operation).
+`load_model` wraps `src.read::<String>().await.and_then(|text| parse(&text))` — UTF-8 validation (`FromIoBytes for String`, `31b §5`) surfaces as `Diagnostic<ModelLoadErrorKind>` with `Io(IoErrorKind::Malformed)` when bytes are non-UTF-8. `dump_model` wraps `sink.write(canonical_render(m)).await` where `canonical_render` yields a `String` (`IntoIoBytes for String`). Per `30 §7.1`, `load_*` are accumulating helpers (wrapped parse stages are accumulating); `dump_*` are fail-fast.
 
 #### 10.4.2 Error roster
 
@@ -1394,6 +1534,7 @@ Both `IoErrorKind` and every domain wrapper enum are `#[non_exhaustive]` per `31
 
 - Every `String` field (`name`, `description`, `alias`, path segments, constraint tokens) is YAML-safe — no control characters, no embedded `---` document separators, no bytes that `serde_yaml` cannot quote.
 - Every identifier obeys `00 §4.1`'s identifier grammar.
+- Every authored named-entity `id` (if present in input projection metadata) remains canonical UUIDv7 text.
 - Every `Expr` round-trips through its `ExprSource` YAML form (`14 §4`).
 - Every `LeafExtras` / `ComplexExtras` field that `32b §5` accepts as input is exposed on the output shape.
 
@@ -1415,9 +1556,15 @@ The sync parser remains primary for in-memory / already-read payloads:
 ```rust
 let text: String = obtain_somehow(); // e.g. from an HTTP body the caller already drained
 let (model, warnings) = semstrait_model::parse(&text)?;
+
+// Deterministic-profile lane:
+let (model, warnings) = semstrait_model::parse_with_profile(
+    &text,
+    IdentityProfile::StrictRequireProvided,
+)?;
 ```
 
-The async wrapper is pure sugar for the common "read then parse" pattern:
+The async wrapper is the "read then parse" composition:
 
 ```rust
 use semstrait_common::io::Location;
