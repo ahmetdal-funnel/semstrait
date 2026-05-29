@@ -2,8 +2,9 @@
 prereqs: [00, 10, 11, 12, 13, 14, 14a, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 30, 31, 31b, 35]
 authoritative-for:
   - the root YAML shape for a `semstrait` model — `semantic_model:` wrapper, per-variant plural arrays, shared Semantics pools, `relationships:`
-  - the in-memory `SemanticModel` root type — per-variant typed maps, shared pools as `BTreeMap`, `relationships` as `Vec`
+  - the in-memory `SemanticModel` root type — every entity collection (data kinds, shared pools, relationships) is an `EntityId`-keyed `BTreeMap` with name-ordered iteration/serialization
   - the DataKind type hierarchy — `DataKindBase<E>` common-fields struct generic over the per-axis extras flavor, per-variant `*Body` structs, `Public*` / `Nested*` concrete types, sealed `DataKind` trait hierarchy on structural + behavioral axes, and view enums for heterogeneous iteration
+  - the named-entity identity policy at model boundary — an `id` field (`EntityId`, UUIDv7 string) carried directly on every named entity struct, optional at authoring, profile-controlled missing-id generation at parse, consumed by `33`
   - the per-axis extras shapes — `LeafExtras` (full set) and `ComplexExtras` (`temporal:` only)
   - structural rules (SR-*) that govern a valid root-level document
   - the `parse` and `validate` free-function signatures, the `ParseErrorKind` and `ValidateError` rosters (per `30 §5`), and their `Diagnose` impls
@@ -85,11 +86,47 @@ extras:
 
 `CatalogRef` is a transparent newtype around the alias; resolution against `catalogs.yaml` happens at compile. Full grammar lives in `32b §4`.
 
+### 1.4 Optional named-entity `id`
+
+Model authoring may include an optional `id` field on named-entity blocks:
+
+- top-level and nested DataKinds,
+- shared Semantics entries (`dimensions`, `measures`, `metrics`),
+- `relationships` entries.
+
+`id` is a string and, when present, MUST be a canonical UUIDv7 text form (lowercase, hyphenated). When omitted, missing-id behavior is profile-controlled (`§9.0.1`).
+
+```yaml
+semantic_model:
+  name: analytics-v1
+  datasets:
+    - id: "0197cb6e-a63a-7d53-8d6f-35f4b1d67d4e"
+      name: orders
+      extras: { ... }
+  relationships:
+    - id: "0197cb6e-a63a-7d53-9e77-17f07341da5c"
+      name: orders_to_customers
+      from: orders
+      to: customers
+      keys: [{ from: customer_id, to: id }]
+      cardinality: many_to_one
+```
+
+The `id` field is part of the public payload: it is a field on every named-entity struct (`DataKindBase` for data kinds; `Dimension` / `Measure` / `Metric` / `Relationship` / `Key` / `Filter` per `18`). When omitted at authoring, parse generates a UUIDv7 under the convenience profile (§9.0.1). It is the storage key for every model collection (§2).
+
 ---
 
 ## 2. `SemanticModel` Root Type
 
 ```rust
+/// Canonical UUID text (lowercase, hyphenated). At the model layer, authored
+/// optionally and parse generates a UUIDv7 per missing named entity under the
+/// convenience profile (§9.0.1). The same `EntityId` type is reused by the
+/// manifest (`33`), where compile-synthesised entities carry a deterministic
+/// UUIDv5 (name-based) id (`33 §9.1`) — so the type admits UUIDv7 (authored)
+/// and UUIDv5 (compile-generated) alike.
+pub type EntityId = String;
+
 #[non_exhaustive]
 pub struct SemanticModel {
     pub name: String,
@@ -97,29 +134,31 @@ pub struct SemanticModel {
     pub ai_context: Option<AiContext>,
     pub labels: Vec<String>,
 
-    // Data kinds — per-variant typed maps.
-    pub datasets:  BTreeMap<String, Dataset>,
-    pub grainsets: BTreeMap<String, Grainset>,
-    pub unionsets: BTreeMap<String, Unionset>,
-    pub joinsets:  BTreeMap<String, Joinset>,
+    // Data kinds — per-variant maps keyed by EntityId.
+    pub datasets:  BTreeMap<EntityId, Dataset>,
+    pub grainsets: BTreeMap<EntityId, Grainset>,
+    pub unionsets: BTreeMap<EntityId, Unionset>,
+    pub joinsets:  BTreeMap<EntityId, Joinset>,
 
-    // Shared Semantics pools.
-    pub dimensions: BTreeMap<String, Dimension>,
-    pub measures:   BTreeMap<String, Measure>,
-    pub metrics:    BTreeMap<String, Metric>,
+    // Shared Semantics pools — keyed by EntityId.
+    pub dimensions: BTreeMap<EntityId, Dimension>,
+    pub measures:   BTreeMap<EntityId, Measure>,
+    pub metrics:    BTreeMap<EntityId, Metric>,
 
-    // Cross-entity relationships (position-significant).
-    pub relationships: Vec<Relationship>,
+    // Cross-entity relationships — keyed by EntityId.
+    pub relationships: BTreeMap<EntityId, Relationship>,
 }
 ```
 
-All fields are `pub` so that consumers can destructure without getter boilerplate. Construction outside `parse` is permitted (test harnesses, tooling).
+All semantic-payload fields in the public roster are `pub` so consumers can destructure without getter boilerplate. Construction outside `parse` is permitted (test harnesses, tooling).
+
+Every collection is keyed by the entity's own `id` (the `EntityId` carried inside each value). Keying by `id` rather than by name lets the model retain *every* authored entity — including two entries that share a name — so duplicate-by-name detection runs as an explicit per-layer scan at `.build()` (§9.0) instead of being silently masked by map-key collision. Name lookup is therefore a scan or a caller-built index, not a direct map hit (§2.2). Iteration and serialization are name-ordered (§7) so identity-keyed storage does not perturb deterministic output.
 
 ### 2.1 Global name uniqueness
 
-Data-kind names are globally unique across the four top-level maps: `datasets["sales"]` and `grainsets["sales"]` cannot both exist. Kind: `ValidateError::DuplicateDataKindName` (SR-3) — fired uniformly over single-source, code-built, and cross-source accumulations at `SemanticModelBuilder::build` time (D-10).
+Data-kind names are globally unique across the four top-level maps: a `Dataset` named `sales` and a `Grainset` named `sales` cannot both exist. Because the maps are keyed by `EntityId`, two same-named entities do *not* collide on insert — both are retained and the clash is surfaced by the global name scan at `SemanticModelBuilder::build`: `ValidateError::DuplicateDataKindName` (SR-3) — fired uniformly over single-source, code-built, and cross-source accumulations (D-10).
 
-Shared pools use their own namespace per carrier: `dimensions["region"]` and `measures["region"]` can coexist. Duplicates within a carrier raise `ValidateError::DuplicateSharedSemanticsName` via the same `.build()` dedup pass.
+Shared pools use their own namespace per carrier: a Dimension named `region` and a Measure named `region` can coexist. Duplicate names within a carrier raise `ValidateError::DuplicateSharedSemanticsName` via the same `.build()` per-carrier name scan.
 
 Nested data kinds use parent-scoped uniqueness (addressing becomes `grainsets[sales].unionsets[regional]`); see `26 §5`.
 
@@ -140,6 +179,12 @@ impl SemanticModel {
 
 `iter_all` walks only top-level public data kinds (it does not descend into bodies); nested data kinds are reached through `ComplexDataKind::children_ref` on each visited public composer. All view enums are defined in §3.6.
 
+### 2.3 Named-entity identity is an inline field
+
+There is no separate identity sidecar. Each named entity carries its own `id: EntityId` (canonical UUIDv7 text) directly on its struct — `DataKindBase` for data kinds (§3.1), and `Dimension` / `Measure` / `Metric` / `Relationship` / `Key` / `Filter` per `18`. That `id` is also the storage key of the collection the entity lives in (§2), so identity, payload, and storage key are one and the same.
+
+The model root itself is addressed by `name`; it carries no separate `id` (the manifest mints a deterministic `model_id`, `33 §9.1`). Compile (`33`) carries each entity's `id` straight onto the corresponding manifest entity — identity rides inline, there is no `stable_ids` side-map (`33 §4.3.1`) and no path-keyed index at the model layer.
+
 ---
 
 ## 3. DataKind Type Hierarchy
@@ -150,12 +195,13 @@ Six layers: a common-fields struct, per-variant shared bodies, concrete types in
 
 ```rust
 pub struct DataKindBase<E> {
+    pub id:     EntityId,   // authored or parse-generated UUIDv7 text
     pub name:   String,
     pub extras: E,
 }
 ```
 
-Held inside every per-variant body (§3.2). Carries the two universal fields every data kind exposes regardless of variant or form: a `name` (anchoring + structural label per `26 §4`) and an `extras` block parameterized over the per-axis flavor — `LeafExtras` for the leaf body and `ComplexExtras` for the three composer bodies (§4).
+Held inside every per-variant body (§3.2). Carries the universal fields every data kind exposes regardless of variant or form: an `id` (the entity's `EntityId`, also its storage key per §2), a `name` (anchoring + structural label per `26 §4`), and an `extras` block parameterized over the per-axis flavor — `LeafExtras` for the leaf body and `ComplexExtras` for the three composer bodies (§4). Because `id` lives on the base, all eight concrete DataKind types (Public + Nested) carry it through `body.base`.
 
 `description`, `ai_context`, and `semantic_interface` are NOT on the base — they are Public-form-only, and live on each Public concrete type directly (§3.3).
 
@@ -172,27 +218,27 @@ pub struct DatasetBody {
 
 pub struct GrainsetBody {
     pub base:      DataKindBase<ComplexExtras>,
-    pub datasets:  Vec<NestedDataset>,
-    pub unionsets: Vec<NestedUnionset>,
-    pub joinsets:  Vec<NestedJoinset>,
+    pub datasets:  BTreeMap<EntityId, NestedDataset>,
+    pub unionsets: BTreeMap<EntityId, NestedUnionset>,
+    pub joinsets:  BTreeMap<EntityId, NestedJoinset>,
 }
 
 pub struct UnionsetBody {
     pub base:      DataKindBase<ComplexExtras>,
-    pub datasets:  Vec<NestedDataset>,
-    pub grainsets: Vec<NestedGrainset>,
-    pub joinsets:  Vec<NestedJoinset>,
+    pub datasets:  BTreeMap<EntityId, NestedDataset>,
+    pub grainsets: BTreeMap<EntityId, NestedGrainset>,
+    pub joinsets:  BTreeMap<EntityId, NestedJoinset>,
     pub mode:      UnionMode,
 }
 
 pub struct JoinsetBody {
     pub base:          DataKindBase<ComplexExtras>,
-    pub datasets:      Vec<NestedDataset>,
-    pub grainsets:     Vec<NestedGrainset>,
-    pub unionsets:     Vec<NestedUnionset>,
+    pub datasets:      BTreeMap<EntityId, NestedDataset>,
+    pub grainsets:     BTreeMap<EntityId, NestedGrainset>,
+    pub unionsets:     BTreeMap<EntityId, NestedUnionset>,
     /// Joinset-local relationships. Unified `Relationship` shape — same
     /// struct as `SemanticModel.relationships`. See `18 §2`.
-    pub relationships: Vec<Relationship>,
+    pub relationships: BTreeMap<EntityId, Relationship>,
 }
 
 #[non_exhaustive]
@@ -371,8 +417,10 @@ Every view method dispatches via `match` to the underlying concrete type. Views 
 
 ### 3.7 Storage layout
 
-- `SemanticModel.{datasets, grainsets, unionsets, joinsets}` — `BTreeMap<String, _>` keyed by name, holding the four **Public** concrete types.
-- `*Body.{datasets, grainsets, unionsets, joinsets}` — `Vec<Nested*>` holding the four **Nested** concrete types, constrained by each body's declared child set.
+- `SemanticModel.{datasets, grainsets, unionsets, joinsets}` — `BTreeMap<EntityId, _>` keyed by entity `id`, holding the four **Public** concrete types.
+- `SemanticModel.{dimensions, measures, metrics}` and `SemanticModel.relationships` — `BTreeMap<EntityId, _>` keyed by entity `id`.
+- `*Body.{datasets, grainsets, unionsets, joinsets}` and `JoinsetBody.relationships` — `BTreeMap<EntityId, _>` holding the **Nested** concrete types (and Joinset-local `Relationship`s), constrained by each body's declared child set.
+- `SemanticModelBuilder` lowers decoded YAML straight into these id-keyed maps (§9.0); there is no separate accumulation layout, handle table, or name index — duplicate-by-name detection is an explicit per-layer scan at `.build()`.
 
 The Public / Nested split is enforced at the type level: no Public-form value can appear inside a body's child vector, and no Nested-form value can appear at the top-level map.
 
@@ -598,9 +646,11 @@ Root-level invariants enforced at `parse` and the `validate` stage. Each rule ma
 | **SR-5**  | `catalog`, `storage`, `semantic_mapping` are leaf-only — they live on `LeafExtras` and have no slot in `ComplexExtras`. Authoring any of them under a Complex variant's `extras:` block is a parse error. Cascade-from-ancestor does not apply to these fields (R-6 / §4.1).                                                                                                                                  | `ParseErrorKind::UnknownField`                           |
 | **SR-6**  | _Retired._ Per-variant required-extras rules live in `21 §7` / `22` / `23` / `24` (each chapter owns its own `VALID_E_2[1-4]xx` code band); the Grainset-child-temporal case is covered end-to-end by SR-E-8 (`18 §11`).                                                                                                                                                                                      | —                                                        |
 | **SR-7**  | `deny_unknown_fields` is applied at every struct parse site (model root, data-kind blocks, extras, relationships, semantic elements).                                                                                                                                                                                                                                                                         | `ParseErrorKind::UnknownField`                           |
-| **SR-8**  | Identifier rules: data-kind names and semantic-element names follow `11 §4`.                                                                                                                                                                                                                                                                                                                                  | `ParseErrorKind::InvalidIdentifier`                      |
+| **SR-8**  | Identifier rules: data-kind names and semantic-element names follow `11 §13`.                                                                                                                                                                                                                                                                                                                                 | `ParseErrorKind::InvalidIdentifier`                      |
 | **SR-9**  | `${VAR}` substitution is applied before YAML decoding; unset variables are fatal parse errors (§8).                                                                                                                                                                                                                                                                                                           | `ParseErrorKind::UnsetEnvVar`                            |
 | **SR-10** | Every `ComplexDataKind` (`Grainset` / `Unionset` / `Joinset`, Public or Nested) MUST have at least **2 children** across its allowed child-variant arrays. A composer with 0 or 1 children is degenerate — 0 collapses to nothing; 1 collapses to the single child's interface and should be authored as that child directly. Enforced at `validate`.                                                         | `ValidateError::ComplexDataKindInsufficientChildren` |
+| **SR-11** | Optional named-entity `id`, when authored, MUST be canonical UUIDv7 text (`xxxxxxxx-xxxx-7xxx-xxxx-xxxxxxxxxxxx`, lowercase).                                                                                                                                                                                                                                                                               | `ParseErrorKind::InvalidEntityId`                        |
+| **SR-12** | Named-entity `id` values are globally unique across the model (`data kinds + semantics + relationships`). Duplicate ids are rejected at build/validate boundary.                                                                                                                                                                                                                                             | `ValidateError::DuplicateEntityId`                       |
 
 
 SR-* numbering is append-only. Adding a rule is a MINOR change per `30 §2`.
@@ -611,26 +661,35 @@ Entity-level invariants (`SR-E-`*) — reference-site overrides, Semantics orpha
 
 ## 7. Deterministic Ordering (I4)
 
-Given the same input YAML plus the same environment, `parse` produces a byte-identical `SemanticModel` under any canonical serializer.
+Given the same input YAML plus the same environment, `parse` produces a byte-identical serialized `SemanticModel` under any canonical serializer.
+
+Every entity collection is keyed by `EntityId`, but the `EntityId` is **never** the ordering axis for output. Iteration helpers (§2.2) and serde serialization project each map into a **name-ordered** sequence, so deterministic output does not depend on id values. This keeps I4 byte-stable even under the convenience profile, where generated UUIDv7 ids vary across fresh parses.
 
 
-| Collection                                                  | Type                          | Ordering rule                                                                                        |
-| ----------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `SemanticModel.datasets`                                    | `BTreeMap<String, Dataset>`   | Alphabetical by name                                                                                 |
-| `SemanticModel.grainsets`                                   | `BTreeMap<String, Grainset>`  | Alphabetical by name                                                                                 |
-| `SemanticModel.unionsets`                                   | `BTreeMap<String, Unionset>`  | Alphabetical by name                                                                                 |
-| `SemanticModel.joinsets`                                    | `BTreeMap<String, Joinset>`   | Alphabetical by name                                                                                 |
-| `SemanticModel.dimensions`                                  | `BTreeMap<String, Dimension>` | Alphabetical by name                                                                                 |
-| `SemanticModel.measures`                                    | `BTreeMap<String, Measure>`   | Alphabetical by name                                                                                 |
-| `SemanticModel.metrics`                                     | `BTreeMap<String, Metric>`    | Alphabetical by name                                                                                 |
-| `SemanticModel.labels`                                      | `Vec<String>`                 | YAML author order                                                                                    |
-| `SemanticModel.relationships`                               | `Vec<Relationship>`           | YAML author order; first-match-wins semantics per `16 §11`                                           |
-| `GrainsetBody.{datasets, unionsets, joinsets}`              | `Vec<Nested*>`                | YAML author order                                                                                    |
-| `UnionsetBody.{datasets, grainsets, joinsets}`              | `Vec<Nested*>`                | YAML author order                                                                                    |
-| `JoinsetBody.{datasets, grainsets, unionsets}`              | `Vec<Nested*>`                | YAML author order                                                                                    |
-| `JoinsetBody.relationships`                                 | `Vec<Relationship>`           | YAML author order (unified shape per `18 §2`)                                                        |
-| `iter_all` / `iter_public` / `iter_simple` / `iter_complex` | iterators                     | Alphabetical by `(variant-tag, name)`; variants in fixed order: Dataset, Grainset, Unionset, Joinset |
+| Collection                                                  | Type                             | Ordering rule (iteration / serialization)                                                            |
+| ----------------------------------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `SemanticModel.datasets`                                    | `BTreeMap<EntityId, Dataset>`    | Alphabetical by name (name-ordered projection)                                                       |
+| `SemanticModel.grainsets`                                   | `BTreeMap<EntityId, Grainset>`   | Alphabetical by name (name-ordered projection)                                                       |
+| `SemanticModel.unionsets`                                   | `BTreeMap<EntityId, Unionset>`   | Alphabetical by name (name-ordered projection)                                                       |
+| `SemanticModel.joinsets`                                    | `BTreeMap<EntityId, Joinset>`    | Alphabetical by name (name-ordered projection)                                                       |
+| `SemanticModel.dimensions`                                  | `BTreeMap<EntityId, Dimension>`  | Alphabetical by name (name-ordered projection)                                                       |
+| `SemanticModel.measures`                                    | `BTreeMap<EntityId, Measure>`    | Alphabetical by name (name-ordered projection)                                                       |
+| `SemanticModel.metrics`                                     | `BTreeMap<EntityId, Metric>`     | Alphabetical by name (name-ordered projection)                                                       |
+| `SemanticModel.labels`                                      | `Vec<String>`                    | YAML author order                                                                                    |
+| `SemanticModel.relationships`                               | `BTreeMap<EntityId, Relationship>` | Alphabetical by name (name-ordered projection); first-match-wins now resolves in name order — see note below and `16 §11` |
+| `GrainsetBody.{datasets, unionsets, joinsets}`              | `BTreeMap<EntityId, Nested*>`    | Alphabetical by name (name-ordered projection)                                                       |
+| `UnionsetBody.{datasets, grainsets, joinsets}`              | `BTreeMap<EntityId, Nested*>`    | Alphabetical by name (name-ordered projection)                                                       |
+| `JoinsetBody.{datasets, grainsets, unionsets}`              | `BTreeMap<EntityId, Nested*>`    | Alphabetical by name (name-ordered projection)                                                       |
+| `JoinsetBody.relationships`                                 | `BTreeMap<EntityId, Relationship>` | Alphabetical by name (name-ordered projection)                                                     |
+| `iter_all` / `iter_public` / `iter_simple` / `iter_complex` | iterators                        | Alphabetical by `(variant-tag, name)`; variants in fixed order: Dataset, Grainset, Unionset, Joinset |
 
+
+**Relationship ordering change.** Relationships were previously a `Vec` carrying YAML author order, and first-match-wins (`16 §11`) consumed that author order. With relationships now stored in an `EntityId`-keyed map projected in **name order**, first-match-wins resolution and cross-kind BFS neighbor iteration (`19 §3.4.3`) proceed in name order. Relationships are identified by `EntityId` (no `RelationshipId` newtype; `18 §2.1`). This is a deliberate consequence of the id-first rework (`STATUS.md` items U / U.2).
+
+Identity determinism by profile (`§9.0.1`):
+
+- **Strict deterministic** — all named entities carry authored ids; repeated parses of identical source produce byte-identical models *including* id values.
+- **Convenience** — missing ids are auto-generated as UUIDv7; name-ordered output stays deterministic, but the embedded id values vary across fresh parses unless persisted and reused from manifest (`33 §4.3.1`).
 
 `HashMap` is banned from the entire public surface. A CI check fails on any public `HashMap<_, _>` reachable from `SemanticModel`.
 
@@ -656,7 +715,55 @@ Syntax: only `${IDENT}` is recognized. Bare `$VAR` is treated as literal text. I
 
 ## 9. Stage APIs: `parse` and `validate`
 
-The model crate hosts two accumulating stages per `30 §7.1`: `parse` (YAML → `SemanticModel`) and `validate` (structural-precondition pass over a parsed `SemanticModel`). Each owns its own kind enum (`ParseErrorKind`, `ValidateError`), each implements `Diagnose` per `30 §5.4`, and each uses the accumulating return shape per `30 §7.2`. The fluent loader (§9.6) composes the two behind one async-or-sync entry point.
+The model crate hosts two accumulating stages per `30 §7.1`: `parse` (YAML → `SemanticModelBuilder`) and `validate` (structural-precondition pass over a parsed `SemanticModel`). Each owns its own kind enum (`ParseErrorKind`, `ValidateError`), each implements `Diagnose` per `30 §5.4`, and each uses the accumulating return shape per `30 §7.2`. The fluent loader (§9.6) composes the two behind one async-or-sync entry point.
+
+### 9.0 Parse/build materialization pipeline (internal; shape-preserving)
+
+`semstrait-model` separates authoring decode from canonical model materialization:
+
+1. `${VAR}` substitution on raw YAML text (§8).
+2. A single `serde` decode pass into parse-layer DTOs (`YamlRoot` and nested serde carriers), capturing the optional authored `id` on each named entity.
+3. Missing-id resolution per `IdentityProfile` (`§9.0.1`): generate a UUIDv7 for every named entity that lacks an authored `id`.
+4. Lower decoded entities **directly** into the canonical `SemanticModel` id-keyed maps (§2 / §3.7) — no intermediate accumulation store, no handle table.
+5. `.build()` runs validate-stage checks, including the per-layer duplicate scans below.
+
+There is no separate builder accumulation layout, `EntityHandle`, or `SemanticModelStorage`. The id-keyed maps **are** the storage: because the map key is the entity's own `id` (unique by construction — authored ids are checked, generated ids are fresh UUIDv7), every authored entity is retained without insert-time collision, and duplicate-by-name is detected by scanning each map at `.build()`:
+
+- **Global layer** — data-kind name uniqueness (`SR-3`) across the four top-level data-kind maps; `id` global uniqueness (`SR-12`) across all named entities.
+- **Per-carrier layer** — shared-pool name uniqueness within `dimensions` / `measures` / `metrics`.
+- **Parent-scoped layer** — nested-child name uniqueness within each complex body's child maps (`26 §5`).
+
+```rust
+pub type EntityId = String; // canonical UUIDv7 text (lowercase, hyphenated)
+```
+
+Rules:
+
+- `EntityId` is a boundary string. Canonical form is lowercase, hyphenated UUIDv7 text (`SR-11`).
+- Named-entity IDs may be authored (`id`) or generated; generated IDs MUST still satisfy UUIDv7 canonical format.
+- Dedup of *names* is by explicit scan (`SR-3` / `SR-E-3`); the map key is the `id`, so name collisions are reported, not silently overwritten.
+- Public/nested structural envelopes (§3.3) and nesting rules (`26`) remain unchanged.
+- Identity is a single `EntityId` lane across model and manifest (`33`); the model does not allocate any separate compile-id newtypes (the former `DataKindId` / `RelationshipId` / `SemanticsId` / `BindingId` are retired). This section does not move that boundary.
+
+### 9.0.1 Identity profiles
+
+`semstrait-model` defines two profiles for missing named-entity IDs:
+
+```rust
+#[non_exhaustive]
+pub enum IdentityProfile {
+    /// Missing `id` is generated as UUIDv7.
+    ConvenienceGenerateMissing,
+    /// Every named entity must provide `id`; missing is an error.
+    StrictRequireProvided,
+}
+```
+
+Default profile is `ConvenienceGenerateMissing` for `parse(&str)` and `SemanticModel::loader()`.
+
+- **Strict deterministic profile** (`StrictRequireProvided`) requires authored `id` for every named entity.
+- **Convenience profile** (`ConvenienceGenerateMissing`) generates UUIDv7 for missing named-entity `id`.
+- Cross-run identity stability from source alone requires `StrictRequireProvided` or persisted id reuse from manifest (`33 §4.3.1`).
 
 ### 9.1 `parse` signature
 
@@ -674,11 +781,16 @@ use semstrait_common::diagnostic::{Diagnostic, Diagnostics};
 pub fn parse(
     input: &str,
 ) -> Result<SemanticModelBuilder, Diagnostics<ParseErrorKind>>;
+
+pub fn parse_with_profile(
+    input: &str,
+    profile: IdentityProfile,
+) -> Result<SemanticModelBuilder, Diagnostics<ParseErrorKind>>;
 ```
 
-One entry point. No options, no context, no engine / catalog handle.
+`parse` is shorthand for `parse_with_profile(input, IdentityProfile::ConvenienceGenerateMissing)`.
 
-Per D-10, dup-name detection (SR-3 / SR-E-3) does **not** run at parse — it runs uniformly over the builder's Vec storage at `.build()` time so the same diagnostic surfaces regardless of construction path.
+Per D-10, dup-name diagnostics (SR-3 / SR-E-3) are emitted at `.build()` so single-source, multi-source, and code-built paths share one output contract. Implementations may track names incrementally during lowering into the id-keyed maps (§9.0), but they must not surface final `Duplicate*` diagnostics before `.build()`.
 
 ### 9.2 `ParseErrorKind` roster
 
@@ -695,6 +807,7 @@ pub enum ParseErrorKind {
 
     // — Structural rules (SR-*) —
     InvalidIdentifier             { raw: String, reason: String },           // SR-8
+    InvalidEntityId               { raw: String, reason: String },           // SR-11
 
     // — Entity-level invariants (SR-E-*) — fired at parse —
     RelationshipMissingCardinality { relationship: String },                 // SR-E-4
@@ -739,7 +852,7 @@ pub fn validate(
 ) -> Result<Diagnostics<ValidateError>, Diagnostics<ValidateError>>;
 ```
 
-`validate` runs the SR-* rules whose enforcement column in §6 reads "Enforced at `validate`" (SR-6, SR-10) plus the entity-level `SR-E-`* invariants from `18 §11`. It does not transform the model; it is a pure precondition checker. Call it as a separate step before `compile` (`33`) when per-stage error routing matters; the fluent loader (§9.6) chains `parse` and `validate` for callers that don't need that granularity.
+`validate` runs the SR-* rules whose enforcement column in §6 reads "Enforced at `validate`" (SR-10, SR-12) plus the entity-level `SR-E-`* invariants from `18 §11`. It does not transform the model; it is a pure precondition checker. Call it as a separate step before `compile` (`33`) when per-stage error routing matters; the fluent loader (§9.6) chains `parse` and `validate` for callers that don't need that granularity.
 
 ### 9.5 `ValidateError` roster
 
@@ -755,6 +868,8 @@ pub enum ValidateError {
     // — Cross-source / single-file dup detection (SR-3, D-10) —
     DuplicateDataKindName            { name: String, occurrences: Vec<Location> },
     DuplicateSharedSemanticsName     { carrier: String, name: String, occurrences: Vec<Location> },
+    DuplicateEntityId                { id: String, occurrences: Vec<Location> },   // SR-12
+    MissingEntityId                  { path: String },                              // strict profile only
 
     // — Entity-level invariants (SR-E-*) per `18 §11` —
     OrphanSharedSemantics            { carrier: String, name: String },
@@ -783,7 +898,9 @@ impl From<ir::ValidateError> for ValidateError {
 }
 ```
 
-The `Duplicate*` variants migrated from `ParseErrorKind` per D-10: dedup runs uniformly over `SemanticModelBuilder`'s Vec-backed storage at `.build()` time, so single-source, code-built, and cross-source accumulations all surface the same diagnostic with every occurrence's `Location`.
+The `Duplicate*` variants migrated from `ParseErrorKind` per D-10: dedup runs uniformly at `.build()` as a per-layer name scan over the id-keyed maps (§9.0), so single-source, code-built, and cross-source accumulations all surface the same diagnostic with every occurrence's `Location`.
+
+`DuplicateEntityId` is emitted by the same `.build()` pass over resolved named-entity IDs. `MissingEntityId` is emitted only under `IdentityProfile::StrictRequireProvided`.
 
 The `SemanticsShadowRootPool` variant carries `Severity::Warning` (the only warning-class variant in v1) and rides through on the `Ok` arm.
 
@@ -793,7 +910,7 @@ The full `SR-E-*` variant roster is enumerated alongside the entity-level invari
 
 ### 9.6 Fluent loader: `SemanticModel::loader()`
 
-`parse` and `validate` are the primitives — pure inputs, pure outputs, no config. Most callers want **parse + validate** together, returning a `SemanticModel` ready for `compile` consumption. The fluent loader is the ergonomic entry that fuses the two **plus** filesystem reads.
+`parse` / `parse_with_profile` and `validate` are the primitives — pure inputs, pure outputs, with explicit profile control only for missing-id policy. Most callers want **parse + validate** together, returning a `SemanticModel` ready for `compile` consumption. The fluent loader is the ergonomic entry that fuses the two **plus** filesystem reads.
 
 The loader is parametrized by a **filesystem strategy** (not a phase marker). The type parameter `F: SourceFs` selects how the loader reads source bytes — `LocalFs` for production, `InMemoryFs` for tests. This matches Rust idiom for I/O-strategy parametrization (see `figment`, `config-rs`, `tower`). Compile-time enforcement of "did the caller attach a source?" is dropped in favour of a runtime `ModelBuildErrorKind::NoSource` diagnostic; the cost (one extra runtime check) buys real testability via `InMemoryFs`.
 
@@ -847,6 +964,10 @@ impl<F: SourceFs> SemanticModelLoader<F> {
     /// for inspector / round-trip tooling.
     pub fn skip_validate(self) -> Self;
 
+    /// Configure missing-id policy for named entities (§9.0.1).
+    /// Default is `IdentityProfile::ConvenienceGenerateMissing`.
+    pub fn with_identity_profile(self, profile: IdentityProfile) -> Self;
+
     /// Run the configured pipeline.
     pub fn build(self) -> Result<
         (SemanticModel, Diagnostics<ModelBuildErrorKind>),
@@ -887,9 +1008,10 @@ impl Diagnose for ModelBuildErrorKind { /* delegates to wrapped variant */ }
 **Stages composed by `build`** (in order, fail-fast across stages, accumulating within each stage):
 
 1. **Read** — for each `from_yaml_file`/`from_catalogs_yaml_file` source, call `self.fs.read(path)`. `Err` ⇒ `ModelBuildErrorKind::SourceIo`.
-2. **Parse model** — `parse(&yaml, source)` per attached model source(s). `Err` ⇒ `ModelBuildErrorKind::Parse(_)`.
+2. **Parse model** — `parse_with_profile(&yaml, self.identity_profile)` per attached model source(s). `Err` ⇒ `ModelBuildErrorKind::Parse(_)`.
 3. **Parse catalogs** — when present, `parse_catalogs(&yaml, source)`. `Err` ⇒ `ModelBuildErrorKind::CatalogsParse(_)`.
-4. **Validate** — when `skip_validate()` was NOT called, run the structural-precondition pass (§9.4–§9.5). `Err` ⇒ `ModelBuildErrorKind::Validate(_)`.
+4. **Identity finalize** — confirm every named entity carries an `id` (authored or generated) and enforce profile-specific constraints via the per-layer scans (`DuplicateEntityId`, strict `MissingEntityId`).
+5. **Validate** — when `skip_validate()` was NOT called, run the structural-precondition pass (§9.4–§9.5). `Err` ⇒ `ModelBuildErrorKind::Validate(_)`.
 
 Within a stage, every diagnostic the stage produces is collected (parse / validate are accumulating per `30 §7.1`); across stages, the loader halts at the first stage whose Err arm fires and lifts that stage's accumulated set into `ModelBuildErrorKind`. Warnings from earlier stages that completed successfully ride through on the failing stage's Err vector — never silently dropped per `30 §7.3`.
 
@@ -911,17 +1033,17 @@ let (model, _) = SemanticModelLoader::<InMemoryFs>::new()
     .build()?;
 ```
 
-**Why FS-strategy parametrization (not typestate)?** A loader without a source attached is still a programming error, but it surfaces as `ModelBuildErrorKind::NoSource` at `build()` time rather than as a compile-time error. The trade-off buys: (a) `with_fs(InMemoryFs)` testability with no `#[cfg(test)]` plumbing, (b) a single `SemanticModelLoader<F>` type instead of a state-machine of marker structs, (c) idiomatic alignment with the broader Rust ecosystem (`figment`, `config-rs`, `tower`). The loss (compile-time "did you attach a source?") is small — every loader call site is a public API entry, and missing a source is a user-evident error at first run.
+**FS-strategy contract.** Source attachment is runtime-checked; empty loader build returns `ModelBuildErrorKind::NoSource`. `SourceFs` is the filesystem abstraction, with `LocalFs` and `InMemoryFs` as built-ins.
 
-**Why retain `parse` and `validate` as primary?** The fluent loader is ergonomic sugar. Callers needing per-stage control (custom error routing per stage, cached parse tree reuse, programmatic post-parse mutations before validate) continue to call `parse(&str, source)` and `validate(&model)` directly. The two surfaces coexist as primitives (`parse`, `validate`) + ergonomic-fused (`loader().from_yaml_*().build()`).
+**Stage API contract.** `parse` / `parse_with_profile` and `validate` remain primary stage APIs. The fluent loader is an additive wrapper that composes them without changing stage semantics.
 
 **Composition with `semstrait-api`.** `SemStrait::compile_from_yaml` (`38 §3.3`) is the parallel API at the orchestration layer (it adds compile on top). The two lanes don't compete: in-process callers reach for `SemanticModel::loader()` to obtain a `SemanticModel` they can pass to a separate compile call (e.g. for caching mid-pipeline); end-to-end callers reach for `SemStrait::compile_from_yaml` to skip the intermediate handle. The fused `SemStraitErrorKind` (`30 §5.6`) at `semstrait-api` is parallel to `ModelBuildErrorKind` here — same cross-stage aggregation pattern, broader scope.
 
 #### 9.6.2 Stability
 
-- `SemanticModelLoader<F>`, the `SourceFs` trait, `LocalFs`, `InMemoryFs`, the `SemanticModel::loader()` entry, the `from_yaml_*` / `from_catalogs_yaml_*` / `with_fs` / `with_catalogs` / `skip_validate` setters, and `build` are **Stable in v1**.
+- `SemanticModelLoader<F>`, the `SourceFs` trait, `LocalFs`, `InMemoryFs`, the `SemanticModel::loader()` entry, the `from_yaml_*` / `from_catalogs_yaml_*` / `with_fs` / `with_catalogs` / `with_identity_profile` / `skip_validate` setters, and `build` are **Stable in v1**.
 - `ModelBuildErrorKind` is `#[non_exhaustive]`; new stage variants land as MINOR per `30 §2.2`. Removing or renaming a variant is MAJOR per `30 §2.1`.
-- The relationship "loader is sugar over `parse + parse_catalogs + validate`" is a public contract — `build` MUST NOT alter parse / validate semantics; any divergence is a v1 bug.
+- The relationship "loader composes `parse_with_profile + parse_catalogs + validate`" is a public contract — `build` MUST NOT alter parse / validate semantics; any divergence is a v1 bug.
 - `LocalFs` is the documented default and is intended to remain so. Adding new built-in `SourceFs` implementations (e.g. an `S3Fs` behind a feature flag) is MINOR.
 
 ### 9.7 Builder API
@@ -1136,7 +1258,7 @@ let model = SemanticModel::builder()
 
 #### 9.7.6.1 Same model authored via the ergonomic facade
 
-Both forms produce identical `SemanticModel` values. The facade (§9.7.8) is sugar over the primary surface above; round-trip and code-gen tools continue to use the primary surface.
+Both forms produce identical `SemanticModel` values. The facade (§9.7.8) is an additive wrapper over the primary surface above; round-trip and code-gen tools continue to use the primary surface.
 
 ```rust
 use semstrait_common::{DataType, Grain};
@@ -1247,6 +1369,15 @@ The following facade additions are landed in v1:
 
 Adding a facade method is MINOR per `§9.7.8.4`. The roster grows append-only.
 
+#### 9.7.9 Entity `id` in builders
+
+`id` is an ordinary payload field, so each entity builder exposes an optional `.id(EntityId)` setter. When unset, `.build()` generates a UUIDv7 under the active `IdentityProfile` (`§9.0.1`) — the same generation path used by `parse`.
+
+- Scope: every named-entity builder (`Dataset` / `Grainset` / `Unionset` / `Joinset`, `Dimension` / `Measure` / `Metric`, `Relationship`, `Key` / `Filter`).
+- Dedup: name uniqueness is the per-layer scan over the id-keyed maps (`Duplicate*` validate variants); `DuplicateEntityId` (`SR-12`) is the additive id-uniqueness check.
+- Ordering: `id` never participates in canonical ordering; `I4` output is name-ordered per §7 regardless of id values.
+- Insertion: the entity's `id` is the map key in the collection it joins; there is no separate handle.
+
 ---
 
 ## 10. Crate Boundaries
@@ -1276,6 +1407,7 @@ The optional `::io` submodule (§10.4) adds async load / dump wrappers. It does 
 ### 10.2 No resolution
 
 Name resolution, reference expansion, and cross-kind path resolution are `compile`'s responsibility (`33`, `11 §7`). `parse` records identifiers verbatim.
+Named-entity `EntityId` values are carried inline onto the corresponding manifest entities (`33 §4.3.1`, `§9.1`) — they are storage keys, not semantic-name resolution keys, and there is no side-map. Cross-references inside the model (`ref:`, relationship `from`/`to`) are by name and resolved at compile.
 
 ### 10.3 No planning
 
@@ -1339,7 +1471,7 @@ pub mod io {
 }
 ```
 
-`load_model` is sugar over `src.read::<String>().await.and_then(|text| parse(&text))` — the UTF-8 validation (`FromIoBytes for String`, `31b §5`) surfaces as `Diagnostic<ModelLoadErrorKind>` whose kind is `Io(IoErrorKind::Malformed)` when the source emits non-UTF-8 bytes. `dump_model` is sugar over `sink.write(canonical_render(m)).await` where `canonical_render` yields a `String` (`IntoIoBytes for String`). The value is a single ergonomic entry point that unifies transport (`31b`) with the format-specific parser / serializer owned by this crate. Per `30 §7.1`, `load_*` are accumulating fused helpers (the `parse` / `parse_catalogs` stage they wrap is accumulating); `dump_*` are fail-fast (one I/O failure or round-trip rejection halts the operation).
+`load_model` wraps `src.read::<String>().await.and_then(|text| parse(&text))` — UTF-8 validation (`FromIoBytes for String`, `31b §5`) surfaces as `Diagnostic<ModelLoadErrorKind>` with `Io(IoErrorKind::Malformed)` when bytes are non-UTF-8. `dump_model` wraps `sink.write(canonical_render(m)).await` where `canonical_render` yields a `String` (`IntoIoBytes for String`). Per `30 §7.1`, `load_*` are accumulating helpers (wrapped parse stages are accumulating); `dump_*` are fail-fast.
 
 #### 10.4.2 Error roster
 
@@ -1394,6 +1526,7 @@ Both `IoErrorKind` and every domain wrapper enum are `#[non_exhaustive]` per `31
 
 - Every `String` field (`name`, `description`, `alias`, path segments, constraint tokens) is YAML-safe — no control characters, no embedded `---` document separators, no bytes that `serde_yaml` cannot quote.
 - Every identifier obeys `00 §4.1`'s identifier grammar.
+- Every authored named-entity `id` (if present in input projection metadata) remains canonical UUIDv7 text.
 - Every `Expr` round-trips through its `ExprSource` YAML form (`14 §4`).
 - Every `LeafExtras` / `ComplexExtras` field that `32b §5` accepts as input is exposed on the output shape.
 
@@ -1415,9 +1548,15 @@ The sync parser remains primary for in-memory / already-read payloads:
 ```rust
 let text: String = obtain_somehow(); // e.g. from an HTTP body the caller already drained
 let (model, warnings) = semstrait_model::parse(&text)?;
+
+// Deterministic-profile lane:
+let (model, warnings) = semstrait_model::parse_with_profile(
+    &text,
+    IdentityProfile::StrictRequireProvided,
+)?;
 ```
 
-The async wrapper is pure sugar for the common "read then parse" pattern:
+The async wrapper is the "read then parse" composition:
 
 ```rust
 use semstrait_common::io::Location;
@@ -1452,7 +1591,7 @@ Per I11. `io` is default-off so the historical pure-type consumer of `semstrait-
 
 | Scope                    | Doc                                                                                    | What lives there                                                                                                                                                                                                                                                                                                                                                                                      |
 | ------------------------ | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Canonical entities**   | `[../foundations/18_entities.md](../foundations/18_entities.md)`                       | `**Relationship`, `RelationshipId`, `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, derived `JoinType`, `TemporalShape`, `ScdType`, `Dimension` / `Measure` / `Metric`, `DimensionType` + body structs, `Additivity`, filter taxonomy, `AiContext`, `Keys`, `SemanticMappingValue` shape, root-pool reference / override grammar, `SR-E-`* entity-level rules. Authoritative for every entity struct shape embedded in 32.** |
+| **Canonical entities**   | `[../foundations/18_entities.md](../foundations/18_entities.md)`                       | `**Relationship` (identified by `id: EntityId`), `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, derived `JoinType`, `TemporalShape`, `ScdType`, `Dimension` / `Measure` / `Metric`, `DimensionType` + body structs, `Additivity`, filter taxonomy, `AiContext`, `Keys`, `SemanticMappingValue` shape, root-pool reference / override grammar, `SR-E-`* entity-level rules. Authoritative for every entity struct shape embedded in 32.** |
 | Dataset interior         | `[../data-kinds/21_dataset.md](../data-kinds/21_dataset.md)`                           | Per-Dataset YAML: `dimensions:`, `measures:`, `metrics:`, `filters:`, `keys:`, leaf-only `extras` semantics                                                                                                                                                                                                                                                                                           |
 | Grainset interior        | `[../data-kinds/22_grainset.md](../data-kinds/22_grainset.md)`                         | Per-Grainset YAML: child composition, grain-axis, `temporal:` in extras                                                                                                                                                                                                                                                                                                                               |
 | Unionset interior        | `[../data-kinds/23_unionset.md](../data-kinds/23_unionset.md)`                         | Per-Unionset YAML: children, `mode:`, coverage                                                                                                                                                                                                                                                                                                                                                        |

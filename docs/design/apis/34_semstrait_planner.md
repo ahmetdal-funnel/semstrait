@@ -2,6 +2,8 @@
 prereqs: [10, 11, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 30, 31, 33, 35]
 authoritative-for:
   - the `semstrait-planner` public-API surface (types, traits, free functions)
+  - planner consumption contract for `SemanticManifest` and `SemanticGraph` canonical types
+  - TODO marker and boundary expectations for future planner runtime graph lifecycle work
   - the `plan` free-function signature using the fail-fast typed-kind shape per `30 §7.1` (`Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>`) and its seven pipeline sub-steps
   - the `optimize` free-function signature (parallel fail-fast shape over `OptimizeErrorKind`) and the canonical-pass roster
   - the `Request` type and its fields (dimensions, measures, metrics, filters, order, limit, offset, from, temporal, session)
@@ -18,7 +20,7 @@ refined-by:
   - 23 (`data-kinds/23_unionset.md` — `UnionsetStrategy` per-variant algorithm)
   - 24 (`data-kinds/24_joinset.md` — `JoinsetStrategy` per-variant algorithm)
   - 25 (`data-kinds/25_applicability_matrix.md` — per-variant cross-cut consumed at dispatch)
-  - 35 (`apis/35_semstrait_ir.md` — `SemanticPlan` and `PlanNode` tree the planner emits)
+  - 35 (`apis/35_semstrait_ir.md` — `SemanticPlan` / `PlanNode` and canonical `semantic_graph` types the planner emits/consumes)
   - 36 (`apis/36_semstrait_adapter.md` — consumes the `SemanticPlan` produced by this crate)
   - 40 (`implementation/40_refactor_plan.md` — current code-vs-target delta for the planner crate)
 ---
@@ -37,6 +39,8 @@ refined-by:
 > `OptimizerPass` trait shapes, and the `PlanErrorKind` / `OptimizeErrorKind`
 > typed-kind enums (per `30 §5`) that flow across the stage boundary.
 > Round-1 open items parked in `questions/open/34_questions.md`.
+>
+> **Scope note (2026-05-27).** Planner runtime graph lifecycle is intentionally marked TODO/provisional in this document. Canonical graph types live in ir (`35`), manifest seeds live in `33`, and finalized planner runtime contracts will land in a dedicated planner pass. Runtime DAG backend target for that pass is `daggy`; legacy `petgraph` usage in manifest internals is transitional and non-authoritative for planner runtime contracts.
 
 ## 1. Purpose, scope, layering
 
@@ -48,17 +52,18 @@ refined-by:
 - The `Strategy` trait (§8) — the dispatch surface ratified structurally in `20 §5.2` and concretized here.
 - The four built-in strategies: `SimpleStrategy`, `GrainsetStrategy`, `UnionsetStrategy`, `JoinsetStrategy` (§9) — crate-public wrappers whose algorithms are ratified in `21`–`24`.
 - Field-first resolution (§10) — the planner-side realization of the algorithm ratified in `16 §11`.
+- TODO/provisional boundary contract for runtime graph lifecycle (builder/store/drift/lowering details deferred).
 - The `OptimizerPass` trait (§12) — the pluggable v1 optimizer interface.
 - The `PlanErrorKind` and `OptimizeErrorKind` typed-kind enums (§13), their `Diagnose` impls per `30 §5.4`, and the variant rosters wrapping per-DataKind `Simple` / `Grainset` / `Unionset` / `Joinset` errors.
 - The `StrategyRegistry` and `StrategyContext` (§8.3 / §8.4) — internal wiring types exposed to adapter-level extensions and test doubles only.
 
 ### 1.2 What `semstrait-planner` does NOT own
 
-- **Expression / type vocabulary.** `Expr`, `PhysicalExpr`, `Aggregation`, `DataType`, `Grain`, `Diagnostic<K>`, `Severity`, `Diagnose` all live in `semstrait-common` (`31`). `34` consumes them.
+- **Expression and graph type vocabulary.** `Expr`, `SemanticExpr`, `PhysicalExpr`, `SemanticGraph`, `SemanticNode`, `SemanticEdge`, `SegmentKey`, `DataType`, `Grain`, and diagnostics primitives live in `semstrait-ir`/`semstrait-common` (`35`, `31`). `34` consumes them.
 - **Plan-tree shape.** `SemanticPlan`, `PlanNode`, `NodeMeta`, `SourceRef`, `Name` all live in `semstrait-ir` (`35`). `34` emits and consumes them.
-- **SemanticManifest shape.** `SemanticManifest`, `ResolvedDataKind`, `ResolvedBinding`, `ResolvedExprTable`, `CoverageIndex`, `CompositionIndex` all live in `semstrait-manifest` (`33`). `34` reads them — never mutates, never re-resolves (I5 / I8).
+- **SemanticManifest shape.** `SemanticManifest` seed/index contracts live in `semstrait-manifest` (`33`). `34` reads them, builds runtime segments, and never mutates persisted artifacts.
 - **YAML parsing / structural validation.** Lives in `semstrait-model` (`32`). The `Request` the planner accepts is already a Rust value — the API layer (`semstrait-api`) is responsible for converting user-facing JSON / gRPC / protobuf into `Request`.
-- **Catalog / filesystem access.** `CatalogProvider` / `FileSystem` (`37`) are consumed at `compile` time only; no planner surface accepts them (I11).
+- **Catalog / filesystem ownership.** `CatalogProvider` / `FileSystem` trait ownership remains in `37`; planner may consume explicit drift probes/results but does not own provider contracts.
 - **SQL / engine emission.** `semstrait-adapter` (`36`) consumes the `SemanticPlan` and produces engine-specific artifacts; no planner API touches a dialect.
 
 ### 1.3 Design posture — sync-only dispatch crate
@@ -66,7 +71,7 @@ refined-by:
 The planner is the workspace's widest dispatch site — the `plan` entry point fans out across every `ResolvedDataKind` variant — but it is **not** the crate with the most runtime weight. The hot path is a single tree walk over pre-resolved SemanticManifest indices (§7). Three properties shape the design:
 
 - **Synchronous end-to-end.** Per I6, there is no `async fn` anywhere on the public surface. `plan` and `optimize` are ordinary fallible functions; every strategy method is sync. The `async` wrapper on `compile` (`10 §3.3`) is the last async boundary in the pipeline; everything the planner reads has already been resolved.
-- **Pure transformations over pre-built indices.** Per I5 / I8, the planner does no name resolution, no catalog fetch, no expression recompilation. It performs O(1) / O(log n) index lookups on the `SemanticManifest` (`19 §3.2.3`, `33 §3.4`) and emits `PlanNode`s carrying pre-resolved `PhysicalExpr`s.
+- **Manifest-seeded planning.** Per I5 / I8, the planner does no semantic name resolution. It performs O(1)/O(log n) lookups on manifest indices and lowers to `PlanNode`s. Runtime graph lifecycle details are TODO/provisional in this revision.
 - **Strategy dispatch is the one variant-match site.** Per `20 §5.3`, the only place the planner branches on a `ResolvedDataKind` variant tag is the dispatch function (§8.5). Every other planner site consumes `&dyn Strategy`. Adding a new `Complex` variant per I10 is a MINOR change that forces a new match arm in one place, not a scatter of edits.
 
 ### 1.4 Invariants upheld by the crate
@@ -74,13 +79,35 @@ The planner is the workspace's widest dispatch site — the `plan` entry point f
 
 | Invariant                                  | `semstrait-planner` guarantee                                                                                                                                                                                                                                                                                                                                   |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **I5** — name resolution is compile-time   | The planner performs **lookup only** (`19 §3.2.3`, `33 §3.4`). No `resolve`_* method walks names to Semantics or columns; every such walk was performed at `compile`. A CI lint forbids `EntityRef` leaves in any `PhysicalExpr` a plan node carries.                                                                                                            |
+| **I5** — name resolution is compile-time   | The planner performs **lookup only** (`19 §3.2.3`, `33 §4`). No `resolve`_* method walks names to Semantics or columns; every such walk was performed at `compile`. A CI lint forbids `EntityRef` leaves in any `PhysicalExpr` a plan node carries.                                                                                                            |
 | **I6** — plan hot path is synchronous      | **No `pub async fn` exists on `semstrait-planner`.** The `Strategy` trait's `plan` method is sync; so is every `OptimizerPass::apply`. A CI audit (`cargo clippy -- -D clippy::async_fn_in_trait`) enforces.                                                                                                                                                    |
-| **I8** — planner-complete SemanticManifest | Every `(SemanticsName, BindingId)` the planner might ask for is already in `manifest.expr_table` (`19 §3.2.3`). Every `Relationship` the planner walks is in `manifest.resolved_relationships`. A SemanticManifest whose indices fail this completeness guarantee triggers `PlanErrorKind::SemanticManifestIndexInconsistent` at dispatch (`20 §8.2`).           |
+| **I8** — planner-complete SemanticManifest | Every lookup needed for candidate selection and segment build is present in manifest seeds/indices (`33 §3`). Missing ids/edges/seeds trigger `PlanErrorKind::SemanticManifestIndexInconsistent` before lowering.           |
 | **I10** — non-exhaustive public sum types  | `Request`, `SessionContext`, `ResolvedQueryRequest`, `PlanErrorKind`, `OptimizeErrorKind`, `StrategyId` are all `#[non_exhaustive]`. An integration test over `cargo public-api` enforces.                                                                                                                                                                      |
 | **I11** — no I/O in hot path               | No `std::fs`, no `std::net`, no `tokio`, no `reqwest` in the crate's dependency graph. The `Cargo.toml` audit (§16.2) is CI-enforced.                                                                                                                                                                                                                           |
 | **I12** — first-class diagnostics          | `PlanErrorKind` and `OptimizeErrorKind` implement `Diagnose` per `30 §5.4`; identification is by variant identity per `30 §5.4` (no string-code surface). Warnings accumulate through both success and failure arms per `30 §7.2` / `§7.3`. The `tracing` channel (`30 §6`) carries library-internal observability events orthogonally to returned diagnostics. |
 
+
+### 1.4A Runtime contract: `manifest -> graph -> planning -> plan`
+
+Status: **TODO / provisional**.
+
+This section is intentionally a boundary marker, not a finalized planner implementation contract.
+
+Planned runtime path:
+
+1. read candidates from manifest indices (`33`);
+2. materialize/lookup runtime graph fragments using canonical IR graph shapes (`35`);
+3. resolve runtime physical expressions for touched fragment scope;
+4. apply source drift policy (`Strict` / `Warn` / `TrustManifest`);
+5. lower fragment into canonical `SemanticPlan`.
+
+Current contract at this stage:
+
+- `33` is authoritative for persisted manifest seed/index shape.
+- `35` is authoritative for canonical graph and expression types.
+- Graph-fragment admission validates DAG-ness and typed expression-reference resolvability (`GraphExprRef`) before planning/lowering.
+- planner runtime store/build/eviction/drift interfaces are pending dedicated planner design pass.
+- planner runtime DAG backend target is `daggy`; backend-specific types do not leak through `33`/`35` public contracts.
 
 ### 1.5 Constraint validation precedes Strategy dispatch
 
@@ -102,6 +129,7 @@ semstrait-planner
 ├── plan                 // pub fn plan, PlanErrorKind, plan-pipeline internals
 ├── optimize             // pub fn optimize, OptimizerPass, OptimizeErrorKind,
 │                        //   canonical v1 passes
+├── graph_runtime        // TODO/provisional: runtime graph lifecycle interfaces
 ├── strategy             // Strategy trait, StrategyId, StrategyContext,
 │                        //   StrategyRegistry, dispatch_strategy
 ├── strategies           // SimpleStrategy, GrainsetStrategy, UnionsetStrategy,
@@ -110,7 +138,7 @@ semstrait-planner
                          //   helpers; relationship-traversal wrappers
 ```
 
-Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root re-exports are forbidden — consumers either import `semstrait_planner::plan` or `semstrait_planner::plan::plan`, never both.
+Crate-root re-exports expose the stable convenience surface. Non-root re-exports are forbidden — consumers either import `semstrait_planner::plan` or `semstrait_planner::plan::plan`, never both.
 
 **Surface roster (one line per item; full shapes in later sections):**
 
@@ -119,6 +147,7 @@ Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root r
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------- |
 | (crate root) | `pub fn plan(...) -> Result<(SemanticPlan, Diagnostics<PlanErrorKind>), (Diagnostic<PlanErrorKind>, Diagnostics<PlanErrorKind>)>`                 | free fn                            | §6      |
 | (crate root) | `pub fn optimize(...) -> Result<(SemanticPlan, Diagnostics<OptimizeErrorKind>), (Diagnostic<OptimizeErrorKind>, Diagnostics<OptimizeErrorKind>)>` | free fn                            | §11     |
+| `graph_runtime` | TODO/provisional runtime graph lifecycle interfaces                                                                                              | deferred surface                   | §1.4A   |
 | `request`    | `pub struct Request`                                                                                                                              | value type                         | §3      |
 | `request`    | `pub struct SessionContext`                                                                                                                       | value type                         | §4      |
 | `request`    | `pub struct ResolvedQueryRequest`                                                                                                                 | value type                         | §5      |
@@ -137,12 +166,14 @@ Crate-root re-exports (§17.1) expose the stable convenience surface. Non-root r
 | `strategy`   | `pub struct StrategyId`                                                                                                                           | newtype                            | §8.2    |
 | `strategy`   | `pub struct StrategyContext<'a>`                                                                                                                  | per-invocation context             | §8.4    |
 | `strategy`   | `pub struct StrategyRegistry`                                                                                                                     | dispatch table                     | §8.3    |
-| `strategy`   | `pub fn dispatch_strategy(...) -> &dyn Strategy`                                                                                                  | free fn                            | §8.5    |
+| `strategy`   | `pub fn dispatch_strategy(...) -> Result<&dyn Strategy, PlanErrorKind>`                                                                          | free fn                            | §8.5    |
 | `strategies` | `pub struct SimpleStrategy`                                                                                                                       | v1 strategy                        | §9.1    |
 | `strategies` | `pub struct GrainsetStrategy`                                                                                                                     | v1 strategy                        | §9.2    |
 | `strategies` | `pub struct UnionsetStrategy`                                                                                                                     | v1 strategy                        | §9.3    |
 | `strategies` | `pub struct JoinsetStrategy`                                                                                                                      | v1 strategy                        | §9.4    |
 
+
+> **Legacy detail note.** Sections `§3+` retain extensive pre-split planner details. The split contract ratified in `§1.4A` (runtime graph lifecycle) and `§2` (public surface roster) is authoritative when names/flows differ (for example legacy `expr_table` references vs `ManifestExpressions` + runtime realization).
 
 ## 3. The `Request` type
 
@@ -192,7 +223,7 @@ Filters on a Measure or two-stage Metric with `agg:` land above `PlanNode::Agg` 
 - `limit: Option<u64>` — row cap on the post-sort output. `Some(0)` emits an empty-result `PlanNode::Fetch`.
 - `offset: Option<u64>` — row offset applied before `limit`.
 
-Placement: `order` → `PlanNode::Sort`; `offset` / `limit` → `PlanNode::Fetch`. Empty `order` with non-empty `limit` is legal; result order is non-deterministic (`35 §5.8`).
+Placement: `order` → `PlanNode::Sort`; `offset` / `limit` → `PlanNode::Fetch`. Empty `order` with non-empty `limit` is legal; result order is non-deterministic unless `order` is specified.
 
 ### 3.5 `Filter`
 
@@ -421,28 +452,27 @@ pub struct ResolvedQueryRequest {
 pub enum ResolvedTarget {
     Explicit(DataKindRef),                            // Request.from = Some(d)
     Implicit(DataKindRef),                            // `16 §11.3` single-kind fast path
-    Composition(DataKindRef),                         // `16 §11.4` — pre-built explicit or implicit
-                                                      //   composition resolved by constituent-set
-                                                      //   lookup (`33 §7.2`); origin is on the
-                                                      //   resolved kind itself
+    Composition(DataKindRef),                         // `16 §11.4` — graph-index lookup
+                                                      //   hit by constituent-set; origin is on
+                                                      //   the resolved kind itself
 }
 
 #[non_exhaustive]
 pub struct ResolvedSemanticRef {
     pub owner:      DataKindRef,
     pub element:    SemanticElement,
-    pub binding_id: BindingId,                        // entry key into manifest.expr_table
+    pub binding_id: EntityId,                         // key into manifest `bindings`
 }
 
 #[non_exhaustive]
 pub enum SemanticElement { Dimension, Measure, Metric, Filter, Key }
 ```
 
-For `ResolvedTarget::Composition(name)`, the planner consumes the resolved kind through `manifest.datakind(&name)`; the kind's `composed_interface.traversed_paths` and `constituents` are already materialized at compile per `16 §10`. Strategies treat `Origin::Explicit` and `Origin::Implicit { id }` uniformly. For Complex-owned fields, `binding_id` points at the constituent Binding the field resolves through per `16 §7`'s `FieldOwnership`.
+For `ResolvedTarget::Composition(name)`, the planner consumes the resolved kind through the runtime graph composition index (`graph.composition_index(name)`); traversed paths and constituent sets are graph-build products derived from manifest primitives (`16 §10` / `§11`). Strategies treat `Origin::Explicit` and `Origin::Implicit { id }` uniformly. For Complex-owned fields, `binding_id` points at the constituent Binding the field resolves through per `16 §7`'s `FieldOwnership`.
 
 ### 5.2 Invariants
 
-A well-formed `ResolvedQueryRequest` satisfies: every `owner` names a `ResolvedDataKind` in `manifest.resolved_datakinds`; every `binding_id` is present in `manifest.expr_table` (I8 / `19 §3.2.3`); `target` is consistent with all `owner` fields; `dimensions` / `measures` / `metrics` entries have `element` matching the field they appear in; `filters` preserve caller order. Violation is a planner-internal bug; step 1 constructs only well-formed instances and consumers MAY `debug_assert!` in test builds.
+A well-formed `ResolvedQueryRequest` satisfies: every `owner` resolves through graph/manifest lookup (`graph.name_index` + `manifest.data_kinds`); every `binding_id` is present in `manifest.bindings` (I8 / `19 §3.2.3`); `target` is consistent with all `owner` fields; `dimensions` / `measures` / `metrics` entries have `element` matching the field they appear in; `filters` preserve caller order. Violation is a planner-internal bug; step 1 constructs only well-formed instances and consumers MAY `debug_assert!` in test builds.
 
 ## 6. The `plan` function signature
 
@@ -478,7 +508,7 @@ pub fn plan(
 
 ### 6.2 Preconditions on `manifest`
 
-The SemanticManifest must satisfy every invariant in `33 §3.1` — in particular, `expr_table` must be populated for every exposed `(name, binding_id)` pair, and every referenced `RelationshipId` must be present in `resolved_relationships`. Feeding a partially-built SemanticManifest is a caller error; the planner's index-inconsistency checks raise `PlanErrorKind::SemanticManifestIndexInconsistent` where possible but are not exhaustive. Multi-thread access is safe per `33 §12` — a single `SemanticManifest` may back concurrent `plan` calls.
+The SemanticManifest must satisfy every invariant in `33 §4` / `§10` / `§12` — in particular, `bindings`, `data_kinds`, `relationships`, and typed expression pools must be internally consistent so graph build can derive indices before planning. Feeding a partially-built SemanticManifest is a caller error; planner graph/index checks raise `PlanErrorKind::SemanticManifestIndexInconsistent` where possible but are not exhaustive. Multi-thread access is safe per `33 §12` — a single `SemanticManifest` may back concurrent `plan` calls.
 
 ### 6.3 Postconditions
 
@@ -490,9 +520,9 @@ The SemanticManifest must satisfy every invariant in `33 §3.1` — in particula
 
 `plan` is `Send` on the invoking thread and reentrant under concurrent invocations against the same SemanticManifest (reads only; no interior mutability across calls).
 
-## 7. Plan pipeline sub-steps
+## 7. Legacy direct-plan pipeline notes (transitional)
 
-Per `10 §3.4`, `plan` executes seven sub-steps in fixed order. The ordering is binding — a strategy MAY NOT reorder sub-steps, and a caller cannot influence ordering. Each sub-step has a defined input, output, and error surface. A failure at any step short-circuits the remaining steps (fail-fast, `30 §7`).
+This section preserves pre-split direct-plan wording for migration context. The authoritative planner pipeline is `§1.4A` plus `10 §3.4`. Any conflict between this section and `§1.4A` is resolved in favor of `§1.4A`.
 
 ### 7.1 Step 0 — Constraint validation (`11 §8.6`)
 
@@ -519,17 +549,17 @@ No name resolution beyond the pre-built index (I5). Complexity is O(names × log
 
 Two-branch decision:
 
-- **Explicit (`request.from == Some(d)`).** Per `16 §11.6`: look up `d` in `manifest.resolved_datakinds`. Absent → `PLAN_E_2040`. For every resolved Semantics, assert the owner equals `d` (Simple) or appears in `d`'s constituents (Complex); violation → `PLAN_E_0507 SemanticsNotOnSurface`. Set `target = Explicit(d)`.
+- **Explicit (`request.from == Some(d)`).** Per `16 §11.6`: look up `d` in the graph/manifest DataKind index (`graph.datakind_index`). Absent → `PLAN_E_2040`. For every resolved Semantics, assert the owner equals `d` (Simple) or appears in `d`'s constituents (Complex); violation → `PLAN_E_0507 SemanticsNotOnSurface`. Set `target = Explicit(d)`.
 - **Implicit (`request.from == None`).** Invoke field-first resolution (§10 / `16 §11`). Output is `ResolvedTarget::Implicit(d)` (single-kind fast path) or `ResolvedTarget::Composition(d)` (constituent-set lookup hit per §10.2 step 4). Errors: `PLAN_E_0500` / `PLAN_E_0501` / `PLAN_E_0502` / `PLAN_E_0503` / `PLAN_E_0508`.
 
 ### 7.4 Step 3 — Composition consistency check
 
-For composition targets (`ResolvedTarget::Explicit(d)` where `d` is Complex, or `ResolvedTarget::Composition(d)`), the planner consumes the pre-built `composed_interface` from `manifest.datakind(&d)`:
+For composition targets (`ResolvedTarget::Explicit(d)` where `d` is Complex, or `ResolvedTarget::Composition(d)`), the planner consumes the graph-built composition entry from `graph.composition_index(d)`:
 
-- **Composition target (explicit or implicit-pre-built):** `composed_interface.traversed_paths` is already materialized at compile per `16 §10`. Step 3 walks the path edges to confirm every `RelationshipId` resolves in `manifest.resolved_relationships` (a SemanticManifest-integrity check) and packages the per-edge `JoinKeyExprPair` shape strategies consume.
+- **Composition target (explicit or implicit):** `traversed_paths` is materialized during graph build per `16 §10`. Step 3 walks the path edges to confirm every relationship `EntityId` resolves in the manifest relationship scope (`manifest.relationships`, holding `ResolvedRelationship` per `33 §8A`, plus Joinset-local shadows) and packages the per-edge resolved join keys (`ResolvedJoinKey` semantic-id pairs + the resolved `join_type` / `filter`) that strategies consume.
 - **Simple target:** step 3 is a no-op.
 
-`PLAN_E_2052 SemanticManifestIndexInconsistent` surfaces here when a recorded `RelationshipId` is missing from `manifest.resolved_relationships` — a SemanticManifest-integrity bug, not a plan-time failure mode under valid inputs.
+`PLAN_E_2052 SemanticManifestIndexInconsistent` surfaces here when a recorded relationship `EntityId` is missing from the expected relationship scope — a manifest/graph integrity bug, not a plan-time failure mode under valid inputs.
 
 ### 7.5 Step 4 — Strategy dispatch (`20 §5.3`)
 
@@ -671,17 +701,18 @@ impl<'a> StrategyContext<'a> {
 pub fn dispatch_strategy<'r>(
     kind: &ResolvedDataKind,
     registry: &'r StrategyRegistry,
-) -> &'r dyn Strategy {
+) -> Result<&'r dyn Strategy, PlanErrorKind> {
     match kind {
-        ResolvedDataKind::Simple(_) => registry.simple(),
-        ResolvedDataKind::Complex(ResolvedComplexDataKind::Unionset(_)) => registry.unionset(),
-        ResolvedDataKind::Complex(ResolvedComplexDataKind::Grainset(_)) => registry.grainset(),
-        ResolvedDataKind::Complex(ResolvedComplexDataKind::Joinset(_))  => registry.joinset(),
+        ResolvedDataKind::Simple(_) => Ok(registry.simple()),
+        ResolvedDataKind::Complex(ResolvedComplexDataKind::Unionset(_)) => Ok(registry.unionset()),
+        ResolvedDataKind::Complex(ResolvedComplexDataKind::Grainset(_)) => Ok(registry.grainset()),
+        ResolvedDataKind::Complex(ResolvedComplexDataKind::Joinset(_))  => Ok(registry.joinset()),
+        _ => Err(PlanErrorKind::StrategyMissingForVariant),
     }
 }
 ```
 
-The single variant-tag match site in the planner's hot path (per `20 §5.3`). `#[non_exhaustive]` on `ResolvedDataKind` / `ResolvedComplexDataKind` forces a new arm when a future Complex variant lands — a MINOR bump per `30 §2`. O(1) per dispatch; every other planner site consumes `&dyn Strategy` from here or from `ctx.plan_datakind` recursion.
+The single variant-tag match site in the planner's hot path (per `20 §5.3`). `#[non_exhaustive]` on `ResolvedDataKind` / `ResolvedComplexDataKind` requires a defensive fallback arm for forward-compatible builds. O(1) for known variants; every other planner site consumes the returned `&dyn Strategy` from here or from `ctx.plan_datakind` recursion.
 
 ## 9. Built-in strategies (v1 roster)
 
@@ -697,7 +728,7 @@ impl SimpleStrategy { pub fn new() -> Self; }
 // impl Strategy per §8.1 — dispatches to the `21 §4` algorithm.
 ```
 
-**Algorithm pointer.** `21 §4.1`–§4.7: L1 `Scan` per-source per `15 §3.6`; L2 `Rename` Semantics → physical columns; L3 `Expression` materializes Measure / Metric / Dimension expressions from `ResolvedExprTable`; L4 `Agg` aggregates per-Measure; L5 `Project` final-column projection. Single-source vs multi-source fan-out per `21 §4.2`; filter interleaving per `21 §4.6`.
+**Algorithm pointer.** `21 §4.1`–§4.7: L1 `Scan` per-source per `15 §3.6`; L2 `Rename` Semantics → physical columns; L3 `Expression` materializes Measure / Metric / Dimension expressions from the manifest physical pool (`ManifestExpression { expr, layer }`, `33 §7.2`); L4 `Agg` aggregates per-Measure; L5 `Project` final-column projection. The Strategy reads each expression's `ExprLayer` to choose the L-layer placement (`Scalar` → L2/L3 pre-agg, `Aggregate` → L4, `PostAggregate` → above L4) per `19 §6.0`; pre-/re-aggregation safety from function-derived `Additivity` (`14a §3.6.2`). Single-source vs multi-source fan-out per `21 §4.2`; filter interleaving per `21 §4.6`.
 
 **Errors.** `PLAN_E_21xx` per `21 §7`; shared `PLAN_E_0600`, `PLAN_E_0601`.
 
@@ -749,46 +780,46 @@ impl JoinsetStrategy { pub fn new() -> Self; }
 
 Step 2 of the pipeline (§7.3) invokes field-first resolution when `request.from == None`. When `request.from` is `Some(d)`, step 2 takes the explicit-routing branch per `16 §11.6` and field-first resolution is skipped entirely.
 
-### 10.2 Algorithm — lookup-only over compiled compositions (from `16 §11`)
+### 10.2 Algorithm — lookup-only over `SemanticGraph` build-time indices (`16 §11`)
 
-The algorithm's canonical ratification is `16 §11`; §10 here records the planner-side realization. Per `16 §10`, every Joinset and Unionset (explicit and implicit) is **eagerly materialized at compile** with stable `Origin` carriage; plan-time is a pure lookup over `33`'s `CompositionIndex`. There is no plan-time BFS / Steiner walk and no on-demand synthesis.
+The algorithm's canonical ratification is `16 §11`; §10 here records the planner-side realization. Per `33 §4.1` / `§6.8` and `16 §10`, the manifest persists primitives only, while explicit and implicit compositions are synthesized into `SemanticGraph` at graph-build time. Plan-time resolution is therefore lookup-only over graph-held indices — no plan-time BFS / Steiner walk and no on-demand synthesis.
 
-1. **Name-to-kind map (`16 §11.2`).** For each `SemanticsName` in `request.dimensions ∪ request.measures ∪ request.metrics ∪ request.filters.field`, consult `manifest.name_index(name)`:
-  - `None` → `PLAN_E_0508 UnknownSemantics { name }` (re-raised from step 1 if the lookup missed there) per `16 §14.3`.
+1. **Name-to-kind map (`16 §11.2`).** For each `SemanticsName` in `request.dimensions ∪ request.measures ∪ request.metrics ∪ request.filters.field`, consult `graph.name_index(name)`:
+  - `None` → `PLAN_E_0508 UnknownSemantics { name }`.
   - `Some(owning)` → record the `Vec<DataKindRef>`.
-2. **Candidate kind set `T`.** Deduplicate `⋃ owning` across selected names. If `|T| == 0`, emit `PLAN_E_0508` (unreachable here because step 1 already enforced non-empty owners).
-3. **Single-kind fast path (`16 §11.3`).** If `|T| == 1`, return `ResolvedTarget::Implicit(T[0])`. The planner treats the Request as if `from: Some(T[0])` had been declared.
-4. **Multi-target lookup over `CompositionIndex` (`16 §11.4`).** If `|T| >= 2`:
-  - Form the canonical `ConstituentSet` (lex-sorted `Vec<DataKindName>`) per `33 §7.2` from `T`.
-  - Query `manifest.composition_index.by_constituent_set(&set)` (`33 §7.2`) → `&[DataKindName]`.
-  - **Single match** → fast-path: pick the unique pre-built `ResolvedJoinset` or `ResolvedUnionset` (whose `origin` is either `Origin::Explicit` or `Origin::Implicit { id }`), package as `ResolvedTarget::Composition(name)`. Strategy dispatch (§9.2's table) routes by the resolved variant; explicit and implicit are uniform downstream.
-  - **Multi match** → ambiguity. The constituent set was reachable via more than one canonical form (e.g. directional Joinsets that differ in path ordering, or both an implicit Joinset and an implicit Unionset for the same set). Emit `PLAN_E_0500 AmbiguousImplicitComposition { constituent_set, candidates }` (per `16 §14.3` shape) — the author must explicitly name a Joinset or refine the Request.
-  - **No match** → no composition was materialized at compile for this set. Two sub-cases:
-    - Inspect `MAX_IMPLICIT_COMPOSITION_DEPTH` policy: if the constituent set is reachable in the relationship graph but exceeded the depth bound at compile, emit `PLAN_E_0502 CompositionDepthExceeded { from_kinds, max_depth }` (per `16 §14.3` shape) with a hint suggesting an explicit Joinset.
-    - Otherwise emit `PLAN_E_0501 NoCompositionPath { from, to }` (per `16 §14.3` shape) with a hint listing the kinds and the missing relationship.
-5. **Return.** `ResolvedTarget::{Implicit | Composition(name)}`. The planner consumes the resolved composition through `manifest.datakind(&name)` (`33 §3.4`); strategies see a uniform `ResolvedDataKind::Complex(...)` payload regardless of `origin`.
+2. **Candidate kind set `T`.** Deduplicate `⋃ owning` across selected names.
+3. **Single-kind fast path (`16 §11.3`).** If `|T| == 1`, return `ResolvedTarget::Implicit(T[0])`.
+4. **Multi-target lookup (`16 §11.4`).** If `|T| >= 2`, query `graph.composition_by_constituent_set(&T)`:
+  - **Single match** → `ResolvedTarget::Composition(name)`.
+  - **Multi match** → `PLAN_E_0500 AmbiguousImplicitComposition`.
+  - **No match** → `PLAN_E_0501 NoCompositionPath` or `PLAN_E_0502 CompositionDepthExceeded` (when the graph build recorded a cap hit).
+5. **Return.** `ResolvedTarget::{Implicit | Composition(name)}`; strategy dispatch remains variant-driven and origin-agnostic.
 
-### 10.3 Integration with SemanticManifest indices
+### 10.3 Integration with graph-build indices
 
-The algorithm is a thin reader of two pre-built indices: `manifest.name_index: BTreeMap<SemanticsName, Vec<DataKindRef>>` (`33 §5`) and `manifest.composition_index.by_constituent_set: BTreeMap<ConstituentSet, Vec<DataKindName>>` (`33 §7.2`). Every lookup is O(log n); the constituent-set map is materialized at compile per `33 §9.1`'s sub-pass 9. No relationship-graph traversal at plan time (the graph is consumed only at compile, by `33 §9.1`'s sub-pass 7). No name resolution at plan time (I5).
+The planner reads graph-build indices reconstructed from manifest primitives:
 
-The `MAX_IMPLICIT_COMPOSITION_DEPTH` constant remains a **compile-side bound** consumed by `33 §9.1`'s sub-pass 7 (implicit-Joinset enumeration); it is referenced here only for the §10.2 step-4 error message that explains why a constituent set was not enumerated at compile.
+- `graph.name_index: BTreeMap<SemanticsName, Vec<DataKindRef>>`
+- `graph.composition_index: BTreeMap<DataKindName, ResolvedComplexDataKind>`
+- `graph.composition_by_constituent_set: BTreeMap<BTreeSet<DataKindRef>, Vec<DataKindName>>`
 
-### 10.4 Depth bound (compile-side reference)
+These indices are built during `SemanticGraph` construction from `SemanticBitmap`, `DataKind` coverage, and `relationships` (`33 §4.1`, `§6.8`; `16 §10`/`§11`). Planner hot path performs lookup only (I5/I6/I11).
+
+### 10.4 Depth bound (graph-build reference)
 
 ```rust
 pub const MAX_IMPLICIT_COMPOSITION_DEPTH: usize = 4;
 ```
 
-Per `16 §10.4` (Q-COMP-001 closed 2026-04-28). The constant is exported from `semstrait-manifest` (`33 §9.1` step 7) and re-exported here for cross-doc readability and for the §10.2 step-4 error-hint rendering. Plan-time does not enforce the bound — enforcement is a compile-time invariant per `33 §3.1` ("Implicit-cap discipline"). A Request that hits the depth bound at compile produces no entry in `composition_index.by_constituent_set`, and §10.2 step-4 surfaces `PLAN_E_0502` accordingly.
+Per `16 §10.4` (Q-COMP-001 closed 2026-04-28). The constant is a code-level invariant used by implicit-composition enumeration during graph build. Plan-time does not enforce the bound; it only consumes graph-build outcomes (for example `PLAN_E_0502` when no composition candidate was materialized due to cap limits).
 
-The companion cap `MAX_IMPLICIT_ENUMERATION_COUNT = 2000` (Q-COMP-005 closed 2026-04-29; `16 §10.4`) is also compile-side; if exceeded, compile fails with `CompileError::ImplicitEnumerationExploded` (`33 §10.1`) and no SemanticManifest is produced — plan-time never observes the breach.
+The companion cap `MAX_IMPLICIT_ENUMERATION_COUNT = 2000` (Q-COMP-005 closed 2026-04-29; `16 §10.4`) is also graph-build-side; if exceeded, graph construction fails before any request planning starts.
 
 ### 10.5 Interaction with Joinsets and `19 §3.4` path resolution
 
 A `Request` with explicit `from: Some(joinset)` skips §10 entirely. A `Request` with `from: None` whose constituent set hits a pre-built `Origin::Explicit` Joinset returns it directly — there is no "implicit composition shadows Joinset" advisory because the canonical form is uniquely the explicit Joinset's by construction (per `16 §10.6` clash rejection — an implicit composition with the same canonical form would have failed compile with `COMP_E_0414` `ExplicitImplicitCompositionClash`).
 
-Per `16 §11.7`, plan-time field-first resolution and compile-time cross-kind path resolution (`19 §3.4`) operate on different timing layers but share the same SemanticManifest indices. `19 §3.4` runs at compile and materializes `PathSignature` entries inside `ResolvedExprTable`; `34 §10` runs at plan and looks up pre-built compositions by constituent set. The depth-bound and tie-break policy are now compile-side discipline (`16 §10.4` / `§10.6`) — no shared plan-time BFS helper exists.
+Per `16 §11.7`, plan-time field-first resolution and compile-time cross-kind path resolution (`19 §3.4`) operate on different timing layers and share manifest primitives, but not the same runtime indices. `19 §3.4` runs at compile and materializes `PathSignature` entries inside `ResolvedExprTable`; `34 §10` runs at plan and looks up graph-build composition indices by constituent set. Depth-bound and tie-break policy are graph-build discipline (`16 §10.4` / `§10.6`) — no shared plan-time BFS helper exists.
 
 ## 11. The `optimize` function
 
@@ -958,7 +989,7 @@ pub enum PlanErrorKind {
     AmbiguousImplicitComposition  { constituent_set: Vec<DataKindRef>, candidates: Vec<DataKindRef> },
     NoCompositionPath             { from: DataKindRef, to: DataKindRef },
     CompositionDepthExceeded      { from_kinds: Vec<DataKindRef>, max_depth: usize },
-    CrossCompositionForbidden     { relationship_id: RelationshipId, attempted_direction: String },
+    CrossCompositionForbidden     { relationship_id: EntityId, attempted_direction: String },
     AmbiguousCompositionReference { name: SemanticsName, candidates: Vec<DataKindRef> },
     CompositionAggregationConflict { name: SemanticsName, aggregations: Vec<String> },
     SemanticsNotOnSurface         { name: SemanticsName, surface: DataKindRef },

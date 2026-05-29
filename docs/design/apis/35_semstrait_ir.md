@@ -9,11 +9,17 @@ authoritative-for:
   - the shared identifier carriers `ColumnRef` and `SemanticsName` (consumed by both leaf sets per `14 §3.4 / §3.5`; `35` is the crate-level home post-second-cascade)
   - the `PhysicalLeaf` and `SemanticLeaf` enums — canonical-IR leaf set and per-kind typed semantic leaf set per `14 §3.4 / §3.5`
   - the `PhysicalExpr = Expr<PhysicalLeaf>` and `SemanticExpr = Expr<SemanticLeaf>` type aliases per `14 §3.6`
+  - the `PhysicalExprId` expression-pool ID newtype (wrapper around the underlying `ExprId`); the manifest persists a single physical-only pool, so the former `SemanticExprId` / split-pool framing is retired
+  - the `ExprLayer` applicability classification (§5.5) carried on every persisted manifest expression
+  - the IR-side serialization derive contract for `Expr<L>` and every leaf type — `serde::Serialize` / `serde::Deserialize` derived in `semstrait-ir`, JSON encoding, deterministic byte sequence, no per-`Expr` format version — per manifest ratification clause C18
+  - the load-time integrity contract for IR-typed cross-references — every `PhysicalExprId` referenced outside `ManifestExpressions` resolves to an existing pool entry; failure is `LoadError::DanglingReference` — per manifest ratification clause CX1 (structural shape owned here; the load-time walk lives in `33`'s deserializer)
   - the per-kind accessor enums (`DimensionAccessor`, `MeasureAccessor`, `MetricAccessor`, `KeyAccessor`) carried as `Option<…>` fields on the typed semantic leaves per `14 §4.1`
   - the `Parameter` placeholder struct and the closed `ParameterKey` enum per `14 §5`
   - the authoring-surface DSL — the `expr_fn` module with `col`, `field`, `dim`, `measure`, `metric`, `key` free constructors; `std::ops` impls on `SemanticExpr` and `PhysicalExpr`; the `ExprFunctionExt` extension trait — per `14 §9.2`
   - the `CanonicalFn` newtype and the `FunctionRegistry` / `FunctionSpec` / `FnSignature` / `ParamType` / `ReturnTypeRule` / `FunctionCategory` / `RegistryExtension` / `function_registry()` surface, moved from `semstrait-common` per `14a §2`
   - the narrow ir-emitted error kinds — `ValidateError` (raised by `Tree::with_new_children` and `Rewriter<N>::f_*`) and `CompileError` (raised by `ReturnTypeRule::Custom` callbacks wired into `FunctionSpec`); each implements `Diagnose` per `30 §5`. Downstream stages embed via D.ii kind-nesting (`30 §7.4`)
+  - canonical semantic-graph types (`SemanticGraph`, `SemanticNode`, `SemanticEdge`, `SemanticGraphFragment`, `SegmentKey`, `SemanticInterfaceBitmask`) used by planner runtime assembly
+  - semantic-graph read contracts (`SemanticGraphRead`, `SemanticGraphFragmentRead`, bitmap-operation traits); IR owns shape/contracts only, not runtime cache lifecycle
   - `SemanticPlan` — the canonical, engine-agnostic query plan tree
   - `PlanNode` sum type — variant roster (`Scan`, `Filter`, `Project`, `Agg`, `Join`, `Union`, `Sort`, `Fetch`) and per-variant shape
   - `EngineArtifact` / `EnginePlan` / `SqlArtifact` adapter-consumable output types (structural shape owned here; emission semantics in `36`)
@@ -26,8 +32,8 @@ authoritative-for:
 refined-by:
   - 14 (`Expr<L>`, leaf-set catalogs, accessor catalogs, `Parameter` shape, DSL constructor list, trait scaffolding, support-enum rosters — the type-architecture contract `35` implements)
   - 14a (`CanonicalFn` semantics, signature polymorphism, return-type rules, registry sealing protocol)
-  - 19 (compile-pipeline — Phase A `SemanticExpr::resolve` produces the `PhysicalExpr`s `35` stores in `PlanNode`s; Phase B placement consumes them)
-  - 34 (`semstrait-planner` produces `SemanticPlan` values; consumes `PhysicalExpr` and the sealed `FunctionRegistry`)
+  - 19 (expression-flow contract — semantic expression forms and runtime realization boundary consumed by planner)
+  - 34 (`semstrait-planner` produces `SemanticPlan` values; consumes `PhysicalExpr`, canonical graph types, and owns graph lifecycle/cache policy)
   - 36 (`semstrait-adapter` consumes `SemanticPlan` and produces `EngineArtifact`; owns the Substrait / SQL emission logic referenced here as a mapping only)
   - 40 (`implementation/40_refactor_plan.md` — current `crates/semstrait-ir/src/plan` vs target layout delta is tracked here)
 ---
@@ -38,7 +44,7 @@ refined-by:
 
 ## 1. Purpose and Scope
 
-`semstrait-ir` is the **canonical IR crate**. It carries every type the post-compile pipeline operates on: the engine-agnostic expression types (`Expr<L>` + both leaf sets), the function-identity catalog (`CanonicalFn` + `FunctionRegistry`), the in-memory plan tree (`SemanticPlan`), and the adapter-consumable output types. The producer side is split — `semstrait-model` parses YAML into the expression types, `semstrait-manifest::compile` resolves `SemanticExpr` into `PhysicalExpr` per `[19 §3](../foundations/19_expression_flow.md)`, and `semstrait-planner` (`34`) builds `SemanticPlan` from `Request × SemanticManifest`. The consumer side is the adapter family (`semstrait-adapter`, `36`+). No other crate in the workspace contains a plan-tree, expression-type, or function-registry vocabulary.
+`semstrait-ir` is the **canonical IR crate**. It carries every type the post-compile pipeline operates on: the engine-agnostic expression types (`Expr<L>` + both leaf sets), the function-identity catalog (`CanonicalFn` + `FunctionRegistry`), canonical semantic-graph vocabulary, the in-memory plan tree (`SemanticPlan`), and adapter-consumable output types. The producer side is split — `semstrait-model` parses YAML into the expression types, `semstrait-manifest::compile` resolves semantic references and emits manifest seeds, and `semstrait-planner` (`34`) realizes runtime fragments and builds `SemanticPlan` from `Request × SemanticManifest`. The consumer side is the adapter family (`semstrait-adapter`, `36`+). No other crate in the workspace contains canonical plan-tree, semantic-graph, expression-type, or function-registry vocabularies.
 
 ### 1.1 What `semstrait-ir` OWNS
 
@@ -52,9 +58,10 @@ refined-by:
 | Shared identifier carriers `ColumnRef`, `SemanticsName` | §3.4 | `[14 §3.4 / §3.5](../foundations/14_expressions.md)` |
 | Authoring-surface DSL — `expr_fn` module, `std::ops` impls on `Expr<L>`, `ExprFunctionExt` | §7 | `[14 §9.2](../foundations/14_expressions.md)` |
 | `CanonicalFn` newtype + `FunctionRegistry` / `FunctionSpec` / `FnSignature` / `ParamType` / `ReturnTypeRule` / `FunctionCategory` / `RegistryExtension` / `function_registry()` | §8 | `[14a §2](../foundations/14a_function_catalog.md)` |
+| Canonical semantic-graph types — `SemanticGraph`, `SemanticNode`, `SemanticEdge`, `SemanticGraphFragment`, `SegmentKey`, `SemanticInterfaceBitmask` + read traits | §2A | `33` / `34` split contract (shape in ir, lifecycle in planner) |
 | Narrow ir-emitted error kinds — `ValidateError`, `CompileError` | §16 | `[14 §3.1](../foundations/14_expressions.md)` / `[14a §3.5](../foundations/14a_function_catalog.md)` |
 | `SemanticPlan` root + `PlanNode` sum (8 variants) + well-formedness invariants | §9 / §10 / §13 | `[00 §4.1](../00_overview.md)` |
-| Plan-level primitives — `SourceRef`, `ResolvedColumn`, `Name`, `KeyPair`, `SortDir`, `NullOrdering`, `AggregateExpr`, `NodeMeta` | §11 | `[15](../foundations/15_mapping_and_binding.md)` / `[16 §5](../foundations/16_composition_and_relationships.md)` |
+| Plan-level primitives — `SourceRef`, `ResolvedColumn`, `Name`, `KeyPair`, `SortDir`, `NullOrdering`, `AggregateExpr`, `NodeMeta` | §11 | `[15](../foundations/15_mapping_and_binding.md)` / `[16 §5](../foundations/16_composition.md)` |
 | Adapter-consumable output family — `EngineArtifact`, `EnginePlan`, `SqlArtifact`, `DialectId`, `Dialect`, `Capability` | §12 | `[00 §4.1](../00_overview.md)` (shape only; emission in `[36](36_semstrait_adapter.md)`) |
 | Visitor / traversal API over `PlanNode` trees | §14 | unified with `Tree` (§3.2) |
 | Serde derivations for `SemanticPlan`, `Expr<L>`, and every public IR type | §15 | — |
@@ -67,8 +74,9 @@ refined-by:
 - **Optimization passes.** Rule-based rewrites over `SemanticPlan` live in `semstrait-planner` (`34`, stage 5 per `10 §3.5`). `35`'s `walk` / `transform` helpers (§14) are the substrate those rewrites run on, not the rewrites themselves.
 - **Adapter emission.** Translating a `SemanticPlan` into an `EngineArtifact` (SQL text or Substrait proto) is `36`'s contract. `35` ratifies the artifact's structural shape and the Substrait mapping table; the rendering code, dialect-specific SQL, and capability checks all live above.
 - **SemanticManifest shape.** `SemanticPlan` refers to the SemanticManifest through the opaque `SourceRef` handle (§11.2). SemanticManifest types live in `semstrait-manifest` per `33`; `35` never embeds them inline.
+- **Runtime graph lifecycle policy.** TTL/LRU cache ownership, segment admission/eviction, memory-budget enforcement, and drift-policy execution live in planner (`34`). `35` owns graph *shape and read contracts* only.
 - **Expression-type variant catalogs and structural invariants.** While `semstrait-ir` now OWNS the *crate-level* placement of the expression types per §1.1, the **variant rosters** for each enum, the **structural invariants** between leaf sets, the **type aliases** discipline, and the **accessor catalogs** are ratified by `[14 §3](../foundations/14_expressions.md)` and `[14 §4](../foundations/14_expressions.md)`. `35`'s §3–§6 reference those rosters rather than re-ratifying them; per `[DOCS_MAINTENANCE.md §3](../DOCS_MAINTENANCE.md)`, the variant catalogs and structural rules live in `14` alone.
-- **Compile-time `SemanticExpr` → `PhysicalExpr` resolution.** The algorithm that lowers `SemanticExpr` into `PhysicalExpr` (`SemanticExpr::resolve`, `ResolvedExprTable` keying, cross-DataKind path resolution, sugar-accessor elimination, type inference, Semantics-boundary reconciliation) lives in `semstrait-manifest::compile` per `[19 §3](../foundations/19_expression_flow.md)`. `35` owns the types that flow through that algorithm; it does not own the algorithm.
+- **Planner-time `SemanticExpr` → `PhysicalExpr` realization policy.** The runtime algorithm that realizes `SemanticExpr` into `PhysicalExpr` for touched graph fragments is owned by planner runtime (`34` TODO/provisional section). `35` owns only the expression and graph types flowing through that algorithm.
 - **Phase B placement and `Parameter` binding.** The `Strategy`-driven plan-tree construction (filter splitting, `Aggregate` lift into `PlanNode::Agg`, `Parameter` binding against the `Request`, advisory channel) lives in `semstrait-planner` per `[19 §6](../foundations/19_expression_flow.md)` and `[34](34_semstrait_planner.md)`. `35` owns the `PlanNode` and `PhysicalExpr` types that the planner produces; the planning algorithm itself is `34`'s contract.
 - **Canonical-function semantics and per-engine mapping.** What `coalesce` does to nulls, which engines support `regexp_match` natively, how `add` maps to DataFusion's `Add` operator — `[14a](../foundations/14a_function_catalog.md)` and `registry/functions_mapping.md` are authoritative. `35` owns the registry's *shape*, not its *contents*.
 - **Engine / dialect identity outside the artifact family.** `DialectId` MUST appear only on `SqlArtifact.dialect` (§12.3), `Dialect::ID` (§12.5), and `Capability` membership where capability is dialect-keyed (§12.6). It MUST NOT appear on `SemanticPlan`, `SemanticPlan.meta`, any `PlanNode` variant, any `Expr<L>` variant, any leaf-set variant, `NodeMeta`, or any registry-side type. Per S7 (§1.5) and Q4.A (2026-05-21).
@@ -144,6 +152,9 @@ semstrait-ir
 ├── functions            // CanonicalFn, FunctionRegistry, FunctionSpec, FnSignature,
 │                        //   ParamType, ReturnTypeRule, FunctionCategory,
 │                        //   RegistryExtension trait, function_registry() accessor (14a §2 / §3 / §8)
+├── semantic_graph       // SemanticGraph, SemanticNode, SemanticEdge, GraphExprRef,
+│                        //   SemanticGraphFragment, SegmentKey,
+│                        //   SemanticInterfaceBitmask, read-only graph contracts
 ├── plan                 // SemanticPlan, PlanNode, per-variant structs, NodeMeta
 │   ├── node             //   PlanNode enum + variant-struct shapes
 │   └── traversal        //   PlanVisitor, walk_pre / walk_post / transform
@@ -166,13 +177,137 @@ semstrait-ir
 | `expr` | Referenced by `plan` but not vice-versa; consumers needing only expressions skip the plan-tree surface. |
 | `expr::{tree, leaves, accessor, parameter, expr_fn}` | Per-type-family split for `cargo public-api` audit clarity; `expr_fn` isolates DSL from structural types. |
 | `functions` | Adjacent to `expr` because every `FunctionCall` consumer resolves `name` against the registry. |
+| `semantic_graph` | Canonical graph vocabulary shared by manifest/planner boundaries; keeps graph-shape evolution independent from planner cache policy. |
 | `plan` vs `primitives` | `PlanNode` references every primitive but not vice-versa; primitives can be consumed without the full `PlanNode` surface. |
 | `plan::node` vs `plan::traversal` | Traversal-API method count scales with variant count; isolating it limits I10 blast radius. |
 | `artifact` | Output shape, decoupled from input shape; consumed by the engine layer above `semstrait-adapter`. |
-| `error` | Co-locates `ValidateError`, `CompileError`, `IrErrorKind`. Distinct from manifest's wider `CompileError` (per `33 §10`), which embeds via D.ii. |
+| `error` | Co-locates `ValidateError`, `CompileError`, `IrErrorKind`. Distinct from manifest's wider compile error surface (`33` compile/error boundary), which embeds via D.ii. |
 | `substrait_map` | Table reference only; conversion code lives in `[36](36_semstrait_adapter.md)`. |
 
 **Re-exports.** The crate root re-exports a curated surface (§20). Non-root re-exports of internal helpers are forbidden.
+
+## 2A. Canonical `semantic_graph` Surface
+
+`semstrait-ir::semantic_graph` defines the canonical graph type system used between manifest seeds (`33`) and planner runtime lifecycle (`34`).
+
+```rust
+#[non_exhaustive]
+pub struct SemanticGraph {
+    pub nodes: BTreeMap<SemanticNodeId, SemanticNode>,
+    pub edges: BTreeMap<SemanticEdgeId, SemanticEdge>,
+    pub outgoing_edges: BTreeMap<SemanticNodeId, Vec<SemanticEdgeId>>,
+}
+
+#[non_exhaustive]
+pub struct SemanticNode {
+    pub payload: SemanticNodePayload,
+    pub interface_id: Option<EntityId>,    // -> manifest `interfaces`
+}
+
+#[non_exhaustive]
+pub enum SemanticNodePayload {
+    DataKind {
+        data_kind_id: EntityId,            // -> manifest `data_kinds`
+        name: DataKindName,
+    },
+    Semantic {
+        semantic_id: EntityId,             // -> manifest `semantics` registry
+    },
+    Expression {
+        expr_ref: GraphExprRef,
+    },
+    Source {
+        source_id: EntityId,               // -> manifest `sources`
+    },
+}
+
+#[non_exhaustive]
+pub enum GraphExprRef {
+    Physical(PhysicalExprId),
+}
+
+#[non_exhaustive]
+pub struct SemanticEdge {
+    pub from: SemanticNodeId,
+    pub to: SemanticNodeId,
+    pub edge_type: SemanticEdgeType,
+    pub predicate_expr: Option<GraphExprRef>,
+}
+
+#[non_exhaustive]
+pub enum SemanticEdgeType {
+    Relationship,
+    Composition,
+    Binding,
+    DependsOn,
+}
+
+#[non_exhaustive]
+pub struct SemanticGraphFragment {
+    pub key: SegmentKey,
+    pub graph: SemanticGraph,
+    pub touched_sources: Vec<EntityId>,    // -> manifest `sources`
+}
+
+#[non_exhaustive]
+pub struct SegmentKey {
+    pub manifest_epoch: u64,
+    pub datakind_ids: BTreeSet<EntityId>,
+    pub requested_semantics: BTreeSet<EntityId>,
+    pub constraints_fingerprint: [u8; 32],
+}
+
+#[non_exhaustive]
+pub struct SemanticInterfaceBitmask {
+    pub words: Vec<u64>,
+}
+```
+
+`SemanticInterfaceBitmask` is a local coverage view only. The global semantic registry stays in manifest (`33`) as `SemanticBitmap`; graph structures never duplicate registry ownership.
+
+**Identity vs. graph handles.** `SemanticNodeId` / `SemanticEdgeId` are the runtime graph's own structural handles, allocated at graph build (daggy-style positional ids) — they are *not* persisted in the manifest. Every reference from a node payload back to a manifest entity (`data_kind_id`, `semantic_id`, `source_id`, `interface_id`, `SegmentKey` sets, `touched_sources`) is an `EntityId` into the corresponding `EntityId`-keyed manifest collection (`33 §4.1`). This is the "compact handles in memory, `EntityId` identity on disk" boundary: the graph builds compact positional handles for traversal while addressing manifest entities by their durable `EntityId`.
+
+Read contracts:
+
+```rust
+pub trait SemanticGraphRead {
+    fn node(&self, id: SemanticNodeId) -> Option<&SemanticNode>;
+    fn edge(&self, id: SemanticEdgeId) -> Option<&SemanticEdge>;
+    fn outgoing(&self, id: SemanticNodeId) -> &[SemanticEdgeId];
+}
+
+pub trait SemanticGraphFragmentRead {
+    fn key(&self) -> &SegmentKey;
+    fn graph(&self) -> &SemanticGraph;
+    fn touched_sources(&self) -> &[EntityId];   // -> manifest `sources`
+}
+
+pub trait SemanticInterfaceBitmaskOps {
+    fn is_subset_of(&self, other: &Self) -> bool;
+    fn intersects(&self, other: &Self) -> bool;
+}
+```
+
+Graph invariant:
+
+- `SemanticGraphFragment` is a DAG.
+- Introducing a cycle is an error at planner graph-build time.
+- Planner runtime DAG backend target is `daggy` (per `34 §1.4A`); IR remains backend-agnostic and exposes no backend-specific graph types.
+- Node/edge collections are stable-id keyed maps; adjacency is explicit via `outgoing_edges`.
+- `outgoing_edges[node]` is sorted by `SemanticEdgeId` for deterministic traversal.
+- `SemanticNodePayload::{DataKind, Semantic}` carry identity only; full semantic metadata remains owned by manifest (`33` `SemanticBitmap`).
+- Graph-held expression references are pool-typed via `GraphExprRef` (physical-only); runtime pool dispatch by untyped `ExprId` is forbidden.
+- Every `GraphExprRef` must resolve to an existing pool entry before the fragment is admitted. The referenced `ManifestExpression` carries the `ExprLayer` (`33 §7.2`); the graph does **not** duplicate the layer (DRY — single source of truth on the manifest expression).
+
+#### 2A.1 Expression layering and the `DependsOn` reservation (v1 scope)
+
+The graph does **not** persist or synthesize an expression-dependency DAG (Metric → Measure → Expression) in v1. The vocabulary exists — `SemanticNodePayload::Expression` and `SemanticEdgeType::DependsOn` — but is **reserved**, not built:
+
+- **Why it's unnecessary for correctness.** A Metric's lowered `PhysicalExpr` already contains its constituent `Aggregate` nodes (named-Measure references are substituted inline at Phase A, `19 §3.3`). Phase B's aggregate-lift (`19 §7`) extracts those `Aggregate` nodes into pre-aggregatable slots and leaves the post-aggregate residual; the `ExprLayer` (`PostAggregate`) tells the planner the residual lands above the final aggregation. Together with per-aggregate `Additivity` (`14a §3.6.2`) this drives correct pre-/re-aggregation across complex DataKinds **without** a separate dependency structure. Persisting one would duplicate information already in the tree (DRY violation) and add a sync hazard.
+- **What it's reserved for (post-v1).** Cross-Metric shared-aggregate elimination (compute `sum(x)` once when several Metrics use it) and semantic-layer explainability (showing a physical plan in terms of authored Measures). Both are optimizations/UX, not correctness, and benefit from preserving named decomposition — the natural future home for `Expression` nodes + `DependsOn` edges.
+- **v1 graph build** synthesizes only `Relationship` / `Composition` / `Binding` edges from manifest primitives; `DependsOn` and `Expression` nodes are not emitted.
+
+Boundary rule: IR owns shape and read semantics only. Runtime mutability, cache policy, cycle-check strategy, and drift-policy execution are planner contracts (`34`), never IR contracts.
 
 ## 3. `Expr<L>` Structural Type — Owned Here, Specified by `14`
 
@@ -198,11 +333,13 @@ pub trait Tree: Sized {
     fn with_new_children(self, new_children: Vec<Self>) -> Result<Self, ValidateError>;
 }
 
-impl<T: Tree> T {
-    pub fn apply<V: Visitor<Self>>(&self, v: &mut V) -> V::Output { /* default body */ }
-    pub fn transform<F>(self, f: F) -> Result<Self, ValidateError>
+pub trait TreeExt: Tree {
+    fn apply<V: Visitor<Self>>(&self, v: &mut V) -> V::Output { /* default body */ }
+    fn transform<F>(self, f: F) -> Result<Self, ValidateError>
     where F: FnMut(Self) -> Result<Self, ValidateError> { /* default body */ }
 }
+
+impl<T: Tree> TreeExt for T {}
 
 /// Per `14 §3.1`.
 pub trait Visitor<N> {
@@ -224,7 +361,7 @@ pub trait ExprLeaf: Sized + Clone + Debug {
 }
 ```
 
-Consumers write `use semstrait_ir::Tree` (no cross-crate hop to core). The single trait surface lets one generic algorithm operate on both expression trees and plan trees — e.g. the optimizer applies the same `transform` helper to predicates inside `FilterNode` and to subtrees rooted at `FilterNode` itself.
+Consumers write `use semstrait_ir::{Tree, TreeExt}` (no cross-crate hop to core). The single trait surface lets one generic algorithm operate on both expression trees and plan trees — e.g. the optimizer applies the same `transform` helper to predicates inside `FilterNode` and to subtrees rooted at `FilterNode` itself.
 
 `ValidateError` is owned by `semstrait-ir` (§16) since it is raised entirely by `Tree::with_new_children` and the `Rewriter<N>::f_*` callbacks defined here.
 
@@ -439,7 +576,7 @@ pub enum TypeClass {
 ```rust
 /// The compile-time snapshot of physical columns exposed by a source.
 /// Per `15 §3.2`. Referenced by:
-/// - `15 §3.1 PhysicalSource::{File, Stream, Table, Snapshot}` for the
+/// - `15 §3.1 PhysicalSource::{File, Stream, Table, ObjectStore}` for the
 ///   resolved schema attached to every `PhysicalSource` variant.
 /// - §11.1 `NodeMeta.output_schema` for the per-`PlanNode` output
 ///   schema (via plan-level `Schema`, which has the same shape).
@@ -557,6 +694,30 @@ pub type SemanticExpr = Expr<SemanticLeaf>;
 
 These are the spelled-out names used throughout downstream docs (`19`, `33`, `34`) and downstream-crate APIs. The generic `Expr<L>` form appears in trait bounds and shared algorithmic code (e.g., the optimizer's tree-walks).
 
+#### 5.3.1 Expression-pool ID newtype
+
+The manifest persists a **single, physical-only** expression pool (`33 §7.2`); `SemanticExpr` is lowered away at compile and not persisted. The pool handle is one newtype:
+
+```rust
+/// Identifier of an entry in the manifest's physical expression pool
+/// (keys `BTreeMap<PhysicalExprId, ManifestExpression>` per `33 §7.2`).
+/// Newtype-over-stable per `30 §4.3`: no `#[non_exhaustive]`; `.0` access intentional.
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct PhysicalExprId(pub ExprId);
+```
+
+`ExprId` is the underlying content-keyed identifier carrier; `PhysicalExprId` wraps it without altering its representation. The wrapper exists to keep expression handles distinct from `EntityId` (the manifest's entity-identity lane) — an expression is a content-deduplicated subtree, not a named entity. With a single pool there is no cross-pool mix-up hazard; the earlier `SemanticExprId` (and the `semantic` pool) are retired (supersedes C12.3's split-pool framing).
+
+#### 5.3.2 Expression resolvability path (authoring -> graph -> plan)
+
+The expression lifecycle is intentionally two-stage and lookup-only after compile:
+
+1. **Authoring.** Parse produces `SemanticExpr` at semantic sites (or `PhysicalExpr` for physical-mapping sites) per `14` / `19`.
+2. **Compile.** `semstrait-manifest::compile` resolves semantic leaves, runs gates G1-G5, lowers each `SemanticExpr → PhysicalExpr`, classifies its `ExprLayer` (`19 §3.2.6`), and emits physical-pool entries (`ManifestExpression { expr, layer }`) keyed by `PhysicalExprId` (`33 §7.2`). The semantic form is not persisted.
+3. **Graph build.** `SemanticGraph` references pool entries through `GraphExprRef` (physical-only); unresolved ids fail graph build and no untyped `ExprId` dispatch is allowed.
+4. **Planning.** Planner consumes graph/manifest references by lookup only; no re-resolution pass mutates expression identity.
+
 ### 5.4 Type-enforced forbidden combinations
 
 Per `[14 §3.7](../foundations/14_expressions.md)`, the leaf-set boundary makes several invariants type-level:
@@ -566,6 +727,39 @@ Per `[14 §3.7](../foundations/14_expressions.md)`, the leaf-set boundary makes 
 - A `Dimension`-tagged leaf cannot carry a `MeasureAccessor` (or any non-Dimension accessor) — the variant signature `Dimension { name, accessor: Option<DimensionAccessor> }` enforces kind agreement at construction.
 
 There is no `try_into_physical` runtime check, no defensive `panic!` for "Field found in PhysicalExpr". `SemanticLeaf::Column` is type-admissible but context-validated by compile per §5.2's manual-vs-auto rule.
+
+### 5.5 Expression layer (`ExprLayer`)
+
+A lowered `PhysicalExpr` is "just a tree", but **where its result applies in the relational pipeline differs**: a grouping-key scalar belongs *below* the GROUP BY (pushdown-eligible), a Measure aggregation *is* the GROUP BY, and a ratio Metric's outer formula belongs *above* it (after any union/join re-aggregation). The planner needs this placement to allocate expressions optimally across `PlanNode`s and across complex-DataKind composition. `ExprLayer` is that classification — the canonical home for the "what layer" metadata persisted on every manifest expression (`33 §7.2`).
+
+```rust
+/// The relational-pipeline layer at which an expression's RESULT applies.
+/// Determined at compile from the expression's structure (presence and
+/// position of `Aggregate` / `Window` nodes), not from the authoring kind.
+#[non_exhaustive]
+pub enum ExprLayer {
+    /// Row-level: the tree contains no aggregation. Evaluated before grouping;
+    /// pushdown-eligible (Scan / pre-Agg Project). Grouping-key Dimensions, Keys.
+    Scalar,
+    /// Grouped aggregation: after Phase-B aggregate-lift (`19 §7`), the result
+    /// is produced by an `Aggregate` over row-level inputs. Measures.
+    /// Pre-/re-aggregation safety is governed by the aggregation's `Additivity`
+    /// (`14a §3.6`), derived from the aggregate op in v1.
+    Aggregate,
+    /// Computed over already-aggregated inputs: one or more `Aggregate` nodes
+    /// sit strictly below a scalar root. Ratio / derived Metrics, and any
+    /// Dimension whose `expr` references a Measure. Evaluated after the final
+    /// aggregation (and after any union/join re-aggregation).
+    PostAggregate,
+}
+```
+
+Design notes:
+
+- **Tree-derived, not role-derived (SOLID — separate concerns).** `ExprLayer` is a pure function of the expression's structure, decoupled from the authoring `SemanticRole` (`33 §5`). A bucketed Dimension `case_when(revenue > 1000, …)` over a Measure `revenue` classifies as `PostAggregate` even though its role is `Dimension`. Conflating layer with role would couple planning to the semantic taxonomy.
+- **Computed once at compile.** Phase A assigns the layer when it lowers each `SemanticExpr → PhysicalExpr` (`19 §3`); it is persisted on the manifest expression record (`33 §7.2`) and load-validated against the tree (CX1).
+- **Dedup-safe.** Because the layer is a function of the tree, content-deduplicated pool entries (same tree) always carry the same layer.
+- **Window classification (v1).** Window-bearing expressions (per-entity accessor sugar, §6.1) classify by their relationship to aggregation: a window over the aggregated grain (e.g. `measure.previous`) is `PostAggregate`; a window over raw rows is `Scalar`. A dedicated `Windowed` layer is a reserved `#[non_exhaustive]` extension if windowed pushdown needs finer placement.
 
 ## 6. Per-Kind Accessor Enums and `Parameter`
 
@@ -1705,6 +1899,21 @@ Every public IR type derives `Serialize` / `Deserialize` under the crate-level `
 - `PhysicalExpr` and `SemanticExpr` serialize through the `Expr<L>` `#[derive(Serialize, Deserialize)]` machinery owned by this crate (§3.3). `PlanNode` and `Expr<L>` are the two `semstrait-ir`-owned `#[non_exhaustive]` enums that require serde-tagged discriminator wire form; everything else uses direct `#[derive(...)]`.
 - **Outbound-only Substrait emission (Q4.C, 2026-05-21).** The `Serialize` half of every IR type is fully populated for the canonical wire form. The `Deserialize` half is for **IR-internal round-trip** only — process-to-process plan transport between same-version `semstrait` peers, or test fixtures. It is NOT a contract for inbound conversion from arbitrary `substrait::proto::Plan` values produced outside `semstrait`. Cross-engine inbound deserialization is out of scope for v1; if needed in a future version, it lands as a separate `36`-side concern, not in `35`.
 
+#### 15.1.1 Expression serialization derive contract (per C18)
+
+Per the manifest ratification clause C18 (`_research/manifest/RATIFICATION_LOG.md`), the canonical expression types have a sharper serialization contract than the general "every public IR type derives serde" rule above. C18 makes four specific picks that this crate carries:
+
+1. **Derivation lives here, not in `semstrait-manifest`.** `Expr<L>`, `PhysicalLeaf`, `SemanticLeaf`, every per-kind accessor enum (§6.1), `Parameter` / `ParameterKey` (§6.2), every structural-variant support enum (§3.4), and the identifier carriers `ColumnRef` / `SemanticsName` derive `serde::Serialize` and `serde::Deserialize` directly in `semstrait-ir`. Manifest (`33`) consumes the derives by storing `BTreeMap<PhysicalExprId, ManifestExpression>` (physical-only per `33 §7.2`); manifest-side `Serialize` / `Deserialize` impls on these types are forbidden — duplicating the derive risks divergence between IR's wire form and manifest's wire form.
+2. **Encoding format is JSON via serde.** Matches the manifest-level §1 readability posture (`33`). No bespoke binary encoding for expression payloads.
+3. **Deterministic encoding required.** The same `Expr<L>` value MUST produce the same byte sequence on every encode. This is a hard requirement — not a quality-of-implementation goal — because two downstream contracts depend on it:
+   - `manifest_epoch` / `model_hash` stability across repeat compiles of the same `(model, catalog snapshot)` input (`00 §9` I4); a non-deterministic encoding would surface phantom epoch bumps even when nothing changed.
+   - Compile-time content dedup of expressions (C18.5): the manifest allocates `ExprId` by hashing the canonical-encoded form, so encoding determinism is the precondition for "same expression value -> same id." Without it, structurally-identical authored expressions land in distinct pool entries.
+
+   Concretely: `BTreeMap` field iteration ordering (already deterministic), explicit field ordering in derived struct serialization, and stable enum-tag spelling are sufficient. Floating-point literals in `Literal::Float` use a fixed canonical-string representation (no platform-dependent rounding).
+4. **No per-`Expr` format version.** `manifest_epoch` is the only versioning channel for expression-payload format evolution (C18.4). Adding a `format_version: u32` field to `Expr<L>` or its leaves is forbidden in v1; if a future format break is needed, the migration signal is a `manifest_epoch` bump, not a per-expression discriminator.
+
+These four picks are the v1 contract. Open extensions (e.g., binary encoding for hot-path round-trip, content-addressed wire form) land additively under `30 §2.2` MINOR rules.
+
 ### 15.2 Substrait mapping table
 
 The adapter crate (`36`) owns the **outbound** conversion from `SemanticPlan` to `substrait::proto::Plan`. `35` ratifies the **mapping** so `36`'s emitter and the crate's outbound round-trip tests agree on which `substrait::proto::Rel` corresponds to which `PlanNode`.
@@ -1729,6 +1938,17 @@ The adapter is free to emit Substrait proto plans with extra hints (capacity, pa
 1. **Carrier.** Every `SemAnnotation` on a `PlanNode` emits into `RelCommon.advanced_extension.optimization[]` of the corresponding `substrait::proto::Rel`, namespaced by URN `urn:semstrait:annotations:v1`; the `enhancement` slot is reserved for adapter execution hints and MUST NOT carry annotations.
 2. **Roundtrip.** Binary `Plan.encode_to_vec` is fully roundtrip-safe; `36`'s emitter collects every annotation URN into the plan-root `Plan.expected_type_urls`. JSON emission is best-effort (proto3 JSON loses `Any` payload fidelity) and MAY elide annotations.
 3. **Drop-safe.** Per Substrait `optimization[]` semantics, any consumer MAY discard entries it does not recognize; consumers MUST behave correctly with annotations stripped.
+
+### 15.4 Load-time integrity contract (per CX1)
+
+Per the manifest ratification clause CX1 (`_research/manifest/RATIFICATION_LOG.md`), every cross-reference threading IR-typed identifiers through the manifest wire form is integrity-checked at load. `35` owns the structural shape of the IR-typed reference vocabulary that participates in this check (`PhysicalExprId` per §5.3.1); the load-time validation pass itself is performed by the consumer (`33`'s deserializer). The IR-side contract is:
+
+1. **Single integrity pass on load.** Manifest deserialization performs one integrity walk over every IR-typed cross-reference. In v1 wire form, the required external site is `SemanticBinding.mapping[EntityId] = SemanticMappingValue::Expr(PhysicalExprId)` and each referenced `PhysicalExprId` MUST resolve in `expressions.physical` (whose entries are `ManifestExpression { expr, layer }`). (The mapping key is the semantic's `EntityId`; the expression-pool id is its own content-dedup handle per `33 §7.2`.)
+2. **Failure shape.** A reference whose target is absent from its pool surfaces as `LoadError::DanglingReference{ from, to_kind, target_id }`. The `from` field carries the referencing site (binding id, hop, mapping key); `to_kind` discriminates the target pool (`SemanticExpr` vs `PhysicalExpr` vs other manifest collections); `target_id` is the unresolved newtype value. Per `30 §5.4`, identification is by variant identity.
+3. **Hardens compile-time gates.** This pass extends C13's compile-time gates G1 / G2 / G4 (`_research/manifest/RATIFICATION_LOG.md`) from "compile-time only" to "compile-time + load-time defense in depth." A hand-edited or repository-corrupted manifest cannot slip a dangling IR-typed reference past load.
+4. **No JSON `$ref` indirection.** This contract was ratified in lieu of OpenAPI-style `$ref` JSON pointers. The wire format remains the id-keyed map plus newtype-wrapped id reference (less verbose than `$ref`, no inline-vs-pointer ambiguity, no serde-side `$ref` resolver complexity). Integrity is preserved by the load-time pass, not by the wire form's structural shape.
+
+The strongly-typed newtypes from §5.3.1 are what make this pass type-directed rather than name-directed: each cross-reference site declares which pool it targets via the newtype, and the integrity walk dispatches to the correct pool by type. Renaming a newtype is MAJOR per `30 §2.1` because every load-time integrity site references it by name.
 
 ## 16. Error Types
 
@@ -1780,7 +2000,7 @@ pub enum CompileError {
 impl Diagnose for CompileError { /* per-variant message / severity */ }
 ```
 
-`CompileError` is the narrow function-resolution diagnostic. The wider compile-stage error surface (unknown references, ambiguous paths, cycles, type-inference failures, …) lives in `semstrait-manifest::CompileError` per `[33 §10](33_semstrait_manifest.md)` and embeds `Ir(ir::CompileError)` via D.ii kind-nesting (`[30 §7.4](30_api_contracts.md)`).
+`CompileError` is the narrow function-resolution diagnostic. The wider compile-stage error surface (unknown references, ambiguous paths, cycles, type-inference failures, …) lives in `semstrait-manifest::CompileError` per `33`'s compile/error boundary and embeds `Ir(ir::CompileError)` via D.ii kind-nesting (`[30 §7.4](30_api_contracts.md)`).
 
 ### 16.3 `IrErrorKind`
 
@@ -1889,7 +2109,7 @@ The retired `IR_E_*` numeric range from earlier drafts is gone. Identification i
 ### 17.3 Delta with current code
 
 - `LogicalPlan` → rename to `SemanticPlan`.
-- Local `JoinType` / `SortDirection` enums → drop in favor of canonical `[16 §5.2](../foundations/16_composition_and_relationships.md)` `JoinType` (re-exported via `semstrait-common`) and `SortDir` + `NullOrdering` (§11.6).
+- Local `JoinType` / `SortDirection` enums → drop in favor of canonical `[16 §5.2](../foundations/16_composition.md)` `JoinType` (re-exported via `semstrait-common`) and `SortDir` + `NullOrdering` (§11.6).
 - Every `pub enum` in `plan/` → add `#[non_exhaustive]`.
 - `ScanNode.location` / `ScanNode.format` → drop in favor of opaque `SourceRef` (§11.2); path + format resolution moves to `36`.
 - Add `filters_pushdown: Vec<PhysicalExpr>` to `ScanNode`.

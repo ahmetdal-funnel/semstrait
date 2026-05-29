@@ -91,5 +91,7 @@ When a task references prior work or past decisions, use `/memory-recall` before
 After each implementation phase, run multi-agent code review covering:
 
 1. **Rust** -- idiomatic patterns, ownership, error handling, clippy
-2. **Software design** -- architecture, separation of concerns
+2. **Software design** -- architecture, separation of concerns  
+i1
 3. **Data engineering** -- data model correctness, query pipeline integrity
+

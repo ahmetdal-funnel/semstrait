@@ -52,7 +52,7 @@ purpose: Joinset questions parked for post-v1 ratification
 
 **v1 decision (ratified 2026-04-17).** Dropped. `JoinAssociativity` does NOT exist in the v1 Joinset body. `32 §14` records this as `TD-JOINSET-ASSOCIATIVITY-PARK`.
 
-**v1 behavior.** The Joinset walks its `relationships:` in YAML author order (`32 §7` / `18 §2`). When there is a choice, the planner picks the canonical left-deep traversal starting from the first-referenced member in the first `Relationship` entry. No cross-cutting hint shapes the walk. For the explicit-binary-join case that is v1 Joinset's only ratified arity, shape choices are degenerate anyway — there is exactly one join to emit.
+**v1 behavior.** The Joinset walks its `relationships:` in **name order** (`32 §7` / `18 §2` — relationships are `EntityId`-keyed and projected name-ordered post id-first rework, STATUS item U; the earlier "YAML author order" wording is superseded). When there is a choice, the planner picks the canonical left-deep traversal starting from the first member (by name) in the first `Relationship` entry. No cross-cutting hint shapes the walk. For the explicit-binary-join case that is v1 Joinset's only ratified arity, shape choices are degenerate anyway — there is exactly one join to emit.
 
 **Deferred sub-questions.**
 

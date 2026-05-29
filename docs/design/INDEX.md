@@ -98,30 +98,38 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 | Semantics element types and naming constraints | [`foundations/11_names_and_scopes.md`](foundations/11_names_and_scopes.md) |
 | `DataType`, `Grain` | [`foundations/13_types_and_grain.md`](foundations/13_types_and_grain.md) |
 | `Expr<L>`, `SemanticExpr`, `PhysicalExpr`, `SemanticLeaf`, `PhysicalLeaf` | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md); crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) |
-| `Tree`, `Visitor`, `Rewriter`, `ExprLeaf` (traversal trait family) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §3.1 / §3.2; crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §3.2 |
-| Structural-variant support enums (`BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`) and `Literal` typed-literal carrier | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §3.3; crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §3.4 |
-| Identifier carriers (`ColumnRef`, `SemanticsName`) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §3.4 / §3.5; crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §3.4 |
+| `Tree`, `Visitor`, `Rewriter`, `ExprLeaf` (traversal trait family) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §3.1 / §3.2; crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) |
+| Structural-variant support enums (`BinaryOpKind`, `UnaryOpKind`, `AggregationOp`, `LikeKind`, `CastFailure`, `WindowFn`, `WindowFrame`) and `Literal` typed-literal carrier | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §3.3; crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) |
+| Identifier carriers (`ColumnRef`, `SemanticsName`) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §3.4 / §3.5; crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) |
 | `ExprSource` (Inline-DSL / `Block(Expr<L>)` authoring carrier — no separate `ExprBlock` AST) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §6.1; crate-of-record: [`apis/32_semstrait_model.md`](apis/32_semstrait_model.md) |
-| Narrow expression-side error kinds (`ValidateError`, `CompileError`) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §10 (I12 row); crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §15.1 / §15.2 |
+| Narrow expression-side error kinds (`ValidateError`, `CompileError`) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §10 (I12 row); crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) |
 | Non-coercion / pass-through posture (no implicit type promotion at canonical layer) | [`foundations/14_expressions.md`](foundations/14_expressions.md) §5.4 |
-| `CanonicalFn`, `FunctionRegistry`, function-level `Additivity` | concept: [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md); crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §6 / §7 |
+| `CanonicalFn`, `FunctionRegistry`, function-level `Additivity` | concept: [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md); crate-of-record: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) |
 | `RegistryExtension` (per-adapter function-catalog extension) | concept: [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md) §7; consumer: [`apis/36_semstrait_adapter.md`](apis/36_semstrait_adapter.md) §7 |
-| `SemanticPlan`, `PlanNode` (closed sum: `Scan`, `Filter`, `Project`, `Agg`, `Join`, `Union`, `Sort`, `Fetch`) | [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §8 / §9 |
+| `SemanticPlan`, `PlanNode` (closed sum: `Scan`, `Filter`, `Project`, `Agg`, `Join`, `Union`, `Sort`, `Fetch`) | [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) |
+| `SemanticGraph`, `SemanticNode`, `SemanticEdge`, `SemanticGraphFragment`, `SegmentKey` (canonical graph type system) | [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §2A |
+| Planner runtime graph lifecycle (TODO/provisional boundary; runtime DAG backend target = `daggy`) | [`apis/34_semstrait_planner.md`](apis/34_semstrait_planner.md) §1.4A |
 | `EngineAdapter` (engine-dispatch trait) | [`apis/36_semstrait_adapter.md`](apis/36_semstrait_adapter.md) §3 |
 | `DialectEmit` (per-dialect SQL rendering trait) | [`apis/36_semstrait_adapter.md`](apis/36_semstrait_adapter.md) §4 |
-| `Capability` enum + `AdapterCapabilities` (cross-boundary capability vocabulary; SQL adapters = ergonomic, Substrait = handoff contract) | enum body: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §11.6; per-adapter rosters: [`apis/36_semstrait_adapter.md`](apis/36_semstrait_adapter.md) §6 |
+| `Capability` enum + `AdapterCapabilities` (cross-boundary capability vocabulary; SQL adapters = ergonomic, Substrait = handoff contract) | enum body: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md); per-adapter rosters: [`apis/36_semstrait_adapter.md`](apis/36_semstrait_adapter.md) §6 |
 | Expression compile-pipeline (Phase A resolution + Phase B placement) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
 | Two-phase expression flow, `resolve`, sugar (Family A/B) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
 | Per-kind typed semantic leaves (`Field`, `Dimension`, `Measure`, `Metric`, `Key`); accessor enums (`MeasureAccessor`, `DimensionAccessor`, `MetricAccessor`, `KeyAccessor`); `Parameter` | [`foundations/14_expressions.md`](foundations/14_expressions.md) |
-| `ResolvedExprTable`, cross-DataKind path resolution, `PathSignature`, cycle detection, type inference, semantics-boundary reconciliation, referenced-column harvesting | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) |
+| Manifest expression persistence (physical-only `ManifestExpressions` of `ManifestExpression { expr, layer }`; semantic form lowered away at compile) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md), [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) §7.2 |
+| Expression layer / applicability (`ExprLayer { Scalar, Aggregate, PostAggregate }`; placement axis for pushdown / pre-aggregation) | concept: [`foundations/14_expressions.md`](foundations/14_expressions.md) §3.8; type: [`apis/35_semstrait_ir.md`](apis/35_semstrait_ir.md) §5.5; assigned [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) §3.2.6; placement §6.0 |
+| Additivity (function-derived in v1; `AdditivitySource` trait + behavior; model-level deferred) | [`foundations/14a_function_catalog.md`](foundations/14a_function_catalog.md) §3.6 / §3.6.1 / §3.6.2; composition [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) §6.5 |
 | Auto-mapping synthesis pre-step, `Column`-under-manual-mapping rejection | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) §3.11 |
-| `ResolvedExprEntry` + `Provenance` (manifest storage shape) | [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) §6.3 |
+| `ManifestExpressions` (manifest expression storage shape — physical-only + `ExprLayer`) | [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) §7.2 |
 | `RequestDimensionRef`, `DimensionVariation` (rollup-aware Dimension carrier) | [`apis/34_semstrait_planner.md`](apis/34_semstrait_planner.md) §3.10 (consumer cross-ref in `[foundations/19_expression_flow.md](foundations/19_expression_flow.md) §6.2`) |
 | Effective-`Additivity` composition (function-level × model-level → planner-effective) | [`foundations/19_expression_flow.md`](foundations/19_expression_flow.md) §6.5 |
 | `SemanticMapping` and binding flow | [`foundations/15_mapping_and_binding.md`](foundations/15_mapping_and_binding.md) |
 | `Relationship`, composed interface semantics | [`foundations/16_composition.md`](foundations/16_composition.md) |
+| Manifest relationship form (`ResolvedRelationship`, `ResolvedJoinKey`; resolved endpoints/defaults/`join_type`; semantic-id join keys) | [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) §8A |
 | `TemporalShape` and shape semantics | [`foundations/17_temporal_shape.md`](foundations/17_temporal_shape.md) |
+| Manifest temporal form (`TemporalShape`, `TemporalType` on `DataKind.temporal`; dim refs → `EntityId`; generic `grain`; leaf-only on disk) | [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) §8B |
 | Canonical entities (`Cardinality`, `Integrity`, `Optional`, `CrossFilter`, derived `JoinType`, `DimensionType`, `AggregationType`, etc.) | [`foundations/18_entities.md`](foundations/18_entities.md) |
+| Named-entity identity (`EntityId`, per-entity `id` field; id-keyed model collections, name-ordered output) | [`apis/32_semstrait_model.md`](apis/32_semstrait_model.md) §2 / §2.3 / §9.0; entity `id` fields in [`foundations/18_entities.md`](foundations/18_entities.md) |
+| Manifest single id lane (`EntityId` keys every collection + cross-ref; `bit_position` the lone integer; compile-synthesised ids generated deterministically; no `stable_ids` side-map) | [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) §2 / §4.1 / §4.3.1 / §9.1 |
 | `DataKind` taxonomy and trait axes | [`data-kinds/20_taxonomy.md`](data-kinds/20_taxonomy.md) |
 | Typed diagnostics contract and observability policy | [`apis/30_api_contracts.md`](apis/30_api_contracts.md) |
 | Unified API error sum (`SemStraitErrorKind`) | [`apis/38_semstrait_api.md`](apis/38_semstrait_api.md) |
@@ -140,9 +148,9 @@ Current snapshot:
 
 | Directory | Files | Lines |
 |---|---:|---:|
-| `open/` | 23 | ~2630 |
-| `closed/` | 20 | ~1450 |
-| `deferred/` | 18 | 797 |
+| `open/` | 23 | ~2140 |
+| `closed/` | 21 | ~1740 |
+| `deferred/` | 21 | ~1287 |
 
 For registry-specific questions, use the aggregate navigator:
 - [`questions/open/registry_questions.md`](questions/open/registry_questions.md)

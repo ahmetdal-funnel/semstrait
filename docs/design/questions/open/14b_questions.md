@@ -16,7 +16,7 @@ purpose: Round-1 questions originally raised against `foundations/14b_expression
 | OQ-2 | Multi-leaf path composition           | `[19 §3.4.5](../../foundations/19_expression_flow.md)` — distinct paths in `PathSignature.paths`; join-subgraph canonicalization is `16`'s concern. |
 | OQ-5 | `Provenance` entry-level vs node-level | `[33 §6.3.1](../../apis/33_semstrait_manifest.md)` — entry-level only. |
 | OQ-6 | Batch-error mode for resolution       | `[19 §8.4](../../foundations/19_expression_flow.md)` — fail-fast; batch mode tracked as future extension. |
-| OQ-7 | `BindingId` stability                 | Cross-linked to `[Q-MAP-001](15_questions.md)`; concrete `BindingId` keying ratified in `[19 §3.2.1](../../foundations/19_expression_flow.md)`. |
+| OQ-7 | `BindingId` stability                 | MOOTED — `BindingId` eliminated (id-first rework, STATUS item U.2). Bindings identified by deterministic `EntityId`; see `[closed/15 Q-MAP-001](../closed/15_questions.md)`. |
 | OQ-9 | Split join-key columns in `referenced_columns` | `[19 §3.10](../../foundations/19_expression_flow.md)` — inline; no separate field. |
 
 This file remains as a forwarding pointer; the closed sibling `[../closed/14b_questions.md](../closed/14b_questions.md)` retains the historical Round-1 ratifications.

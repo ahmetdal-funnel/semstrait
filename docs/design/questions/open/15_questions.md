@@ -20,33 +20,9 @@ depends-on:
 
 ---
 
-## Q-MAP-001 — `BindingId` uniqueness: per-SemanticManifest or cross-SemanticManifest?
+## Q-MAP-001 — `BindingId` uniqueness — MOOTED → see `closed/15`
 
-> **Cross-link (2026-04-28).** This entry is the **authoritative home** for the `BindingId` scope-and-stability decision (per `15`'s `authoritative-for: BindingId` claim). The former `14b` consumer-side restatement (`OQ-7`) is settled by `[19 §3.2.1](../../foundations/19_expression_flow.md)`'s `BindingId` keying; this entry remains the open ratification of the scope question.
-
-**Question.** `15 §2.2` ratifies `BindingId(pub u32)` as unique **within a SemanticManifest** (per-compile counter; identical Models produce identical IDs IF the compile driver's iteration order is deterministic; recompile of a modified Model shifts IDs). Should `BindingId` instead carry a cross-SemanticManifest identity — e.g. by including the SemanticManifest's content hash into the ID? That would let two SemanticManifests be compared on a per-Binding basis without ambiguity.
-
-**Refs.**
-
-- `15 §2.2` — per-SemanticManifest scope.
-- `19 §3.2` — `ResolvedExprKey { semantics_name, binding_id }`; assumes `binding_id` is valid within the SemanticManifest it came from.
-- `00 §4.1` (`BindingId` row) — not explicitly defined; inherits from `15`.
-- `33` (pending) — SemanticManifest persistence and cross-SemanticManifest comparability.
-
-**Arguments for per-SemanticManifest (current Round-1 default).**
-
-- `u32` shape is simple, small, cheap. Matches `19 §3.2.1`'s `BindingId` keying shape.
-- Two SemanticManifests are distinct artifacts; the DataKind identity (`DataKindId` per `11`) already provides cross-SemanticManifest comparability for what matters — "is this the same kind?". `BindingId` per-SemanticManifest is the Resolved-layer analogue of "the N-th Binding I built this time."
-- Re-`compile` of a modified Model SHOULD be expected to produce a different SemanticManifest; ID drift is not a leak.
-
-**Arguments for cross-SemanticManifest (would amend `15 §2.2`).**
-
-- Enables differential tooling: "diff SemanticManifest A vs B, show which Bindings changed." Per-SemanticManifest IDs make this hard (IDs shift for unrelated reasons).
-- Content-hash-derived IDs auto-invalidate consumers holding stale IDs.
-
-**Current position in `15`.** Per-SemanticManifest. A future `33` ratification can override by redefining `BindingId` to include a SemanticManifest hash; `19 §3.2` would follow.
-
-**Next step.** Revisit at `33` drafting time. If `33` ratifies a cross-SemanticManifest diff operator, the ID shape may tighten.
+> **MOOTED by the id-first rework (STATUS item U.2).** `BindingId` is eliminated: bindings are identified by a deterministic content-derived `EntityId` (UUIDv5, `33 §9.1`), which is globally unique and cross-run/cross-edit stable — answering the original per-vs-cross-manifest scope question by construction (cross-manifest comparison by binding `EntityId` is meaningful for unchanged content). Full resolution recorded in [`../closed/15_questions.md`](../closed/15_questions.md).
 
 ---
 
@@ -76,30 +52,9 @@ depends-on:
 
 ---
 
-## Q-MAP-006 — `ResolvedColumnMapping.computed` storage: duplicate or alias?
+## Q-MAP-006 — `ResolvedColumnMapping.computed` storage: duplicate or alias? — CLOSED (2026-05-28)
 
-**Question.** `19 §3.4`'s `ResolvedExprTable` is a global `(SemanticsName, BindingId) → PhysicalExpr` map. `15 §7.5`'s per-Binding `computed: HashMap<SemanticsName, PhysicalExpr>` serves the same data for per-Binding lookup. Does the SemanticManifest store the `PhysicalExpr` twice (duplicated), or do the per-Binding values alias into the global table?
-
-**Refs.**
-
-- `19 §3.4` — global `ResolvedExprTable`.
-- `15 §7.5` — per-Binding denormalization.
-- `33` (pending) — SemanticManifest storage strategy.
-
-**Arguments for duplication (Round-1 default).**
-
-- Simpler. The planner always reads from the per-Binding map; no pointer-following, no lifetime gymnastics.
-- `PhysicalExpr` is an owned tree — duplicate storage has a real-but-small overhead.
-- Rust's ownership model is simpler without `Arc<PhysicalExpr>` / indirect lookups.
-
-**Arguments for aliasing.**
-
-- Memory overhead on huge Models (thousands of Semantics × many Bindings) could matter.
-- Single source of truth: editing the expression in one place updates both views.
-
-**Current position.** Duplicate storage by default; `33` may override.
-
-**Next step.** `33` benchmarks the SemanticManifest's in-memory footprint; if duplication is material, switch to `Arc<PhysicalExpr>` shared between table and per-Binding map.
+> **Moved to [`../closed/15_questions.md`](../closed/15_questions.md), then superseded by STATUS item V (2026-05-29).** Originally settled by C11 + C12 (split typed pools). Item V makes the manifest **physical-only** — `ManifestExpressions { physical: BTreeMap<PhysicalExprId, ManifestExpression{ expr, layer }> }` (`33 §7.2`); the `semantic` pool and `SemanticExprId` are dropped. The duplicate-vs-alias question dissolves with a single pool. See `closed/15` for the full note.
 
 ---
 

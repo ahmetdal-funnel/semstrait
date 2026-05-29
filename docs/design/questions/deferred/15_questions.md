@@ -29,3 +29,23 @@ purpose: Mapping-and-binding questions parked for post-v1 ratification
 - **C:** auto-detect from first encountered value.
 
 **Next step.** Address during the v2 partition-extraction ratification pass; the Hive-style result-type decision rolls into the broader partition-arm design.
+
+---
+
+## Q-MAP-D02 — Thread A: model-as-truth posture for binding fields — DEFERRED
+
+**Status: DEFERRED.** Tabled at the 2026-05-28 manifest ratification cascade. Thread A (the broader question of how the SemanticManifest relates to the authored Model — copy-by-value of every Model field vs reference-into-Model vs partial-projection) is scoped at the model-layer and does not block manifest shape ratifications C1–C18 / CCK / CX1. v1 ratification posture: manifest copies primitive fields by value (per C17(d) / C18 / CX1); the Round-1 alternative — "manifest holds an `Arc<SemanticModel>` and projects fields lazily" — is parked.
+
+**Refs.**
+
+- `_research/manifest/RATIFICATION_LOG.md` — Thread A (model-layer concern, deferred from manifest cascade).
+- `15 §2.2` — `Binding` ownership discipline.
+- `15 §7.5` — per-Binding mapping persistence.
+- See sibling: [`32_questions.md`](32_questions.md) Q-MODEL-D03 — model-layer counterpart.
+
+**Open axes (preserved for v2).**
+
+- **Manifest-as-projection vs manifest-as-copy.** Projection avoids duplication but couples manifest-load to Model availability; copy is self-contained but bloats manifest size for shared fields.
+- **Selective sharing.** Some fields (`Binding.format`, `Binding.partition_def`) are large and rarely re-read post-compile; lazy projection could pay off there.
+
+**Next step.** Address during a v2 manifest-vs-Model layering ratification pass when manifest size in real-world deployments becomes a measured concern. Migration MAJOR if the public `SemanticManifest` field shape changes.

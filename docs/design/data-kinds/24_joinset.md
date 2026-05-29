@@ -18,7 +18,7 @@ refined-by:
   - 17 (`foundations/17_temporal_shape.md` — `TemporalShape`, as-of activation matrix for `JoinType::AsOf`)
   - 25 (cross-kind strategy catalog — Joinset × Grainset, Joinset × Unionset composition rules)
   - 32 (`apis/32_semstrait_model.md` — YAML surface for the `joinsets:` top-level block and `path:` sub-block)
-  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedJoinset`, the SemanticManifest entry carrying the materialized `ComposedSemanticInterface`)
+  - 33 (`apis/33_semstrait_manifest.md` — `DataKindVariant::Joinset` and `JoinsetHop` shapes, anchor + members + cumulative `hop_coverage` + `path_origin` + `scope_local_relationships`; `ComposedSemanticInterface` synthesis is deferred to graph build per C7.4 cascade)
   - 34 (`apis/34_semstrait_planner.md` — `JoinsetStrategy` implementation, path-resolve entry points)
   - 35 (`PlanNode::Join` consumption of `Joinset`-derived join sequences; `JoinNode.from_relationship` + `from_joinset` tagging)
 ---
@@ -29,7 +29,7 @@ refined-by:
 >
 > - `[../apis/32_semstrait_model.md §3](../apis/32_semstrait_model.md)` — top-level YAML tag (`joinsets:`), `JoinsetBody` struct shape.
 > - `[../foundations/18_entities.md §2](../foundations/18_entities.md)` — canonical `Relationship` struct (unified across root-level `relationships:` and `JoinsetBody.relationships`). Key decisions:
->   - `JoinsetBody.relationships: Vec<Relationship>` — no separate `JoinRelationship` type. The unified struct is **semantic-first**, carrying `{ name, from, to, keys, filter?, cardinality, integrity, optional?, cross_filter?, ai_context?, description? }`.
+>   - `JoinsetBody.relationships: BTreeMap<EntityId, Relationship>` — no separate `JoinRelationship` type. The unified struct is **semantic-first**, carrying `{ id, name, from, to, keys, filter?, cardinality, integrity, optional?, cross_filter?, ai_context?, description? }`.
 >   - `JoinType` is **derived** at compile from `Relationship.optional` per `18 §2.9`, not authored. v1 roster: `{Inner, Left, Right, Full}`, `#[non_exhaustive]`. `AsOf` is descoped for v1 (post-v1 deferred per `17`).
 >   - Join keys shape: `keys: [{from: <SemanticExpr>, to: <SemanticExpr>}, …]` equi-pair list + optional `filter: <SemanticExpr>` residual predicate.
 >   - `cardinality:` is required at every Relationship authoring site (SR-E-4). `optional:` and `cross_filter:` are required on `OneToOne` / `ManyToMany` (SR-E-13); directional `cross_filter` is forbidden on `ManyToMany` (SR-E-14).
@@ -55,7 +55,7 @@ refined-by:
 
 - **§2** — the `JoinsetDataKind` canonical struct shape: `{ anchor, members, path, relationships, interface, ... }`, its placement as a `ComplexDataKind` variant, and how it composes via `CompositionKind::Joinset`.
 - **§3** — the **anchor** contract: exactly one root child, which member plays the FROM-clause role, which member drives the fan-out reference frame. Rationale for mandating the anchor (determinism, fanout predictability, and traversal ambiguity resolution).
-- **§4** — the **join-path** contract: the two authoring modes (implicit path = name the members, let the planner compute; explicit path = pin a `RelationshipId`-indexed traversal), their selection rules, and their interaction with `16`'s Relationship graph.
+- **§4** — the **join-path** contract: the two authoring modes (implicit path = name the members, let the planner compute; explicit path = pin a `EntityId`-indexed traversal), their selection rules, and their interaction with `16`'s Relationship graph.
 - **§5** — the `**JoinsetStrategy`** planner contract: how the planner lowers a resolved `Joinset` into `PlanNode::Join` nodes in anchor-outward order, how per-hop `JoinType` is derived from each traversed Relationship's `optional` field (per `18 §2.9`; scope-local Relationship shadow per `18 §2.10` is the sole mechanism for divergent join semantics), how `Cardinality` propagates, and how post-join Project nodes reconcile the unified surface per `16 §6`.
 - **§6** — `Joinset` as a **consumer** (not declarer) of `Relationship`s. `Joinset`'s `path` references Relationships by id or by citing the Relationship graph; it never introduces a new Relationship.
 - **§7** — the `**TemporalShape`** interaction: as-of join gating — `JoinType::AsOf` is legal only when the hop's `to`-side carries a temporal shape that `17 §5` sanctions (`Events ↔ Snapshot`, `Events ↔ SCD`, etc.). `17` is parallel-drafted; `24` fixes the integration points so the hookup is mechanical once `17` lands.
@@ -92,11 +92,13 @@ A `Joinset` is what the author reaches for when they need (a) a named surface, (
 
 ### 1.4 Invariants `24` directly upholds
 
-- **I1 — canonical layer.** A `Joinset`'s anchor, members, and path references are `DataKindRef` / `RelationshipId` handles; never SQL column names. Resolution to physical join predicates happens during `JoinsetStrategy` → `PlanNode::Join` lowering, which delegates to `15`-resolved `Binding.column_mapping` at each hop.
+- **I1 — canonical layer.** A `Joinset`'s anchor, members, and path references are `DataKindRef` / `EntityId` handles; never SQL column names. Resolution to physical join predicates happens during `JoinsetStrategy` → `PlanNode::Join` lowering, which delegates to `15`-resolved `Binding.column_mapping` at each hop.
 - **I4 — determinism.** For a fixed SemanticManifest and a fixed `Joinset`, the materialized `ComposedSemanticInterface` is bit-identical; the planner's `JoinsetStrategy` emits the same `PlanNode::Join` sequence on every invocation. Implicit-path resolution uses `16 §11.4`'s deterministic neighbor order (extended for anchor bias in §4.1.3).
-- **I5 — compile-time resolution.** `Joinset.path` (whether implicit or explicit) is fully resolved to `Vec<RelationshipId>` at `compile`. The `plan` stage never re-walks the Relationship graph for a `Joinset`.
+- **I5 — compile-time resolution.** `Joinset.path` (whether implicit or explicit) is fully resolved to `Vec<EntityId>` at `compile`. The `plan` stage never re-walks the Relationship graph for a `Joinset`.
 - **I7 — strict crate DAG.** `Joinset` resolution lives in `semstrait-manifest`; `JoinsetStrategy` lives in `semstrait-planner`; `PlanNode::Join` construction consumes the resolved `Joinset` without re-resolution.
-- **I8 — SemanticManifest is planner-complete.** A `ResolvedJoinset` carries everything the planner needs: resolved anchor, resolved `RelationshipId` sequence with forward/reverse direction per hop, the resolved Relationship at each hop (root-level or scope-local shadow per `18 §2.10`) from which `JoinType` is derived at plan emission, resolved `ComposedSemanticInterface`.
+- **I8 — SemanticManifest is planner-complete.** `ResolvedJoinset`'s **manifest contract** persists the anchor (`EntityId`), the binary-v1 `members: Vec<EntityId>`, `Vec<JoinsetHop>` (each hop carrying `from` / `to` (`EntityId`) / `relationship: EntityId` / `direction: HopDirection` / `hop_coverage: SemanticBitmask` with cumulative semantics per `33 §6.7`), `path_origin: PathOrigin { Explicit, Implicit }`, and `scope_local_relationships: Vec<Relationship>` for `18 §2.10` shadowing. The resolved `ComposedSemanticInterface` (`UnifiedSemantics` + `FieldProvenance` + `CompositionCoverage`) is **deferred to graph build** (see Phase 3 amendment below); planner-completeness is preserved because `SemanticGraph` synthesises the unified surface deterministically from manifest primitives (anchor + per-hop coverage + members' interfaces) at build time. `JoinType` is still derived at plan emission from the resolved Relationship's `optional` field per `18 §2.9`.
+
+> **Phase 3 amendment (2026-05-28; cascade from C7.4).** Earlier drafts of `ResolvedJoinset`'s manifest contract included the resolved `ComposedSemanticInterface` (`UnifiedSemantics`, `FieldProvenance`, `CompositionCoverage`, `traversed_paths`) as a persisted field. Per ratified clause C7.4 (manifest-pass `RATIFICATION_LOG.md`), these are dropped from the manifest contract and re-classified as **graph-build outputs**. The manifest now persists only the path primitives — anchor, members, `Vec<JoinsetHop>` with cumulative `hop_coverage`, `path_origin`, and `scope_local_relationships` — plus the universal top-level `coverage: SemanticBitmask` (which equals `hops.last().hop_coverage` per CCK.1 and `33 §6.7`). The `ComposedSemanticInterface` synthesis at graph build time uses (a) per-hop `hop_coverage` for first-cut path search and (b) the members' canonical `SemanticInterface`s for the unified-surface merge per `16 §6`. The cross-references for the manifest-resident shape are [`../apis/33_semstrait_manifest.md §6.7`](../apis/33_semstrait_manifest.md) (`DataKindVariant::Joinset` + `JoinsetHop`) and `33 §10` (CX1 load-time integrity). The plan-time observable behaviour in `24 §5` is unchanged — `JoinsetStrategy::lower` still consumes a fully-resolved hops sequence; the difference is that the unified-interface materialisation is synthesised into the graph during build, not loaded from the manifest. `§2.4`'s pseudo-shape and `§8`'s `ComposedSemanticInterface`-on-Joinset narrative are recast accordingly: the same content exists, but at graph-build time, not at manifest-load time.
 - **I10 — non-exhaustive extensibility.** `JoinsetDataKind`, `JoinHop`, `ExplicitPath`, `JoinsetStrategy`'s inputs / outputs are all `#[non_exhaustive]`. N-ary lift (`TD-NESTING-NARY-JOIN`) and `JoinType::AsOf` activation (pending `17`) are MINOR additions.
 - **I12 — first-class diagnostics.** Every `Joinset` Precondition has a stable error code in the `*_E_24xx` / `PLAN_W_24xx` ranges (§§9–11).
 
@@ -156,7 +158,7 @@ pub struct JoinsetDataKind {
     /// semantics inside a Joinset — there is no per-hop override
     /// surface.
     #[serde(default)]
-    pub relationships: Vec<Relationship>,
+    pub relationships: BTreeMap<EntityId, Relationship>,
 
     /// The Joinset's own interface — the declared Dimensions /
     /// Measures / Metrics / Filters / Keys that live at the Joinset
@@ -187,9 +189,9 @@ pub struct ExplicitPath {
 #[non_exhaustive]
 pub struct JoinHop {
     /// The Relationship traversed by this hop. MUST be a
-    /// `RelationshipId` declared in the SemanticManifest's `relationships:`
+    /// `EntityId` declared in the SemanticManifest's `relationships:`
     /// top-level block per `16 §2.1`.
-    pub relationship: RelationshipId,
+    pub relationship: EntityId,
 
     /// The traversal direction. `Forward` walks
     /// `Relationship.from → Relationship.to`; `Reverse` walks the
@@ -211,27 +213,25 @@ pub enum HopDirection {
 }
 ```
 
-Round 1 uses `HopDirection` explicitly rather than inferring direction from the ordered `relationship.from` / `relationship.to` fields because the same `RelationshipId` can be walked either direction on a bidirectional edge, and explicit direction makes validation (§§10.1–10.2) straightforward.
+Round 1 uses `HopDirection` explicitly rather than inferring direction from the ordered `relationship.from` / `relationship.to` fields because the same `EntityId` can be walked either direction on a bidirectional edge, and explicit direction makes validation (§§10.1–10.2) straightforward.
 
 ### 2.4 Composition via `CompositionKind::Joinset`
 
-Per `16 §10.1`, an explicit `ComplexDataKind` is materialized at `compile` as a `ResolvedComplexDataKind` carrying its `ComposedSemanticInterface`. For `Joinset`:
+Per `16 §10.1`, an explicit `ComplexDataKind` is materialized at `compile` as a `ResolvedComplexDataKind`. For `Joinset` under the manifest-resident shape (per C7.4 cascade), `compile` produces a manifest entry carrying anchor + members + per-hop coverage + scope-local relationships; the `ComposedSemanticInterface` is synthesised by `SemanticGraph` at build time, not persisted on the manifest:
 
 ```text
 compile(JoinsetDataKind) → ResolvedJoinset {
     name, anchor, members, hops: Vec<ResolvedJoinHop>, relationships,
-    interface: ComposedSemanticInterface {
-        composition_kind: CompositionKind::Joinset,
-        constituents: <members, canonicalised anchor-first>,
-        interface: UnifiedSemantics <per §8.2>,
-        provenance: FieldProvenance <per §8.3>,
-        coverage: CompositionCoverage <per §8.4>,
-        traversed_paths: Vec<RelationshipPath> <recorded for audit/debug>,
-    },
+    // interface: ComposedSemanticInterface { ... }  — RETIRED at the manifest layer (C7.4).
+    //   Synthesised by SemanticGraph at build time from anchor + per-hop coverage +
+    //   members' SemanticInterfaces. See `33 §6.7` for the persisted shape and the
+    //   Phase 3 amendment under §1.4 above for the cascade rationale.
 }
 ```
 
-`33` ratifies the exact `ResolvedJoinset` struct roster. `24` fixes only the semantic content: the `ComposedSemanticInterface` carried by a `ResolvedJoinset` MUST have `composition_kind == CompositionKind::Joinset` and MUST populate `constituents` in anchor-first order (see §3.2 for why).
+> **Retired at the manifest layer (2026-05-28; cascade from C7.4).** The `interface: ComposedSemanticInterface { … }` member of the pseudo-shape above is removed from the manifest contract per ratified clause C7.4. The semantic content (composition kind, anchor-first constituents, `UnifiedSemantics`, `FieldProvenance`, `CompositionCoverage`, `traversed_paths`) is unchanged; the materialisation site moves from compile to graph build. `33 §6.7` ratifies the manifest-resident `DataKindVariant::Joinset` and `JoinsetHop` struct roster ([`../apis/33_semstrait_manifest.md`](../apis/33_semstrait_manifest.md)). `24 §8` (the `ComposedSemanticInterface`-on-Joinset narrative) remains correct as a description of the graph-build output; the only shift is the lifecycle stage at which the unified surface materialises.
+
+`24` continues to fix the semantic content: the `ComposedSemanticInterface` synthesised at graph build for a Joinset MUST have `composition_kind == CompositionKind::Joinset` and MUST populate `constituents` in anchor-first order (see §3.2 for why).
 
 ### 2.5 v1 arity — binary only (restatement)
 
@@ -321,7 +321,7 @@ JOINSET_IMPLICIT_PATH(anchor, members, manifest) -> Vec<ResolvedJoinHop> | Compi
           - target = target
           - depth limit = unbounded (Joinset is the escape hatch; 16 §9.1's
             MAX_IMPLICIT_COMPOSITION_DEPTH does NOT apply here)
-          - neighbor order = RelationshipId ascending (I4, same as 16 §11.4)
+          - neighbor order = relationship name order (I4, same as 19 §3.4.3)
           - direction constraints = none; every Relationship is bidirectional
             per 16 §2.4
   5. if paths is empty:
@@ -331,7 +331,7 @@ JOINSET_IMPLICIT_PATH(anchor, members, manifest) -> Vec<ResolvedJoinHop> | Compi
                                                       // author must pin via explicit path
   7. selected ← the unique shortest path
   8. return Vec<ResolvedJoinHop> constructed from `selected` with each hop
-           carrying its RelationshipId, walked direction, and landed-on DataKindRef.
+           carrying its EntityId, walked direction, and landed-on DataKindRef.
 ```
 
 #### 4.1.3 Extension of `16 §11.4`
@@ -361,7 +361,7 @@ Authors prefer explicit (§4.2) when:
 
 #### 4.2.1 Authoring shape
 
-The author declares `path: Some(ExplicitPath { hops: Vec<JoinHop> })`. Each `JoinHop` cites a `RelationshipId` and a `HopDirection`. For v1 binary Joinsets, exactly one hop.
+The author declares `path: Some(ExplicitPath { hops: Vec<JoinHop> })`. Each `JoinHop` cites a `EntityId` and a `HopDirection`. For v1 binary Joinsets, exactly one hop.
 
 #### 4.2.2 Validation pipeline
 
@@ -372,7 +372,7 @@ Explicit path validation runs across validate and compile stages:
 | -------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | validate | `hops` non-empty                                                                                                                        | `VALID_E_2403 JoinsetExplicitPathEmpty`                                                                                                                                                         |
 | validate | (v1) `hops.len() == 1`                                                                                                                  | `VALID_E_2400 JoinsetArityV1Violation`                                                                                                                                                          |
-| compile  | each `hop.relationship` resolves to a SemanticManifest `RelationshipId`                                                                 | `COMP_E_2404 JoinsetExplicitPathUnknownRelationship { position, relationship }`                                                                                                                 |
+| compile  | each `hop.relationship` resolves to a SemanticManifest `EntityId`                                                                 | `COMP_E_2404 JoinsetExplicitPathUnknownRelationship { position, relationship }`                                                                                                                 |
 | compile  | `hop_0`'s walked source == `anchor` (given `direction`, the "source" endpoint matches the anchor DataKind)                              | `COMP_E_2405 JoinsetExplicitPathAnchorMismatch { expected_anchor, actual_source }`                                                                                                              |
 | compile  | `hop_i.to` matches the Relationship's walked target endpoint (given `direction`)                                                        | `COMP_E_2406 JoinsetExplicitPathEndpointMismatch { position, declared_to, computed_to }`                                                                                                        |
 | compile  | `hop_{i+1}`'s source (given direction) == `hop_i.to` (chain continuity) — no-op for v1 binary, but kept for N-ary forward-compatibility | `COMP_E_2407 JoinsetExplicitPathDiscontinuity { position }`                                                                                                                                     |
@@ -386,7 +386,7 @@ Explicit path validation runs across validate and compile stages:
 
 #### 4.2.4 Scope-local Relationship resolution
 
-When a Joinset declares a scope-local `Relationship` (per `§5.3.2`) and an explicit path, compile resolves each `hop.relationship` `RelationshipId` against the Joinset's scope first, then falls back to root-level. A scope-local Relationship with the same `name` as a root-level one shadows it within this Joinset (`18 §2.10`); the path's `RelationshipId` is rebound to the scope-local entry. With an implicit path, scope resolution runs after path enumeration: BFS walks the root-level Relationship graph to enumerate paths, then each resolved hop's Relationship is rebound to its scope-local shadow (if any) before `EFFECTIVE_JOIN_TYPE` runs.
+When a Joinset declares a scope-local `Relationship` (per `§5.3.2`) and an explicit path, compile resolves each `hop.relationship` `EntityId` against the Joinset's scope first, then falls back to root-level. A scope-local Relationship with the same `name` as a root-level one shadows it within this Joinset (`18 §2.10`); the path's `EntityId` is rebound to the scope-local entry. With an implicit path, scope resolution runs after path enumeration: BFS walks the root-level Relationship graph to enumerate paths, then each resolved hop's Relationship is rebound to its scope-local shadow (if any) before `EFFECTIVE_JOIN_TYPE` runs.
 
 ### 4.3 Mode-selection precedence
 
@@ -405,6 +405,8 @@ Round 1 forbids hybrid modes ("use these specific hops plus let the planner fill
 ### 5.1 Path resolution
 
 `JoinsetStrategy` is the planner-side contract that lowers a `ResolvedJoinset` to `PlanNode::Join` nodes. Path resolution runs at `compile` (per §4); `JoinsetStrategy` consumes the already-resolved `hops: Vec<ResolvedJoinHop>` without re-walking the Relationship graph.
+
+Expression placement within each member's subplan and at the post-join reconciliation follows the member expression's `ExprLayer` (`19 §6.0`): `Scalar` Dimensions/Keys feed pre-join projection and `GROUP BY`; `Aggregate` Measures land in the member's `Agg`; `PostAggregate` Metric residuals land in the post-join `Project`. Non-additive measures under join fanout are gated by function-derived `Additivity` (`14a §3.6.2`) — see §11.1's `JoinsetNonAdditiveRollupRequired`.
 
 ```rust
 #[non_exhaustive]
@@ -555,7 +557,7 @@ Exact pushdown semantics (predicate pushdown, projection pruning) are `19 §3` /
 
 `Joinset` **consumes** top-level `Relationship`s declared in the Model's `relationships:` block (per `16 §2.1`, YAML surface per `32`) and MAY declare **scope-local `Relationship`s** in its own `relationships:` block that shadow root-level entries within the Joinset's scope only (per `18 §2.10`). `Joinset` does NOT:
 
-- Modify root-level Relationships. A root-level Relationship's `cardinality`, `integrity`, `optional`, `cross_filter`, `keys` remain authoritative for implicit composition (`16 §11`) and for every other Joinset that does not shadow it. A scope-local shadow affects only the Joinset that declares it; the root-level entry on the SemanticManifest's `ResolvedRelationship` is unchanged.
+- Modify root-level Relationships. A root-level Relationship's `cardinality`, `integrity`, `optional`, `cross_filter`, `keys` remain authoritative for implicit composition (`16 §11`) and for every other Joinset that does not shadow it. A scope-local shadow affects only the Joinset that declares it; the root-level `ResolvedRelationship` entry on the SemanticManifest (`33 §8A`) is unchanged, while the shadow is persisted inline on `DataKindVariant::Joinset.scope_local_relationships` (`33 §6.7`).
 - Participate in root-level Relationship-graph validation. `16 §12`'s well-formedness (duplicate detection, key-type agreement, self-reference, etc.) runs on the root-level `relationships:` block independently of any `Joinset` that may consume the resulting edges. Scope-local Relationships run the same structural rules (`18 §11`, SR-E-4 / SR-E-13 / SR-E-14) within the Joinset's scope.
 
 The reverse direction holds: `Relationship`s are unaware of which `Joinset`s consume them. A Relationship with no consumers (no implicit-composition walks, no `Joinset.path` references) is a perfectly valid SemanticManifest entry; authors routinely declare Relationships defensively for future use.
@@ -565,7 +567,7 @@ The reverse direction holds: `Relationship`s are unaware of which `Joinset`s con
 
 | Reference                                           | Purpose                            | Validation stage                                |
 | --------------------------------------------------- | ---------------------------------- | ----------------------------------------------- |
-| `ExplicitPath.hops[i].relationship: RelationshipId` | Author-pinned path citation.       | compile (`COMP_E_2404`–`COMP_E_2410`).          |
+| `ExplicitPath.hops[i].relationship: EntityId` | Author-pinned path citation.       | compile (`COMP_E_2404`–`COMP_E_2410`).          |
 | Implicit-path resolution (`§4.1.2 step 4`)          | BFS over the Relationship graph.   | compile (`COMP_E_2401`–`COMP_E_2402`).          |
 | `JoinsetStrategy`'s `effective_join_type` (§5.3)    | Per-hop `JoinType` derivation from resolved Relationship's `optional`. | compile + plan; scope-local Relationship shadowing resolved at compile. |
 | `JoinsetStrategy`'s key-pair emission (§5.2 step 3) | Plan-node `KeyPair` carriage.      | plan (lookup only; no validation).              |
@@ -655,7 +657,7 @@ Consumers (planner advisories, SQL adapters) read this map to know, for each `(m
 
 ### 8.5 `traversed_paths`
 
-`16 §5.2`'s `ComposedSemanticInterface.traversed_paths: Vec<RelationshipPath>` is populated for Joinsets with a single-element `Vec<RelationshipPath>` containing the single hop's `[RelationshipId]` (v1 binary). For N-ary Joinsets, multiple paths may be present (one per leg of the spanning tree). The field is diagnostic — it lets `34` / `35` print the actual traversed edges in plan explanations without re-resolving.
+`16 §5.2`'s `ComposedSemanticInterface.traversed_paths: Vec<RelationshipPath>` is populated for Joinsets with a single-element `Vec<RelationshipPath>` containing the single hop's `[EntityId]` (v1 binary). For N-ary Joinsets, multiple paths may be present (one per leg of the spanning tree). The field is diagnostic — it lets `34` / `35` print the actual traversed edges in plan explanations without re-resolving.
 
 ### 8.6 Identity and equality (specialization of `16 §5.4`)
 
@@ -714,7 +716,7 @@ Double-emission (a single programming-level error triggering both a `12` and a `
 | `COMP_E_2401` | `JoinsetImplicitNoPath { joinset, anchor, target }`                                            | Implicit-path BFS found no Relationship path from `anchor` to the other member (§4.1.2 step 5). Author must declare the Relationship or an explicit path.                                                                                                         |
 | `COMP_E_2402` | `JoinsetImplicitAmbiguousPaths { joinset, anchor, target, candidates: Vec<RelationshipPath> }` | Implicit-path BFS found multiple equal-length shortest paths (§4.1.2 step 6). Author must pin via explicit path.                                                                                                                                                  |
 | `COMP_E_2403` | `JoinsetAnchorUnreachable { joinset, unreachable_member }`                                     | Resolved path does not connect the anchor to one of the members. v1 binary-degenerate (the single hop either connects the two or fails at `COMP_E_2401`); N-ary-forward-looking.                                                                                  |
-| `COMP_E_2404` | `JoinsetExplicitPathUnknownRelationship { joinset, position, relationship }`                   | An explicit `JoinHop.relationship` does not resolve to a SemanticManifest `RelationshipId`.                                                                                                                                                                       |
+| `COMP_E_2404` | `JoinsetExplicitPathUnknownRelationship { joinset, position, relationship }`                   | An explicit `JoinHop.relationship` does not resolve to a SemanticManifest `EntityId`.                                                                                                                                                                       |
 | `COMP_E_2405` | `JoinsetExplicitPathAnchorMismatch { joinset, expected_anchor, actual_source }`                | Hop 0's walked source (given `direction`) is not the Joinset's declared anchor.                                                                                                                                                                                   |
 | `COMP_E_2406` | `JoinsetExplicitPathEndpointMismatch { joinset, position, declared_to, computed_to }`          | `hop.to` does not match the Relationship's walked target endpoint (given `direction`).                                                                                                                                                                            |
 | `COMP_E_2407` | `JoinsetExplicitPathDiscontinuity { joinset, position }`                                       | Hop `i+1`'s walked source != hop `i`'s `to`. v1 binary-degenerate; N-ary-forward-looking.                                                                                                                                                                         |

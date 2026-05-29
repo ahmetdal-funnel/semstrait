@@ -20,7 +20,7 @@ refined-by:
   - 24 (`data-kinds/24_joinset.md` — per-traversal `JoinType::AsOf` override; anchor selection in explicit paths)
   - 25 (cross-kind strategy catalog — per-shape planner strategies for rollup, as-of resolution, current-snapshot pinning)
   - 32 (`apis/32_semstrait_model.md` — YAML surface for `temporal_shape:` block, including SCD subtype discriminator keys)
-  - 33 (`apis/33_semstrait_manifest.md` — `ResolvedTemporalShape` on `ResolvedDataKind`, per-shape indices)
+  - 33 (`apis/33_semstrait_manifest.md` — `TemporalShape` / `TemporalType` on `DataKind.temporal` (`33 §8B`); identifying-Dimension refs resolved to `EntityId`; planner-side shape indices deferred per §10)
   - 34 (`apis/34_semstrait_planner.md` — planner's shape-aware strategy dispatch; `Request.temporal` consumption)
   - 35 (`apis/35_semstrait_ir.md` — `PlanNode::Join` carriage of `JoinType::AsOf` variant data)
   - `registry/temporal_shape_mapping.md` (per-engine SCD / Events / Snapshot emission — AS OF JOIN in Spark, lateral joins in DuckDB, temporal tables, etc.)
@@ -100,7 +100,7 @@ DEFERRED status does **not** mean "ignore the vocabulary until the planner catch
 
 - **I1 — canonical layer.** `TemporalShape`'s identifying Dimension references are `SemanticsName`s, never physical column names. The `SemanticsName → physical-column` resolution happens in `15 §4` via `ColumnMapping`; `17`'s rules operate on the canonical-layer names.
 - **I4 — determinism.** Shape-gated planner decisions are fully determined by `(Model, Request)`; no non-deterministic tie-breaking. When shape-propagation through composition is ambiguous (e.g. a `Unionset` of constituents with divergent shapes), the rule is "emit `COMP_E_17NN`, do not pick a shape."
-- **I5 — resolution at compile time.** `temporal_shape:` references to Dimensions are resolved during `compile`; the SemanticManifest carries a `ResolvedTemporalShape` with `SemanticsName` pointers replaced by `(SemanticsName, BindingId)` pairs that index into the `ResolvedExprTable` per `19 §3.2`.
+- **I5 — resolution at compile time.** `temporal:` references to Dimensions are resolved during `compile`; the SemanticManifest carries a `TemporalShape` on the leaf `DataKind.temporal` field (`33 §8B`) with each identifying-Dimension `SemanticsName` resolved to its semantic `EntityId`. This is the only resolution applied — temporal is otherwise propagation, so the manifest type carries no `Resolved*` prefix.
 - **I8 — SemanticManifest planner-complete.** Every shape-aware planner decision is table-driven from SemanticManifest state; no YAML-time logic survives into `plan`.
 - **I10 — non-exhaustive extensibility.** `TemporalShape`, `ScdSubtype`, and `JoinType::AsOf`-extended `JoinType` are all `#[non_exhaustive]`. Variants may grow (SCD Type 7, non-temporal shapes, bi-temporal shapes) without MAJOR bumps.
 - **I12 — first-class diagnostics.** Every Precondition and advisory in §9 carries a stable `*_E_17NN` / `*_W_17NN` code.
@@ -666,7 +666,7 @@ The closed list of behaviors whose **vocabulary and model surface** `17` ratifie
 - `20`–`25` — per-DataKind strategy catalog; consumes `TemporalShape` for rollup, anchoring, and snapshot selection.
 - `30 §6.2` — subsystem code-range allocation; `[CONTRADICTION-FOUND]` at head of doc records the 17NN coordination.
 - `32` — YAML surface for `temporal_shape:` block and subtype discriminators.
-- `33` — `ResolvedTemporalShape` on `ResolvedDataKind`; SemanticManifest-layer materialization of this doc's model-layer types.
+- `33 §8B` — `TemporalShape` / `TemporalType` on `DataKind.temporal`; SemanticManifest-layer propagation of this doc's model-layer types (identifying-Dimension refs resolved to `EntityId`; `grain` generic; leaf-only on disk).
 - `34` — planner's shape-aware strategy dispatch; `Request.temporal` consumption; `AsOf` emission.
 - `35` — `PlanNode::Join` extension for `JoinType::AsOf(anchor)` payload.
 - `36` — per-adapter emission rules for `AsOf` joins / snapshot selection / SCD window predicates.

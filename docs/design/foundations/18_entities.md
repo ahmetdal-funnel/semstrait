@@ -2,7 +2,7 @@
 prereqs: [00, 10, 11, 13, 14, 19]
 authoritative-for:
   - the shared Semantics pools (`dimensions:`, `measures:`, `metrics:`) at the root level and their per-DataKind reference / override grammar
-  - the `Relationship` struct and its companion `RelationshipId` newtype — unified shape used at both root `relationships:` and `JoinsetBody.relationships`
+  - the `Relationship` struct (identified by its `id: EntityId`) — unified shape used at both root `relationships:` and `JoinsetBody.relationships`
   - `JoinType`, `Cardinality`, `Directionality`, `JoinKeyExprPair`
   - the `TemporalShape` type hierarchy — `TemporalShape` struct, `TemporalShapeKind` enum, per-variant `*Body` structs, `ScdType` (v1 roster `{Type1, Type2}`); `Grain` is consumed via `TemporalShape.grain` but the `Grain` enum itself is owned by `13 §3.1`
   - the `Dimension` struct and `DimensionType` roster
@@ -25,18 +25,28 @@ refined-by:
   - 30 (`apis/30_api_contracts.md` — error-code allocation for `SR-E-*`)
   - 32 (`apis/32_semstrait_model.md` — root YAML shape; hosts `relationships:` and the shared pools this doc ratifies; SR-* enforcement)
   - 32b (`apis/32b_catalogs_yaml.md` — catalog grammar)
-  - 33 (`apis/33_semstrait_manifest.md` — SemanticManifest-layer `Resolved*` counterparts of the types ratified here)
+  - 33 (`apis/33_semstrait_manifest.md` — compile-resolved manifest counterparts: `ResolvedRelationship` / `ResolvedJoinKey` (`33 §8A`) for `Relationship`; `TemporalShape` / `TemporalType` on `DataKind.temporal` (`33 §8B`) for the temporal hierarchy)
   - 34 (`apis/34_semstrait_planner.md` — planner consumption of resolved entity types)
   - 35 (`apis/35_semstrait_ir.md` — `PlanNode::Join` carriage of `JoinType`)
 ---
 
 # 18. Canonical Entity Types
 
-`18` is the consolidated specification for the ratified entity types that populate a `SemanticModel`: shared Semantics pools, relationships, temporal shapes, dimensions / measures / metrics, filters, AI context, keys, and the model-authoring `SemanticMapping` value shape. `32` fixes the root YAML shape and the `DataKind` hierarchy (an apis-layer concern); `18` fixes the entity shapes nested inside (a foundations-layer concern — these types cross-cut every DataKind variant, SemanticManifest, Planner, and IR surface).
-
-> **Reader's note (structural placement).** This doc originally landed as `apis/32c_entities.md` in the late-April 2026 entity-ratification pass. It was promoted to the foundations layer (`foundations/18_entities.md`) in the 2026-04-17 consolidation pass because the types it defines are structurally foundational — they cross-cut every `2x` data-kind variant, every `3x` api surface, and every planner/adapter consumer. Per the directionality rule in `00 §8`, canonical definitions belong in the lowest-numbered doc that owns them; the promotion places entity types in their correct layer. Section numbering is unchanged from `32c` — every `18 §N` was `32c §N` in the prior revision.
+`18` is the canonical specification for entity payload types that populate a `SemanticModel`: shared Semantics pools, relationships, temporal shapes, dimensions / measures / metrics, filters, AI context, keys, and model-authoring `SemanticMapping` value shapes. `32` owns root YAML shape and DataKind hierarchy; `18` owns the entity payloads embedded in those structures.
 
 Every struct in this document is `#[non_exhaustive]` and every enum is `#[non_exhaustive]` per I10, unless a specific note overrides.
+
+### Scope note — payload shape and identity field
+
+`18` owns canonical **entity payload shapes**. Named-entity identity is an `id: EntityId` field carried directly on each entity struct in this document (`Dimension`, `Measure`, `Metric`, `Relationship`, `Key` decls, `Filter`), mirroring the `DataKindBase.id` field for data kinds (`32 §3.1`). `EntityId` is the identity type defined at `32 §2` (canonical UUID text; authored ids are UUIDv7).
+
+Identity routing:
+
+- model authoring boundary (`id` optional at authoring; strict/convenience missing-id generation profiles) — `32 §1.4` and `32 §9.0.1`;
+- the entity's `id` is also its storage key in every model collection — `32 §2`, `§3.7`;
+- manifest propagation — the entity's `id` is carried straight onto the corresponding manifest entity (the manifest is `EntityId`-keyed, single id lane) — `33 §4.3.1` / `§9.1`.
+
+There is no separate identity sidecar at the model layer and no `stable_ids` side-map at the manifest layer; `id` is part of the payload throughout.
 
 ## 1. Shared Semantics Pools & Reference Grammar
 
@@ -89,13 +99,20 @@ pub enum DimensionEntry {
 
 #[non_exhaustive]
 pub struct DimensionRef {
+    /// Named-entity identity for this reference site (`32 §2.3`). A `Ref` is a
+    /// distinct interface member with its own `id` — authored optionally,
+    /// parse-generated when omitted. It identifies the reference-with-override
+    /// site; the referenced root-pool Dimension keeps its own `id`.
+    pub id: EntityId,
     pub name: SemanticsName,
     /// Local override of the root-pool expression (see §1.3).
     pub expr: Option<crate::expr_block::ExprSource>,
 }
 ```
 
-`MeasureEntry` / `MeasureRef` and `MetricEntry` / `MetricRef` are analogous. The `Ref` variant carries only the fields that are legally overridable at the reference site (§1.3); every other attribute is read from the root-pool declaration at `compile` time.
+`MeasureEntry` / `MeasureRef` and `MetricEntry` / `MetricRef` are analogous (each `Ref` carries the same `id` field). The `Ref` variant carries only the fields that are legally overridable at the reference site (§1.3); every other attribute is read from the root-pool declaration at `compile` time.
+
+Each entry's `id` is the storage key in its DataKind's `SemanticInterface`: the interface holds its `DimensionEntry` / `MeasureEntry` / `MetricEntry` members (and its `DataKindFilter`s, §7.1) in `EntityId`-keyed `BTreeMap`s — an `Inline` entry keys by its inner entity's `id`, a `Ref` entry by the ref-site `id`. Iteration and serialization are name-ordered per `32 §7`. Keys live in the `Keys` struct (§9).
 
 ### 1.3 Override scope at a reference site
 
@@ -143,6 +160,12 @@ One `Relationship` struct serves both authoring sites: root-level `relationships
 ```rust
 #[non_exhaustive]
 pub struct Relationship {
+    /// Named-entity identity (`32 §2.3`). Authored optionally; parse generates
+    /// a UUIDv7 when omitted. Storage key in the model's `relationships` map
+    /// (and a `JoinsetBody`'s `relationships` map), and the sole identity used
+    /// for relationships across manifest and runtime (§2.1).
+    pub id: EntityId,
+
     pub name: String,
     pub from: DataKindName,
     pub to:   DataKindName,
@@ -179,17 +202,13 @@ pub struct Relationship {
 }
 ```
 
-Companion identity newtype — stable `u32` handle used by SemanticManifest indices and compile-time graph walks:
+**Identity is the `id: EntityId` field.** A `Relationship` is identified everywhere — model, manifest, and runtime graph — by its own `id: EntityId`. There is no separate `RelationshipId` newtype. The manifest keys `relationships` by `EntityId` and every relationship reference is an `EntityId` (`33 §4.1`, `§6.7` — `JoinsetHop.relationship` is an `EntityId`); `16 §6`'s `RelationshipPath` is a `Vec<EntityId>`. The planner runtime graph (`34`) builds its own daggy edge handles (`SemanticEdgeId`, `35 §2A`) for hot-path adjacency, but those address the durable relationship by `EntityId` — they are graph-structure positions, not a parallel identity.
 
-```rust
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RelationshipId(pub u32);
-```
+> **Ordering basis (id-first rework).** Relationships are stored model-side in an `EntityId`-keyed map projected in name order (`32 §2`, `§7`), not an author-ordered `Vec`. First-match-wins resolution (`16 §11`) and BFS neighbor iteration (`19 §3.4.3`) therefore proceed in **name order** rather than YAML author order — deterministic and author-meaningful.
 
-`RelationshipId` is allocated at `compile` in declaration order over the root-level `relationships:` list. It is the key type for the `SemanticManifest.relationship_index`, for `RelationshipGraph` traversal in `19 §3.4.2`, and for `RelationshipPath` in `16 §6`. `PartialOrd` / `Ord` are derived so downstream code (`19 §3.4.3`'s BFS neighbor iteration, `SemanticManifest` indices keyed by `(DataKindId, RelationshipId)`) can rely on natural `u32` ordering without unwrapping the newtype. Its one-copy-only home is this doc; `19`, `16`, and `33` all reference it from here.
+> **Id-first cascade (STATUS item U.2, landed).** `RelationshipId` is eliminated tree-wide; relationships are identified by `EntityId` everywhere (`16` composition-id derivation + canonical `(EntityId, Direction)` forms, `19 §3.4.5` `PathSignature: Vec<EntityId>`, `33 §6.7` `JoinsetHop.relationship`, `34` planner). Material consequence (ratified): composition `ImplicitId` is now **stable across recompiles** when relationship `EntityId`s are stable (authored/persisted; synthesized ids always stable), strengthening `16 §5.7`.
 
-**Authored vs derived.** `JoinType` is **not** an authoring-layer field. It is derived at compile from `optional` per `§2.9` and carried on the manifest-layer `ResolvedRelationship` (`33 §8.1`). This is a deliberate semantic-first stance: the relationship's shape is the contract; the SQL-level join kind is a consequence.
+**Authored vs derived.** `JoinType` is **not** an authoring-layer field. It is derived at compile from `optional` per `§2.9` and carried on the manifest-layer `ResolvedRelationship` (`33 §8A`) — the authoring `Relationship` here is **not** re-exported into the manifest verbatim; compile resolves it (endpoints to `EntityId`, defaults applied, keys lowered) into `ResolvedRelationship`.
 
 **No parallel override surface.** Authors who need different join semantics inside a specific Joinset declare a **scope-local Relationship** in that Joinset's `relationships:` block with the divergent fields directly. The scope-shadow rule in `§2.10` resolves the visibility. There is no per-hop override map and no per-edge override mechanism.
 
@@ -228,7 +247,7 @@ pub enum Cardinality {
 
 `cardinality:` is required on every `Relationship`, at every authoring site. Authors MUST declare the cardinality they intend; the planner does not infer it. Missing cardinality is `parse.relationship-missing-cardinality` (SR-E-4).
 
-`Cardinality` is **planning metadata, not runtime enforcement** — `semstrait` does not scan data to verify the declared multiplicity. Authors assert; the planner trusts. Misdeclaration produces arithmetically incorrect aggregations without a runtime error. This trade-off is explicit (verification would require a scan, violating compile-time-resolution posture I5). See `16 §3` for fanout consequences per variant.
+`Cardinality` is **planning metadata, not runtime enforcement**. `semstrait` does not scan data to verify declared multiplicity. See `16 §3` for fanout consequences per variant.
 
 ### 2.4 `Optional` — preserved-side enum
 
@@ -272,7 +291,7 @@ pub enum CrossFilter {
 
 **`ManyToMany` constraint.** When `cardinality == ManyToMany`, `cross_filter ∈ {Left, Right}` is rejected per SR-E-14 (`validate.relationship-many-to-many-cross-filter-directional`). A many-to-many relationship has no natural "one" side, so directional filter propagation is ambiguous; authors MUST declare `Both` or `None`.
 
-**Planner contract.** `cross_filter` is recorded on the canonical `Relationship` and surfaces to the planner via the manifest-layer `ResolvedRelationship`. The exact predicate-placement and pushdown rules driven by this field are owned by the planner doc; `18` ratifies the authoring shape and the validation rules only.
+**Planner contract.** `cross_filter` is authored on this `Relationship` and surfaces to the planner via the manifest-layer `ResolvedRelationship` (`33 §8A`), where compile materialises its default (`§2.7`) so the manifest carries a concrete value, not an `Option`. The exact predicate-placement and pushdown rules driven by this field are owned by the planner doc; `18` ratifies the authoring shape and the validation rules only.
 
 ### 2.6 `Integrity` — author-asserted RI strength
 
@@ -302,9 +321,7 @@ impl Default for Integrity {
 }
 ```
 
-**Author assertion (α stance).** `integrity:` is informational — `semstrait` does not verify the claim at compile time, against the catalog, or against declared `Key::Foreign` entries (`§9.1`). The same trust posture as `cardinality` (`§2.3`): authors assert; the planner shapes the plan accordingly; misdeclaration produces silent wrong results.
-
-**Why no compile-time cross-check in v1.** Three plausible sources for verifying `Enforced` (author assertion only / catalog-driven / FK-declaration-driven) were considered. v1 commits to the simplest: author assertion. The reservation `Enforced` vs. `Assumed` as distinct variants leaves headroom to add catalog-driven or FK-declaration-driven verification in a future MINOR without authoring-surface churn.
+`integrity:` is informational in v1. `semstrait` does not verify it at compile time against catalog metadata or declared `Key::Foreign` entries (`§9.1`).
 
 ### 2.7 Defaults & requirements matrix
 
@@ -329,7 +346,7 @@ Reading conventions:
 Validation rules:
 - `optional` and `cross_filter` required when `cardinality ∈ {OneToOne, ManyToMany}` — `validate.relationship-symmetric-cardinality-incomplete` (SR-E-13).
 - `cross_filter ∈ {Left, Right}` rejected when `cardinality == ManyToMany` — `validate.relationship-many-to-many-cross-filter-directional` (SR-E-14).
-- `integrity: Enforced` is **not** cross-checked at compile (deliberate non-rule per α stance).
+- `integrity: Enforced` is **not** cross-checked at compile in v1.
 
 ### 2.8 `JoinKeyExprPair` — hybrid equi-key grammar
 
@@ -345,11 +362,11 @@ pub struct JoinKeyExprPair {
 
 Authors list one `JoinKeyExprPair` per equi-predicate. The planner emits `left.<from_expr> = right.<to_expr>` per pair and ANDs the residual `filter:` predicate (if any) on top.
 
-**Why a hybrid `keys` + `filter` grammar.** The v1 expected traffic is simple equi-joins; `keys:` makes that common case readable. Non-equi residuals (e.g. `from.valid_from <= to.event_ts`) need a `filter:` escape. Splitting the two keeps equi-joins short and lets the planner still know which predicates are join-structural (for hash-join eligibility, partition pruning, etc.) vs post-join residual.
+`keys` carries equi-join predicates. `filter` carries residual non-equi predicates (for example `from.valid_from <= to.event_ts`).
 
 ### 2.9 `JoinType` — derived at compile, manifest-only
 
-`JoinType` is **not authored**. It is derived at compile from the relationship's `optional` field and carried on `ResolvedRelationship` (`33 §8.1`) for downstream consumption by `JoinsetStrategy` and `PlanNode::Join` emission.
+`JoinType` is **not authored**. It is derived at compile from the relationship's `optional` field and carried on `ResolvedRelationship` (`33 §8A`) for downstream consumption by `JoinsetStrategy` and `PlanNode::Join` emission.
 
 ```rust
 #[non_exhaustive]
@@ -542,6 +559,11 @@ Planner-level semantics — the shape × grain rollup matrix, snapshot pin polic
 ```rust
 #[non_exhaustive]
 pub struct Dimension {
+    /// Named-entity identity (`32 §2.3`). Authored optionally; parse generates
+    /// a UUIDv7 when omitted. Storage key in the model's `dimensions` map and
+    /// in a DataKind's `SemanticInterface`.
+    pub id: EntityId,
+
     pub name: SemanticsName,
 
     /// Mandatory at declaration; immutable from the root-pool declaration.
@@ -666,6 +688,11 @@ dimensions:
 ```rust
 #[non_exhaustive]
 pub struct Measure {
+    /// Named-entity identity (`32 §2.3`). Authored optionally; parse generates
+    /// a UUIDv7 when omitted. Storage key in the model's `measures` map and
+    /// in a DataKind's `SemanticInterface`.
+    pub id: EntityId,
+
     pub name: SemanticsName,
 
     pub data_type: DataType,
@@ -690,11 +717,11 @@ pub struct Measure {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additivity: Option<AdditivityType>,
 
-    /// Measure-level conditional-aggregation filters (see §7).
+    /// Measure-level conditional-aggregation filters (see §7), keyed by EntityId.
     /// Each filter wraps the Measure in a `CASE WHEN ... THEN expr ELSE NULL END`
-    /// at compile time.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub filters: Vec<AggregationFilter>,
+    /// at compile time. Multiple filters AND together regardless of order.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub filters: BTreeMap<EntityId, AggregationFilter>,
 }
 ```
 
@@ -788,6 +815,11 @@ measures:
 ```rust
 #[non_exhaustive]
 pub struct Metric {
+    /// Named-entity identity (`32 §2.3`). Authored optionally; parse generates
+    /// a UUIDv7 when omitted. Storage key in the model's `metrics` map and
+    /// in a DataKind's `SemanticInterface`.
+    pub id: EntityId,
+
     pub name: SemanticsName,
 
     pub data_type: DataType,
@@ -811,8 +843,8 @@ pub struct Metric {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additivity: Option<AdditivityType>,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub filters: Vec<AggregationFilter>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub filters: BTreeMap<EntityId, AggregationFilter>,
 }
 ```
 
@@ -872,6 +904,10 @@ A DataKind-level filter narrows the rowset a DataKind exposes. Authored under a 
 ```rust
 #[non_exhaustive]
 pub struct DataKindFilter {
+    /// Named-entity identity (`32 §2.3`). Authored optionally; parse generates
+    /// a UUIDv7 when omitted. Storage key in the DataKind's
+    /// `SemanticInterface` filter map.
+    pub id: EntityId,
     pub name: FilterName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -909,6 +945,9 @@ A Measure / Metric-level filter specifies a conditional inside the aggregation. 
 ```rust
 #[non_exhaustive]
 pub struct AggregationFilter {
+    /// Named-entity identity (`32 §2.3`). Authored optionally; parse generates
+    /// a UUIDv7 when omitted. Storage key in a Measure's / Metric's `filters` map.
+    pub id: EntityId,
     pub name: FilterName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -1000,18 +1039,21 @@ pub struct Keys {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary: Option<KeyDecl>,
 
-    /// Additional unique keys beyond the primary.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unique: Vec<KeyDecl>,
+    /// Additional unique keys beyond the primary, keyed by EntityId.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unique: BTreeMap<EntityId, KeyDecl>,
 
-    /// Foreign keys — references to other DataKinds' primary / unique keys.
-    /// Relationship graph uses these to infer join paths.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub foreign: Vec<ForeignKeyDecl>,
+    /// Foreign keys — references to other DataKinds' primary / unique keys,
+    /// keyed by EntityId. Relationship graph uses these to infer join paths.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub foreign: BTreeMap<EntityId, ForeignKeyDecl>,
 }
 
 #[non_exhaustive]
 pub struct KeyDecl {
+    /// Named-entity identity (`32 §2.3`). Authored optionally; parse generates
+    /// a UUIDv7 when omitted. Storage key in `Keys.unique`.
+    pub id: EntityId,
     /// Bare Semantic names — no physical column references.
     /// Resolution through `semantic_mapping` at binding time.
     pub fields: Vec<SemanticsName>,
@@ -1021,6 +1063,9 @@ pub struct KeyDecl {
 
 #[non_exhaustive]
 pub struct ForeignKeyDecl {
+    /// Named-entity identity (`32 §2.3`). Authored optionally; parse generates
+    /// a UUIDv7 when omitted. Storage key in `Keys.foreign`.
+    pub id: EntityId,
     pub fields: Vec<SemanticsName>,
     /// The target DataKind whose primary / unique key is referenced.
     pub references: DataKindName,
@@ -1030,6 +1075,8 @@ pub struct ForeignKeyDecl {
     pub name: Option<String>,
 }
 ```
+
+Ordering of `unique` / `foreign` for serialization follows the optional `name` when present, falling back to `id` order when absent (these key decls carry no required name). The `primary` key remains a single optional declaration; its `id` is generated like any other.
 
 YAML:
 

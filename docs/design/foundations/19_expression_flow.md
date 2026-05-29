@@ -69,7 +69,7 @@ refined-by:
 **Key invariants from `00 §9` that `19` directly upholds:**
 
 - **I1 / I2 / I3** — canonical layers carry no raw SQL, physical types, or engine branching; `PhysicalExpr` is engine-neutral; `FunctionCall` references `CanonicalFn` identities.
-- **I4** — deterministic `SemanticManifest`. `ResolvedExprTable` uses an ordered map keyed by `(SemanticsName, BindingId)`; substitution is pure; path ambiguity resolves by hard error rather than tie-break (§3.4.3).
+- **I4** — deterministic `SemanticManifest`. `ResolvedExprTable` uses an ordered map keyed by `(SemanticsName, EntityId)`; substitution is pure; path ambiguity resolves by hard error rather than tie-break (§3.4.3).
 - **I5** — name resolution at compile time only. Every typed semantic leaf is substituted away at compile time; `PhysicalExpr` values stored in `ResolvedExprTable` carry no `Field` / `Dimension` / `Measure` / `Metric` / `Key` by `14 §3.7`'s structural invariant; plan-time lookups are O(log n) map accesses.
 - **I6** — sync hot path. Phase A resolution is a pure, sync transformation over already-loaded inputs; `plan → optimize → adapt` is synchronous and free of hidden I/O.
 - **I8** — planner-complete `SemanticManifest`. After `compile` seals, every `(name, binding_id)` combination the planner might demand is already in the `ResolvedExprTable`.
@@ -214,11 +214,12 @@ pub struct ResolvedExprTable {
 
 pub struct ResolvedExprKey {
     pub semantics_name: SemanticsName,
-    pub binding_id:     BindingId,
+    pub binding_id:     EntityId,
 }
 
 pub struct ResolvedExprEntry {
     pub physical_expr:      PhysicalExpr,
+    pub layer:             ExprLayer,    // applicability layer (§3.2.6); persisted on the manifest expr (33 §7.2)
     pub inferred_type:      DataType,
     pub referenced_columns: Vec<String>,
     pub path_signature:     Option<PathSignature>,
@@ -228,39 +229,60 @@ pub struct ResolvedExprEntry {
 
 **Why `BTreeMap`.** Deterministic iteration order for `SemanticManifest` serialization and downstream artifacts (adapter column-projection lists); O(log n) lookup is acceptable because the plan-time hot path is dominated by expression-tree traversal, and typical manifests carry `n` in the low thousands.
 
-**`BindingId`** is a `u32` newtype assigned by `compile` in `SemanticManifest`-level DataKind/Binding iteration order. Not stable across Model edits — internal only; author-facing diagnostics quote `DataKind.name / Binding.name`. `BindingName` is not the key: it's unique only within its owning `Dataset`, not globally.
+**The binding key is an `EntityId`** (the binding's durable id per `15 §2.2` — a deterministic UUIDv5 generated at compile, `33 §9.1`). It is globally unique and stable across Model edits that don't change the binding. Author-facing diagnostics still quote `DataKind.name / Binding.name`; `BindingName` is not the key (unique only within its owning `Dataset`, not globally). The retired `EntityId` u32 handle is no longer used.
 
 **`SemanticsName`** is the canonical identity newtype from `[11 §4](11_names_and_scopes.md)` — one unified global namespace. The **kind** of a Semantics (Dimension / Measure / Metric / Key) is encoded in the variant tag of the authored `SemanticLeaf` and reconciled against the registry during substitution (§3.3).
 
 #### 3.2.2 Determinism
 
-`BTreeMap<ResolvedExprKey, _>` orders lexicographically by `(semantics_name, binding_id)`. Given frozen inputs, substitution is a pure post-order walk; BFS in §3.4 explores neighbors in deterministic `RelationshipId` order; multiple shortest paths surface as `AmbiguousRelationshipPath` (no tie-break). Identical inputs → byte-identical `ResolvedExprTable` (compile-layer evidence for `00 §9` **I4**).
+`BTreeMap<ResolvedExprKey, _>` orders lexicographically by `(semantics_name, binding_id)` (the latter an `EntityId`). Given frozen inputs, substitution is a pure post-order walk; BFS in §3.4 explores neighbors in deterministic **relationship-name order**; multiple shortest paths surface as `AmbiguousRelationshipPath` (no tie-break). Identical inputs → byte-identical `ResolvedExprTable` (compile-layer evidence for `00 §9` **I4**).
 
 #### 3.2.3 Lookup contract
 
 ```rust
 impl ResolvedExprTable {
-    pub fn lookup(&self, name: &SemanticsName, binding_id: BindingId) -> Option<&ResolvedExprEntry>;
-    pub fn lookup_all(&self, name: &SemanticsName) -> impl Iterator<Item = (BindingId, &ResolvedExprEntry)>;
+    pub fn lookup(&self, name: &SemanticsName, binding_id: EntityId) -> Option<&ResolvedExprEntry>;
+    pub fn lookup_all(&self, name: &SemanticsName) -> impl Iterator<Item = (EntityId, &ResolvedExprEntry)>;
     pub fn iter(&self) -> impl Iterator<Item = (&ResolvedExprKey, &ResolvedExprEntry)>;
 }
 ```
 
 `lookup` is O(log n); `lookup_all` ranges `BTreeMap` over a single `SemanticsName` (used by `ComplexDataKind` source selection over multiple Bindings). Sealed manifests are `Arc`-wrapped and immutable — no `insert`/`remove`/`update` on the public API.
 
-#### 3.2.4 Serialization posture
+#### 3.2.4 Serialization posture and the compile-time / persisted split
 
-Byte-level encoding is owned by `[33](../apis/33_semstrait_manifest.md)`. Shape-level contract: `entries` encodes in `BTreeMap`'s natural iteration order; each entry's `physical_expr` is stored inline (no interning pool in v1 — resolved exprs are small, decode simplicity beats encode-time compaction for write-once-read-many manifests).
+`ResolvedExprTable` is the **compile-time working set**; its persisted form is owned by `[33](../apis/33_semstrait_manifest.md)`. The two are not identical, and the split follows what is content-derived vs binding-context-dependent:
+
+- **`physical_expr` + `layer` are interned into the content-deduped pool** `ManifestExpressions.physical: BTreeMap<PhysicalExprId, ManifestExpression { expr, layer }>` (`33 §7.2`). The `layer` is a pure function of the tree (§3.2.6), so it rides on the deduped entry. (This supersedes any earlier "stored inline, no interning pool" wording.)
+- **The per-`(SemanticsName, binding EntityId)` context fields** — `inferred_type`, `referenced_columns`, `path_signature` — are **not** functions of the expression tree alone (a shared tree bound to different sources may infer different types / traverse different paths), so they do **not** belong on the deduped pool entry. They are persisted on the manifest's per-binding expression reference (the on-disk counterpart of `ResolvedExprKey -> {PhysicalExprId, inferred_type, referenced_columns, path_signature}`). The exact on-disk shape of that per-binding record is part of the pending `19`↔`33` reconciliation (`STATUS.md`); `19` ratifies the field set, `33` ratifies the persistence container.
+
+Shape-level contract: `entries` encodes in `BTreeMap`'s natural iteration order.
 
 #### 3.2.5 `Provenance`
 
 Per-entry diagnostic-reporter carrier (which source `Location`s contributed which occurrences during Tier-1 / Tier-2 merge per `[11 §6.3](11_names_and_scopes.md)`). Never leaves the manifest, never read at plan time or adapt time. **Shape owned by `[33 §<ResolvedExprEntry>](../apis/33_semstrait_manifest.md)`** (it is a manifest-storage concern, not a Phase-A algorithm concern); `19` only requires that `compile` populates it.
 
+#### 3.2.6 Layer classification
+
+After substeps 0–4 produce the `PhysicalExpr`, Phase A classifies its `ExprLayer` (`[14 §3.8](14_expressions.md)`; type at `[35 §5.5](../apis/35_semstrait_ir.md)`) as a **pure function of the resolved tree** — `classify(tree)`:
+
+```text
+classify(t):
+  if no Aggregate node occurs anywhere in t          -> Scalar
+  else if the root node of t is an Aggregate          -> Aggregate
+  else                                                -> PostAggregate   # Aggregate(s) strictly below a non-Aggregate root
+```
+
+- **`Window` is not a layer of its own.** A `Window` whose argument subtree contains an `Aggregate` (an *aggregation-relative window* — e.g. a `measure.previous` accessor lowered over the aggregated grain) makes the tree fall into `PostAggregate` by the rule above (the root is the `Window`, an `Aggregate` is below it). A `Window` over raw columns only (e.g. `dimension.lag`, no `Aggregate` descendant) classifies as `Scalar`. No separate `Windowed` layer exists in v1 (reserved, `35 §5.5`).
+- Classification runs on the **Phase A** tree (before Phase B's aggregate-lift, `§7`); the lift does not change the classification, it consumes it.
+
+The layer is independent of the authoring `SemanticRole`: a Dimension whose `expr` resolves to a subtree containing an `Aggregate` is `PostAggregate`. It is recorded on `ResolvedExprEntry.layer` and persisted with the physical expression (`33 §7.2`); CX1 re-validates `layer == classify(expr)` at load. This is the single piece of "extra data" that lets Phase B (`§6`) place each expression onto the correct `PlanNode` layer (pushdown vs aggregate vs post-aggregate) without re-walking semantic provenance.
+
 ### 3.3 The substitution algorithm — per-leaf-kind rules
 
 #### 3.3.1 Overview
 
-For every `(SemanticsName, BindingId)` pair the Model exposes, compile calls `SemanticExpr::resolve` against the Semantics's merged `expr:` tree (the post-Tier-1-merge `SemanticExpr` per `[11 §6.3](11_names_and_scopes.md)`). The implementation is a **post-order walk** over the `Expr<SemanticLeaf>` tree:
+For every `(SemanticsName, EntityId)` pair the Model exposes, compile calls `SemanticExpr::resolve` against the Semantics's merged `expr:` tree (the post-Tier-1-merge `SemanticExpr` per `[11 §6.3](11_names_and_scopes.md)`). The implementation is a **post-order walk** over the `Expr<SemanticLeaf>` tree:
 
 1. For each `Expr<L>::Leaf(leaf)` node, dispatch to the per-leaf-kind rule (§3.3.2). The rule returns either a `PhysicalLeaf` (wrapped in `Expr::Leaf`) or a structural subtree (e.g. an accessor-sugared typed leaf lowers to a `Window`-rooted subtree, which then recurses).
 2. For each structural variant of `Expr<L>` (`BinaryOp`, `Case`, `FunctionCall`, `Aggregate`, `Cast`, `InList`, `Between`, `Like`, `IsNull`, `Coalesce`, `NullIf`, `Window`, `UnaryOp`), recurse on the children, then rebuild the same variant with the resolved children. The structural shape passes through unchanged (§3.3.3).
@@ -414,22 +436,22 @@ Built once at `compile` time after `validate` (so endpoints are known-valid):
 ```rust
 pub struct RelationshipGraph {
     kinds:         BTreeMap<DataKindName, DataKindNode>,
-    relationships: Vec<Relationship>,
-    by_kind:       BTreeMap<DataKindName, Vec<RelationshipId>>, // ascending RelationshipId
+    relationships: BTreeMap<EntityId, Relationship>,
+    by_kind:       BTreeMap<DataKindName, Vec<EntityId>>, // relationship EntityIds, name-ordered
 }
 ```
 
-`RelationshipId` is the `u32` newtype from `[18 §2.1](18_entities.md)`. Stable within a compile; not stable across edits (same rationale as `BindingId`).
+A relationship is referenced by its `EntityId` (`18 §2.1`) — durable and stable across edits. The `by_kind` adjacency vectors are ordered by relationship **name** so neighbor iteration (and thus path enumeration) is deterministic and author-meaningful.
 
 #### 3.4.3 The BFS algorithm
 
-Shortest-path BFS over the `RelationshipGraph` from `from_kind` to `to_kind`. Returns the path's `Vec<RelationshipId>` on a unique hit. The walk records the shortest depth `d` on first reach, then exhausts every path of depth `d`; deeper paths are ignored.
+Shortest-path BFS over the `RelationshipGraph` from `from_kind` to `to_kind`. Returns the path's `Vec<EntityId>` on a unique hit. The walk records the shortest depth `d` on first reach, then exhausts every path of depth `d`; deeper paths are ignored.
 
 - 0 hits → `CompileError::NoRelationshipPath { from, to }`.
 - 1 hit  → success.
 - ≥ 2 hits at depth `d` → `CompileError::AmbiguousRelationshipPath { from, to, paths }` (hard error; no tie-break).
 
-**Why shortest-path + hard ambiguity, not tie-break.** A tie-break (declaration order, lex order) would silently pick one path when the Model expressed two equally-valid intentions; that violates `00 §9` **I4** (determinism) and surprises authors. Ambiguity is an authoring defect that demands explicit relationship-graph disambiguation. Neighbor iteration uses ascending `RelationshipId` to keep the `paths` vector content stable across compiles. Termination follows from the visited-depth map and the bounded `|kinds|` frontier.
+**Why shortest-path + hard ambiguity, not tie-break.** A tie-break (declaration order, lex order) would silently pick one path when the Model expressed two equally-valid intentions; that violates `00 §9` **I4** (determinism) and surprises authors. Ambiguity is an authoring defect that demands explicit relationship-graph disambiguation. Neighbor iteration uses relationship-name order to keep the `paths` vector content stable across compiles (and stable across edits, since it no longer rides a compile-counter). Termination follows from the visited-depth map and the bounded `|kinds|` frontier.
 
 #### 3.4.4 Binding selection for the spliced subtree
 
@@ -442,7 +464,7 @@ pub struct PathSignature {
     pub paths: BTreeSet<RelationshipPath>,
 }
 
-pub struct RelationshipPath(pub Vec<RelationshipId>);
+pub struct RelationshipPath(pub Vec<EntityId>); // chain of relationship EntityIds
 ```
 
 `paths` is a `BTreeSet` so identical relationship chains contributed by multiple leaf sites dedupe deterministically. `path_signature` is `None` when no cross-kind walk occurred (every typed semantic leaf resolved within the current DataKind; no plan-time join needed); `Some(ps)` carries one or more distinct paths whose union the planner materializes as the join subgraph per `[16 §4](16_composition.md)`. Phase A only populates the structure.
@@ -515,7 +537,7 @@ When a Semantics declares `data_type: T` explicitly and the resolved root's `inf
 
 ### 3.8 Per-Binding keying
 
-The `ResolvedExprTable` carries one entry per `(SemanticsName, BindingId)` pair the Model exposes:
+The `ResolvedExprTable` carries one entry per `(SemanticsName, EntityId)` pair the Model exposes:
 
 | DataKind shape | # entries per Semantics name | Notes |
 |---|---|---|
@@ -551,7 +573,7 @@ flowchart TD
 - **`validate` preconditions** (unique DataKind names, valid Relationship endpoints, valid `PhysicalSource`, valid `expr:`/column binding per `[10 §3.2](10_resolution_pipeline.md)`) are presumed; structural leakage past `validate` is `unreachable!`.
 - **Sealed registry** (`[14a §2.1](14a_function_catalog.md)`) consulted read-only in step 6.
 - **Shape inference** from `[11 §6.3](11_names_and_scopes.md)` runs in step 3 and pins the `data_type:` value step 7 reconciles against.
-- **No re-entry.** Topological sort from step 5 guarantees each `(SemanticsName, BindingId)` is resolved exactly once.
+- **No re-entry.** Topological sort from step 5 guarantees each `(SemanticsName, EntityId)` is resolved exactly once.
 
 ### 3.10 Referenced-column harvesting
 
@@ -564,7 +586,7 @@ Each `ResolvedExprEntry.referenced_columns: Vec<String>` is the flat, de-duplica
 - `{…} { accessor: Some(_) }` → after sugar elimination, only the lowered subtree's typed-leaf children contribute (`Parameter` leaves contribute nothing — bound at plan time).
 - Structural variants recurse and union.
 
-Output is de-duplicated (via a `BTreeSet<String>` intermediate) but unsorted — the planner sorts as needed. Column names are **binding-native** (no source / schema qualification); qualification is supplied by the binding's `PhysicalSource` at adapt time. Distinct `BindingId`s keep `Unionset`-style name collisions naturally segregated.
+Output is de-duplicated (via a `BTreeSet<String>` intermediate) but unsorted — the planner sorts as needed. Column names are **binding-native** (no source / schema qualification); qualification is supplied by the binding's `PhysicalSource` at adapt time. Distinct `EntityId`s keep `Unionset`-style name collisions naturally segregated.
 
 ### 3.11 Auto-mapping synthesis pre-step
 
@@ -583,6 +605,18 @@ After synthesis the binding's `SemanticMapping` is indistinguishable from an exp
 **Companion rule — `SemanticKindMismatch`** (fired during §3.3.2.d's kind-check step). A typed semantic leaf with an explicit kind contract (e.g. `measure("x")`) that disagrees with the registry's kind for `name` (e.g. `x` is a Dimension) → `CompileError::SemanticKindMismatch { authored_kind, registered_kind, name, location }`. `Field` leaves never trigger this — they carry no kind contract.
 
 **Idempotent.** Re-running the pre-step on an already-normalized binding is a no-op (synthesis skips covered columns; rejection already terminated). Simplifies test fixtures and `--explain` re-tracing.
+
+### 3.12 Relationship join-key and filter lowering
+
+A `Relationship`'s join keys (`JoinKeyExprPair.from` / `.to`) and residual `filter` are `SemanticExpr` sites (`14 §7`), so they lower through the same Phase A `resolve` pipeline as any other expression — they are **not** a parallel, un-lowered carrier. Each side resolves against its own endpoint's interface (`from`-side keys against the `from` DataKind, `to`-side keys against the `to` DataKind).
+
+The manifest representation (`33 §8A`) is **semantic-id-first**, so lowering decomposes each join-key side rather than inlining a physical expression:
+
+- **Bare-name key** (the common case, e.g. `customer_id`) — resolves to an existing declared semantic (`Dimension` / `Field` / `Key`) on that interface. The manifest `ResolvedJoinKey` side is that semantic's `EntityId`; its physical column is reached through the bound `SemanticMapping` (`15`).
+- **Computed key** (e.g. `lower(email)`) — decomposes via the auto-mapping mechanism of §3.11: compile synthesises an implicit `Field` semantic for the expression, binds its lowered `PhysicalExpr` through the binding mapping (`SemanticMappingValue::Expr`, `33 §7.1`), and the `ResolvedJoinKey` side references that synthesised `Field`'s `EntityId`.
+- **Residual `filter`** — a whole-rowset Boolean predicate (not a per-side semantic). It lowers to a single `PhysicalExpr` interned in `ManifestExpressions.physical` and is referenced as a `PhysicalExprId` directly on `ResolvedRelationship.filter` (`33 §8A.1`), ANDed into the join condition.
+
+This keeps the join contract expressed at the semantic layer (separation of concerns) while the lowered `PhysicalExpr` lives in the one expression pool — uniform with every other lowered expression, and never re-resolved at plan time (I5 / I8). The `Relationship` graph itself is still consumed for cross-DataKind *path* resolution per §3.4 (a distinct concern from lowering the join predicate).
 
 ---
 
@@ -657,6 +691,8 @@ Phase-B observable: Strategy places B₁'s filter; B₂'s `Literal(true)` is a n
 | `dimensions.<d>.expr` (computed)   | scalar          | no |
 | `filters.<f>.expr`                 | Boolean         | yes — HAVING-style predicates may reference aggregated values |
 | `keys` members                     | n/a in v1       | no per-member `expr:` authoring slot is ratified (`18 §9`) |
+| `relationships.<r>.keys[].{from,to}` | scalar        | no — equi-join operand; lowers per §3.12 (bare name → semantic id; computed → synthesised `Field`) |
+| `relationships.<r>.filter`         | Boolean         | no — residual join predicate; lowers to a pooled `PhysicalExprId` (§3.12) |
 | `extras.semantic_mapping.<x>.expr` | scalar          | no (parses to `PhysicalExpr`) |
 
 **Structural shape gates** enforced at parse / construction time:
@@ -675,6 +711,18 @@ Phase B does two things Phase A does not:
 
 - **`Aggregate` lift.** `Aggregate` nodes embedded in `PhysicalExpr` are extracted into `PlanNode::Aggregate` slots; the residual `PhysicalExpr` substitutes `Column` refs to the lifted slots (§7).
 - **`Parameter` binding.** Compile-emitted `Parameter` leaves are substituted with concrete values from the `Request` per `[14 §5.3](14_expressions.md)`. A `Parameter` reaching the adapter is a hard error owned by the planner.
+
+#### 6.0 Placement is keyed on `ExprLayer`
+
+Each persisted expression carries its applicability layer (`ManifestExpression.layer`, `33 §7.2`; `ExprLayer` at `[35 §5.5](../apis/35_semstrait_ir.md)`), assigned at compile (`§3.2.6`). Strategy reads it directly — it does **not** re-derive placement by re-walking the tree or the semantic registry:
+
+| `ExprLayer` | Plan-tree placement |
+|---|---|
+| `Scalar` | pre-aggregation `Project` (and pushdown-eligible toward `Scan`); grouping-key Dimensions/Keys materialise here and feed `GROUP BY` (§6.2). |
+| `Aggregate` | the expression's `Aggregate` node is lifted into `PlanNode::Aggregate` (§7); pre-/re-aggregation across complex DataKinds is governed by its `Additivity` (§6.5). |
+| `PostAggregate` | the post-aggregate residual lands in a `Project` **above** the final `Aggregate` (and above any union/join re-aggregation). Ratio Metrics and Measure-referencing Dimensions land here. |
+
+This is the single piece of metadata that lets the planner allocate expressions optimally across the plan tree and across complex-DataKind composition without reconstructing the semantic layering that lowering would otherwise erase.
 
 ### 6.1 Filter placement
 
@@ -743,6 +791,8 @@ Both enums share the unified shape `Additive | SemiAdditive { axes } | NonAdditi
 | `Non`              | (any)               | `Non`                        |
 
 Rule: function-level `Non` is dominant; model-level may narrow `Additive`; `Semi`-with-`Semi` intersects the axis sets. Model cannot relax math the function disallows.
+
+**v1 scope — function-only.** In v1 the only source is function-level additivity, accessed through the `AdditivitySource` abstraction (`[14a §3.6.2](14a_function_catalog.md)`) with the aggregate op as the source; model-level `Measure.additivity` / `Metric.additivity` is **deferred** (the `Semi`/`Non` model rows above are the reserved extension point). Effective additivity therefore equals the function-level value, and `SemiAdditive { axes }` is not produced in v1 (it requires model-level axes). Strategy is written generically over `A: AdditivitySource`, so promoting model-level/composite additivity later is additive with no call-site change. The branching itself (`pre_aggregatable` / `reaggregation`) lives once on `Additivity` (`14a §3.6.1`).
 
 **Strategy behaviour per effective additivity:**
 

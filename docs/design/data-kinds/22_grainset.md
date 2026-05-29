@@ -72,10 +72,12 @@ The sealed trait hierarchy and shared `DataKind` invariants live in `20`. The Ru
 | **I1** — no raw SQL in canonical layer | The emitted plan tree carries `PlanNode::{Project, Filter, Agg, Union, Join}` with `PhysicalExpr` payloads; no SQL-shaped strings. Adapter rendering (`36`) is the only SQL site. |
 | **I2** — physical types via adapters only | Cross-grain JOIN type-reconciliation uses canonical `DataType` per `13 §2`; no engine types. |
 | **I3** — no engine branching | Zero engine-identity checks in `22`. Every decision reads either resolved manifest indices or per-unit Coverage (compile-derived). |
-| **I4** — SemanticManifest determinism | Effective-routing-unit ordering follows YAML author-declared order across the `datasets:` / `unionsets:` / `joinsets:` arrays (per `32 §6` ordering table). Same-grain pre-merge produces implicit Unionsets in declaration order per `23 §3.1`. Driver selection is most-covering with declaration-order tie-break; attached ordering follows declaration order (G-2c). |
+| **I4** — SemanticManifest determinism | Effective-routing-unit ordering follows **name order** across the `datasets:` / `unionsets:` / `joinsets:` collections (id-keyed, name-ordered projection per `32 §7`, post id-first rework). Same-grain pre-merge produces implicit Unionsets in name order per `23 §3.1`. Driver selection is most-covering with **name-order** tie-break; attached ordering follows name order (G-2c). |
 | **I5** — compile-time resolution | Per-unit Coverage is folded once at compile (§3.2); cross-grain JOIN-tree shape is built at compile from Keys + Coverage; per-Request routing is O(\|units\| × \|Semantics\|) lookups. |
 | **I6** — synchronous hot path | No I/O at any stage of Grainset resolution. |
-| **I8** — planner-complete SemanticManifest | `ResolvedGrainset` carries the effective-routing-unit list, per-unit Coverage projection, the per-pair JOIN-key index, and the `ComposedSemanticInterface`. |
+| **I8** — planner-complete SemanticManifest | `ResolvedGrainset`'s **manifest contract** persists `GrainsetLevel { grain, routing_unit, level_coverage }` per level (`levels.len() >= 2`, distinct grains, coarsest-first per `33 §6.6`). Cross-grain JOIN-tree shape, per-pair JOIN-key index, and the `ComposedSemanticInterface` are **deferred to graph build** (see Phase 3 amendment below); planner-completeness is preserved because `SemanticGraph` synthesises them deterministically from manifest primitives (per-level coverage + Keys carried on each level's interface) at build time. |
+
+> **Phase 3 amendment (2026-05-28; cascade from C8.2).** Earlier drafts of `ResolvedGrainset`'s manifest contract included the cross-grain JOIN-tree shape, the per-pair JOIN-key index, and the resolved `ComposedSemanticInterface` as persisted fields. Per ratified clause C8.2 (manifest-pass `RATIFICATION_LOG.md`), these are dropped from the manifest contract and re-classified as **graph-build outputs**. The manifest now persists only the per-level coverage primitives — `GrainsetLevel { grain, routing_unit: RoutingUnitRef, level_coverage: SemanticBitmask }` — plus the universal top-level `coverage: SemanticBitmask` per CCK.1. `RoutingUnitRef` is `Inline(NestedDataKind)` for single same-grain children and `Synthesized(EntityId)` for ≥2 same-grain children (referencing a top-level implicit Unionset per C9.4). Cross-grain JOIN-tree synthesis at graph build time uses (a) per-level `level_coverage` for first-cut path search and (b) Keys on each level's interface (per `18 §2.5`) for the equi-join skeleton. The cross-references for the manifest-resident shape are [`../apis/33_semstrait_manifest.md §6.6`](../apis/33_semstrait_manifest.md) (`DataKindVariant::Grainset`) and `33 §10` (CX1 load-time integrity). The plan-time observable behaviour in `22 §4` is unchanged — `GrainsetStrategy::resolve` still receives a fully-resolved per-level routing-unit list; the difference is that the JOIN-tree skeleton is synthesised into the graph during build, not loaded from the manifest.
 | **I10** — non-exhaustive public sum types | `Grainset` and `NestedGrainset` are `#[non_exhaustive]` per `32 §3.3`. The internal `RollupPolicy` (per G-4) is `#[non_exhaustive]` even though not authored. |
 | **I12** — first-class Diagnostics | Every error code in §§7–9 is stable and carries a `Diagnostic.location`. |
 
@@ -87,11 +89,11 @@ The `Grainset` author touches the following surface. Type-level shape lives in `
 
 | # | Axis | Explicit (authored) | Implicit (compile-derived) | Cite |
 |---|---|---|---|---|
-| A | Identity | `body.base.name` (Public form: globally unique across top-level `data_kinds:` per SR-3; Nested form: scoped to parent's nested-kind scope per `26 §4`). | `data_kind_id` (compile-assigned per `33 §<DataKindId>`); same-grain implicit Unionsets created during pre-merge get content-derived hash-ids per `33 §<implicit-unionset-id>` (forthcoming). | `32 §3.1`, `32 §3.3`, `26 §4`, `23 §3.3` |
+| A | Identity | `body.base.name` (Public form: globally unique across top-level `data_kinds:` per SR-3; Nested form: scoped to parent's nested-kind scope per `26 §4`). | `id: EntityId` (model `id` for explicit kinds; deterministic content-derived id for same-grain implicit Unionsets created during pre-merge, per `33 §9.1`). | `32 §3.1`, `32 §3.3`, `26 §4`, `23 §3.3` |
 | B | Description | `description: Option<String>` on `Grainset` (Public form only; absent on `NestedGrainset` per `26 §3` "Nested-form structural-only" rule). | None. | `32 §3.3` |
 | C | Semantic interface | `semantic_interface: SemanticInterface` on `Grainset` (Public form only; absent on `NestedGrainset`). Authors Dimensions, Measures, Metrics, **Keys** (the cross-grain JOIN surface — see §3.4), Filters per `18 §1`–`§2`. Components flatten in YAML per `#[serde(flatten)]`. | Per-Semantics inferred-type fields; typed-leaf substitution for `- ref: <name>` entries; Metric expansion; Computed-Dimension expression resolution per `19 §3`. | `32 §3.3`, `18 §1`–`§2`, `19 §3` |
 | D | AI context | `ai_context: Option<AiContext>` on `Grainset` (Public form only). | None. | `32 §3.3`, `18 §6` |
-| E | Children | `body.{datasets, grainsets, joinsets}: Vec<Nested*>` — children are **inlined** `NestedDataset` / `NestedUnionset` / `NestedJoinset` structs per `26`'s nesting matrix (Grainset admits all three Complex variants except itself per R2). Each child MUST author `extras.temporal.grain:` explicitly per SR-E-8. | Per-child Coverage inference (§3.2); same-grain pre-merge into implicit Unionsets (§3.3); cross-grain JOIN-tree shape via `ComposedSemanticInterface` (§3.4). | `32 §3.2`, `26 §1`, `26 §2`, `18 §3.4` (SR-E-8) |
+| E | Children | `body.{datasets, grainsets, joinsets}: BTreeMap<EntityId, Nested*>` — children are **inlined** `NestedDataset` / `NestedUnionset` / `NestedJoinset` structs per `26`'s nesting matrix (Grainset admits all three Complex variants except itself per R2). Each child MUST author `extras.temporal.grain:` explicitly per SR-E-8. | Per-child Coverage inference (§3.2); same-grain pre-merge into implicit Unionsets (§3.3); cross-grain JOIN-tree shape via `ComposedSemanticInterface` (§3.4). | `32 §3.2`, `26 §1`, `26 §2`, `18 §3.4` (SR-E-8) |
 | F | TemporalShape | `extras.temporal: Option<TemporalShape>` on `ComplexExtras` — carries only `kind` (incl. SCD subtype). Per the V1 strict equivalence rule (§5.2), the Grainset's effective `kind` is the cascade-up of children's kinds (which must all be equivalent). `grain` is type-level forbidden on `ComplexExtras` per SR-E-7. | Cascade-up from children's `extras.temporal.kind`. The Grainset's grain axis is the **set** of children's distinct grain values (≥ 2 per §5.2). | `32 §4`, `17`, `18 §3.3` (SR-E-7), `26 §3.1` |
 
 **Public vs. Nested form distinction.** Rows B, C, D apply only to the Public form (`Grainset`). The Nested form (`NestedGrainset`) carries only `body` (which contains `base.name`, `extras: ComplexExtras`, and the nested child arrays); fields B/C/D are structurally absent per `26 §3`. The `name` at nested scope is the structural anchor in the parent's nested-kind scope (`26 §4` addressing).
@@ -188,17 +190,17 @@ Notes on this example:
 
 ### 3.1 Children list shape and ordering
 
-The `GrainsetBody` carries three child arrays — `datasets: Vec<NestedDataset>`, `unionsets: Vec<NestedUnionset>`, `joinsets: Vec<NestedJoinset>` (per `32 §3.2`). The **canonical child sequence** for plan emission is:
+The `GrainsetBody` carries three child maps — `datasets: BTreeMap<EntityId, NestedDataset>`, `unionsets: BTreeMap<EntityId, NestedUnionset>`, `joinsets: BTreeMap<EntityId, NestedJoinset>` (per `32 §3.2`). The **canonical child sequence** for plan emission is:
 
-1. all `datasets:` entries in YAML author order, then
-2. all `unionsets:` entries in YAML author order, then
-3. all `joinsets:` entries in YAML author order.
+1. all `datasets:` entries in name order, then
+2. all `unionsets:` entries in name order, then
+3. all `joinsets:` entries in name order.
 
-This order is stable (per `32 §6` ordering table) and is the order:
+This order is stable (per `32 §7` ordering table — collections are id-keyed but projected name-ordered; intra-variant basis changed from author order to name order with the id-first rework) and is the order:
 
-- Same-grain children are merged (declaration order within the same grain determines their order inside the implicit Unionset's `inputs` per `23 §3.1`).
-- Driver selection's tie-break runs (most-covering first; declaration-order tie-break per G-2b).
-- Attached units are added in cross-grain JOIN-tree construction (declaration-order per G-2c — deterministic).
+- Same-grain children are merged (name order within the same grain determines their order inside the implicit Unionset's `inputs` per `23 §3.1`).
+- Driver selection's tie-break runs (most-covering first; name-order tie-break per G-2b).
+- Attached units are added in cross-grain JOIN-tree construction (name order per G-2c — deterministic).
 
 R2 (no same-variant self-nesting) is type-level absence per `32 §3.2` — a `grainsets:` field does not exist on `GrainsetBody`. R3 (≥ 2 children) is the validate-stage rule per `26 §2.3`. Nested-child name uniqueness within a single Grainset's combined child set is the Grainset author's responsibility; collisions surface via the `26 §4` addressing scheme as ambiguous addresses.
 
@@ -264,7 +266,7 @@ When a Request's Semantics set is fully covered by exactly one effective routing
 
 1. Identify grain-eligible units (units whose `grain ≤ request.grain` per `13 §3.2`'s coarseness order).
 2. Filter to units that fully cover the Request's Semantics set (Coverage `Native` / `Derived` per §3.2).
-3. If exactly one such unit (or multiple with the most-covering equal — declaration-order tie-break per G-2b) → that's the chosen unit.
+3. If exactly one such unit (or multiple with the most-covering equal — name-order tie-break per G-2b) → that's the chosen unit.
 4. Run the chosen unit's Strategy on a unit-narrowed Request.
 5. Wrap with `Project (DATE_TRUNC) + Agg` if `chosen_unit.grain` is finer than `request.grain` AND the rollup is shape-legal per `17 §4`.
 
@@ -277,8 +279,8 @@ When no single grain-eligible unit fully covers the Request's Semantics set, the
 **Algorithm**:
 
 1. Filter to grain-eligible units.
-2. Identify the **driver** = unit covering the largest subset of the Request's Semantics (Native / Derived). Tie-break: declaration order (G-2b).
-3. Greedily add **attached** units in declaration order (G-2c — deterministic over greedy-by-coverage-delta). Each attached unit must:
+2. Identify the **driver** = unit covering the largest subset of the Request's Semantics (Native / Derived). Tie-break: name order (G-2b).
+3. Greedily add **attached** units in name order (G-2c — deterministic over greedy-by-coverage-delta). Each attached unit must:
    - Cover ≥ 1 Semantics not yet covered by driver-or-already-attached units.
    - Share at least one Key (per `18 §2.5`) with the driver (or with an already-attached unit reachable through the JOIN tree).
 4. After all attached units are added, every Request Semantics must be covered. If any remains uncovered → `PLAN_E_2202 GrainsetSemanticsNotCoverableByJoin` (§9).
@@ -286,6 +288,8 @@ When no single grain-eligible unit fully covers the Request's Semantics set, the
    - Driver as the LEFT side.
    - Each attached unit added via `PlanNode::Join { join_type: LeftOuter }` (per G-2a) on the equi-join condition over shared Keys.
 6. Above the JOIN tree, emit the Request's `Project + Agg + Filter` per the standard observable pipeline.
+
+Expression placement at each level and at the top follows the `ExprLayer` (`19 §6.0`): `Scalar` Dimensions/Keys materialise pre-`Agg` (and feed `GROUP BY`); `Aggregate` Measures lift into the per-unit `Agg` and re-aggregate at the top; `PostAggregate` Metric residuals land above the final `Agg`. Rollup (`DATE_TRUNC + Agg`) and cross-grain re-aggregation are gated by **function-derived** `Additivity` in v1 (`19 §6.5`, `14a §3.6.2`).
 
 **Observable plan shape** (worked example in §10.4):
 
@@ -446,9 +450,9 @@ Effective routing units: `Day` (single child `paid_media_daily`), `Month` (singl
 
 Coverage: `cost` is provided by both. `Day` unit covers `cost` Natively; `Month` unit covers `cost` Natively.
 
-Most-covering at Month: tie (both cover {report_date, campaign_id, cost}). Tie-break: declaration order → `Day` (it appears first; `paid_media_daily` is index 0).
+Most-covering at Month: tie (both cover {report_date, campaign_id, cost}). Tie-break: name order → `Day` (`paid_media_daily` sorts alphabetically before `paid_media_monthly`).
 
-Wait — but `Day` requires rollup; `Month` is direct. The "most-covering" tie-break breaks before the cost-of-rollup is consulted. V1 picks `Day` (declaration order). Future cost-aware extensions may flip this.
+Wait — but `Day` requires rollup; `Month` is direct. The "most-covering" tie-break breaks before the cost-of-rollup is consulted. V1 picks `Day` (name order). Future cost-aware extensions may flip this.
 
 Single-unit delegation (§4.2): `Day` chosen; rollup wrapper added.
 
@@ -488,8 +492,8 @@ Coverage:
 Reframed Request at `Quarter`:
 
 - All three units grain-eligible (Day → Quarter, Month → Quarter, Quarter → Quarter).
-- Most-covering at Quarter: `Day` and `Month` tied at 3 (both cover {cost, campaign_id, report_date}). Declaration-order tie-break → `Day` is driver.
-- `clicks` uncovered by driver → need attached unit. Greedy declaration order: `Month` is next, but doesn't cover `clicks`. Skip to `Quarter`: covers `clicks` AND shares `campaign_id` Key with `Day`. Attach.
+- Most-covering at Quarter: `Day` and `Month` tied at 3 (both cover {cost, campaign_id, report_date}). Name-order tie-break (`paid_media_daily` < `paid_media_monthly`) → `Day` is driver.
+- `clicks` uncovered by driver → need attached unit. Greedy name order (`paid_media_monthly` < `paid_media_quarterly_clicks`): `Month` is next, but doesn't cover `clicks`. Skip to `Quarter`: covers `clicks` AND shares `campaign_id` Key with `Day`. Attach.
 - After driver + 1 attached, all 4 Semantics covered.
 
 Observable plan shape:
@@ -507,7 +511,7 @@ Project           (final shape — report_date (quarter), campaign_id, cost, cli
 - Effective routing units = one per distinct grain. Same-grain children would pre-merge into an implicit Unionset (`mode: All`, non-strict NullFill per §3.3); the Unionset would be the routing unit.
 - §4.2 single-unit delegation is the common case. Cross-grain JOIN (§4.3) fires only when no single unit covers the full Request.
 - LEFT OUTER JOIN preserves driver's row set. Attached units contribute additional Measures via equi-join on shared Keys (per `18 §2.5`). Per G-2a ratification.
-- Driver = most-covering at the Request grain; declaration-order tie-break (G-2b). Attached added in declaration order (G-2c — deterministic).
+- Driver = most-covering at the Request grain; name-order tie-break (G-2b). Attached added in name order (G-2c — deterministic).
 - `RollupPolicy` is internal-only in V1 (per G-4). Default rollup behavior follows shape rules in `17`.
 - Algorithm body — exact column ordering, `DateTrunc` placement, partial-aggregate staging, JOIN-key index lookup — lives in `34 §<GrainsetStrategy>` (parked in [`../_drafts/34_grainset_strategy.md`](../_drafts/34_grainset_strategy.md)).
 
