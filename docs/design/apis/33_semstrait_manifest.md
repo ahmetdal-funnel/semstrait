@@ -462,7 +462,7 @@ Rules:
 - **Generated identity.** A binding has no model-authored id; its `id` is generated deterministically at compile from `(data_kind_id, source_id, mapping)` (§9.1).
 - **`SemanticMappingValue::Expr` references `PhysicalExprId`.** Manifest persists only the post-desugar physical form referencing native columns; the semantic/authoring form is lowered away at compile and not persisted (§7.2). `PhysicalExprId` is an expression-pool handle (content-dedup), not an `EntityId` (§7.2). The pool entry it resolves to carries the expression's `ExprLayer`.
 
-### 7.2 `ManifestExpressions` (split typed pools, C12)
+### 7.2 `ManifestExpressions` (physical-only pool + layer)
 
 ```rust
 #[non_exhaustive]

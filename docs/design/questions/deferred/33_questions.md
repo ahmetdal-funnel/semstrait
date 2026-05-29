@@ -157,7 +157,7 @@ purpose: Manifest questions parked for post-v1 ratification or follow-up researc
 
 ## Q-MAN-D08 — Phase 2 Target B: Dual expression-form persistence — DEFERRED
 
-**Status: DEFERRED — Phase 2 research candidate.** Targets C11 (split typed pools — `ManifestExpressions { semantic, physical }`) and C12 (typed-id discipline). The interface is ratified for v1 (per Q-MAP-006 closure citing C11 / C12); the open Phase 2 question is whether v2 should add **provenance edges** between `SemanticExprId` and `PhysicalExprId` — i.e. recording which physical expression was lowered from which semantic expression.
+**Status: DEFERRED — Phase 2 research candidate. Re-scoped by STATUS item V (2026-05-29).** v1 now persists a **physical-only** pool (no `semantic` pool, no `SemanticExprId`); the applicability `ExprLayer` replaced the diagnostic-only semantic form. The Phase-2 question is therefore reframed: if semantic-layer explainability or shared-aggregate provenance is wanted, v2 would **re-introduce** a persisted semantic form (or a `PhysicalExprId → source-semantic` provenance side-map) — this is the same post-v1 home as the reserved graph `Expression`-node / `DependsOn` edge (`35 §2A.1`). Not needed for v1 correctness.
 
 **Refs.**
 

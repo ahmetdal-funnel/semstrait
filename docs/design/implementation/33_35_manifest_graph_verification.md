@@ -14,7 +14,7 @@ Post-verification cleanup focused on boundary clarity, deterministic graph input
 | Constraint | Result | Evidence |
 |---|---|---|
 | 1) No overuse of single-use abstractions | **Pass** | `33 §6.1/§6.7` removed the standalone `PathOrigin` abstraction and reuses `DataKindOrigin` directly. |
-| 2) Shared behavior uses traits/enums | **Pass** | Shared behavior remains encoded in reusable enums/newtypes (`DataKindOrigin`, `GraphExprRef`, `SemanticExprId`, `PhysicalExprId`). |
+| 2) Shared behavior uses traits/enums | **Pass** | Shared behavior remains encoded in reusable enums/newtypes (`DataKindOrigin`, `GraphExprRef`, `ExprLayer`, `PhysicalExprId`; `SemanticExprId` retired by STATUS item V). |
 | 3) Bitmap/bitmask semantics explicit | **Pass** | `33 §5` / `§10` / `§12` define bit-position mapping, canonical encoding, and load-time invalid-bit rejection. |
 | 4) Manifest does not build graph | **Pass** | `33 §1` / `§2` / `§4.4` define primitives-only persistence and graph-build ownership in planner runtime. |
 | 5) Expressions resolvable via graph | **Pass** | `35 §2A` requires pool-typed `GraphExprRef` and build-time reference resolution before fragment admission; `35 §5.3.2` keeps compile→graph→plan lookup-only flow. |
@@ -26,7 +26,7 @@ The manifest now states one deterministic graph-builder input contract:
 - source identity/indexing inputs (`SourceId`, `locator`, `version_ref`, `schema_fingerprint`)
 - composition/topology hints (`data_kinds`, `relationships`, `interfaces`, join/grain/union payloads)
 - explicit bitmap/bitmask semantics (`SemanticBitmap`, canonical `SemanticBitmask`)
-- typed expression pools and references (`SemanticExprId`, `PhysicalExprId`, `GraphExprRef`)
+- physical-only expression pool with applicability layer (`ManifestExpression { expr, layer }`, `PhysicalExprId`, `GraphExprRef`)
 - derived runtime indices (name/adjacency/composition lookups) are graph-build outputs, not manifest fields
 
 ## Validation ownership checkpoints

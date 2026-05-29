@@ -68,6 +68,8 @@
 
 ### C11 — Expression forms persisted
 
+> **Superseded by STATUS item V (layered expressions, 2026-05-29).** The manifest now persists **physical-only** expressions, each wrapped as `ManifestExpression { expr: PhysicalExpr, layer: ExprLayer }` (`33 §7.2`). `SemanticExpr` is a transient compile input, not a manifest artifact (the source model serves authoring round-trip/diagnostics); the `semantic` pool and `SemanticExprId` are dropped. The applicability `ExprLayer` is the new "what layer" metadata that replaces the diagnostic-only semantic pool. C12.5 is moot (one pool). This block is retained as the item-T historical record.
+
 **Pick:** both `SemanticExpr` and `PhysicalExpr` are first-class persisted manifest artifacts.
 
 **Sugar layer:** `SemanticExpr` only. `PhysicalExpr` is post-desugar canonical form referencing native columns.
@@ -77,6 +79,8 @@
 ---
 
 ### C12 — Expression storage shape
+
+> **Superseded by STATUS item V (2026-05-29).** Single physical-only pool: `physical: BTreeMap<PhysicalExprId, ManifestExpression>` (`33 §7.2`). C12.2's split pools and C12.3's `SemanticExprId` are retired (with one pool there is no cross-pool hazard); C12.4 dedup and the `PhysicalExprId` newtype survive; C12.5 is moot. C16's reverse index is now `EntityId -> [PhysicalExprId]`.
 
 **Picks:**
 - C12.1 = flat indexed pool
