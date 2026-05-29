@@ -93,7 +93,7 @@ The `Grainset` author touches the following surface. Type-level shape lives in `
 | B | Description | `description: Option<String>` on `Grainset` (Public form only; absent on `NestedGrainset` per `26 §3` "Nested-form structural-only" rule). | None. | `32 §3.3` |
 | C | Semantic interface | `semantic_interface: SemanticInterface` on `Grainset` (Public form only; absent on `NestedGrainset`). Authors Dimensions, Measures, Metrics, **Keys** (the cross-grain JOIN surface — see §3.4), Filters per `18 §1`–`§2`. Components flatten in YAML per `#[serde(flatten)]`. | Per-Semantics inferred-type fields; typed-leaf substitution for `- ref: <name>` entries; Metric expansion; Computed-Dimension expression resolution per `19 §3`. | `32 §3.3`, `18 §1`–`§2`, `19 §3` |
 | D | AI context | `ai_context: Option<AiContext>` on `Grainset` (Public form only). | None. | `32 §3.3`, `18 §6` |
-| E | Children | `body.{datasets, grainsets, joinsets}: Vec<Nested*>` — children are **inlined** `NestedDataset` / `NestedUnionset` / `NestedJoinset` structs per `26`'s nesting matrix (Grainset admits all three Complex variants except itself per R2). Each child MUST author `extras.temporal.grain:` explicitly per SR-E-8. | Per-child Coverage inference (§3.2); same-grain pre-merge into implicit Unionsets (§3.3); cross-grain JOIN-tree shape via `ComposedSemanticInterface` (§3.4). | `32 §3.2`, `26 §1`, `26 §2`, `18 §3.4` (SR-E-8) |
+| E | Children | `body.{datasets, grainsets, joinsets}: BTreeMap<EntityId, Nested*>` — children are **inlined** `NestedDataset` / `NestedUnionset` / `NestedJoinset` structs per `26`'s nesting matrix (Grainset admits all three Complex variants except itself per R2). Each child MUST author `extras.temporal.grain:` explicitly per SR-E-8. | Per-child Coverage inference (§3.2); same-grain pre-merge into implicit Unionsets (§3.3); cross-grain JOIN-tree shape via `ComposedSemanticInterface` (§3.4). | `32 §3.2`, `26 §1`, `26 §2`, `18 §3.4` (SR-E-8) |
 | F | TemporalShape | `extras.temporal: Option<TemporalShape>` on `ComplexExtras` — carries only `kind` (incl. SCD subtype). Per the V1 strict equivalence rule (§5.2), the Grainset's effective `kind` is the cascade-up of children's kinds (which must all be equivalent). `grain` is type-level forbidden on `ComplexExtras` per SR-E-7. | Cascade-up from children's `extras.temporal.kind`. The Grainset's grain axis is the **set** of children's distinct grain values (≥ 2 per §5.2). | `32 §4`, `17`, `18 §3.3` (SR-E-7), `26 §3.1` |
 
 **Public vs. Nested form distinction.** Rows B, C, D apply only to the Public form (`Grainset`). The Nested form (`NestedGrainset`) carries only `body` (which contains `base.name`, `extras: ComplexExtras`, and the nested child arrays); fields B/C/D are structurally absent per `26 §3`. The `name` at nested scope is the structural anchor in the parent's nested-kind scope (`26 §4` addressing).
@@ -190,13 +190,13 @@ Notes on this example:
 
 ### 3.1 Children list shape and ordering
 
-The `GrainsetBody` carries three child arrays — `datasets: Vec<NestedDataset>`, `unionsets: Vec<NestedUnionset>`, `joinsets: Vec<NestedJoinset>` (per `32 §3.2`). The **canonical child sequence** for plan emission is:
+The `GrainsetBody` carries three child maps — `datasets: BTreeMap<EntityId, NestedDataset>`, `unionsets: BTreeMap<EntityId, NestedUnionset>`, `joinsets: BTreeMap<EntityId, NestedJoinset>` (per `32 §3.2`). The **canonical child sequence** for plan emission is:
 
-1. all `datasets:` entries in YAML author order, then
-2. all `unionsets:` entries in YAML author order, then
-3. all `joinsets:` entries in YAML author order.
+1. all `datasets:` entries in name order, then
+2. all `unionsets:` entries in name order, then
+3. all `joinsets:` entries in name order.
 
-This order is stable (per `32 §6` ordering table) and is the order:
+This order is stable (per `32 §7` ordering table — collections are id-keyed but projected name-ordered; intra-variant basis changed from author order to name order with the id-first rework) and is the order:
 
 - Same-grain children are merged (declaration order within the same grain determines their order inside the implicit Unionset's `inputs` per `23 §3.1`).
 - Driver selection's tie-break runs (most-covering first; declaration-order tie-break per G-2b).

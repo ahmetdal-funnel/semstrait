@@ -68,27 +68,27 @@ Each body's shape (`32 §3.2` reproduced):
 ```rust
 pub struct GrainsetBody {
     pub base:      DataKindBase<ComplexExtras>,
-    pub datasets:  Vec<NestedDataset>,
-    pub unionsets: Vec<NestedUnionset>,
-    pub joinsets:  Vec<NestedJoinset>,
+    pub datasets:  BTreeMap<EntityId, NestedDataset>,
+    pub unionsets: BTreeMap<EntityId, NestedUnionset>,
+    pub joinsets:  BTreeMap<EntityId, NestedJoinset>,
     // no `grainsets:` field
 }
 
 pub struct UnionsetBody {
     pub base:      DataKindBase<ComplexExtras>,
-    pub datasets:  Vec<NestedDataset>,
-    pub grainsets: Vec<NestedGrainset>,
-    pub joinsets:  Vec<NestedJoinset>,
+    pub datasets:  BTreeMap<EntityId, NestedDataset>,
+    pub grainsets: BTreeMap<EntityId, NestedGrainset>,
+    pub joinsets:  BTreeMap<EntityId, NestedJoinset>,
     pub mode:      UnionMode,
     // no `unionsets:` field
 }
 
 pub struct JoinsetBody {
     pub base:          DataKindBase<ComplexExtras>,
-    pub datasets:      Vec<NestedDataset>,
-    pub grainsets:     Vec<NestedGrainset>,
-    pub unionsets:     Vec<NestedUnionset>,
-    pub relationships: Vec<Relationship>,       // unified shape (`18 §2`)
+    pub datasets:      BTreeMap<EntityId, NestedDataset>,
+    pub grainsets:     BTreeMap<EntityId, NestedGrainset>,
+    pub unionsets:     BTreeMap<EntityId, NestedUnionset>,
+    pub relationships: BTreeMap<EntityId, Relationship>,   // unified shape (`18 §2`)
     // no `joinsets:` field
 }
 ```

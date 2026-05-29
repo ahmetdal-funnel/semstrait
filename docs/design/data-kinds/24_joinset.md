@@ -29,7 +29,7 @@ refined-by:
 >
 > - `[../apis/32_semstrait_model.md §3](../apis/32_semstrait_model.md)` — top-level YAML tag (`joinsets:`), `JoinsetBody` struct shape.
 > - `[../foundations/18_entities.md §2](../foundations/18_entities.md)` — canonical `Relationship` struct (unified across root-level `relationships:` and `JoinsetBody.relationships`). Key decisions:
->   - `JoinsetBody.relationships: Vec<Relationship>` — no separate `JoinRelationship` type. The unified struct is **semantic-first**, carrying `{ name, from, to, keys, filter?, cardinality, integrity, optional?, cross_filter?, ai_context?, description? }`.
+>   - `JoinsetBody.relationships: BTreeMap<EntityId, Relationship>` — no separate `JoinRelationship` type. The unified struct is **semantic-first**, carrying `{ id, name, from, to, keys, filter?, cardinality, integrity, optional?, cross_filter?, ai_context?, description? }`.
 >   - `JoinType` is **derived** at compile from `Relationship.optional` per `18 §2.9`, not authored. v1 roster: `{Inner, Left, Right, Full}`, `#[non_exhaustive]`. `AsOf` is descoped for v1 (post-v1 deferred per `17`).
 >   - Join keys shape: `keys: [{from: <SemanticExpr>, to: <SemanticExpr>}, …]` equi-pair list + optional `filter: <SemanticExpr>` residual predicate.
 >   - `cardinality:` is required at every Relationship authoring site (SR-E-4). `optional:` and `cross_filter:` are required on `OneToOne` / `ManyToMany` (SR-E-13); directional `cross_filter` is forbidden on `ManyToMany` (SR-E-14).
@@ -158,7 +158,7 @@ pub struct JoinsetDataKind {
     /// semantics inside a Joinset — there is no per-hop override
     /// surface.
     #[serde(default)]
-    pub relationships: Vec<Relationship>,
+    pub relationships: BTreeMap<EntityId, Relationship>,
 
     /// The Joinset's own interface — the declared Dimensions /
     /// Measures / Metrics / Filters / Keys that live at the Joinset

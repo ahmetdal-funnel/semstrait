@@ -124,6 +124,7 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 | `Relationship`, composed interface semantics | [`foundations/16_composition.md`](foundations/16_composition.md) |
 | `TemporalShape` and shape semantics | [`foundations/17_temporal_shape.md`](foundations/17_temporal_shape.md) |
 | Canonical entities (`Cardinality`, `Integrity`, `Optional`, `CrossFilter`, derived `JoinType`, `DimensionType`, `AggregationType`, etc.) | [`foundations/18_entities.md`](foundations/18_entities.md) |
+| Named-entity identity (`EntityId`, per-entity `id` field; id-keyed model collections, name-ordered output) | [`apis/32_semstrait_model.md`](apis/32_semstrait_model.md) §2 / §2.3 / §9.0; entity `id` fields in [`foundations/18_entities.md`](foundations/18_entities.md); manifest propagation `33 §4.3.1` |
 | `DataKind` taxonomy and trait axes | [`data-kinds/20_taxonomy.md`](data-kinds/20_taxonomy.md) |
 | Typed diagnostics contract and observability policy | [`apis/30_api_contracts.md`](apis/30_api_contracts.md) |
 | Unified API error sum (`SemStraitErrorKind`) | [`apis/38_semstrait_api.md`](apis/38_semstrait_api.md) |

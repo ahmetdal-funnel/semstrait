@@ -103,7 +103,7 @@ purpose: Items deferred to v2 (or later) ratification, originally raised against
 - `33` CX1 — manifest/IR load-time integrity posture and wire-shape constraints.
 - `30 §2` — stability and MAJOR/MINOR classification for contract changes.
 
-**Current position in `32`.** Deferred. v1 model contract remains name-keyed with no OpenAPI-specific `$ref` / decorator grammar added to the core shape.
+**Current position in `32`.** Deferred. The v1 model contract carries an `id: EntityId` on each named entity and keys its collections by that `id` (name-ordered output) per the id-first rework (`32 §2`, STATUS item U); no OpenAPI-specific `$ref` / decorator grammar is added to the core shape.
 
 **Deferred axes (v2 candidate).**
 

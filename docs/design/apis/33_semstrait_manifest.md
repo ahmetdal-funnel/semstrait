@@ -108,7 +108,7 @@ pub struct SemanticManifest {
     pub sources:       BTreeMap<SourceId, PhysicalSource>,             // C1, C3
     pub expressions:   ManifestExpressions,                            // C11, C12, C18
     pub relationships: BTreeMap<RelationshipId, Relationship>,         // root-scope only
-    pub stable_ids:    ManifestStableIds,                              // model identity propagation (`32 §2.3`)
+    pub stable_ids:    ManifestStableIds,                              // model identity propagation (per-entity `id`, `32 §2`/`§2.3`)
 
     pub metadata:      SemanticManifestMetadata,
 }
@@ -148,7 +148,7 @@ Free-form provenance for tooling; never load-bearing.
 
 ### 4.3.1 `ManifestStableIds` (model identity propagation)
 
-`stable_ids` persists named-entity IDs resolved at model boundary (`32 §1.4`, `§2.3`, `§9.0.1`).
+`stable_ids` persists the named-entity `id` carried on each model entity struct (`32 §1.4`, `§2`/`§2.3`, `§9.0.1`). Compile reads each entity's `id` field directly — there is no model-side identity sidecar — and maps it from the corresponding compile-time lookup id.
 
 ```rust
 pub type EntityId = String; // canonical UUIDv7 text (lowercase, hyphenated)
@@ -168,9 +168,10 @@ pub struct ManifestStableIds {
 Rules:
 
 - `EntityId` values are boundary strings and MUST be canonical UUIDv7 text.
-- Every named entity persisted in manifest primitive maps has a corresponding `stable_ids` entry.
+- Every named entity persisted in manifest primitive maps has a corresponding `stable_ids` entry, sourced from that entity's `id` field (`32 §2`).
 - `EntityId` values are globally unique within one manifest.
-- Missing source-model ids are resolved before persistence according to model-side `IdentityProfile` (`32 §9.0.1`).
+- Missing source-model ids are resolved at parse before persistence according to model-side `IdentityProfile` (`32 §9.0.1`); compile sees every entity already carrying an `id`.
+- `model_id` is allocated at compile: the `SemanticModel` root carries no `id` field (`32 §2.3`), so the manifest assigns the model-level identity here rather than copying it from the model.
 
 ### 4.4 Deterministic payload consumed by graph build
 
@@ -597,7 +598,7 @@ Notes:
 
 - `catalog: Option<&dyn CatalogProvider>` reflects C1.1's catalog-optional posture.
 - The two-channel return shape (`Diagnostics` carries warnings and informational items alongside the success or failure case) is unchanged from the previous spec.
-- `compile` copies resolved model identity sidecar entries (`32 §2.3`) into `SemanticManifest.stable_ids`; this propagation is mandatory even when ids were generated under convenience profile.
+- `compile` reads each model entity's `id` field (`32 §2`/`§2.3`) and records it in `SemanticManifest.stable_ids` against the entity's compile-time lookup id; this propagation is mandatory even when ids were generated under convenience profile.
 
 ### 9.2 Validation gates (C13)
 
