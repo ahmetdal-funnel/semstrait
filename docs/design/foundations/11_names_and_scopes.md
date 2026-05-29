@@ -464,6 +464,8 @@ For a Request at grain `G` on DataKind `K` naming Semantics `S`:
 
 Full per-variant planner rules, including the SCD / Snapshot / Timeseries / Events interaction with SemiAdditive, are ratified in `20–25`. This section fixes the contract — the planner MUST consult `Additivity` at every grain-changing plan step, MUST refuse mechanical rollup on `NonAdditive`, and MUST apply the unsafe-axis policy on `SemiAdditive`.
 
+> **v1 scope (STATUS item V).** The `Additivity` the planner consults in v1 is **function-derived only** (the aggregate op via `AdditivitySource`, `14a §3.6.2`). Model-level `additivity:` (incl. `SemiAdditive` axes) is authored and validated but **not yet consulted at plan time** — so the `SemiAdditive` row above is the reserved contract for when model-level additivity lands (`19 §6.5`). A `sum(snapshot_balance)` therefore plans as `Additive` in v1 regardless of an authored `additivity: non_additive`; advisories flag suspect Additivity × TemporalShape combinations in the interim.
+
 ## 8. Constraint
 
 A **Constraint** is a declarative rule that narrows how a Semantics element participates in computation. The concept is **element-agnostic** — any carrier type (Measure, Metric, Dimension, Filter, Key, DataKind) MAY carry Constraints. The v1 implementation realizes the carrier mechanism for **Measure and Metric**; the other carriers are architecturally reserved extension points (§8.5). The DSL shape — a nested `constraints:` block composed of reusable **kind sub-blocks** — is itself carrier-agnostic (§8.3); different carriers select different kind sub-blocks appropriate to what that element does.

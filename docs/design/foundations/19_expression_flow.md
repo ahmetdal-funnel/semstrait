@@ -249,9 +249,14 @@ impl ResolvedExprTable {
 
 `lookup` is O(log n); `lookup_all` ranges `BTreeMap` over a single `SemanticsName` (used by `ComplexDataKind` source selection over multiple Bindings). Sealed manifests are `Arc`-wrapped and immutable — no `insert`/`remove`/`update` on the public API.
 
-#### 3.2.4 Serialization posture
+#### 3.2.4 Serialization posture and the compile-time / persisted split
 
-Byte-level encoding is owned by `[33](../apis/33_semstrait_manifest.md)`. Shape-level contract: `entries` encodes in `BTreeMap`'s natural iteration order; each entry's `physical_expr` is stored inline (no interning pool in v1 — resolved exprs are small, decode simplicity beats encode-time compaction for write-once-read-many manifests).
+`ResolvedExprTable` is the **compile-time working set**; its persisted form is owned by `[33](../apis/33_semstrait_manifest.md)`. The two are not identical, and the split follows what is content-derived vs binding-context-dependent:
+
+- **`physical_expr` + `layer` are interned into the content-deduped pool** `ManifestExpressions.physical: BTreeMap<PhysicalExprId, ManifestExpression { expr, layer }>` (`33 §7.2`). The `layer` is a pure function of the tree (§3.2.6), so it rides on the deduped entry. (This supersedes any earlier "stored inline, no interning pool" wording.)
+- **The per-`(SemanticsName, binding EntityId)` context fields** — `inferred_type`, `referenced_columns`, `path_signature` — are **not** functions of the expression tree alone (a shared tree bound to different sources may infer different types / traverse different paths), so they do **not** belong on the deduped pool entry. They are persisted on the manifest's per-binding expression reference (the on-disk counterpart of `ResolvedExprKey -> {PhysicalExprId, inferred_type, referenced_columns, path_signature}`). The exact on-disk shape of that per-binding record is part of the pending `19`↔`33` reconciliation (`STATUS.md`); `19` ratifies the field set, `33` ratifies the persistence container.
+
+Shape-level contract: `entries` encodes in `BTreeMap`'s natural iteration order.
 
 #### 3.2.5 `Provenance`
 
@@ -259,13 +264,19 @@ Per-entry diagnostic-reporter carrier (which source `Location`s contributed whic
 
 #### 3.2.6 Layer classification
 
-After substeps 0–4 produce the `PhysicalExpr`, Phase A classifies its `ExprLayer` (`[14 §3.8](14_expressions.md)`; type at `[35 §5.5](../apis/35_semstrait_ir.md)`) as a pure function of the resolved tree:
+After substeps 0–4 produce the `PhysicalExpr`, Phase A classifies its `ExprLayer` (`[14 §3.8](14_expressions.md)`; type at `[35 §5.5](../apis/35_semstrait_ir.md)`) as a **pure function of the resolved tree** — `classify(tree)`:
 
-- no `Aggregate` (nor aggregation-relative `Window`) node anywhere → `Scalar`;
-- an `Aggregate` at the (post-lift) root over row-level inputs → `Aggregate`;
-- one or more `Aggregate` nodes strictly below a scalar root → `PostAggregate`.
+```text
+classify(t):
+  if no Aggregate node occurs anywhere in t          -> Scalar
+  else if the root node of t is an Aggregate          -> Aggregate
+  else                                                -> PostAggregate   # Aggregate(s) strictly below a non-Aggregate root
+```
 
-The layer is independent of the authoring `SemanticRole`: a Dimension whose `expr` resolves to a subtree containing an `Aggregate` is `PostAggregate`. It is recorded on `ResolvedExprEntry.layer` and persisted with the physical expression (`33 §7.2`); CX1 re-validates `layer == classify(tree)` at load. This is the single piece of "extra data" that lets Phase B (`§6`) place each expression onto the correct `PlanNode` layer (pushdown vs aggregate vs post-aggregate) without re-walking semantic provenance.
+- **`Window` is not a layer of its own.** A `Window` whose argument subtree contains an `Aggregate` (an *aggregation-relative window* — e.g. a `measure.previous` accessor lowered over the aggregated grain) makes the tree fall into `PostAggregate` by the rule above (the root is the `Window`, an `Aggregate` is below it). A `Window` over raw columns only (e.g. `dimension.lag`, no `Aggregate` descendant) classifies as `Scalar`. No separate `Windowed` layer exists in v1 (reserved, `35 §5.5`).
+- Classification runs on the **Phase A** tree (before Phase B's aggregate-lift, `§7`); the lift does not change the classification, it consumes it.
+
+The layer is independent of the authoring `SemanticRole`: a Dimension whose `expr` resolves to a subtree containing an `Aggregate` is `PostAggregate`. It is recorded on `ResolvedExprEntry.layer` and persisted with the physical expression (`33 §7.2`); CX1 re-validates `layer == classify(expr)` at load. This is the single piece of "extra data" that lets Phase B (`§6`) place each expression onto the correct `PlanNode` layer (pushdown vs aggregate vs post-aggregate) without re-walking semantic provenance.
 
 ### 3.3 The substitution algorithm — per-leaf-kind rules
 

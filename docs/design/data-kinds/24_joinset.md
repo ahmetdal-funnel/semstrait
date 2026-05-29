@@ -406,6 +406,8 @@ Round 1 forbids hybrid modes ("use these specific hops plus let the planner fill
 
 `JoinsetStrategy` is the planner-side contract that lowers a `ResolvedJoinset` to `PlanNode::Join` nodes. Path resolution runs at `compile` (per §4); `JoinsetStrategy` consumes the already-resolved `hops: Vec<ResolvedJoinHop>` without re-walking the Relationship graph.
 
+Expression placement within each member's subplan and at the post-join reconciliation follows the member expression's `ExprLayer` (`19 §6.0`): `Scalar` Dimensions/Keys feed pre-join projection and `GROUP BY`; `Aggregate` Measures land in the member's `Agg`; `PostAggregate` Metric residuals land in the post-join `Project`. Non-additive measures under join fanout are gated by function-derived `Additivity` (`14a §3.6.2`) — see §11.1's `JoinsetNonAdditiveRollupRequired`.
+
 ```rust
 #[non_exhaustive]
 pub struct JoinsetStrategy<'m> {

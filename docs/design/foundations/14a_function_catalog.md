@@ -155,7 +155,7 @@ pub enum DimensionAxis {
 }
 ```
 
-**Two-source SoC** (per `[19 §6.5.1](19_expression_flow.md)`'s composition table): function-level here vs model-level `AdditivityType` on a Measure / Metric per `[18 §5.2](18_entities.md)`. Phase B Strategy reads both independently; the **effective** additivity (intersection of axes, narrower wins) is what drives lossy-reaggregation advisories per `[19 §6.5.2](19_expression_flow.md)`.
+**Two-source SoC** (per `[19 §6.5](19_expression_flow.md)`'s composition table): function-level here vs model-level `AdditivityType` on a Measure / Metric per `[18 §5.2](18_entities.md)`. The **effective** additivity (intersection of axes, narrower wins) drives lossy-reaggregation advisories. **v1 reads function-level only** (model-level deferred per §3.6.2); the composition table is the reserved extension.
 
 Not author-extensible in v1 — hardcoded per built-in aggregate; UDF additivity is `[TD-REGISTRY-DETERMINISM]`'s sibling deferred item.
 

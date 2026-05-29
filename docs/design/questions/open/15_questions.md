@@ -54,7 +54,7 @@ depends-on:
 
 ## Q-MAP-006 — `ResolvedColumnMapping.computed` storage: duplicate or alias? — CLOSED (2026-05-28)
 
-> **Moved to [`../closed/15_questions.md`](../closed/15_questions.md).** Settled by C11 + C12 (Manifest Ratification Log, 2026-05-28): expressions live in `ManifestExpressions` as split typed pools (`semantic: BTreeMap<SemanticExprId, SemanticExpr>` + `physical: BTreeMap<PhysicalExprId, PhysicalExpr>`); bindings reference into the physical pool by `PhysicalExprId`. Neither duplicated nor aliased — single source of truth via typed-id reference.
+> **Moved to [`../closed/15_questions.md`](../closed/15_questions.md), then superseded by STATUS item V (2026-05-29).** Originally settled by C11 + C12 (split typed pools). Item V makes the manifest **physical-only** — `ManifestExpressions { physical: BTreeMap<PhysicalExprId, ManifestExpression{ expr, layer }> }` (`33 §7.2`); the `semantic` pool and `SemanticExprId` are dropped. The duplicate-vs-alias question dissolves with a single pool. See `closed/15` for the full note.
 
 ---
 
