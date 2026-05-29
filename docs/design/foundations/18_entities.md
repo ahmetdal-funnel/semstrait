@@ -25,7 +25,7 @@ refined-by:
   - 30 (`apis/30_api_contracts.md` — error-code allocation for `SR-E-*`)
   - 32 (`apis/32_semstrait_model.md` — root YAML shape; hosts `relationships:` and the shared pools this doc ratifies; SR-* enforcement)
   - 32b (`apis/32b_catalogs_yaml.md` — catalog grammar)
-  - 33 (`apis/33_semstrait_manifest.md` — SemanticManifest-layer `Resolved*` counterparts of the types ratified here)
+  - 33 (`apis/33_semstrait_manifest.md` — compile-resolved manifest counterparts: `ResolvedRelationship` / `ResolvedJoinKey` (`33 §8A`) for `Relationship`; `TemporalShape` / `TemporalType` on `DataKind.temporal` (`33 §8B`) for the temporal hierarchy)
   - 34 (`apis/34_semstrait_planner.md` — planner consumption of resolved entity types)
   - 35 (`apis/35_semstrait_ir.md` — `PlanNode::Join` carriage of `JoinType`)
 ---
@@ -208,7 +208,7 @@ pub struct Relationship {
 
 > **Id-first cascade (STATUS item U.2, landed).** `RelationshipId` is eliminated tree-wide; relationships are identified by `EntityId` everywhere (`16` composition-id derivation + canonical `(EntityId, Direction)` forms, `19 §3.4.5` `PathSignature: Vec<EntityId>`, `33 §6.7` `JoinsetHop.relationship`, `34` planner). Material consequence (ratified): composition `ImplicitId` is now **stable across recompiles** when relationship `EntityId`s are stable (authored/persisted; synthesized ids always stable), strengthening `16 §5.7`.
 
-**Authored vs derived.** `JoinType` is **not** an authoring-layer field. It is derived at compile from `optional` per `§2.9` and carried on the manifest-layer `ResolvedRelationship` (`33 §8.1`).
+**Authored vs derived.** `JoinType` is **not** an authoring-layer field. It is derived at compile from `optional` per `§2.9` and carried on the manifest-layer `ResolvedRelationship` (`33 §8A`) — the authoring `Relationship` here is **not** re-exported into the manifest verbatim; compile resolves it (endpoints to `EntityId`, defaults applied, keys lowered) into `ResolvedRelationship`.
 
 **No parallel override surface.** Authors who need different join semantics inside a specific Joinset declare a **scope-local Relationship** in that Joinset's `relationships:` block with the divergent fields directly. The scope-shadow rule in `§2.10` resolves the visibility. There is no per-hop override map and no per-edge override mechanism.
 
@@ -291,7 +291,7 @@ pub enum CrossFilter {
 
 **`ManyToMany` constraint.** When `cardinality == ManyToMany`, `cross_filter ∈ {Left, Right}` is rejected per SR-E-14 (`validate.relationship-many-to-many-cross-filter-directional`). A many-to-many relationship has no natural "one" side, so directional filter propagation is ambiguous; authors MUST declare `Both` or `None`.
 
-**Planner contract.** `cross_filter` is recorded on the canonical `Relationship` and surfaces to the planner via the manifest-layer `ResolvedRelationship`. The exact predicate-placement and pushdown rules driven by this field are owned by the planner doc; `18` ratifies the authoring shape and the validation rules only.
+**Planner contract.** `cross_filter` is authored on this `Relationship` and surfaces to the planner via the manifest-layer `ResolvedRelationship` (`33 §8A`), where compile materialises its default (`§2.7`) so the manifest carries a concrete value, not an `Option`. The exact predicate-placement and pushdown rules driven by this field are owned by the planner doc; `18` ratifies the authoring shape and the validation rules only.
 
 ### 2.6 `Integrity` — author-asserted RI strength
 
@@ -366,7 +366,7 @@ Authors list one `JoinKeyExprPair` per equi-predicate. The planner emits `left.<
 
 ### 2.9 `JoinType` — derived at compile, manifest-only
 
-`JoinType` is **not authored**. It is derived at compile from the relationship's `optional` field and carried on `ResolvedRelationship` (`33 §8.1`) for downstream consumption by `JoinsetStrategy` and `PlanNode::Join` emission.
+`JoinType` is **not authored**. It is derived at compile from the relationship's `optional` field and carried on `ResolvedRelationship` (`33 §8A`) for downstream consumption by `JoinsetStrategy` and `PlanNode::Join` emission.
 
 ```rust
 #[non_exhaustive]

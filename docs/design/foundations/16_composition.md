@@ -24,7 +24,7 @@ refined-by:
   - 24 (`data-kinds/24_joinset.md` — Joinset author-named Relationship-driven composition; anchor + path)
   - 25 (`data-kinds/25_applicability_matrix.md` — per-variant cross-cut for composition rules)
   - 32 (`apis/32_semstrait_model.md` — YAML surface for `Relationship` / `Joinset`)
-  - 33 (`apis/33_semstrait_manifest.md` — persists `Relationship` at root scope plus inline as Joinset shadow per `33 §6.7`; Joinset is `DataKindVariant::Joinset` per C7; `ComposedSemanticInterface` is synthesized by `SemanticGraph` at build time per C7.4 + C8.2 and is NOT persisted)
+  - 33 (`apis/33_semstrait_manifest.md` — persists the compile-resolved `ResolvedRelationship` (`33 §8A`) at root scope plus inline as Joinset shadow per `33 §6.7`; Joinset is `DataKindVariant::Joinset` per C7; `ComposedSemanticInterface` is synthesized by `SemanticGraph` at build time per C7.4 + C8.2 and is NOT persisted)
   - 34 (`apis/34_semstrait_planner.md` — planner consumes the field-first algorithm as its entry point)
   - 35 (`apis/35_semstrait_ir.md` — `PlanNode::Join` carriage of `JoinType` / `Cardinality`)
 ---
@@ -281,9 +281,11 @@ Fields:
 - `filter: Option<SemanticExpr>` — optional residual predicate AND-ed
   on top of the equi-join keys (`18 §2.8`).
 - **Derived** `join_type: JoinType` — produced at compile from `optional`
-  per the `18 §2.9` table; carried on the persisted `Relationship`
-  (manifest re-export of the canonical entity from `18 §2`; `33 §3`).
-  Not an authoring field.
+  per the `18 §2.9` table; carried on the manifest-layer
+  `ResolvedRelationship` (`33 §8A`), into which compile resolves the
+  authoring `Relationship` (endpoints to `EntityId`, defaults applied,
+  keys lowered) — it is **not** a verbatim re-export. Not an authoring
+  field.
 
 **Conventional orientation.** `from` is the "owning" or "driving" side
 and `to` is the "referenced" side, mirroring foreign-key narrative. For
@@ -514,9 +516,10 @@ Enum defined in [`18 §2.9`](./18_entities.md#29-jointype--derived-at-compile-ma
 
 The join-kind is **not authored**. It is derived at compile from
 `Relationship.optional` per the `18 §2.9` derivation table, recorded on
-the persisted `Relationship` (manifest re-export of the canonical
-entity from `18 §2`; `33 §3`), and lowers from there to
-`PlanNode::Join`'s `join_type` field in `35`.
+the manifest-layer `ResolvedRelationship` (`33 §8A`) — into which the
+authoring `Relationship` (`18 §2`) is resolved at compile, not
+re-exported verbatim — and lowers from there to `PlanNode::Join`'s
+`join_type` field in `35`.
 
 ### 4.1 Enum — ratified variants
 

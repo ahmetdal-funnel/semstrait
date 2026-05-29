@@ -7,7 +7,8 @@ authoritative-for:
   - the `EntityId`-keyed top-level `SemanticBitmap` registry and per-DataKind / per-constituent `SemanticBitmask` shape (the lone surviving integer is the `bit_position` ordinal)
   - the manifest-resident `DataKind` primitive (including `interface_id` linkage by `EntityId`) and the closed `DataKindVariant { Dataset, Unionset, Grainset, Joinset }` taxonomy mirror
   - the `NestedDataKind` shape used inside Unionset / Grainset / Joinset variants
-  - manifest persistence shape for `SemanticInterface`, `SemanticBinding`, `Relationship` (top-level, scope-root only)
+  - manifest persistence shape for `SemanticInterface`, `SemanticBinding`, `ResolvedRelationship` (top-level, scope-root only) and `ResolvedJoinKey`
+  - the compile-resolved `TemporalShape` / `TemporalType` propagated onto leaf `DataKind`s (identifying-Dimension refs resolved to `EntityId`; `grain` generic per shape)
   - the named-entity `id: EntityId` carried on every manifest entity (model-authored reuses model `id`; compile-synthesised generates a deterministic id) plus the top-level `model_id`
   - manifest expression persistence contract — physical-only `ManifestExpressions` of `ManifestExpression { expr: PhysicalExpr, layer: ExprLayer }` keyed by `PhysicalExprId`; semantic form is lowered away at compile and not persisted
   - `PhysicalSource` manifest contract (locator + version reference + inline `projected_schema` + SHA-256 `schema_fingerprint`); reduced `PhysicalSourceType { Table, File }` and `PhysicalSourceVersionRef { IcebergSnapshotId, MonotonicVersion }` rosters
@@ -49,7 +50,9 @@ This shape lands the 20 ratified clauses C1–C18 + CCK + CX1 (see `_research/ma
 - **Catalog-optional.** `compile` accepts `Option<&dyn CatalogProvider>`. When absent, model-sourced physical shape is used.
 - **Deterministic input boundary.** Manifest ends at compile-time resolution + persistence. Runtime graph fragments, implicit-composition enumeration, and cache policy are planner graph-build concerns (`34`).
 - **IR owns canonical expression vocabulary.** Manifest persists IR-owned `PhysicalExpr` (post-lowering), plus its `ExprLayer`, with `Serialize` / `Deserialize` derived inside `semstrait-ir` (spec 35). `SemanticExpr` is a transient compile input, not persisted.
-- **Resolved naming policy.** Prefix `Resolved*` only for compile-complete forms; do not use it for author-level or deferred-runtime forms.
+- **Relationships are resolved, not re-exported.** The manifest stores a compile-resolved `ResolvedRelationship` (§8A), **not** the spec-18 authoring `Relationship`. Compile resolves endpoints to `EntityId` (`from` / `to` → `data_kinds`), applies the `optional` / `cross_filter` defaults matrix (spec 18 §2.7), derives `join_type` (spec 18 §2.9), and represents join keys as semantic-id pairs (`ResolvedJoinKey`) whose physical expression is reached through the bound `SemanticBinding.mapping`. This keeps the join contract at the semantic layer (SoC) while staying planner-complete (I5 / I8).
+- **Temporal shape propagates onto leaf DataKinds.** Compile carries each leaf `Dataset`'s `TemporalShape` onto its manifest `DataKind` (§6.1) with the only resolution being identifying-Dimension `SemanticsName → EntityId`; `grain` is a generic field on the shape (mirrors the model). Planner shape-aware behaviour is deferred (spec 17 §10), but the manifest is the planner-complete record so the shape is not dropped.
+- **Resolved naming policy.** Prefix `Resolved*` only for compile-complete forms; do not use it for author-level or deferred-runtime forms. `TemporalShape` carries no `Resolved*` prefix — it is propagation with a single id-resolution step, not a full compile-resolution form.
 
 ## 3. Public Crate Surface
 
@@ -64,7 +67,9 @@ semstrait-manifest
 │   ├── grainset      // GrainsetLevel, RoutingUnitRef
 │   ├── joinset       // JoinsetHop, HopDirection
 │   ├── binding       // SemanticBinding, SemanticMappingValue
-│   ├── relationship  // Relationship (re-export of canonical entity from spec 18)
+│   ├── relationship  // ResolvedRelationship, ResolvedJoinKey
+│   │                 //   (Cardinality, Integrity, Optional, CrossFilter, JoinType re-exported from spec 18)
+│   ├── temporal      // TemporalShape, TemporalType (ScdType, Grain re-exported from spec 18 / 13)
 │   ├── identity      // EntityId (re-export of canonical id type from spec 32)
 │   ├── expr          // ManifestExpressions, ManifestExpression, PhysicalExprId
 │   ├── source        // PhysicalSource, PhysicalSourceType,
@@ -86,6 +91,8 @@ Primary root exports:
 - `GrainsetLevel`, `RoutingUnitRef`
 - `JoinsetHop`, `HopDirection`
 - `SemanticBinding`, `SemanticMappingValue`
+- `ResolvedRelationship`, `ResolvedJoinKey`
+- `TemporalShape`, `TemporalType`
 - `ManifestExpressions`, `ManifestExpression`, `PhysicalExprId`, `ExprLayer` (re-export from `35`)
 - `PhysicalSource`, `PhysicalSourceType`, `PhysicalSourceVersionRef`, `SourceColumn`
 - `compile`, `Repository`
@@ -109,7 +116,7 @@ pub struct SemanticManifest {
     pub bindings:      BTreeMap<EntityId, SemanticBinding>,            // C2
     pub sources:       BTreeMap<EntityId, PhysicalSource>,             // C1, C3
     pub expressions:   ManifestExpressions,                            // C11, C12, C18 (expr-pool ids — §7.2)
-    pub relationships: BTreeMap<EntityId, Relationship>,               // root-scope only
+    pub relationships: BTreeMap<EntityId, ResolvedRelationship>,       // root-scope only (§8A)
 
     pub metadata:      SemanticManifestMetadata,
 }
@@ -121,7 +128,7 @@ Top-level constraints:
 - **Single identity lane.** All entity collections are `EntityId`-keyed `BTreeMap`s; the key equals the value's own `id` field. Deterministic ordering follows the `EntityId` sort.
 - Every persisted entity carries one `id: EntityId` (no separate compile-id newtypes, no `stable_ids` side-map). Model-authored entities reuse their model `id`; compile-synthesised entities (sources, bindings, interfaces, implicit Unionsets, synthesised fields) generate a deterministic `id` (§9.1).
 - Vectors remain inside entities where ordered lists are meaningful (`branches`, `levels`, `hops`, `bindings`, etc.); their elements are `EntityId`s or carry their own `id`.
-- `relationships` holds **root-scope** Relationships only. Joinset-local (shadow) Relationships per spec 18 §2.10 live inline on the Joinset variant, not here (C7.6).
+- `relationships` holds **root-scope** `ResolvedRelationship`s only (§8A) — the compile-resolved manifest form, **not** a re-export of the spec-18 authoring `Relationship`. Joinset-local (shadow) relationships per spec 18 §2.10 live inline on the Joinset variant as `ResolvedRelationship`s, not here (C7.6).
 - The expression pool (`expressions.physical`) keeps its own content-dedup handle (`PhysicalExprId`, §7.2) — it addresses deduplicated expression subtrees, not named entities, and is intentionally not an `EntityId`. Each entry carries its `ExprLayer` (the applicability "extra data").
 
 ### 4.2 Top-level fingerprints
@@ -255,6 +262,7 @@ pub struct DataKind {
     pub interface_id: EntityId,    // -> interfaces
     pub origin: DataKindOrigin,
     pub coverage: SemanticBitmask,
+    pub temporal: Option<TemporalShape>,   // §8B — leaf-effective shape (None when shape-unclassified)
     pub variant: DataKindVariant,
 }
 
@@ -271,6 +279,7 @@ Notes:
 - `interface_id` links every `DataKind` to one canonical `SemanticInterface` entry in `interfaces` (by `EntityId`).
 - `origin` distinguishes author-declared (`Explicit`) from compile-synthesised entries such as multi-source-Dataset auto-Unionsets (`Implicit`). Diagnostic-only — runtime semantics are identical (C9.5).
 - `id` reuses the model `id` for `Explicit` DataKinds and is a deterministic generated id for `Implicit` ones (§9.1).
+- `temporal` carries the leaf `Dataset`'s resolved `TemporalShape` (§8B). It is `Some` only when the leaf authored `extras.temporal:`; complex kinds (Unionset / Grainset / Joinset) carry `None` at this level (spec 17 §3.2 — shape cascades to leaves during compile, the composed surface derives its effective shape at graph build). The identifying-Dimension references inside it are resolved to `EntityId`; `grain` is leaf-effective (spec 18 §3.3, SR-E-6).
 
 ### 6.2 `DataKindVariant`
 
@@ -292,7 +301,7 @@ pub enum DataKindVariant {
         members: Vec<EntityId>,                                        // -> data_kinds; anchor in members; len == 2 (binary v1)
         hops: Vec<JoinsetHop>,                                         // len == 1 (binary v1); cumulative
         path_origin: DataKindOrigin,
-        scope_local_relationships: Vec<Relationship>,                  // §2.10 shadow; each carries its own `id`
+        scope_local_relationships: Vec<ResolvedRelationship>,          // §2.10 shadow; resolved form (§8A); each carries its own `id`
     },
 }
 ```
@@ -306,6 +315,7 @@ Mirrors spec 20's Public/Nested split. Inlined into a parent variant — no sepa
 pub struct NestedDataKind {
     pub structural_label: String,                  // spec 26 addressing; nested kinds have no top-level id
     pub coverage: SemanticBitmask,
+    pub temporal: Option<TemporalShape>,           // §8B — leaf-effective (e.g. Grainset child grain, spec 17 §3.4)
     pub variant: NestedDataKindVariant,
 }
 
@@ -400,7 +410,7 @@ DataKindVariant::Joinset {
     members: Vec<EntityId>,                        // -> data_kinds; len == 2 (binary v1); anchor in members
     hops: Vec<JoinsetHop>,                         // len == 1 (binary v1); cumulative coverage
     path_origin: DataKindOrigin,
-    scope_local_relationships: Vec<Relationship>,  // §2.10 shadow; bounded to this Joinset; each carries its own `id`
+    scope_local_relationships: Vec<ResolvedRelationship>,  // §2.10 shadow (§8A); bounded to this Joinset; each carries its own `id`
 }
 
 #[non_exhaustive]
@@ -423,7 +433,7 @@ Rules:
 - **Anchor invariant** (C7.7). `anchor in members`. Defense-in-depth twin of canonical `VALID_E_2402`.
 - **Top-level `coverage` of a Joinset DataKind** equals `hops.last().hop_coverage` (the last cumulative hop is the full Joinset coverage).
 - **`path_origin`.** Diagnostic / audit tag distinguishing explicit-author vs implicit-search-derived hop sequences (spec 24 §I5). Reuses `DataKindOrigin` directly (`Explicit | Implicit`) to avoid a duplicate single-use enum.
-- **Scope-local Relationships persisted inline** (C7.6). Joinset-bounded shadow Relationships per spec 18 §2.10 live on the variant; root-scope `relationships` only holds non-shadow Relationships. This avoids a `relationship.scope` discriminator and keeps shadow visibility cleanly bounded.
+- **Scope-local relationships persisted inline** (C7.6). Joinset-bounded shadow relationships per spec 18 §2.10 live on the variant as `ResolvedRelationship`s (§8A); root-scope `relationships` only holds non-shadow `ResolvedRelationship`s. This avoids a `relationship.scope` discriminator and keeps shadow visibility cleanly bounded.
 - **No `ComposedSemanticInterface`** (C7.4). Manifest carries hops + per-hop coverage; `SemanticGraph` synthesises `UnifiedSemantics` and `FieldProvenance` at build. Cascade: spec 24 §1.4 I8 must drop "resolved ComposedSemanticInterface" from `ResolvedJoinset`'s manifest contract; §2.4 must retire the `interface: ComposedSemanticInterface { … }` pseudo-shape.
 
 ### 6.8 Implicit composition (C9)
@@ -493,6 +503,7 @@ Rules:
 - **Compile-time dedup** (C12.4). Equivalent expressions collapse to one `PhysicalExprId`. Because `ExprLayer` is a function of the tree, dedup is layer-consistent (same tree ⇒ same layer).
 - **C12.5 (no cross-pool link) is moot** — there is one pool.
 - **Derived views only** (C16). Expression coverage and reverse indexes (for example semantic `EntityId -> [PhysicalExprId]`) are derived at load/graph-build time, not persisted.
+- **All lowered expressions intern here.** The pool is the single home for every `PhysicalExpr` the manifest references — computed-semantic bodies, binding `Expr` mappings, **and** relationship residual `filter`s (`§8A.1`) plus the lowered bodies behind relationship join keys (reached via the synthesised-`Field` binding mapping, `§8A.2`). Relationship expressions are not stored inline on `ResolvedRelationship`; they flow through Phase A (`19 §3`) into this pool like any other expression.
 
 ### 7.3 Serialization mechanism (C18)
 
@@ -584,6 +595,79 @@ pub struct SourceColumn {
 - **Mixed-mode override: model wins** (C14.5). When catalog is provided AND model declares overrides for specific sources, model wins. Diagnostic: `COMP_W_CATALOG_OVERRIDE { source_id, catalog_value, model_value }` (warning, not error).
 - **`catalog_fingerprint` is fetched-content** (C14.6). Identity-only hashing would miss provider-internal drift. `None` when catalog is absent.
 
+## 8A. `ResolvedRelationship` and `ResolvedJoinKey`
+
+The manifest persists a compile-**resolved** relationship form, not the spec-18 authoring `Relationship`. The authoring struct (`18 §2.1`) carries `from` / `to` as `DataKindName`, `optional` / `cross_filter` as `Option` (default-derived at compile), join `keys` as `JoinKeyExprPair` (`SemanticExpr` sources), and **no** `JoinType`. Compile discharges all of that resolution; the manifest stores the result so the planner performs lookup only (I5 / I8).
+
+### 8A.1 Shape
+
+```rust
+#[non_exhaustive]
+pub struct ResolvedRelationship {
+    pub id: EntityId,                    // model id (authored) — also the map key in `relationships`
+    pub from: EntityId,                  // -> data_kinds (resolved from the authoring `DataKindName`)
+    pub to:   EntityId,                  // -> data_kinds
+    pub keys: Vec<ResolvedJoinKey>,      // equi-join pairs, semantic-id form (§8A.2)
+    pub filter: Option<PhysicalExprId>,  // residual predicate; ANDed into the join condition; None = equi-only
+    pub cardinality: Cardinality,        // re-exported from spec 18
+    pub integrity: Integrity,            // re-exported from spec 18
+    pub optional: Optional,              // resolved — defaults applied (spec 18 §2.7)
+    pub cross_filter: CrossFilter,       // resolved — defaults applied (spec 18 §2.7)
+    pub join_type: JoinType,             // derived at compile from `optional` (spec 18 §2.9)
+    pub description: Option<String>,
+}
+
+#[non_exhaustive]
+pub struct ResolvedJoinKey {
+    pub from: EntityId,                  // -> semantics (Dimension | Field | Key) on the `from` interface
+    pub to:   EntityId,                  // -> semantics on the `to` interface
+}
+```
+
+`Cardinality`, `Integrity`, `Optional`, `CrossFilter`, `JoinType` are the canonical enums re-exported from spec 18 §2; the manifest does not redefine them.
+
+### 8A.2 Join keys are semantic-id pairs (SoC)
+
+Each `ResolvedJoinKey` references a semantic on each side by `EntityId` — a `Dimension`, `Field`, or `Key` on the respective interface — **not** a `PhysicalExprId` directly. The physical expression for a side is reached through that semantic's bound `SemanticBinding.mapping[semantic_id]` (`§7.1`): a bare-name key resolves to an existing declared semantic; a computed key (e.g. `from: lower(email)`) is decomposed at compile into a synthesised implicit `Field` semantic (`role = Field`, generated id per §9.1) whose binding mapping holds the lowered `PhysicalExprId` (`SemanticMappingValue::Expr`). The decomposition is the same `auto`-mapping mechanism ratified in `19 §3.11`; it keeps the join contract expressed at the semantic layer while the physical form lives in the binding (separation of concerns) and the expression pool stays the single home for lowered `PhysicalExpr` (`§7.2`).
+
+Consequence: a relationship key expression is **never** stored inline on the relationship. It is lowered through Phase A (`19 §3`), interned in `ManifestExpressions.physical`, and referenced indirectly via the semantic + binding. The residual `filter` is the one direct `PhysicalExprId` on the relationship (it is not a per-side semantic, but a whole-rowset predicate).
+
+### 8A.3 Resolution responsibilities (compile)
+
+- **Endpoints.** `from` / `to` `DataKindName`s resolve to the owning `DataKind`'s `EntityId`. A dangling endpoint is `validate.relationship-dangling-endpoint` (SR-E-5) at validate, and CX1 (`§10`) re-checks the id at load.
+- **Defaults applied.** `optional` / `cross_filter` are materialised to concrete values via the spec 18 §2.7 matrix (no `Option` survives into the manifest). Symmetric-cardinality completeness (SR-E-13) and the many-to-many directional rule (SR-E-14) are already enforced at validate.
+- **`join_type` derived.** From the resolved `optional` per the spec 18 §2.9 one-to-one table. `PlanNode::Join` (`35`) reads it; nothing re-derives it at plan time.
+- **Scope.** Root-scope `ResolvedRelationship`s live in `SemanticManifest.relationships`; Joinset-local shadows live inline on `DataKindVariant::Joinset.scope_local_relationships` (`§6.7`, C7.6).
+
+## 8B. `TemporalShape` and `TemporalType`
+
+Compile propagates each leaf `Dataset`'s temporal classification onto its manifest `DataKind` (`§6.1` `temporal` field). The only resolution applied is the identifying-Dimension reference `SemanticsName → EntityId`; everything else is carried verbatim from the model (`18 §3`). It carries no `Resolved*` prefix because it is propagation, not full compile-resolution.
+
+```rust
+#[non_exhaustive]
+pub struct TemporalShape {
+    pub temporal_type: TemporalType,    // the shape variant; identifying dims resolved to EntityId
+    pub grain: Option<Grain>,           // generic across all shapes; leaf-effective (spec 18 §3.3)
+}
+
+#[non_exhaustive]
+pub enum TemporalType {
+    Timeseries { occurred_at: EntityId },        // -> semantics (temporal Dimension)
+    Events     { event_time:  EntityId },
+    Snapshot   { snapshotted_at: EntityId },
+    Scd        { scd_type: ScdType, valid_from: EntityId, valid_to: EntityId },
+}
+```
+
+`ScdType` (v1 roster `{Type1, Type2}`) and `Grain` are re-exported from spec 18 §3 / spec 13 §3.1; the manifest does not redefine them.
+
+Rules:
+
+- **Leaf-only on disk.** `temporal` is `Some` only on leaf `Dataset`s — whether a top-level `DataKind` (`§6.1`) or a `NestedDataKind` `Dataset` variant (`§6.3`, e.g. a Grainset child carrying its own `grain` per spec 17 §3.4). A complex kind (`Unionset` / `Grainset` / `Joinset`, top-level or nested) carries `None`; its effective shape is derived by `SemanticGraph` at build per spec 17 §3.2 (shape cascade + composed-surface derivation are graph-build concerns, like JOIN-trees and `ComposedSemanticInterface`).
+- **`grain` is generic, not per-variant.** It applies to every `TemporalType` and is leaf-effective (required on a leaf with `temporal:` authored — SR-E-6; forbidden on complex kinds — SR-E-7). Mirrors the model carrier (`18 §3.1`).
+- **Identifying dims are `EntityId`.** Each variant's time-axis Dimension reference is resolved to its semantic `EntityId` (a registry entry in `semantics`), consistent with the single-id lane and matching spec 17 §1.5. CX1 (`§10`) checks each against `semantics.entries`.
+- **Planner support deferred.** Shape-aware planning (rollup gates, snapshot selection, as-of joins) is deferred per spec 17 §10; the manifest still records the shape so the planner-complete contract (I8) is not violated and future shape-aware behaviour has its inputs.
+
 ## 9. Compile and Persistence Boundary (C13 + C14)
 
 ### 9.1 `compile`
@@ -603,13 +687,15 @@ Notes:
 
 - `catalog: Option<&dyn CatalogProvider>` reflects C1.1's catalog-optional posture.
 - The two-channel return shape (`Diagnostics` carries warnings and informational items alongside the success or failure case) is unchanged from the previous spec.
+- **Relationship resolution.** Compile turns each authoring `Relationship` (spec 18 §2) into a `ResolvedRelationship` (§8A): resolve `from` / `to` to `EntityId`; apply the `optional` / `cross_filter` defaults matrix (spec 18 §2.7); derive `join_type` (spec 18 §2.9); lower each join-key side through Phase A and represent it as a semantic-id pair (decomposing computed keys into synthesised implicit `Field`s); lower the residual `filter` to a pooled `PhysicalExprId`.
+- **Temporal propagation.** Compile carries each leaf `Dataset`'s authored `TemporalShape` (spec 18 §3) onto its manifest `DataKind.temporal` (§8B), resolving the identifying-Dimension `SemanticsName`(s) to `EntityId`. Shape is leaf-effective; complex kinds carry `None`.
 - **Identity propagation and generation.** `compile` carries each model entity's `id` (`32 §2`/`§2.3`) straight onto the corresponding manifest entity (it is both the value's `id` field and its map key). For entities with no model-authored identity — `PhysicalSource`, `SemanticBinding`, `SemanticInterface`, implicit Unionsets (`origin = Implicit`), synthesised `Field` semantics, and the top-level `model_id` — `compile` generates a **deterministic, content-derived** `EntityId` using **UUIDv5** (RFC 4122 name-based, SHA-1 over namespace + content). Deterministic derivation (not time-based UUIDv7) is mandatory so identical `(model, catalog)` inputs yield byte-identical manifests (I4).
   - **Per-entity-type namespace + content seed** (so distinct entity classes never collide and the same content reproduces the same id):
     - `PhysicalSource` → namespace `source`, seed = `(source_type, locator, version_ref)`.
     - `SemanticBinding` → namespace `binding`, seed = `(data_kind id, source id, canonical mapping encoding)`.
     - `SemanticInterface` → namespace `interface`, seed = the sorted member-`EntityId` set.
     - Implicit `Unionset` → namespace `data_kind`, seed = the parent `Dataset`'s structural identity + per-source list.
-    - Synthesised `Field` semantic → namespace `semantic`, seed = `(owning data_kind id, name, role)`.
+    - Synthesised `Field` semantic → namespace `semantic`, seed = `(owning data_kind id, name, role)`. This includes the implicit `Field` synthesised for a **computed relationship join key** (§8A.2), whose owning DataKind is the key's side (`from` / `to`) and whose binding mapping holds the lowered `PhysicalExprId`.
     - `model_id` → namespace `model`, seed = `model_hash`.
   - **Format.** `EntityId` is canonical UUID text: authored ids are UUIDv7 (`32`); generated ids are UUIDv5. The version nibble (`7` vs `5`) records provenance but is informational — CX1 (§10) validates canonical-UUID-text shape and global uniqueness, not the specific version.
 
@@ -685,6 +771,10 @@ Cross-references checked at load:
 | `JoinsetHop.relationship` | Joinset hop | `relationships` *or* `Joinset.scope_local_relationships` |
 | `JoinsetHop.from` / `JoinsetHop.to` | Joinset hop | `data_kinds` |
 | `Joinset.anchor`, `Joinset.members[*]` | Joinset variant | `data_kinds` |
+| `ResolvedRelationship.from` / `.to` | relationship | `data_kinds` |
+| `ResolvedJoinKey.from` / `.to` | relationship key | `semantics.entries` (on the `from` / `to` interface respectively) |
+| `ResolvedRelationship.filter::Some(id)` | relationship | `expressions.physical` |
+| `TemporalType.{occurred_at,event_time,snapshotted_at,valid_from,valid_to}` | DataKind `temporal` | `semantics.entries` (by `EntityId`) |
 | `SemanticInterface.{dimensions,measures,metrics,keys,fields}[*]` | interface | `semantics.entries` (by `EntityId`) |
 | `SemanticBitmask.words` (any set bit) | any bitmask | `semantics.entries` (some entry has matching `bit_position`; out-of-range bits are invalid) |
 | `SemanticDefinition.bit_position` uniqueness | bitmap registry | within bitmap |
@@ -701,6 +791,8 @@ Structural violations also surface here as a defense-in-depth twin of compile-ti
 - `SemanticBitmask.words` canonical form (no trailing all-zero words; empty mask is `Vec::new()`)
 - every entity `id` is canonical UUID text and equals its map key; all `id`s plus `model_id` are globally unique across collections
 - every `ManifestExpression.layer` equals `classify(expr)` (`19 §3.2.6`) — the persisted layer is consistent with the expression tree
+- `ResolvedRelationship.join_type` equals the derivation of `ResolvedRelationship.optional` (spec 18 §2.9) — the persisted derived value is consistent with its source
+- `DataKind.temporal` / `NestedDataKind.temporal` is `Some` only on a `Dataset` variant (leaf); `Unionset` / `Grainset` / `Joinset` carry `None` (spec 17 §3.2)
 
 This hardens C13's G1 / G2 / G4 from compile-time-only to compile-time + load-time. A hand-edited or repository-corrupted manifest cannot slip a dangling reference past load. The wire format remains an id-keyed map plus id reference (no OpenAPI-style `$ref` JSON pointers); CX1 preserves the integrity guarantee at less verbosity cost.
 
@@ -734,6 +826,9 @@ Use `Resolved*` only for compile-complete forms where uncertainty is eliminated 
 - I12.18 `Resolved*` prefix is used only for compile-complete forms.
 - I12.19 Graph build is deterministic over manifest primitives: same manifest bytes + same builder options => same node/edge/index reconstruction.
 - I12.20 Every expression reference that crosses into graph/planner flow is a `PhysicalExprId` and resolves by id, not by runtime semantic-name re-resolution.
+- I12.21 `relationships` and `Joinset.scope_local_relationships` hold compile-resolved `ResolvedRelationship`s (§8A), not the spec-18 authoring `Relationship`. Each carries resolved `EntityId` endpoints (`from` / `to` → `data_kinds`), materialised `optional` / `cross_filter` (no `Option`), and a `join_type` derived from `optional` (spec 18 §2.9).
+- I12.22 A `ResolvedJoinKey` side is a semantic `EntityId` (Dimension / Field / Key on the respective interface); its lowered `PhysicalExpr` is reached only through the bound `SemanticBinding.mapping`. Relationship key/filter expressions are interned in `expressions.physical` (no inline expression on the relationship).
+- I12.23 `DataKind.temporal` / `NestedDataKind.temporal`, when `Some`, carries identifying-Dimension refs resolved to `EntityId` (members of `semantics`); `grain` is a generic field on `TemporalShape`. `temporal` is populated only on leaf `Dataset` variants (top-level or nested); complex kinds derive their effective shape at graph build (spec 17 §3.2).
 
 ## 13. Deferred Threads and Open Considerations
 
@@ -757,7 +852,8 @@ The following spec amendments are **implied** by the closed clauses but live in 
 - **Spec 14 / 15** — Add author-side per-binding fields (`locator`, `source_type`, `projected_schema`, optional `version_ref`) for the model-as-truth (catalog-absent) path (Thread A).
 - **Spec 16 §9.1** — Confirm `MAX_IMPLICIT_COMPOSITION_DEPTH` wording does not imply persistence.
 - **Spec 16 §10.4** — Align "compile-time-enumerated compositions" framing with the lightweight posture (index lives in `SemanticGraph`, not manifest).
-- **Spec 18** — `Relationship` is persisted both at root scope (`SemanticManifest.relationships`) and inline as Joinset-scoped shadow (`Joinset.scope_local_relationships`); no `scope` discriminator on the entity.
+- **Spec 18** — The manifest persists a compile-resolved `ResolvedRelationship` (§8A), **not** the authoring `Relationship`; it is stored both at root scope (`SemanticManifest.relationships`) and inline as Joinset-scoped shadow (`Joinset.scope_local_relationships`), with no `scope` discriminator. Re-point `18 §2.5` / `§2.9` / `§2.11`'s "manifest-layer `ResolvedRelationship` (`33 §8.1`)" references to `33 §8A` (the prior `§8.1` anchor was `PhysicalSource`). The derived `JoinType` and resolved `optional` / `cross_filter` live on `ResolvedRelationship`, not on the authoring struct. **(Applied in the relationship/temporal reconciliation pass.)**
+- **Spec 17 / 18 §3** — The manifest carries temporal as `TemporalShape` / `TemporalType` on `DataKind.temporal` (§8B), not as a `ResolvedTemporalShape` on a `ResolvedDataKind`. Re-point `17 §1.5` / `§13` / `refined-by` and `18 §3.6` / frontmatter `refined-by` to `33 §8B`. Identifying-Dimension refs are resolved to `EntityId`; `grain` is the generic field. **(Applied in this pass.)**
 - **Spec 20** — Reflect bitmask-coverage layer cross-references; CCK skeleton (universal `coverage`); Public/Nested split alignment with `DataKind` / `NestedDataKind`.
 - **Spec 21** — Clarify multi-source Dataset auto-synthesis surfaces as a top-level implicit `Unionset` (with `origin = Implicit`), referenced by id from `RoutingUnitRef::Synthesized` when applicable.
 - **Spec 22 §1.3 I8** — Drop "JOIN-tree shape, per-pair JOIN-key index, ComposedSemanticInterface" from `ResolvedGrainset`'s manifest contract (C8.2 cascade).

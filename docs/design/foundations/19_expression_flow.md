@@ -606,6 +606,18 @@ After synthesis the binding's `SemanticMapping` is indistinguishable from an exp
 
 **Idempotent.** Re-running the pre-step on an already-normalized binding is a no-op (synthesis skips covered columns; rejection already terminated). Simplifies test fixtures and `--explain` re-tracing.
 
+### 3.12 Relationship join-key and filter lowering
+
+A `Relationship`'s join keys (`JoinKeyExprPair.from` / `.to`) and residual `filter` are `SemanticExpr` sites (`14 §7`), so they lower through the same Phase A `resolve` pipeline as any other expression — they are **not** a parallel, un-lowered carrier. Each side resolves against its own endpoint's interface (`from`-side keys against the `from` DataKind, `to`-side keys against the `to` DataKind).
+
+The manifest representation (`33 §8A`) is **semantic-id-first**, so lowering decomposes each join-key side rather than inlining a physical expression:
+
+- **Bare-name key** (the common case, e.g. `customer_id`) — resolves to an existing declared semantic (`Dimension` / `Field` / `Key`) on that interface. The manifest `ResolvedJoinKey` side is that semantic's `EntityId`; its physical column is reached through the bound `SemanticMapping` (`15`).
+- **Computed key** (e.g. `lower(email)`) — decomposes via the auto-mapping mechanism of §3.11: compile synthesises an implicit `Field` semantic for the expression, binds its lowered `PhysicalExpr` through the binding mapping (`SemanticMappingValue::Expr`, `33 §7.1`), and the `ResolvedJoinKey` side references that synthesised `Field`'s `EntityId`.
+- **Residual `filter`** — a whole-rowset Boolean predicate (not a per-side semantic). It lowers to a single `PhysicalExpr` interned in `ManifestExpressions.physical` and is referenced as a `PhysicalExprId` directly on `ResolvedRelationship.filter` (`33 §8A.1`), ANDed into the join condition.
+
+This keeps the join contract expressed at the semantic layer (separation of concerns) while the lowered `PhysicalExpr` lives in the one expression pool — uniform with every other lowered expression, and never re-resolved at plan time (I5 / I8). The `Relationship` graph itself is still consumed for cross-DataKind *path* resolution per §3.4 (a distinct concern from lowering the join predicate).
+
 ---
 
 ## 4. Sugar Contract
@@ -679,6 +691,8 @@ Phase-B observable: Strategy places B₁'s filter; B₂'s `Literal(true)` is a n
 | `dimensions.<d>.expr` (computed)   | scalar          | no |
 | `filters.<f>.expr`                 | Boolean         | yes — HAVING-style predicates may reference aggregated values |
 | `keys` members                     | n/a in v1       | no per-member `expr:` authoring slot is ratified (`18 §9`) |
+| `relationships.<r>.keys[].{from,to}` | scalar        | no — equi-join operand; lowers per §3.12 (bare name → semantic id; computed → synthesised `Field`) |
+| `relationships.<r>.filter`         | Boolean         | no — residual join predicate; lowers to a pooled `PhysicalExprId` (§3.12) |
 | `extras.semantic_mapping.<x>.expr` | scalar          | no (parses to `PhysicalExpr`) |
 
 **Structural shape gates** enforced at parse / construction time:

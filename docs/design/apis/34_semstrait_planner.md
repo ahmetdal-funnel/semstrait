@@ -556,7 +556,7 @@ Two-branch decision:
 
 For composition targets (`ResolvedTarget::Explicit(d)` where `d` is Complex, or `ResolvedTarget::Composition(d)`), the planner consumes the graph-built composition entry from `graph.composition_index(d)`:
 
-- **Composition target (explicit or implicit):** `traversed_paths` is materialized during graph build per `16 §10`. Step 3 walks the path edges to confirm every relationship `EntityId` resolves in the manifest relationship scope (`manifest.relationships` plus Joinset-local shadows) and packages the per-edge `JoinKeyExprPair` shape strategies consume.
+- **Composition target (explicit or implicit):** `traversed_paths` is materialized during graph build per `16 §10`. Step 3 walks the path edges to confirm every relationship `EntityId` resolves in the manifest relationship scope (`manifest.relationships`, holding `ResolvedRelationship` per `33 §8A`, plus Joinset-local shadows) and packages the per-edge resolved join keys (`ResolvedJoinKey` semantic-id pairs + the resolved `join_type` / `filter`) that strategies consume.
 - **Simple target:** step 3 is a no-op.
 
 `PLAN_E_2052 SemanticManifestIndexInconsistent` surfaces here when a recorded relationship `EntityId` is missing from the expected relationship scope — a manifest/graph integrity bug, not a plan-time failure mode under valid inputs.
