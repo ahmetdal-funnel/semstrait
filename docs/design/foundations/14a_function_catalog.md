@@ -159,6 +159,44 @@ pub enum DimensionAxis {
 
 Not author-extensible in v1 — hardcoded per built-in aggregate; UDF additivity is `[TD-REGISTRY-DETERMINISM]`'s sibling deferred item.
 
+#### 3.6.1 Common behavior and branching
+
+Pre-aggregation/re-aggregation safety is the same question regardless of where additivity comes from, so the **branching logic lives once** on `Additivity` itself:
+
+```rust
+impl Additivity {
+    /// True when partial aggregates over disjoint partitions may be combined
+    /// (per-branch / per-level pre-aggregation then a final re-aggregation).
+    pub fn pre_aggregatable(&self) -> bool {
+        matches!(self, Additivity::Additive)
+        // SemiAdditive is pre-aggregatable only when its `axes` are preserved
+        // by the partitioning — evaluated by the planner against the request;
+        // see `19 §6.5`. NonAdditive is never blind-pre-aggregatable.
+    }
+
+    /// The operator used to combine partial aggregates at the re-aggregation
+    /// step, when `pre_aggregatable`. `Sum -> Sum`, `Count -> Sum`,
+    /// `Min -> Min`, `Max -> Max`; `None` when re-aggregation is unsafe.
+    pub fn reaggregation(&self, partial: AggregationOp) -> Option<AggregationOp> { /* … */ }
+}
+```
+
+#### 3.6.2 Source abstraction (v1 function-only; extensible)
+
+The *source* of an expression's additivity is abstracted so the planner is written once and additional sources slot in without touching its branching:
+
+```rust
+/// Yields the effective `Additivity` for an aggregation. Implemented in v1 by
+/// the aggregate op itself (function-derived). Reserved for future composite
+/// sources (function × model-level × temporal-shape) without changing callers.
+pub trait AdditivitySource {
+    fn additivity(&self) -> Additivity;
+}
+```
+
+- **v1 — function-only.** The only source is the aggregate op: `impl AdditivitySource for AggregateKind` returns the closed-five mapping (`Sum`/`Count`/`Min`/`Max` → `Additive`, `Avg` → `NonAdditive`) or `FunctionSpec.additivity` for `Extension` aggregates. Model-level `AdditivityType` (`18 §5.2`, incl. `SemiAdditive { axes }`) is **deferred**; the `SemiAdditive` variant and the `19 §6.5` composition table are the reserved extension point — the model source is simply absent in v1, so effective additivity equals the function-level value.
+- **Zero-cost.** Planner aggregation code is generic over `A: AdditivitySource` (static dispatch); promoting a `CompositeAdditivity { function, model }` source later is additive, no call-site churn (DRY/SOLID).
+
 ## 4. Canonical Function Catalog
 
 ### 4.1 Presentation + population policy

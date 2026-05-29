@@ -306,6 +306,16 @@ These invariants are upheld at the type level, not by runtime assertion. There i
 
 The remaining structural invariants (e.g., `Aggregate` admitted only in aggregate-admitting sites, `Window` author-rejected) are construction-boundary checks; see §7.
 
+### 3.8 Expression layer (applicability)
+
+The two leaf-set layers (`SemanticExpr` / `PhysicalExpr`, §3.6) describe *what vocabulary* an expression uses. A second, orthogonal axis describes *where in the relational pipeline an expression's result applies* — its **layer**. After lowering, a `PhysicalExpr` is "just a tree", but its result lands at a specific stage:
+
+- **Scalar** — row-level; evaluated before grouping; a pushdown candidate (grouping-key Dimensions, Keys).
+- **Aggregate** — produced by the grouped aggregation (Measures); pre-/re-aggregation governed by `Additivity` (`14a §3.6`).
+- **PostAggregate** — computed over already-aggregated inputs (ratio Metrics; any Dimension whose `expr` references a Measure); evaluated after the final aggregation and after any union/join re-aggregation.
+
+The layer is a **pure function of the expression's structure** (presence and position of `Aggregate` / `Window` nodes), computed at compile (`19 §3`). It is deliberately **decoupled from the authoring `SemanticRole`** — a Dimension computed over a Measure is `PostAggregate`, not `Scalar` — so planning logic depends on evaluation placement, not on the semantic taxonomy. The type is ratified in `[apis/35_semstrait_ir.md §5.5](../apis/35_semstrait_ir.md)` (`ExprLayer`); compile assigns it (`19 §3`); the manifest persists it per expression (`33 §7.2`); the planner reads it for placement (`19 §6`).
+
 ---
 
 ## 4. Per-Entity Accessor Sugar

@@ -729,6 +729,39 @@ Per `[14 §3.7](../foundations/14_expressions.md)`, the leaf-set boundary makes 
 
 There is no `try_into_physical` runtime check, no defensive `panic!` for "Field found in PhysicalExpr". `SemanticLeaf::Column` is type-admissible but context-validated by compile per §5.2's manual-vs-auto rule.
 
+### 5.5 Expression layer (`ExprLayer`)
+
+A lowered `PhysicalExpr` is "just a tree", but **where its result applies in the relational pipeline differs**: a grouping-key scalar belongs *below* the GROUP BY (pushdown-eligible), a Measure aggregation *is* the GROUP BY, and a ratio Metric's outer formula belongs *above* it (after any union/join re-aggregation). The planner needs this placement to allocate expressions optimally across `PlanNode`s and across complex-DataKind composition. `ExprLayer` is that classification — the canonical home for the "what layer" metadata persisted on every manifest expression (`33 §7.2`).
+
+```rust
+/// The relational-pipeline layer at which an expression's RESULT applies.
+/// Determined at compile from the expression's structure (presence and
+/// position of `Aggregate` / `Window` nodes), not from the authoring kind.
+#[non_exhaustive]
+pub enum ExprLayer {
+    /// Row-level: the tree contains no aggregation. Evaluated before grouping;
+    /// pushdown-eligible (Scan / pre-Agg Project). Grouping-key Dimensions, Keys.
+    Scalar,
+    /// Grouped aggregation: after Phase-B aggregate-lift (`19 §7`), the result
+    /// is produced by an `Aggregate` over row-level inputs. Measures.
+    /// Pre-/re-aggregation safety is governed by the aggregation's `Additivity`
+    /// (`14a §3.6`), derived from the aggregate op in v1.
+    Aggregate,
+    /// Computed over already-aggregated inputs: one or more `Aggregate` nodes
+    /// sit strictly below a scalar root. Ratio / derived Metrics, and any
+    /// Dimension whose `expr` references a Measure. Evaluated after the final
+    /// aggregation (and after any union/join re-aggregation).
+    PostAggregate,
+}
+```
+
+Design notes:
+
+- **Tree-derived, not role-derived (SOLID — separate concerns).** `ExprLayer` is a pure function of the expression's structure, decoupled from the authoring `SemanticRole` (`33 §5`). A bucketed Dimension `case_when(revenue > 1000, …)` over a Measure `revenue` classifies as `PostAggregate` even though its role is `Dimension`. Conflating layer with role would couple planning to the semantic taxonomy.
+- **Computed once at compile.** Phase A assigns the layer when it lowers each `SemanticExpr → PhysicalExpr` (`19 §3`); it is persisted on the manifest expression record (`33 §7.2`) and load-validated against the tree (CX1).
+- **Dedup-safe.** Because the layer is a function of the tree, content-deduplicated pool entries (same tree) always carry the same layer.
+- **Window classification (v1).** Window-bearing expressions (per-entity accessor sugar, §6.1) classify by their relationship to aggregation: a window over the aggregated grain (e.g. `measure.previous`) is `PostAggregate`; a window over raw rows is `Scalar`. A dedicated `Windowed` layer is a reserved `#[non_exhaustive]` extension if windowed pushdown needs finer placement.
+
 ## 6. Per-Kind Accessor Enums and `Parameter`
 
 ### 6.1 Per-kind accessor enums

@@ -219,6 +219,7 @@ pub struct ResolvedExprKey {
 
 pub struct ResolvedExprEntry {
     pub physical_expr:      PhysicalExpr,
+    pub layer:             ExprLayer,    // applicability layer (§3.2.6); persisted on the manifest expr (33 §7.2)
     pub inferred_type:      DataType,
     pub referenced_columns: Vec<String>,
     pub path_signature:     Option<PathSignature>,
@@ -255,6 +256,16 @@ Byte-level encoding is owned by `[33](../apis/33_semstrait_manifest.md)`. Shape-
 #### 3.2.5 `Provenance`
 
 Per-entry diagnostic-reporter carrier (which source `Location`s contributed which occurrences during Tier-1 / Tier-2 merge per `[11 §6.3](11_names_and_scopes.md)`). Never leaves the manifest, never read at plan time or adapt time. **Shape owned by `[33 §<ResolvedExprEntry>](../apis/33_semstrait_manifest.md)`** (it is a manifest-storage concern, not a Phase-A algorithm concern); `19` only requires that `compile` populates it.
+
+#### 3.2.6 Layer classification
+
+After substeps 0–4 produce the `PhysicalExpr`, Phase A classifies its `ExprLayer` (`[14 §3.8](14_expressions.md)`; type at `[35 §5.5](../apis/35_semstrait_ir.md)`) as a pure function of the resolved tree:
+
+- no `Aggregate` (nor aggregation-relative `Window`) node anywhere → `Scalar`;
+- an `Aggregate` at the (post-lift) root over row-level inputs → `Aggregate`;
+- one or more `Aggregate` nodes strictly below a scalar root → `PostAggregate`.
+
+The layer is independent of the authoring `SemanticRole`: a Dimension whose `expr` resolves to a subtree containing an `Aggregate` is `PostAggregate`. It is recorded on `ResolvedExprEntry.layer` and persisted with the physical expression (`33 §7.2`); CX1 re-validates `layer == classify(tree)` at load. This is the single piece of "extra data" that lets Phase B (`§6`) place each expression onto the correct `PlanNode` layer (pushdown vs aggregate vs post-aggregate) without re-walking semantic provenance.
 
 ### 3.3 The substitution algorithm — per-leaf-kind rules
 
