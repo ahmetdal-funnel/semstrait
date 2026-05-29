@@ -296,8 +296,16 @@ Graph invariant:
 - Node/edge collections are stable-id keyed maps; adjacency is explicit via `outgoing_edges`.
 - `outgoing_edges[node]` is sorted by `SemanticEdgeId` for deterministic traversal.
 - `SemanticNodePayload::{DataKind, Semantic}` carry identity only; full semantic metadata remains owned by manifest (`33` `SemanticBitmap`).
-- Graph-held expression references are pool-typed via `GraphExprRef`; runtime pool dispatch by untyped `ExprId` is forbidden.
-- Every `GraphExprRef` must resolve to an existing pool entry in its declared pool before the fragment is admitted.
+- Graph-held expression references are pool-typed via `GraphExprRef` (physical-only); runtime pool dispatch by untyped `ExprId` is forbidden.
+- Every `GraphExprRef` must resolve to an existing pool entry before the fragment is admitted. The referenced `ManifestExpression` carries the `ExprLayer` (`33 §7.2`); the graph does **not** duplicate the layer (DRY — single source of truth on the manifest expression).
+
+#### 2A.1 Expression layering and the `DependsOn` reservation (v1 scope)
+
+The graph does **not** persist or synthesize an expression-dependency DAG (Metric → Measure → Expression) in v1. The vocabulary exists — `SemanticNodePayload::Expression` and `SemanticEdgeType::DependsOn` — but is **reserved**, not built:
+
+- **Why it's unnecessary for correctness.** A Metric's lowered `PhysicalExpr` already contains its constituent `Aggregate` nodes (named-Measure references are substituted inline at Phase A, `19 §3.3`). Phase B's aggregate-lift (`19 §7`) extracts those `Aggregate` nodes into pre-aggregatable slots and leaves the post-aggregate residual; the `ExprLayer` (`PostAggregate`) tells the planner the residual lands above the final aggregation. Together with per-aggregate `Additivity` (`14a §3.6.2`) this drives correct pre-/re-aggregation across complex DataKinds **without** a separate dependency structure. Persisting one would duplicate information already in the tree (DRY violation) and add a sync hazard.
+- **What it's reserved for (post-v1).** Cross-Metric shared-aggregate elimination (compute `sum(x)` once when several Metrics use it) and semantic-layer explainability (showing a physical plan in terms of authored Measures). Both are optimizations/UX, not correctness, and benefit from preserving named decomposition — the natural future home for `Expression` nodes + `DependsOn` edges.
+- **v1 graph build** synthesizes only `Relationship` / `Composition` / `Binding` edges from manifest primitives; `DependsOn` and `Expression` nodes are not emitted.
 
 Boundary rule: IR owns shape and read semantics only. Runtime mutability, cache policy, cycle-check strategy, and drift-policy execution are planner contracts (`34`), never IR contracts.
 
