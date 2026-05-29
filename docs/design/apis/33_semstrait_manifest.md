@@ -9,7 +9,7 @@ authoritative-for:
   - the `NestedDataKind` shape used inside Unionset / Grainset / Joinset variants
   - manifest persistence shape for `SemanticInterface`, `SemanticBinding`, `Relationship` (top-level, scope-root only)
   - the named-entity `id: EntityId` carried on every manifest entity (model-authored reuses model `id`; compile-synthesised generates a deterministic id) plus the top-level `model_id`
-  - manifest expression persistence contract — split typed pools `ManifestExpressions { semantic, physical }` with strongly-typed `SemanticExprId` / `PhysicalExprId` newtypes
+  - manifest expression persistence contract — physical-only `ManifestExpressions` of `ManifestExpression { expr: PhysicalExpr, layer: ExprLayer }` keyed by `PhysicalExprId`; semantic form is lowered away at compile and not persisted
   - `PhysicalSource` manifest contract (locator + version reference + inline `projected_schema` + SHA-256 `schema_fingerprint`); reduced `PhysicalSourceType { Table, File }` and `PhysicalSourceVersionRef { IcebergSnapshotId, MonotonicVersion }` rosters
   - compile and persistence boundary (`compile`, `Repository`); compile-time validation gates G1–G5 and the D2 desugar-at-compile policy
   - load-time integrity contract (CX1 single-pass cross-reference resolution)
@@ -48,7 +48,7 @@ This shape lands the 20 ratified clauses C1–C18 + CCK + CX1 (see `_research/ma
 - **Implicit Unionsets are top-level.** Multi-source `Dataset` auto-synthesises a Unionset (spec 21 §3.2 + spec 23 §2.1 row A) with a deterministic content-derived `id`. They live in `data_kinds`, not inside `NestedDataKind`.
 - **Catalog-optional.** `compile` accepts `Option<&dyn CatalogProvider>`. When absent, model-sourced physical shape is used.
 - **Deterministic input boundary.** Manifest ends at compile-time resolution + persistence. Runtime graph fragments, implicit-composition enumeration, and cache policy are planner graph-build concerns (`34`).
-- **IR owns canonical expression vocabulary.** Manifest persists IR-owned `Expr<L>` (`SemanticExpr` and `PhysicalExpr`), with `Serialize` / `Deserialize` derived inside `semstrait-ir` (spec 35).
+- **IR owns canonical expression vocabulary.** Manifest persists IR-owned `PhysicalExpr` (post-lowering), plus its `ExprLayer`, with `Serialize` / `Deserialize` derived inside `semstrait-ir` (spec 35). `SemanticExpr` is a transient compile input, not persisted.
 - **Resolved naming policy.** Prefix `Resolved*` only for compile-complete forms; do not use it for author-level or deferred-runtime forms.
 
 ## 3. Public Crate Surface
@@ -66,7 +66,7 @@ semstrait-manifest
 │   ├── binding       // SemanticBinding, SemanticMappingValue
 │   ├── relationship  // Relationship (re-export of canonical entity from spec 18)
 │   ├── identity      // EntityId (re-export of canonical id type from spec 32)
-│   ├── expr          // ManifestExpressions, SemanticExprId, PhysicalExprId
+│   ├── expr          // ManifestExpressions, ManifestExpression, PhysicalExprId
 │   ├── source        // PhysicalSource, PhysicalSourceType,
 │   │                 //   PhysicalSourceVersionRef, SourceColumn
 │   └── metadata      // SemanticManifestMetadata
@@ -86,7 +86,7 @@ Primary root exports:
 - `GrainsetLevel`, `RoutingUnitRef`
 - `JoinsetHop`, `HopDirection`
 - `SemanticBinding`, `SemanticMappingValue`
-- `ManifestExpressions`, `SemanticExprId`, `PhysicalExprId`
+- `ManifestExpressions`, `ManifestExpression`, `PhysicalExprId`, `ExprLayer` (re-export from `35`)
 - `PhysicalSource`, `PhysicalSourceType`, `PhysicalSourceVersionRef`, `SourceColumn`
 - `compile`, `Repository`
 - `CompileError`, `LoadError`
@@ -122,7 +122,7 @@ Top-level constraints:
 - Every persisted entity carries one `id: EntityId` (no separate compile-id newtypes, no `stable_ids` side-map). Model-authored entities reuse their model `id`; compile-synthesised entities (sources, bindings, interfaces, implicit Unionsets, synthesised fields) generate a deterministic `id` (§9.1).
 - Vectors remain inside entities where ordered lists are meaningful (`branches`, `levels`, `hops`, `bindings`, etc.); their elements are `EntityId`s or carry their own `id`.
 - `relationships` holds **root-scope** Relationships only. Joinset-local (shadow) Relationships per spec 18 §2.10 live inline on the Joinset variant, not here (C7.6).
-- Expression pools (`expressions`) keep their own content-dedup handles (`SemanticExprId` / `PhysicalExprId`, §7.2) — these address deduplicated expression subtrees, not named entities, and are intentionally not `EntityId`s.
+- The expression pool (`expressions.physical`) keeps its own content-dedup handle (`PhysicalExprId`, §7.2) — it addresses deduplicated expression subtrees, not named entities, and is intentionally not an `EntityId`. Each entry carries its `ExprLayer` (the applicability "extra data").
 
 ### 4.2 Top-level fingerprints
 
@@ -174,7 +174,7 @@ Rules:
 | `data_kinds`, `relationships`, `interfaces` | `EntityId`-keyed composition primitives (`interface_id`, `coverage`, variant payloads); no runtime edges persisted | node/edge synthesis and composition candidate indexing |
 | `DataKindVariant::{Joinset, Grainset, Unionset}` fields | Explicit composition hints (`anchor`, `members`, `hops`, branch/level routing — all `EntityId`) | deterministic graph topology reconstruction |
 | `SemanticBitmap.entries[*].bit_position` + all `SemanticBitmask` values | Explicit `bit_position ↔ EntityId` mapping and canonical word encoding | coverage math and subset/intersection checks |
-| `expressions.semantic`, `expressions.physical`, typed ids in bindings | Pool-typed expression storage (`SemanticExprId`/`PhysicalExprId`) | expression-node/edge lookup through typed `GraphExprRef` (`35`) |
+| `expressions.physical` (`ManifestExpression { expr, layer }`) + `PhysicalExprId` refs in bindings | Physical expression storage with applicability `ExprLayer` | expression placement (scalar/aggregate/post-aggregate) + node/edge lookup via `GraphExprRef` (`35`) |
 | Per-entity `id: EntityId` + top-level `model_id` | Durable model identity on each primitive | cross-run identity continuity and external correlation |
 
 Indexing note: runtime indices (`name_index`, composition-by-constituent-set, adjacency maps, and any compact integer traversal handles) are derived from these maps at graph build and are never persisted back into manifest.
@@ -460,19 +460,23 @@ Rules:
 - **One-to-many** (C2.2). One Dataset can carry multiple bindings, each pointing to a distinct `PhysicalSource` (e.g., partitioned read, dual feed).
 - **Forward only** (C2.3). Dataset variant carries `bindings: Vec<EntityId>`; binding carries `source_id`; reverse (`source_id -> [binding id]`) is derived at load.
 - **Generated identity.** A binding has no model-authored id; its `id` is generated deterministically at compile from `(data_kind_id, source_id, mapping)` (§9.1).
-- **`SemanticMappingValue::Expr` references `PhysicalExprId`.** Manifest persists the post-desugar physical form referencing native columns (C11). The semantic / authoring form lives in the `semantic` pool below for diagnostic and round-trip purposes. `PhysicalExprId` is an expression-pool handle (content-dedup), not an `EntityId` (§7.2).
+- **`SemanticMappingValue::Expr` references `PhysicalExprId`.** Manifest persists only the post-desugar physical form referencing native columns; the semantic/authoring form is lowered away at compile and not persisted (§7.2). `PhysicalExprId` is an expression-pool handle (content-dedup), not an `EntityId` (§7.2). The pool entry it resolves to carries the expression's `ExprLayer`.
 
 ### 7.2 `ManifestExpressions` (split typed pools, C12)
 
 ```rust
 #[non_exhaustive]
 pub struct ManifestExpressions {
-    pub semantic: BTreeMap<SemanticExprId, SemanticExpr>,
-    pub physical: BTreeMap<PhysicalExprId, PhysicalExpr>,
+    pub physical: BTreeMap<PhysicalExprId, ManifestExpression>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SemanticExprId(pub ExprId);
+/// A persisted expression plus the "extra data" the planner needs to place it:
+/// its applicability layer (`35 §5.5`).
+#[non_exhaustive]
+pub struct ManifestExpression {
+    pub expr:  PhysicalExpr,
+    pub layer: ExprLayer,        // Scalar | Aggregate | PostAggregate (35 §5.5)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalExprId(pub ExprId);
@@ -480,13 +484,15 @@ pub struct PhysicalExprId(pub ExprId);
 
 Rules:
 
-- **Both forms persisted** (C11). `SemanticExpr` (= `Expr<SemanticLeaf>`, with sugar pre-resolved per D2 below) and `PhysicalExpr` (= `Expr<PhysicalLeaf>`, post-desugar canonical form referencing native columns) are first-class persisted artifacts.
-- **Sugar is semantic-only** (C11). `PhysicalExpr` is post-desugar; sugar never crosses into the physical pool.
-- **Strongly typed IDs** (C12.3). `SemanticExprId` / `PhysicalExprId` wrap `ExprId`, so every reference site stays pool-typed without runtime tag dispatch.
-- **Expression ids are not `EntityId`s.** Expressions are content-deduplicated subtrees, not named/authored entities, so they keep their own pool handles rather than joining the `EntityId` lane. This is the single deliberate exception to the manifest's one-id-lane rule; it exists because expression identity is content-addressed (C12.4), not durable model identity.
-- **Compile-time dedup per pool** (C12.4). Equivalent expressions collapse to one id within each pool.
-- **No cross-pool link table** (C12.5). Semantic/physical pairing stays in compile context; graph build and planning perform lookup-only reads.
-- **Derived views only** (C16). Expression coverage and reverse indexes (for example semantic `EntityId -> [SemanticExprId]`) are derived at load/graph-build time, not persisted.
+- **Physical-only pool** (supersedes C11's "both forms persisted"). Compile lowers every `SemanticExpr → PhysicalExpr` (Phase A, `19 §3`) and persists **only** the physical form. `SemanticExpr` is a transient compile input, not a manifest artifact; authoring round-trip and diagnostics are served by re-reading the source model (the source of truth), so a persisted semantic pool added storage without a load-bearing consumer. There is no `semantic` pool and no `SemanticExprId`.
+- **Layer is the extra data** (this rework). Each entry carries its `ExprLayer` so the planner allocates the expression to the right `PlanNode` layer (scalar pushdown / aggregate / post-aggregate) without re-deriving from semantic provenance. The layer is assigned at compile (`19 §3.2.6`) and is a pure function of the tree.
+- **Additivity is derived, not stored** (v1). For an `Aggregate`-layer expression, pre-/re-aggregation safety comes from the aggregate op via `AdditivitySource` (`14a §3.6.2`) — function-only in v1. Model-level additivity is the reserved extension point; it is not persisted here.
+- **Sugar is desugared before persistence** (D2). The persisted `PhysicalExpr` is post-desugar canonical form referencing native columns; sugar never reaches the pool.
+- **Strongly typed ID** (C12.3, narrowed). `PhysicalExprId` wraps `ExprId`; with a single pool the cross-pool-mix-up hazard disappears, but the newtype is retained so expression handles stay distinct from `EntityId`.
+- **Expression ids are not `EntityId`s.** Expressions are content-deduplicated subtrees, not named/authored entities, so they keep their own pool handle (`PhysicalExprId`). This is the single deliberate exception to the manifest's one-id-lane rule; expression identity is content-addressed (C12.4), not durable model identity.
+- **Compile-time dedup** (C12.4). Equivalent expressions collapse to one `PhysicalExprId`. Because `ExprLayer` is a function of the tree, dedup is layer-consistent (same tree ⇒ same layer).
+- **C12.5 (no cross-pool link) is moot** — there is one pool.
+- **Derived views only** (C16). Expression coverage and reverse indexes (for example semantic `EntityId -> [PhysicalExprId]`) are derived at load/graph-build time, not persisted.
 
 ### 7.3 Serialization mechanism (C18)
 
@@ -494,7 +500,7 @@ Rules:
 - **Determinism.** Deterministic encoding required (C18.2) — same `Expr` value renders identical bytes across compilations. Required for `manifest_epoch` / `model_hash` stability and for content dedup. Concretely: `BTreeMap` ordering, sorted `serde` field order, length-prefixed primitives, no NaN / Infinity in literal floats unless explicitly carried by typed Literal width discriminator.
 - **Ownership of derives.** `impl Serialize` / `impl Deserialize` for `Expr<L>` and the leaf families lives in `semstrait-ir` (C18.3); manifest consumes them. Manifest does **not** vendor a parallel encoder.
 - **Versioning.** No per-Expr format version field (C18.4). `manifest_epoch` is the migration signal; cross-epoch encoding changes are valid because graph-build re-derivations regenerate from primitives.
-- **Explicit ID** (C18.5). Each persisted `Expr` is referenced by an explicit `SemanticExprId` / `PhysicalExprId`; compile-time content dedup is permitted under (C12.4).
+- **Explicit ID** (C18.5). Each persisted `PhysicalExpr` is referenced by an explicit `PhysicalExprId`; compile-time content dedup is permitted under (C12.4).
 
 ## 8. `PhysicalSource` (C1 + C3 + C14 + C15)
 
@@ -621,7 +627,7 @@ The compile pass runs five gates. All gates emit **errors** unless explicitly no
 
 ### 9.3 Desugar policy (D2)
 
-Sugar is rewritten **before persistence** (C13 D2). Persisted `SemanticExpr` is post-sugar canonical form; persisted `PhysicalExpr` is post-desugar physical form. Benefits `manifest_epoch` / `model_hash` stability across cosmetic reformulations.
+Sugar is rewritten **before persistence** (C13 D2). The persisted `PhysicalExpr` is post-desugar physical form; the `SemanticExpr` (post-sugar) exists only transiently at compile and is not persisted. Benefits `manifest_epoch` / `model_hash` stability across cosmetic reformulations.
 
 ### 9.4 Graph-build invalidation inputs
 
@@ -694,6 +700,7 @@ Structural violations also surface here as a defense-in-depth twin of compile-ti
 - `Joinset.members.len() == 2` (binary v1); `Joinset.hops.len() == 1` (binary v1); `Joinset.anchor in members`
 - `SemanticBitmask.words` canonical form (no trailing all-zero words; empty mask is `Vec::new()`)
 - every entity `id` is canonical UUID text and equals its map key; all `id`s plus `model_id` are globally unique across collections
+- every `ManifestExpression.layer` equals `classify(expr)` (`19 §3.2.6`) — the persisted layer is consistent with the expression tree
 
 This hardens C13's G1 / G2 / G4 from compile-time-only to compile-time + load-time. A hand-edited or repository-corrupted manifest cannot slip a dangling reference past load. The wire format remains an id-keyed map plus id reference (no OpenAPI-style `$ref` JSON pointers); CX1 preserves the integrity guarantee at less verbosity cost.
 
@@ -701,7 +708,7 @@ This hardens C13's G1 / G2 / G4 from compile-time-only to compile-time + load-ti
 
 Use `Resolved*` only for compile-complete forms where uncertainty is eliminated (for example `ResolvedSemanticName`, resolved mapping, resolved schema-compatibility checks). Do **not** use `Resolved*` for author-level forms or for forms whose reconciliation is deferred to runtime / planner.
 
-`SemanticExpr` and `PhysicalExpr` themselves are not `Resolved*`-prefixed even though they are persisted post-resolution; they live in IR and follow IR's naming policy.
+`PhysicalExpr` is not `Resolved*`-prefixed even though it is persisted post-resolution; it lives in IR and follows IR's naming policy.
 
 ## 12. Invariants
 
@@ -717,7 +724,7 @@ Use `Resolved*` only for compile-complete forms where uncertainty is eliminated 
 - I12.8 `data_kinds` includes implicit Unionsets (multi-source Dataset auto-synthesis) as top-level entries with a deterministic content-derived `id` and `origin = Implicit`.
 - I12.9 Grainset same-grain merge — when a level has >= 2 same-grain children, `RoutingUnitRef::Synthesized` references a top-level implicit Unionset; single same-grain child uses `RoutingUnitRef::Inline`.
 - I12.10 `JoinsetHop.hop_coverage` is cumulative across `[0..=i]`; `Joinset` top-level `coverage` equals `hops.last().hop_coverage`.
-- I12.11 `ManifestExpressions.semantic` and `.physical` are independently dedup'd by content; no cross-pool linkage exists at expr level.
+- I12.11 `ManifestExpressions.physical` is a single content-dedup'd pool of `ManifestExpression { expr, layer }`; no semantic pool is persisted. Every entry's `layer` equals `classify(expr)` (`19 §3.2.6`), checked at load (CX1).
 - I12.12 `PhysicalSource.schema_fingerprint`, when present, equals the SHA-256 of the canonical length-prefixed encoding of `projected_schema` per §8.4.
 - I12.13 `PhysicalSource.schema_fingerprint` is `None` iff `projected_schema.is_empty()`.
 - I12.14 `compile`'s `catalog: Option<&dyn CatalogProvider>` parameter selects between catalog-mediated and model-as-truth fetch paths; when both supply a value for the same source, model wins (with a warning).
@@ -726,7 +733,7 @@ Use `Resolved*` only for compile-complete forms where uncertainty is eliminated 
 - I12.17 Manifest load runs CX1's single-pass cross-reference and structural integrity checks; failure surfaces as `LoadError` and prevents any planner consumption of the artifact.
 - I12.18 `Resolved*` prefix is used only for compile-complete forms.
 - I12.19 Graph build is deterministic over manifest primitives: same manifest bytes + same builder options => same node/edge/index reconstruction.
-- I12.20 Every expression reference that crosses into graph/planner flow is pool-typed (`SemanticExprId` or `PhysicalExprId`) and resolves by id, not by runtime semantic-name re-resolution.
+- I12.20 Every expression reference that crosses into graph/planner flow is a `PhysicalExprId` and resolves by id, not by runtime semantic-name re-resolution.
 
 ## 13. Deferred Threads and Open Considerations
 

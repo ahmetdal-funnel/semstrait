@@ -9,9 +9,10 @@ authoritative-for:
   - the shared identifier carriers `ColumnRef` and `SemanticsName` (consumed by both leaf sets per `14 §3.4 / §3.5`; `35` is the crate-level home post-second-cascade)
   - the `PhysicalLeaf` and `SemanticLeaf` enums — canonical-IR leaf set and per-kind typed semantic leaf set per `14 §3.4 / §3.5`
   - the `PhysicalExpr = Expr<PhysicalLeaf>` and `SemanticExpr = Expr<SemanticLeaf>` type aliases per `14 §3.6`
-  - the `SemanticExprId` and `PhysicalExprId` strongly-typed expression-pool ID newtypes per manifest ratification clause C12.3 (newtype wrappers around the underlying `ExprId`; preserve the leaf-set boundary at reference sites the same way `14 §3.7` preserves it at content sites)
+  - the `PhysicalExprId` expression-pool ID newtype (wrapper around the underlying `ExprId`); the manifest persists a single physical-only pool, so the former `SemanticExprId` / split-pool framing is retired
+  - the `ExprLayer` applicability classification (§5.5) carried on every persisted manifest expression
   - the IR-side serialization derive contract for `Expr<L>` and every leaf type — `serde::Serialize` / `serde::Deserialize` derived in `semstrait-ir`, JSON encoding, deterministic byte sequence, no per-`Expr` format version — per manifest ratification clause C18
-  - the load-time integrity contract for IR-typed cross-references — every `SemanticExprId` / `PhysicalExprId` referenced outside `ManifestExpressions` resolves to an existing pool entry; failure is `LoadError::DanglingReference` — per manifest ratification clause CX1 (structural shape owned here; the load-time walk lives in `33`'s deserializer)
+  - the load-time integrity contract for IR-typed cross-references — every `PhysicalExprId` referenced outside `ManifestExpressions` resolves to an existing pool entry; failure is `LoadError::DanglingReference` — per manifest ratification clause CX1 (structural shape owned here; the load-time walk lives in `33`'s deserializer)
   - the per-kind accessor enums (`DimensionAccessor`, `MeasureAccessor`, `MetricAccessor`, `KeyAccessor`) carried as `Option<…>` fields on the typed semantic leaves per `14 §4.1`
   - the `Parameter` placeholder struct and the closed `ParameterKey` enum per `14 §5`
   - the authoring-surface DSL — the `expr_fn` module with `col`, `field`, `dim`, `measure`, `metric`, `key` free constructors; `std::ops` impls on `SemanticExpr` and `PhysicalExpr`; the `ExprFunctionExt` extension trait — per `14 §9.2`
@@ -222,7 +223,6 @@ pub enum SemanticNodePayload {
 
 #[non_exhaustive]
 pub enum GraphExprRef {
-    Semantic(SemanticExprId),
     Physical(PhysicalExprId),
 }
 
@@ -686,37 +686,28 @@ pub type SemanticExpr = Expr<SemanticLeaf>;
 
 These are the spelled-out names used throughout downstream docs (`19`, `33`, `34`) and downstream-crate APIs. The generic `Expr<L>` form appears in trait bounds and shared algorithmic code (e.g., the optimizer's tree-walks).
 
-#### 5.3.1 Strongly-typed expression-pool ID newtypes (per C12.3)
+#### 5.3.1 Expression-pool ID newtype
 
-Per the manifest ratification clause C12.3 (`_research/manifest/RATIFICATION_LOG.md`), the expression-pool identifier vocabulary is split into two strongly-typed newtypes paralleling the leaf-set boundary:
+The manifest persists a **single, physical-only** expression pool (`33 §7.2`); `SemanticExpr` is lowered away at compile and not persisted. The pool handle is one newtype:
 
 ```rust
-/// Identifier of an entry in the manifest's `semantic` expression pool
-/// (keys `BTreeMap<SemanticExprId, SemanticExpr>` per `33` C12.2).
-/// Newtype-over-stable per `30 §4.3`: no `#[non_exhaustive]`; `.0` access intentional.
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct SemanticExprId(pub ExprId);
-
-/// Identifier of an entry in the manifest's `physical` expression pool
-/// (keys `BTreeMap<PhysicalExprId, PhysicalExpr>` per `33` C12.2).
+/// Identifier of an entry in the manifest's physical expression pool
+/// (keys `BTreeMap<PhysicalExprId, ManifestExpression>` per `33 §7.2`).
 /// Newtype-over-stable per `30 §4.3`: no `#[non_exhaustive]`; `.0` access intentional.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct PhysicalExprId(pub ExprId);
 ```
 
-`ExprId` is the underlying content-keyed identifier carrier; `SemanticExprId` and `PhysicalExprId` wrap it without altering its representation. The wrappers exist solely to type-check reference sites — every binding lookup, mapping value, and graph expression reference (`GraphExprRef`) declares which pool it targets, and the static type system rejects cross-pool mix-ups at compile.
-
-**Rationale.** Typed IDs keep pool selection (`semantic` vs `physical`) in the type system. An untyped `ExprId` plus tagged runtime enum would force per-lookup branching and break the lookup-only discipline (`00 §9` I5).
+`ExprId` is the underlying content-keyed identifier carrier; `PhysicalExprId` wraps it without altering its representation. The wrapper exists to keep expression handles distinct from `EntityId` (the manifest's entity-identity lane) — an expression is a content-deduplicated subtree, not a named entity. With a single pool there is no cross-pool mix-up hazard; the earlier `SemanticExprId` (and the `semantic` pool) are retired (supersedes C12.3's split-pool framing).
 
 #### 5.3.2 Expression resolvability path (authoring -> graph -> plan)
 
 The expression lifecycle is intentionally two-stage and lookup-only after compile:
 
 1. **Authoring.** Parse produces `SemanticExpr` at semantic sites (or `PhysicalExpr` for physical-mapping sites) per `14` / `19`.
-2. **Compile.** `semstrait-manifest::compile` resolves semantic leaves, runs gates G1-G5, and emits pool entries keyed by `SemanticExprId` / `PhysicalExprId` (`33` C11/C13).
-3. **Graph build.** `SemanticGraph` references pool entries through `GraphExprRef::{Semantic, Physical}`; unresolved ids fail graph build and no untyped `ExprId` dispatch is allowed.
+2. **Compile.** `semstrait-manifest::compile` resolves semantic leaves, runs gates G1-G5, lowers each `SemanticExpr → PhysicalExpr`, classifies its `ExprLayer` (`19 §3.2.6`), and emits physical-pool entries (`ManifestExpression { expr, layer }`) keyed by `PhysicalExprId` (`33 §7.2`). The semantic form is not persisted.
+3. **Graph build.** `SemanticGraph` references pool entries through `GraphExprRef` (physical-only); unresolved ids fail graph build and no untyped `ExprId` dispatch is allowed.
 4. **Planning.** Planner consumes graph/manifest references by lookup only; no re-resolution pass mutates expression identity.
 
 ### 5.4 Type-enforced forbidden combinations
@@ -1904,7 +1895,7 @@ Every public IR type derives `Serialize` / `Deserialize` under the crate-level `
 
 Per the manifest ratification clause C18 (`_research/manifest/RATIFICATION_LOG.md`), the canonical expression types have a sharper serialization contract than the general "every public IR type derives serde" rule above. C18 makes four specific picks that this crate carries:
 
-1. **Derivation lives here, not in `semstrait-manifest`.** `Expr<L>`, `PhysicalLeaf`, `SemanticLeaf`, every per-kind accessor enum (§6.1), `Parameter` / `ParameterKey` (§6.2), every structural-variant support enum (§3.4), and the identifier carriers `ColumnRef` / `SemanticsName` derive `serde::Serialize` and `serde::Deserialize` directly in `semstrait-ir`. Manifest (`33`) consumes the derives by storing `BTreeMap<SemanticExprId, SemanticExpr>` / `BTreeMap<PhysicalExprId, PhysicalExpr>` (per C12.2); manifest-side `Serialize` / `Deserialize` impls on these types are forbidden — duplicating the derive risks divergence between IR's wire form and manifest's wire form.
+1. **Derivation lives here, not in `semstrait-manifest`.** `Expr<L>`, `PhysicalLeaf`, `SemanticLeaf`, every per-kind accessor enum (§6.1), `Parameter` / `ParameterKey` (§6.2), every structural-variant support enum (§3.4), and the identifier carriers `ColumnRef` / `SemanticsName` derive `serde::Serialize` and `serde::Deserialize` directly in `semstrait-ir`. Manifest (`33`) consumes the derives by storing `BTreeMap<PhysicalExprId, ManifestExpression>` (physical-only per `33 §7.2`); manifest-side `Serialize` / `Deserialize` impls on these types are forbidden — duplicating the derive risks divergence between IR's wire form and manifest's wire form.
 2. **Encoding format is JSON via serde.** Matches the manifest-level §1 readability posture (`33`). No bespoke binary encoding for expression payloads.
 3. **Deterministic encoding required.** The same `Expr<L>` value MUST produce the same byte sequence on every encode. This is a hard requirement — not a quality-of-implementation goal — because two downstream contracts depend on it:
    - `manifest_epoch` / `model_hash` stability across repeat compiles of the same `(model, catalog snapshot)` input (`00 §9` I4); a non-deterministic encoding would surface phantom epoch bumps even when nothing changed.
@@ -1942,9 +1933,9 @@ The adapter is free to emit Substrait proto plans with extra hints (capacity, pa
 
 ### 15.4 Load-time integrity contract (per CX1)
 
-Per the manifest ratification clause CX1 (`_research/manifest/RATIFICATION_LOG.md`), every cross-reference threading IR-typed identifiers through the manifest wire form is integrity-checked at load. `35` owns the structural shape of the IR-typed reference vocabulary that participates in this check (`SemanticExprId`, `PhysicalExprId` per §5.3.1); the load-time validation pass itself is performed by the consumer (`33`'s deserializer). The IR-side contract is:
+Per the manifest ratification clause CX1 (`_research/manifest/RATIFICATION_LOG.md`), every cross-reference threading IR-typed identifiers through the manifest wire form is integrity-checked at load. `35` owns the structural shape of the IR-typed reference vocabulary that participates in this check (`PhysicalExprId` per §5.3.1); the load-time validation pass itself is performed by the consumer (`33`'s deserializer). The IR-side contract is:
 
-1. **Single integrity pass on load.** Manifest deserialization performs one integrity walk over every IR-typed cross-reference. In v1 wire form, the required external site is `SemanticBinding.mapping[EntityId] = SemanticMappingValue::Expr(PhysicalExprId)` and each referenced `PhysicalExprId` MUST resolve in `expressions.physical`. If an external `SemanticExprId` reference site is added later, it MUST resolve in `expressions.semantic`. (The mapping key is the semantic's `EntityId`; expression-pool ids stay as their own content-dedup handles per `33 §7.2`.)
+1. **Single integrity pass on load.** Manifest deserialization performs one integrity walk over every IR-typed cross-reference. In v1 wire form, the required external site is `SemanticBinding.mapping[EntityId] = SemanticMappingValue::Expr(PhysicalExprId)` and each referenced `PhysicalExprId` MUST resolve in `expressions.physical` (whose entries are `ManifestExpression { expr, layer }`). (The mapping key is the semantic's `EntityId`; the expression-pool id is its own content-dedup handle per `33 §7.2`.)
 2. **Failure shape.** A reference whose target is absent from its pool surfaces as `LoadError::DanglingReference{ from, to_kind, target_id }`. The `from` field carries the referencing site (binding id, hop, mapping key); `to_kind` discriminates the target pool (`SemanticExpr` vs `PhysicalExpr` vs other manifest collections); `target_id` is the unresolved newtype value. Per `30 §5.4`, identification is by variant identity.
 3. **Hardens compile-time gates.** This pass extends C13's compile-time gates G1 / G2 / G4 (`_research/manifest/RATIFICATION_LOG.md`) from "compile-time only" to "compile-time + load-time defense in depth." A hand-edited or repository-corrupted manifest cannot slip a dangling IR-typed reference past load.
 4. **No JSON `$ref` indirection.** This contract was ratified in lieu of OpenAPI-style `$ref` JSON pointers. The wire format remains the id-keyed map plus newtype-wrapped id reference (less verbose than `$ref`, no inline-vs-pointer ambiguity, no serde-side `$ref` resolver complexity). Integrity is preserved by the load-time pass, not by the wire form's structural shape.
