@@ -289,6 +289,8 @@ When no single grain-eligible unit fully covers the Request's Semantics set, the
    - Each attached unit added via `PlanNode::Join { join_type: LeftOuter }` (per G-2a) on the equi-join condition over shared Keys.
 6. Above the JOIN tree, emit the Request's `Project + Agg + Filter` per the standard observable pipeline.
 
+Expression placement at each level and at the top follows the `ExprLayer` (`19 §6.0`): `Scalar` Dimensions/Keys materialise pre-`Agg` (and feed `GROUP BY`); `Aggregate` Measures lift into the per-unit `Agg` and re-aggregate at the top; `PostAggregate` Metric residuals land above the final `Agg`. Rollup (`DATE_TRUNC + Agg`) and cross-grain re-aggregation are gated by **function-derived** `Additivity` in v1 (`19 §6.5`, `14a §3.6.2`).
+
 **Observable plan shape** (worked example in §10.4):
 
 ```

@@ -687,6 +687,18 @@ Phase B does two things Phase A does not:
 - **`Aggregate` lift.** `Aggregate` nodes embedded in `PhysicalExpr` are extracted into `PlanNode::Aggregate` slots; the residual `PhysicalExpr` substitutes `Column` refs to the lifted slots (§7).
 - **`Parameter` binding.** Compile-emitted `Parameter` leaves are substituted with concrete values from the `Request` per `[14 §5.3](14_expressions.md)`. A `Parameter` reaching the adapter is a hard error owned by the planner.
 
+#### 6.0 Placement is keyed on `ExprLayer`
+
+Each persisted expression carries its applicability layer (`ManifestExpression.layer`, `33 §7.2`; `ExprLayer` at `[35 §5.5](../apis/35_semstrait_ir.md)`), assigned at compile (`§3.2.6`). Strategy reads it directly — it does **not** re-derive placement by re-walking the tree or the semantic registry:
+
+| `ExprLayer` | Plan-tree placement |
+|---|---|
+| `Scalar` | pre-aggregation `Project` (and pushdown-eligible toward `Scan`); grouping-key Dimensions/Keys materialise here and feed `GROUP BY` (§6.2). |
+| `Aggregate` | the expression's `Aggregate` node is lifted into `PlanNode::Aggregate` (§7); pre-/re-aggregation across complex DataKinds is governed by its `Additivity` (§6.5). |
+| `PostAggregate` | the post-aggregate residual lands in a `Project` **above** the final `Aggregate` (and above any union/join re-aggregation). Ratio Metrics and Measure-referencing Dimensions land here. |
+
+This is the single piece of metadata that lets the planner allocate expressions optimally across the plan tree and across complex-DataKind composition without reconstructing the semantic layering that lowering would otherwise erase.
+
 ### 6.1 Filter placement
 
 Placement is determined by **where the filter is authored**, then by **what the predicate references** for filters that admit mixed-scope predicates. References inside the authored `SemanticExpr` are characterised by their resolved kind — a typed `Dimension` / `Key` leaf (or a `Field` leaf whose name resolves to a Dimension / Key in the registry) is a *grouping-key reference*; a typed `Measure` / `Metric` leaf (or a `Field` leaf resolving to a Measure / Metric) is an *aggregated reference*. Phase A resolution preserves this distinction in the lowered `PhysicalExpr` shape — grouping-key references lower to `Column` leaves over the grouping axis; aggregated references lower to subtrees containing `Aggregate` nodes.
@@ -754,6 +766,8 @@ Both enums share the unified shape `Additive | SemiAdditive { axes } | NonAdditi
 | `Non`              | (any)               | `Non`                        |
 
 Rule: function-level `Non` is dominant; model-level may narrow `Additive`; `Semi`-with-`Semi` intersects the axis sets. Model cannot relax math the function disallows.
+
+**v1 scope — function-only.** In v1 the only source is function-level additivity, accessed through the `AdditivitySource` abstraction (`[14a §3.6.2](14a_function_catalog.md)`) with the aggregate op as the source; model-level `Measure.additivity` / `Metric.additivity` is **deferred** (the `Semi`/`Non` model rows above are the reserved extension point). Effective additivity therefore equals the function-level value, and `SemiAdditive { axes }` is not produced in v1 (it requires model-level axes). Strategy is written generically over `A: AdditivitySource`, so promoting model-level/composite additivity later is additive with no call-site change. The branching itself (`pre_aggregatable` / `reaggregation`) lives once on `Additivity` (`14a §3.6.1`).
 
 **Strategy behaviour per effective additivity:**
 

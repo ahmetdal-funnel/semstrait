@@ -728,7 +728,7 @@ impl SimpleStrategy { pub fn new() -> Self; }
 // impl Strategy per §8.1 — dispatches to the `21 §4` algorithm.
 ```
 
-**Algorithm pointer.** `21 §4.1`–§4.7: L1 `Scan` per-source per `15 §3.6`; L2 `Rename` Semantics → physical columns; L3 `Expression` materializes Measure / Metric / Dimension expressions from `ResolvedExprTable`; L4 `Agg` aggregates per-Measure; L5 `Project` final-column projection. Single-source vs multi-source fan-out per `21 §4.2`; filter interleaving per `21 §4.6`.
+**Algorithm pointer.** `21 §4.1`–§4.7: L1 `Scan` per-source per `15 §3.6`; L2 `Rename` Semantics → physical columns; L3 `Expression` materializes Measure / Metric / Dimension expressions from the manifest physical pool (`ManifestExpression { expr, layer }`, `33 §7.2`); L4 `Agg` aggregates per-Measure; L5 `Project` final-column projection. The Strategy reads each expression's `ExprLayer` to choose the L-layer placement (`Scalar` → L2/L3 pre-agg, `Aggregate` → L4, `PostAggregate` → above L4) per `19 §6.0`; pre-/re-aggregation safety from function-derived `Additivity` (`14a §3.6.2`). Single-source vs multi-source fan-out per `21 §4.2`; filter interleaving per `21 §4.6`.
 
 **Errors.** `PLAN_E_21xx` per `21 §7`; shared `PLAN_E_0600`, `PLAN_E_0601`.
 

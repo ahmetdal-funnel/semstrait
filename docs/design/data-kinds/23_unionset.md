@@ -247,6 +247,8 @@ pub enum UnionMode {
 
 When a Request names a Measure or Metric on the Unionset's surface, `UnionsetStrategy` emits **per-branch sub-aggregation** under every branch's `Project` (the seam wrapper). This is unconditional: pre-aggregation is the canonical path, not an optimizer judgment, because unioning raw rows and then aggregating wastes compute relative to per-branch partial-aggregate then merge. The contract holds for both explicit Unionsets and implicit Unionsets (`21 §3.2`'s multi-source `Dataset` case).
 
+The aggregate expressions are placed by their `ExprLayer` (`19 §6.0`): `Aggregate`-layer Measures lift into the per-branch `Agg`; a `PostAggregate`-layer Metric's residual stays above the final aggregation (its constituent aggregates pre-aggregate per branch). Pre-aggregate eligibility and the re-aggregation operator come from **function-derived** `Additivity` in v1 (`19 §6.5`, `14a §3.6.2`) — `Additive` Measures (`Sum`/`Count`/`Min`/`Max`) pre-aggregate then re-aggregate; `NonAdditive` (`Avg`) does not.
+
 A Request that names only Dimensions (no Measures, no Metrics) skips per-branch aggregation — the branches' `Project`s flow directly into the `PlanNode::Union`, with a final post-Union de-duplication implicit in `UnionMode::Unique` or absent in `UnionMode::All`.
 
 ### 4.3 NULL-fill projection at the seam
