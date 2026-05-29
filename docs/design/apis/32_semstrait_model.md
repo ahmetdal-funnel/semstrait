@@ -119,8 +119,12 @@ The `id` field is part of the public payload: it is a field on every named-entit
 ## 2. `SemanticModel` Root Type
 
 ```rust
-/// Canonical UUIDv7 text (lowercase, hyphenated). Authored optionally; parse
-/// generates one per missing named entity under the convenience profile (§9.0.1).
+/// Canonical UUID text (lowercase, hyphenated). At the model layer, authored
+/// optionally and parse generates a UUIDv7 per missing named entity under the
+/// convenience profile (§9.0.1). The same `EntityId` type is reused by the
+/// manifest (`33`), where compile-synthesised entities carry a deterministic
+/// UUID variant (`33 §9.1`) — so the type admits UUIDv7 (authored) and a
+/// deterministic variant (generated) alike.
 pub type EntityId = String;
 
 #[non_exhaustive]

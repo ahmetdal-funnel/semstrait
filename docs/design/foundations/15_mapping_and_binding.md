@@ -3,7 +3,7 @@ prereqs: [00, 11, 13, 14, 14a, 18, 19]
 authoritative-for:
   - compile-time `Binding` process (one per `Dataset` leaf, `binding_id`, `sources`, compile-resolved `semantic_mapping`, `coverage`) and its identity / uniqueness rules
   - the model-as-truth source-shape fields on `Binding` when catalog is absent (`locator`, `source_type`, `projected_schema`, `version_ref`) per `_research/manifest/RATIFICATION_LOG.md` C1.1 / C14.4 / C14.5 / C15.5
-  - `BindingId` as a `u32` newtype, its allocation discipline, and `(DataKindId, BindingId)` global-uniqueness rule
+  - binding identity at the manifest boundary — bindings are identified by a deterministically-generated `EntityId` (`33 §7.1`/`§9.1`); any `BindingId` u32 is a compile-internal/runtime handle only, never the manifest identity
   - the `PhysicalSource` sum type (`File`, `Table`, `Snapshot`) and the `Schema`, `PartitionColumn`, `CatalogRef` shapes it carries
   - the `FileFormat` enumeration (`Parquet`, `Csv`, `Json`, `Orc`, `Avro`) and the per-format schema-resolution strategy
   - glob-expansion algorithm, ordering determinism, and error model (no-match / catalog-unreachable / partial-schema)
@@ -127,20 +127,17 @@ Every field is populated by `compile`; the Model-layer YAML surface in `semstrai
 
 The `#[non_exhaustive]` tag is present to allow a future `post_binding_hook: Option<PhysicalExpr>` or similar Semantics-adjacent extension to be added as a MINOR per `30 §4`.
 
-### 2.2 `BindingId`
+### 2.2 Binding identity (`EntityId`)
 
-```rust
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
-pub struct BindingId(pub u32);
-```
+A Binding has no model-authored identity, so the manifest identifies it by an `EntityId` generated deterministically at compile (`33 §9.1`). There is no separate `BindingId` newtype in the manifest lane; the manifest `bindings` collection is keyed by this `EntityId` (`33 §7.1`).
 
-`BindingId` is the compile-time assigned identifier for a Binding. The canonical definition lives in `19 §3.2`; `15` ratifies its allocation discipline:
+- **Derivation.** The binding `EntityId` is derived deterministically from the binding's content — `(data_kind_id, source_id, mapping)` — so identical `(model, catalog)` inputs produce identical binding ids (I4).
+- **Cross-run stability — improved.** Because the id is content-derived rather than counter-allocated, it is stable across runs *and* across model edits that don't change the binding (the old counter-allocated handle shifted whenever an earlier `SimpleDataKind` was inserted). Cross-manifest comparison by binding `EntityId` is meaningful when the binding content is unchanged.
+- **Reference shape.** A `SimpleDataKind` owns exactly one Binding; `Dataset.bindings` carries the binding's `EntityId` (`33 §6.4`). The reverse (`source_id -> [binding EntityId]`) is derived at load (`33 §7.1`).
+- **Compact handles are non-persisted.** Any compact integer binding handle (`BindingId` u32) used by the compile working set (§10) or by the planner runtime for hot-path indexing is internal and is **not** the manifest identity; it is never persisted. The manifest persists binding `EntityId`.
+- **Serialization.** The binding `EntityId` surfaces directly in the persisted manifest form (`33`) and round-trips through `Repository` unchanged.
 
-- **Allocation site.** Bindings are assigned their ID during the `compile` stage's binding-resolution pass (§10 step 1). The `compile` driver owns a monotonically-increasing `u32` counter, handed out in iteration order over the deterministic `ResolvedDataKind` roster. First ID is `0`; there is no `NULL` / `UNDEFINED` value.
-- **Uniqueness scope.** `BindingId` is **unique within a SemanticManifest**, not within a `DataKind`. The compile stage's counter spans the entire SemanticManifest; every Binding across every `SimpleDataKind` gets a distinct `BindingId`.
-- `**(DataKindId, BindingId)` uniqueness.** Because a `SimpleDataKind` owns exactly one `Binding`, `(DataKindId, BindingId)` is vacuously unique: given a `DataKindId`, the mapping to `BindingId` is a function (exactly one value). SemanticManifest indices may key on either half.
-- **Stability across `compile` invocations.** `BindingId` is **stable within a single `compile` run and NOT stable across runs.** Recompiling a Model (even a byte-identical Model) produces the same IDs if and only if the `compile` driver's iteration order over `ResolvedDataKind`s is deterministic (I4). Adding a `SimpleDataKind` anywhere earlier in the iteration order shifts every later Binding's ID — which is intended. Cross-SemanticManifest Binding comparison by ID is not supported; the planner keys on `(DataKindId, BindingId)` and never on `BindingId` alone against another SemanticManifest.
-- **Serialization.** The `u32` surfaces directly in the persisted SemanticManifest form (`33`). Serialized `SemanticManifest`s that round-trip through `Repository::store` and `Repository::load` preserve the IDs unchanged; round-tripping is NOT a re-`compile` and ID stability is preserved by structural equality, not by reconstruction.
+> **Cascade note (id unification).** Several compile-internal structures in this doc still reference a `BindingId` u32 (the `Binding`/`ResolvedBinding` `binding_id` field, `19 §3.2`'s `ResolvedExprTable` keyed on `(SemanticsName, BindingId)`). Those describe the *compile working set*, and parts of that description predate `33`'s `ManifestExpressions` rewrite (item T). Reconciling the compile-internal handle fully to `EntityId` (or to a clearly compile-only handle) is tracked as a follow-up in `STATUS.md` item U; the manifest-boundary contract above is authoritative.
 
 **Proposed (Round 1):** the counter resets to `0` per SemanticManifest (per-compile scope). A cross-SemanticManifest namespace (e.g. embedding the SemanticManifest content hash into the ID) is not adopted; it would break the `u32` shape and have no concrete use case. See `questions/open/15_questions.md` Q-MAP-001.
 

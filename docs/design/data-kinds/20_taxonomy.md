@@ -188,7 +188,7 @@ Every variant participates in the six-stage pipeline ratified in `10 §2`:
 
 > **Invariant D4 — coverage is always present.** Every `ResolvedDataKind` carries a coverage surface. A `ResolvedDataKind` with no coverage surface is malformed — `COMP_E_2005 MissingCoverage`.
 
-> **Phase 3 amendment (2026-05-28; cascade from CCK.1).** The manifest-resident realization of D4 is the universal top-level `coverage: SemanticBitmask` field on every `DataKind` per [`../apis/33_semstrait_manifest.md §6.1`](../apis/33_semstrait_manifest.md). `33` owns the persisted shape (id-keyed `data_kinds: BTreeMap<DataKindId, DataKind>` plus per-variant local coverage masks on `DataKindVariant`); `20` owns the canonical taxonomy and the coverage-always-present invariant. The persisted `coverage` is the union view; per-constituent `*Bitmask` (e.g., `branch_coverage`, `level_coverage`, `hop_coverage`) live on the variant struct per CCK.3.
+> **Phase 3 amendment (2026-05-28; cascade from CCK.1).** The manifest-resident realization of D4 is the universal top-level `coverage: SemanticBitmask` field on every `DataKind` per [`../apis/33_semstrait_manifest.md §6.1`](../apis/33_semstrait_manifest.md). `33` owns the persisted shape (`EntityId`-keyed `data_kinds: BTreeMap<EntityId, DataKind>` plus per-variant local coverage masks on `DataKindVariant`); `20` owns the canonical taxonomy and the coverage-always-present invariant. The persisted `coverage` is the union view; per-constituent `*Bitmask` (e.g., `branch_coverage`, `level_coverage`, `hop_coverage`) live on the variant struct per CCK.3.
 
 ### 4.4 Interface exposure
 

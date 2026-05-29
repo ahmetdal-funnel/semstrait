@@ -356,6 +356,9 @@ The cap applies to **DataKind composition** (implicit composition resolving a Re
 - C9.6 = field-first algorithm (spec 16 §11.4) plan-time inputs from manifest already settled by prior clauses: `semantics: SemanticBitmap`, `data_kinds:`, `relationships:`. No `compositions:` field. No new top-level fields.
 
 **Final shape (manifest top-level after C9 cascade):**
+
+> **Superseded by STATUS item U.2 (id-first unification).** The per-kind compile-id keys shown below (`SemanticInterfaceId`, `DataKindId`, `BindingId`, `SourceId`, `RelationshipId`) were later replaced by a single `EntityId` lane: every collection is `BTreeMap<EntityId, _>`, `stable_ids` is removed, and a top-level `model_id: EntityId` is added. The authoritative current shape is `apis/33_semstrait_manifest.md §4.1`. The snippet below is retained as the item-T historical record.
+
 ```rust
 pub struct SemanticManifest {
     pub manifest_epoch: u64,

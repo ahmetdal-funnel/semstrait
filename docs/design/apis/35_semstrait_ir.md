@@ -200,23 +200,23 @@ pub struct SemanticGraph {
 #[non_exhaustive]
 pub struct SemanticNode {
     pub payload: SemanticNodePayload,
-    pub interface_id: Option<SemanticInterfaceId>,
+    pub interface_id: Option<EntityId>,    // -> manifest `interfaces`
 }
 
 #[non_exhaustive]
 pub enum SemanticNodePayload {
     DataKind {
-        data_kind_id: DataKindId,
+        data_kind_id: EntityId,            // -> manifest `data_kinds`
         name: DataKindName,
     },
     Semantic {
-        semantic_id: SemanticsId,
+        semantic_id: EntityId,             // -> manifest `semantics` registry
     },
     Expression {
         expr_ref: GraphExprRef,
     },
     Source {
-        source_id: SourceId,
+        source_id: EntityId,               // -> manifest `sources`
     },
 }
 
@@ -246,14 +246,14 @@ pub enum SemanticEdgeType {
 pub struct SemanticGraphFragment {
     pub key: SegmentKey,
     pub graph: SemanticGraph,
-    pub touched_sources: Vec<SourceId>,
+    pub touched_sources: Vec<EntityId>,    // -> manifest `sources`
 }
 
 #[non_exhaustive]
 pub struct SegmentKey {
     pub manifest_epoch: u64,
-    pub datakind_ids: BTreeSet<DataKindId>,
-    pub requested_semantics: BTreeSet<SemanticsId>,
+    pub datakind_ids: BTreeSet<EntityId>,
+    pub requested_semantics: BTreeSet<EntityId>,
     pub constraints_fingerprint: [u8; 32],
 }
 
@@ -264,6 +264,8 @@ pub struct SemanticInterfaceBitmask {
 ```
 
 `SemanticInterfaceBitmask` is a local coverage view only. The global semantic registry stays in manifest (`33`) as `SemanticBitmap`; graph structures never duplicate registry ownership.
+
+**Identity vs. graph handles.** `SemanticNodeId` / `SemanticEdgeId` are the runtime graph's own structural handles, allocated at graph build (daggy-style positional ids) — they are *not* persisted in the manifest. Every reference from a node payload back to a manifest entity (`data_kind_id`, `semantic_id`, `source_id`, `interface_id`, `SegmentKey` sets, `touched_sources`) is an `EntityId` into the corresponding `EntityId`-keyed manifest collection (`33 §4.1`). This is the "compact handles in memory, `EntityId` identity on disk" boundary: the graph builds compact positional handles for traversal while addressing manifest entities by their durable `EntityId`.
 
 Read contracts:
 
@@ -1909,7 +1911,7 @@ The adapter is free to emit Substrait proto plans with extra hints (capacity, pa
 
 Per the manifest ratification clause CX1 (`_research/manifest/RATIFICATION_LOG.md`), every cross-reference threading IR-typed identifiers through the manifest wire form is integrity-checked at load. `35` owns the structural shape of the IR-typed reference vocabulary that participates in this check (`SemanticExprId`, `PhysicalExprId` per §5.3.1); the load-time validation pass itself is performed by the consumer (`33`'s deserializer). The IR-side contract is:
 
-1. **Single integrity pass on load.** Manifest deserialization performs one integrity walk over every IR-typed cross-reference. In v1 wire form, the required external site is `SemanticBinding.mapping[SemanticsId] = SemanticMappingValue::Expr(PhysicalExprId)` and each referenced `PhysicalExprId` MUST resolve in `expressions.physical`. If an external `SemanticExprId` reference site is added later, it MUST resolve in `expressions.semantic`.
+1. **Single integrity pass on load.** Manifest deserialization performs one integrity walk over every IR-typed cross-reference. In v1 wire form, the required external site is `SemanticBinding.mapping[EntityId] = SemanticMappingValue::Expr(PhysicalExprId)` and each referenced `PhysicalExprId` MUST resolve in `expressions.physical`. If an external `SemanticExprId` reference site is added later, it MUST resolve in `expressions.semantic`. (The mapping key is the semantic's `EntityId`; expression-pool ids stay as their own content-dedup handles per `33 §7.2`.)
 2. **Failure shape.** A reference whose target is absent from its pool surfaces as `LoadError::DanglingReference{ from, to_kind, target_id }`. The `from` field carries the referencing site (binding id, hop, mapping key); `to_kind` discriminates the target pool (`SemanticExpr` vs `PhysicalExpr` vs other manifest collections); `target_id` is the unresolved newtype value. Per `30 §5.4`, identification is by variant identity.
 3. **Hardens compile-time gates.** This pass extends C13's compile-time gates G1 / G2 / G4 (`_research/manifest/RATIFICATION_LOG.md`) from "compile-time only" to "compile-time + load-time defense in depth." A hand-edited or repository-corrupted manifest cannot slip a dangling IR-typed reference past load.
 4. **No JSON `$ref` indirection.** This contract was ratified in lieu of OpenAPI-style `$ref` JSON pointers. The wire format remains the id-keyed map plus newtype-wrapped id reference (less verbose than `$ref`, no inline-vs-pointer ambiguity, no serde-side `$ref` resolver complexity). Integrity is preserved by the load-time pass, not by the wire form's structural shape.

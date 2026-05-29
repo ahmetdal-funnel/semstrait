@@ -38,15 +38,15 @@ Every struct in this document is `#[non_exhaustive]` and every enum is `#[non_ex
 
 ### Scope note — payload shape and identity field
 
-`18` owns canonical **entity payload shapes**. Named-entity identity is an `id: EntityId` field carried directly on each entity struct in this document (`Dimension`, `Measure`, `Metric`, `Relationship`, `Key` decls, `Filter`), mirroring the `DataKindBase.id` field for data kinds (`32 §3.1`). `EntityId` is the model identity type defined at `32 §2` (canonical UUIDv7 text).
+`18` owns canonical **entity payload shapes**. Named-entity identity is an `id: EntityId` field carried directly on each entity struct in this document (`Dimension`, `Measure`, `Metric`, `Relationship`, `Key` decls, `Filter`), mirroring the `DataKindBase.id` field for data kinds (`32 §3.1`). `EntityId` is the identity type defined at `32 §2` (canonical UUID text; authored ids are UUIDv7).
 
 Identity routing:
 
 - model authoring boundary (`id` optional at authoring; strict/convenience missing-id generation profiles) — `32 §1.4` and `32 §9.0.1`;
 - the entity's `id` is also its storage key in every model collection — `32 §2`, `§3.7`;
-- manifest propagation map (`stable_ids`) — `33 §4.3.1`.
+- manifest propagation — the entity's `id` is carried straight onto the corresponding manifest entity (the manifest is `EntityId`-keyed, single id lane) — `33 §4.3.1` / `§9.1`.
 
-There is no separate identity sidecar; `id` is part of the payload.
+There is no separate identity sidecar at the model layer and no `stable_ids` side-map at the manifest layer; `id` is part of the payload throughout.
 
 ## 1. Shared Semantics Pools & Reference Grammar
 
@@ -202,7 +202,7 @@ pub struct Relationship {
 }
 ```
 
-Companion identity newtype — stable `u32` handle used by SemanticManifest indices and compile-time graph walks:
+Companion runtime handle — a compact `u32` allocated at graph build for traversal-hot-path indexing, **not** a manifest key:
 
 ```rust
 #[non_exhaustive]
@@ -210,11 +210,11 @@ Companion identity newtype — stable `u32` handle used by SemanticManifest indi
 pub struct RelationshipId(pub u32);
 ```
 
-`RelationshipId` is allocated at `compile` over the model's `relationships` map in its canonical name order (`32 §7`). It is the key type for the `SemanticManifest.relationship_index`, for `RelationshipGraph` traversal in `19 §3.4.2`, and for `RelationshipPath` in `16 §6`. `PartialOrd` / `Ord` are derived so downstream code (`19 §3.4.3`'s BFS neighbor iteration, `SemanticManifest` indices keyed by `(DataKindId, RelationshipId)`) can rely on natural `u32` ordering without unwrapping the newtype. Its one-copy-only home is this doc; `19`, `16`, and `33` all reference it from here.
+`RelationshipId` is a **runtime/graph-build handle**, allocated by the planner runtime (`34`) over the `EntityId`-keyed `relationships` collection in its canonical (name) order. It exists only to give `RelationshipGraph` traversal (`19 §3.4.2`), BFS neighbor iteration (`19 §3.4.3`), and `RelationshipPath` (`16 §6`) compact integer keys with natural `u32` ordering. It is **not** persisted: the manifest identifies and references relationships by `EntityId` (`33 §4.1`, `§6.7` — `JoinsetHop.relationship` is an `EntityId`). `PartialOrd` / `Ord` are derived so the runtime can rely on natural `u32` ordering without unwrapping the newtype.
 
-> **Allocation-order change (id-first rework).** Relationships are stored model-side in an `EntityId`-keyed map projected in name order (`32 §2`, `§7`), not an author-ordered `Vec`. `RelationshipId` allocation and first-match-wins resolution (`16 §11`) therefore proceed in **name order** rather than YAML author order. Flagged for reconciliation in `STATUS.md`.
+> **Allocation-order change (id-first rework).** Relationships are stored model-side in an `EntityId`-keyed map projected in name order (`32 §2`, `§7`), not an author-ordered `Vec`. Runtime `RelationshipId` allocation and first-match-wins resolution (`16 §11`) therefore proceed in **name order** rather than YAML author order. Flagged for reconciliation in `STATUS.md`.
 
-`RelationshipId` is the compile/runtime lookup lane (`u32`). It is intentionally separate from the model-boundary identity field `id: EntityId` carried on each `Relationship` (`32 §2`, `32 §2.3`) and propagated to `33 §4.3.1`.
+`RelationshipId` is purely the runtime lookup lane (`u32`). It is intentionally separate from the durable identity field `id: EntityId` carried on each `Relationship` (`32 §2`), which is what the manifest persists and keys by.
 
 **Authored vs derived.** `JoinType` is **not** an authoring-layer field. It is derived at compile from `optional` per `§2.9` and carried on the manifest-layer `ResolvedRelationship` (`33 §8.1`).
 

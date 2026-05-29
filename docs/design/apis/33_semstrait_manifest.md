@@ -3,11 +3,12 @@ prereqs: [11, 13, 14, 15, 16, 17, 18, 19, 20, 30, 31, 35, 37]
 authoritative-for:
   - the `semstrait-manifest` public API surface and crate boundary
   - the lightweight, model-aligned `SemanticManifest` contract used as planner input
-  - the top-level `SemanticBitmap` registry and per-DataKind / per-constituent `SemanticBitmask` shape
-  - the manifest-resident `DataKind` primitive (including `interface_id` linkage) and the closed `DataKindVariant { Dataset, Unionset, Grainset, Joinset }` taxonomy mirror
+  - the single manifest identity lane — every collection keyed by `EntityId` and every cross-reference an `EntityId`; no per-kind compile-id newtypes and no `stable_ids` side-map
+  - the `EntityId`-keyed top-level `SemanticBitmap` registry and per-DataKind / per-constituent `SemanticBitmask` shape (the lone surviving integer is the `bit_position` ordinal)
+  - the manifest-resident `DataKind` primitive (including `interface_id` linkage by `EntityId`) and the closed `DataKindVariant { Dataset, Unionset, Grainset, Joinset }` taxonomy mirror
   - the `NestedDataKind` shape used inside Unionset / Grainset / Joinset variants
   - manifest persistence shape for `SemanticInterface`, `SemanticBinding`, `Relationship` (top-level, scope-root only)
-  - model-identity propagation map `ManifestStableIds` (`EntityId` UUIDv7 strings) and its completeness/uniqueness contract
+  - the named-entity `id: EntityId` carried on every manifest entity (model-authored reuses model `id`; compile-synthesised generates a deterministic id) plus the top-level `model_id`
   - manifest expression persistence contract — split typed pools `ManifestExpressions { semantic, physical }` with strongly-typed `SemanticExprId` / `PhysicalExprId` newtypes
   - `PhysicalSource` manifest contract (locator + version reference + inline `projected_schema` + SHA-256 `schema_fingerprint`); reduced `PhysicalSourceType { Table, File }` and `PhysicalSourceVersionRef { IcebergSnapshotId, MonotonicVersion }` rosters
   - compile and persistence boundary (`compile`, `Repository`); compile-time validation gates G1–G5 and the D2 desugar-at-compile policy
@@ -37,14 +38,14 @@ This shape lands the 20 ratified clauses C1–C18 + CCK + CX1 (see `_research/ma
 
 ## 2. Design Posture
 
-- **Identity on disk, structure in memory.** Manifest persists identity primitives; `SemanticGraph` reconstructs nodes / edges / per-Request structures at graph build.
-- **Dual identity lanes.** Compile/runtime lookup IDs (`DataKindId`, `SemanticsId`, ...) remain canonical internal references; model UUIDv7 string IDs persist in `stable_ids`.
+- **Identity on disk, structure in memory.** Manifest persists identity primitives keyed by `EntityId`; `SemanticGraph` reconstructs nodes / edges / per-Request structures — and any compact integer traversal handles it needs — at graph build.
+- **Single identity lane — `EntityId`.** Every manifest entity carries one durable `id: EntityId` and every collection is keyed by it (`BTreeMap<EntityId, _>`); every cross-reference is an `EntityId`. There are no separate per-kind compile-id newtypes (`DataKindId`, `SemanticsId`, `BindingId`, `SourceId`, `SemanticInterfaceId`, `RelationshipId`) on the manifest and no `stable_ids` side-map. Model-authored entities reuse their model `id`; compile-synthesised entities generate a deterministic `id` (§9.1). Compact integer handles used by the runtime planner are derived at graph build, never persisted.
 - **Closed taxonomy mirror.** `DataKindVariant` enumerates the four ratified DataKinds (`Dataset`, `Unionset`, `Grainset`, `Joinset`) and is `#[non_exhaustive]` per I10.
 - **Bitmap vs Bitmask vocabulary.**
-  - **`SemanticBitmap`** = the registry, the canonical map, single, top-level. Holds full `SemanticDefinition` per entry.
-  - **`*Bitmask`** = a computed mask value over the bitmap (a coverage view), held on local entities. Suffix only; never standalone.
-- **Public vs Nested DataKind split** mirrors spec 20: top-level `DataKind` carries an id; `NestedDataKind` inlined into a parent variant carries a `structural_label` per spec 26 addressing.
-- **Implicit Unionsets are top-level.** Multi-source `Dataset` auto-synthesises a Unionset (spec 21 §3.2 + spec 23 §2.1 row A) with a content-derived hash `data_kind_id`. They live in `data_kinds`, not inside `NestedDataKind`.
+  - **`SemanticBitmap`** = the registry, the canonical map keyed by `EntityId`, single, top-level. Holds full `SemanticDefinition` per entry plus its `bit_position` ordinal.
+  - **`*Bitmask`** = a computed mask value over the bitmap (a coverage view), held on local entities. Suffix only; never standalone. The mask's only integer is `bit_position`, which maps back to an `EntityId` via the registry.
+- **Public vs Nested DataKind split** mirrors spec 20: top-level `DataKind` carries an `id: EntityId`; `NestedDataKind` inlined into a parent variant carries a `structural_label` per spec 26 addressing (nested kinds have no top-level id).
+- **Implicit Unionsets are top-level.** Multi-source `Dataset` auto-synthesises a Unionset (spec 21 §3.2 + spec 23 §2.1 row A) with a deterministic content-derived `id`. They live in `data_kinds`, not inside `NestedDataKind`.
 - **Catalog-optional.** `compile` accepts `Option<&dyn CatalogProvider>`. When absent, model-sourced physical shape is used.
 - **Deterministic input boundary.** Manifest ends at compile-time resolution + persistence. Runtime graph fragments, implicit-composition enumeration, and cache policy are planner graph-build concerns (`34`).
 - **IR owns canonical expression vocabulary.** Manifest persists IR-owned `Expr<L>` (`SemanticExpr` and `PhysicalExpr`), with `Serialize` / `Deserialize` derived inside `semstrait-ir` (spec 35).
@@ -64,7 +65,7 @@ semstrait-manifest
 │   ├── joinset       // JoinsetHop, HopDirection
 │   ├── binding       // SemanticBinding, SemanticMappingValue
 │   ├── relationship  // Relationship (re-export of canonical entity from spec 18)
-│   ├── identity      // ManifestStableIds, EntityId
+│   ├── identity      // EntityId (re-export of canonical id type from spec 32)
 │   ├── expr          // ManifestExpressions, SemanticExprId, PhysicalExprId
 │   ├── source        // PhysicalSource, PhysicalSourceType,
 │   │                 //   PhysicalSourceVersionRef, SourceColumn
@@ -77,7 +78,7 @@ semstrait-manifest
 Primary root exports:
 
 - `SemanticManifest`, `SemanticManifestMetadata`
-- `ManifestStableIds`, `EntityId`
+- `EntityId`
 - `SemanticBitmap`, `SemanticDefinition`, `SemanticBitmask`
 - `SemanticInterface`, `SemanticInterfaceBitmask`
 - `DataKind`, `DataKindVariant`, `NestedDataKind`, `NestedDataKindVariant`, `DataKindOrigin`
@@ -100,15 +101,15 @@ pub struct SemanticManifest {
     pub manifest_epoch: u64,
     pub model_hash: [u8; 32],
     pub catalog_fingerprint: Option<[u8; 32]>,
+    pub model_id: EntityId,                                            // model-level identity (generated at compile)
 
-    pub semantics:     SemanticBitmap,                                 // C4
-    pub interfaces:    BTreeMap<SemanticInterfaceId, SemanticInterface>,
-    pub data_kinds:    BTreeMap<DataKindId, DataKind>,                 // C5–C9 + CCK
-    pub bindings:      BTreeMap<BindingId, SemanticBinding>,           // C2
-    pub sources:       BTreeMap<SourceId, PhysicalSource>,             // C1, C3
-    pub expressions:   ManifestExpressions,                            // C11, C12, C18
-    pub relationships: BTreeMap<RelationshipId, Relationship>,         // root-scope only
-    pub stable_ids:    ManifestStableIds,                              // model identity propagation (per-entity `id`, `32 §2`/`§2.3`)
+    pub semantics:     SemanticBitmap,                                 // C4 — BTreeMap<EntityId, SemanticDefinition> inside
+    pub interfaces:    BTreeMap<EntityId, SemanticInterface>,
+    pub data_kinds:    BTreeMap<EntityId, DataKind>,                   // C5–C9 + CCK
+    pub bindings:      BTreeMap<EntityId, SemanticBinding>,            // C2
+    pub sources:       BTreeMap<EntityId, PhysicalSource>,             // C1, C3
+    pub expressions:   ManifestExpressions,                            // C11, C12, C18 (expr-pool ids — §7.2)
+    pub relationships: BTreeMap<EntityId, Relationship>,               // root-scope only
 
     pub metadata:      SemanticManifestMetadata,
 }
@@ -117,10 +118,11 @@ pub struct SemanticManifest {
 Top-level constraints:
 
 - Identity primitives only — no `nodes`, no `edges`, no `compositions`. `SemanticGraph` reconstructs nodes, edges, and per-Request composition structures at build time.
-- All entity collections are stable-id keyed `BTreeMap`s for deterministic ordering and direct lookup.
-- `stable_ids` carries model-level named-entity identity (`EntityId` UUIDv7 text); it does not replace compile-time lookup ids (`DataKindId`, `SemanticsId`, ...).
-- Vectors remain inside entities where ordered lists are meaningful (`branches`, `levels`, `hops`, `bindings`, etc.).
+- **Single identity lane.** All entity collections are `EntityId`-keyed `BTreeMap`s; the key equals the value's own `id` field. Deterministic ordering follows the `EntityId` sort.
+- Every persisted entity carries one `id: EntityId` (no separate compile-id newtypes, no `stable_ids` side-map). Model-authored entities reuse their model `id`; compile-synthesised entities (sources, bindings, interfaces, implicit Unionsets, synthesised fields) generate a deterministic `id` (§9.1).
+- Vectors remain inside entities where ordered lists are meaningful (`branches`, `levels`, `hops`, `bindings`, etc.); their elements are `EntityId`s or carry their own `id`.
 - `relationships` holds **root-scope** Relationships only. Joinset-local (shadow) Relationships per spec 18 §2.10 live inline on the Joinset variant, not here (C7.6).
+- Expression pools (`expressions`) keep their own content-dedup handles (`SemanticExprId` / `PhysicalExprId`, §7.2) — these address deduplicated expression subtrees, not named entities, and are intentionally not `EntityId`s.
 
 ### 4.2 Top-level fingerprints
 
@@ -146,32 +148,21 @@ pub struct SemanticManifestMetadata {
 
 Free-form provenance for tooling; never load-bearing.
 
-### 4.3.1 `ManifestStableIds` (model identity propagation)
+### 4.3.1 `EntityId` and `model_id` (single identity lane)
 
-`stable_ids` persists the named-entity `id` carried on each model entity struct (`32 §1.4`, `§2`/`§2.3`, `§9.0.1`). Compile reads each entity's `id` field directly — there is no model-side identity sidecar — and maps it from the corresponding compile-time lookup id.
+There is no `stable_ids` side-map. Identity rides on each entity: every manifest entity carries an `id: EntityId` (its map key), and every cross-reference is an `EntityId`. `EntityId` is the canonical id type re-exported from `semstrait-model` (`32 §2`).
 
 ```rust
-pub type EntityId = String; // canonical UUIDv7 text (lowercase, hyphenated)
-
-#[non_exhaustive]
-pub struct ManifestStableIds {
-    pub model_id: EntityId,
-    pub data_kinds: BTreeMap<DataKindId, EntityId>,
-    pub semantics: BTreeMap<SemanticsId, EntityId>,
-    pub interfaces: BTreeMap<SemanticInterfaceId, EntityId>,
-    pub bindings: BTreeMap<BindingId, EntityId>,
-    pub sources: BTreeMap<SourceId, EntityId>,
-    pub relationships: BTreeMap<RelationshipId, EntityId>,
-}
+pub type EntityId = String; // canonical UUID text (lowercase, hyphenated)
 ```
 
 Rules:
 
-- `EntityId` values are boundary strings and MUST be canonical UUIDv7 text.
-- Every named entity persisted in manifest primitive maps has a corresponding `stable_ids` entry, sourced from that entity's `id` field (`32 §2`).
-- `EntityId` values are globally unique within one manifest.
-- Missing source-model ids are resolved at parse before persistence according to model-side `IdentityProfile` (`32 §9.0.1`); compile sees every entity already carrying an `id`.
-- `model_id` is allocated at compile: the `SemanticModel` root carries no `id` field (`32 §2.3`), so the manifest assigns the model-level identity here rather than copying it from the model.
+- `EntityId` values are canonical UUID text. Model-authored ids are UUIDv7 (`32`); compile-synthesised ids are a deterministic UUID variant derived from content (§9.1). The version nibble distinguishes the two flavors.
+- Every persisted `DataKind`, `SemanticDefinition`, `SemanticInterface`, `SemanticBinding`, `PhysicalSource`, and `Relationship` carries an `id` equal to its collection key.
+- `EntityId` values are globally unique across all manifest collections, plus the top-level `model_id`.
+- Model-authored entities reuse the entity's model `id`; missing model ids were already resolved at parse per `IdentityProfile` (`32 §9.0.1`), so compile sees every model entity already carrying an `id`.
+- `model_id` is the top-level model identity (`SemanticManifest.model_id`). The `SemanticModel` root carries no `id` field (`32 §2.3`), so compile mints a deterministic `model_id` (§9.1).
 
 ### 4.4 Deterministic payload consumed by graph build
 
@@ -179,32 +170,32 @@ Rules:
 
 | Payload slice | Deterministic intent | Used by graph build for |
 |---|---|---|
-| `sources: BTreeMap<SourceId, PhysicalSource>` | Stable source identity plus version/schema snapshot (`version_ref`, `schema_fingerprint`) | source-node identity, drift checks, and source-index keys |
-| `data_kinds`, `relationships`, `interfaces` | Stable-id keyed composition primitives (`interface_id`, `coverage`, variant payloads); no runtime edges persisted | node/edge synthesis and composition candidate indexing |
-| `DataKindVariant::{Joinset, Grainset, Unionset}` fields | Explicit composition hints (`anchor`, `members`, `hops`, branch/level routing) | deterministic graph topology reconstruction |
-| `SemanticBitmap.entries[*].bit_position` + all `SemanticBitmask` values | Explicit bit-position mapping and canonical word encoding | coverage math and subset/intersection checks |
+| `sources: BTreeMap<EntityId, PhysicalSource>` | Stable source identity plus version/schema snapshot (`version_ref`, `schema_fingerprint`) | source-node identity, drift checks, and source-index keys |
+| `data_kinds`, `relationships`, `interfaces` | `EntityId`-keyed composition primitives (`interface_id`, `coverage`, variant payloads); no runtime edges persisted | node/edge synthesis and composition candidate indexing |
+| `DataKindVariant::{Joinset, Grainset, Unionset}` fields | Explicit composition hints (`anchor`, `members`, `hops`, branch/level routing — all `EntityId`) | deterministic graph topology reconstruction |
+| `SemanticBitmap.entries[*].bit_position` + all `SemanticBitmask` values | Explicit `bit_position ↔ EntityId` mapping and canonical word encoding | coverage math and subset/intersection checks |
 | `expressions.semantic`, `expressions.physical`, typed ids in bindings | Pool-typed expression storage (`SemanticExprId`/`PhysicalExprId`) | expression-node/edge lookup through typed `GraphExprRef` (`35`) |
-| `stable_ids` | Persisted model-level UUID identity for each named manifest primitive | cross-run identity continuity and external correlation |
+| Per-entity `id: EntityId` + top-level `model_id` | Durable model identity on each primitive | cross-run identity continuity and external correlation |
 
-Indexing note: runtime indices (`name_index`, composition-by-constituent-set, adjacency maps) are derived from these maps at graph build and are never persisted back into manifest.
+Indexing note: runtime indices (`name_index`, composition-by-constituent-set, adjacency maps, and any compact integer traversal handles) are derived from these maps at graph build and are never persisted back into manifest.
 
 ## 5. `SemanticBitmap` Registry (C4)
 
-The `SemanticBitmap` is the canonical, single, top-level registry of every `SemanticsId` reachable from the model. All per-entity `*Bitmask` values are coverage views over this registry.
+The `SemanticBitmap` is the canonical, single, top-level registry of every semantic (`EntityId`) reachable from the model. All per-entity `*Bitmask` values are coverage views over this registry, addressed by `bit_position`.
 
 ```rust
 #[non_exhaustive]
 pub struct SemanticBitmap {
-    pub entries: BTreeMap<SemanticsId, SemanticDefinition>,
+    pub entries: BTreeMap<EntityId, SemanticDefinition>,
 }
 
 #[non_exhaustive]
 pub struct SemanticDefinition {
-    pub semantic_id: SemanticsId,
+    pub id: EntityId,            // model id (Dimension/Measure/Metric/Key) or generated (synthesised Field); also the map key
     pub name: SemanticsName,
     pub role: SemanticRole,
     pub data_type: Option<DataType>,
-    pub bit_position: u32,
+    pub bit_position: u32,       // the lone integer; epoch-stable bit ordinal
 }
 
 #[non_exhaustive]
@@ -224,30 +215,33 @@ pub struct SemanticBitmask {
 
 Rules:
 
-- **Scope is global.** A bit position spans all `SemanticsId`s in the manifest's set.
-- **Wide registry.** Each entry carries the full `SemanticDefinition` (per-semantic name, role, optional `DataType`, and resolved `bit_position`). Per-semantic attributes that previously lived in a `SemanticNodePayload::Semantic` wrapper now live here.
-- **Epoch-stable; cross-epoch renumber allowed.** Within one `manifest_epoch`, `bit_position` is stable. Bumping `manifest_epoch` rebuilds positions from canonical sort over `SemanticsId`. Position lookup at any read site is `bitmap.entries.get(id).bit_position`.
+- **Scope is global.** A bit position spans all semantics (`EntityId`s) in the manifest's set.
+- **Wide registry.** Each entry carries the full `SemanticDefinition` (per-semantic `id`, name, role, optional `DataType`, and resolved `bit_position`). Per-semantic attributes that previously lived in a `SemanticNodePayload::Semantic` wrapper now live here.
+- **Epoch-stable; cross-epoch renumber allowed.** Within one `manifest_epoch`, `bit_position` is stable. Bumping `manifest_epoch` rebuilds positions from canonical sort over `EntityId`. Value lookup at any read site is `bitmap.entries.get(&entity_id)`; the reverse index `bit_position -> EntityId` is derived at load (not persisted) so a set bit resolves to its `EntityId` and then its definition.
 - **Bitmask encoding** (CCK.5): `Vec<u64>` words; bit `n` of word `n / 64` shifted by `n % 64` corresponds to the entry whose `bit_position == n`.
 - **Canonical bitmask form.** `words` is little-endian by word index; bit 0 in each word is its least-significant bit. Trailing all-zero words are invalid. Empty coverage is encoded as `Vec::new()`.
 - **Bitmask validity.** Any set bit whose position is absent from `SemanticBitmap.entries[*].bit_position` is a load-time integrity error.
+
+`EntityId` never participates in bit math; `bit_position` is the only integer in the bitmap subsystem and exists solely to pack masks into words.
 
 `SemanticInterfaceBitmask` (the per-interface mask projection) is structurally a `SemanticBitmask` and lives on `SemanticInterface`.
 
 ```rust
 #[non_exhaustive]
 pub struct SemanticInterface {
-    pub dimensions: Vec<SemanticsId>,
-    pub measures:   Vec<SemanticsId>,
-    pub metrics:    Vec<SemanticsId>,
-    pub keys:       Vec<SemanticsId>,
-    pub fields:     Vec<SemanticsId>,
+    pub id:         EntityId,        // generated at compile; also the map key in `interfaces`
+    pub dimensions: Vec<EntityId>,
+    pub measures:   Vec<EntityId>,
+    pub metrics:    Vec<EntityId>,
+    pub keys:       Vec<EntityId>,
+    pub fields:     Vec<EntityId>,
     pub bitmask:    SemanticInterfaceBitmask,
 }
 
 pub type SemanticInterfaceBitmask = SemanticBitmask;
 ```
 
-The vector-of-ids fields preserve declared shape and ordering for human inspection; `bitmask` is the membership view used by graph-build path search.
+The vector-of-ids fields (each an `EntityId` into `semantics`) preserve declared shape and ordering for human inspection; `bitmask` is the membership view used by graph-build path search. An interface has no model-authored identity, so its `id` is generated deterministically at compile (§9.1).
 
 ## 6. `DataKind` and `DataKindVariant` (CCK + C5–C9)
 
@@ -256,9 +250,9 @@ The vector-of-ids fields preserve declared shape and ordering for human inspecti
 ```rust
 #[non_exhaustive]
 pub struct DataKind {
-    pub data_kind_id: DataKindId,
+    pub id: EntityId,              // model id (Explicit) or generated (Implicit); also the map key
     pub name: DataKindName,
-    pub interface_id: SemanticInterfaceId,
+    pub interface_id: EntityId,    // -> interfaces
     pub origin: DataKindOrigin,
     pub coverage: SemanticBitmask,
     pub variant: DataKindVariant,
@@ -274,8 +268,9 @@ pub enum DataKindOrigin {
 Notes:
 
 - `coverage` is the universal union view (CCK.1) — every DataKind carries it; satisfies spec 20 invariant D4.
-- `interface_id` links every `DataKind` to one canonical `SemanticInterface` entry in `interfaces`.
+- `interface_id` links every `DataKind` to one canonical `SemanticInterface` entry in `interfaces` (by `EntityId`).
 - `origin` distinguishes author-declared (`Explicit`) from compile-synthesised entries such as multi-source-Dataset auto-Unionsets (`Implicit`). Diagnostic-only — runtime semantics are identical (C9.5).
+- `id` reuses the model `id` for `Explicit` DataKinds and is a deterministic generated id for `Implicit` ones (§9.1).
 
 ### 6.2 `DataKindVariant`
 
@@ -283,7 +278,7 @@ Notes:
 #[non_exhaustive]
 pub enum DataKindVariant {
     Dataset {
-        bindings: Vec<BindingId>,                                      // len >= 1
+        bindings: Vec<EntityId>,                                       // -> bindings; len >= 1
     },
     Unionset {
         mode: UnionMode,
@@ -293,11 +288,11 @@ pub enum DataKindVariant {
         levels: Vec<GrainsetLevel>,                                    // len >= 2
     },
     Joinset {
-        anchor: DataKindId,
-        members: Vec<DataKindId>,                                      // anchor in members; len == 2 (binary v1)
+        anchor: EntityId,                                              // -> data_kinds
+        members: Vec<EntityId>,                                        // -> data_kinds; anchor in members; len == 2 (binary v1)
         hops: Vec<JoinsetHop>,                                         // len == 1 (binary v1); cumulative
         path_origin: DataKindOrigin,
-        scope_local_relationships: Vec<Relationship>,                  // §2.10 shadow
+        scope_local_relationships: Vec<Relationship>,                  // §2.10 shadow; each carries its own `id`
     },
 }
 ```
@@ -309,7 +304,7 @@ Mirrors spec 20's Public/Nested split. Inlined into a parent variant — no sepa
 ```rust
 #[non_exhaustive]
 pub struct NestedDataKind {
-    pub structural_label: String,
+    pub structural_label: String,                  // spec 26 addressing; nested kinds have no top-level id
     pub coverage: SemanticBitmask,
     pub variant: NestedDataKindVariant,
 }
@@ -317,7 +312,7 @@ pub struct NestedDataKind {
 #[non_exhaustive]
 pub enum NestedDataKindVariant {
     Dataset {
-        bindings: Vec<BindingId>,
+        bindings: Vec<EntityId>,                   // -> bindings
     },
     Unionset {
         mode: UnionMode,
@@ -335,7 +330,7 @@ pub enum NestedDataKindVariant {
 
 ```rust
 DataKindVariant::Dataset {
-    bindings: Vec<BindingId>,                      // len >= 1
+    bindings: Vec<EntityId>,                        // -> bindings; len >= 1
 }
 ```
 
@@ -366,7 +361,7 @@ Rules:
 - `branches.len() >= 2` per spec 26 R3.
 - Vector preserves YAML declaration order; reordering is a real model edit.
 - `branch_coverage` records each branch's locally-covered semantics (Native/Derived bits per C5.1 cascade). The complement `top_level_coverage \ branch_coverage` is the implicit NullFill mask, derived at graph-build (spec 23 §1.3 I1) — the manifest does not persist it (C6.2).
-- **Implicit Unionset placement.** Multi-source `Dataset` auto-synthesises a Unionset per spec 21 §3.2; the result is a top-level entry in `data_kinds` with `origin = Implicit` and a content-derived hash `data_kind_id` (spec 23 §2.1 row A). It is **not** a `NestedDataKind`.
+- **Implicit Unionset placement.** Multi-source `Dataset` auto-synthesises a Unionset per spec 21 §3.2; the result is a top-level entry in `data_kinds` with `origin = Implicit` and a deterministic content-derived `id` (spec 23 §2.1 row A). It is **not** a `NestedDataKind`.
 
 ### 6.6 `Grainset` variant (C8)
 
@@ -385,7 +380,7 @@ pub struct GrainsetLevel {
 #[non_exhaustive]
 pub enum RoutingUnitRef {
     Inline(NestedDataKind),                        // single same-grain child
-    Synthesized(DataKindId),                       // implicit-Unionset top-level (>= 2 same-grain children)
+    Synthesized(EntityId),                         // -> data_kinds (implicit-Unionset top-level; >= 2 same-grain children)
 }
 ```
 
@@ -401,18 +396,18 @@ Rules:
 
 ```rust
 DataKindVariant::Joinset {
-    anchor: DataKindId,
-    members: Vec<DataKindId>,                      // len == 2 (binary v1); anchor in members
+    anchor: EntityId,                              // -> data_kinds
+    members: Vec<EntityId>,                        // -> data_kinds; len == 2 (binary v1); anchor in members
     hops: Vec<JoinsetHop>,                         // len == 1 (binary v1); cumulative coverage
     path_origin: DataKindOrigin,
-    scope_local_relationships: Vec<Relationship>,  // §2.10 shadow; bounded to this Joinset
+    scope_local_relationships: Vec<Relationship>,  // §2.10 shadow; bounded to this Joinset; each carries its own `id`
 }
 
 #[non_exhaustive]
 pub struct JoinsetHop {
-    pub from: DataKindId,
-    pub to: DataKindId,
-    pub relationship: RelationshipId,
+    pub from: EntityId,                            // -> data_kinds
+    pub to: EntityId,                              // -> data_kinds
+    pub relationship: EntityId,                    // -> relationships (root-scope) or scope_local_relationships
     pub direction: HopDirection,
     pub hop_coverage: SemanticBitmask,             // cumulative across hops [0..=i]
 }
@@ -444,16 +439,17 @@ Rules:
 ```rust
 #[non_exhaustive]
 pub struct SemanticBinding {
-    pub data_kind_id: DataKindId,                                      // C2.4 — leaf-only direct linkage
-    pub source_id: SourceId,
-    pub mapping: BTreeMap<SemanticsId, SemanticMappingValue>,
+    pub id: EntityId,                                                  // generated at compile; also the map key in `bindings`
+    pub data_kind_id: EntityId,                                        // C2.4 — leaf-only direct linkage (-> data_kinds)
+    pub source_id: EntityId,                                           // -> sources
+    pub mapping: BTreeMap<EntityId, SemanticMappingValue>,             // keyed by semantic EntityId
 }
 
 #[non_exhaustive]
 pub enum SemanticMappingValue {
     Column(ColumnRef),
     Literal(Literal),
-    Expr(PhysicalExprId),                                              // C11
+    Expr(PhysicalExprId),                                              // C11 — expr-pool handle (§7.2)
     MetadataRef(String),
 }
 ```
@@ -462,8 +458,9 @@ Rules:
 
 - **Leaf-only linkage** (C2.1). Bindings attach to leaf `Dataset` DataKinds; composite DataKinds (Unionset / Grainset / Joinset) traverse children to reach sources.
 - **One-to-many** (C2.2). One Dataset can carry multiple bindings, each pointing to a distinct `PhysicalSource` (e.g., partitioned read, dual feed).
-- **Forward only** (C2.3). Dataset variant carries `bindings: Vec<BindingId>`; binding carries `source_id`; reverse (`source_id -> [BindingId]`) is derived at load.
-- **`SemanticMappingValue::Expr` references `PhysicalExprId`.** Manifest persists the post-desugar physical form referencing native columns (C11). The semantic / authoring form lives in the `semantic` pool below for diagnostic and round-trip purposes.
+- **Forward only** (C2.3). Dataset variant carries `bindings: Vec<EntityId>`; binding carries `source_id`; reverse (`source_id -> [binding id]`) is derived at load.
+- **Generated identity.** A binding has no model-authored id; its `id` is generated deterministically at compile from `(data_kind_id, source_id, mapping)` (§9.1).
+- **`SemanticMappingValue::Expr` references `PhysicalExprId`.** Manifest persists the post-desugar physical form referencing native columns (C11). The semantic / authoring form lives in the `semantic` pool below for diagnostic and round-trip purposes. `PhysicalExprId` is an expression-pool handle (content-dedup), not an `EntityId` (§7.2).
 
 ### 7.2 `ManifestExpressions` (split typed pools, C12)
 
@@ -486,9 +483,10 @@ Rules:
 - **Both forms persisted** (C11). `SemanticExpr` (= `Expr<SemanticLeaf>`, with sugar pre-resolved per D2 below) and `PhysicalExpr` (= `Expr<PhysicalLeaf>`, post-desugar canonical form referencing native columns) are first-class persisted artifacts.
 - **Sugar is semantic-only** (C11). `PhysicalExpr` is post-desugar; sugar never crosses into the physical pool.
 - **Strongly typed IDs** (C12.3). `SemanticExprId` / `PhysicalExprId` wrap `ExprId`, so every reference site stays pool-typed without runtime tag dispatch.
+- **Expression ids are not `EntityId`s.** Expressions are content-deduplicated subtrees, not named/authored entities, so they keep their own pool handles rather than joining the `EntityId` lane. This is the single deliberate exception to the manifest's one-id-lane rule; it exists because expression identity is content-addressed (C12.4), not durable model identity.
 - **Compile-time dedup per pool** (C12.4). Equivalent expressions collapse to one id within each pool.
 - **No cross-pool link table** (C12.5). Semantic/physical pairing stays in compile context; graph build and planning perform lookup-only reads.
-- **Derived views only** (C16). Expression coverage and reverse indexes (for example `SemanticsId -> [SemanticExprId]`) are derived at load/graph-build time, not persisted.
+- **Derived views only** (C16). Expression coverage and reverse indexes (for example semantic `EntityId -> [SemanticExprId]`) are derived at load/graph-build time, not persisted.
 
 ### 7.3 Serialization mechanism (C18)
 
@@ -505,6 +503,7 @@ Rules:
 ```rust
 #[non_exhaustive]
 pub struct PhysicalSource {
+    pub id: EntityId,                            // generated deterministically from the identity tuple below; also the map key in `sources`
     pub source_type: PhysicalSourceType,
     pub locator: String,
     pub version_ref: Option<PhysicalSourceVersionRef>,
@@ -537,7 +536,7 @@ pub struct SourceColumn {
 
 - **Catalog-optional** (C1.1). When catalog is absent, model is the source of truth for physical shape.
 - **Per identity unit** (C1.2). One `PhysicalSource` per `(table | unique file path / glob root)` plus optional version reference for invalidation.
-- **Deterministic source indexing.** `SourceId` is derived from the identity tuple (`source_type`, `locator`, `version_ref`). `projected_schema` and metadata are attributes, not identity keys.
+- **Deterministic source identity.** A source's `id: EntityId` is generated deterministically from the identity tuple (`source_type`, `locator`, `version_ref`) — the same tuple that previously seeded `SourceId` — so the id is stable across runs and across model edits that don't change the source. `projected_schema` and metadata are attributes, not identity inputs. (Distinct from `semstrait-common::io::SourceId` in `31` — do not conflate.)
 - **Referenced-only scope** (C1.3). Manifest is model-scoped — no catalog-wide scan; only sources reached by some binding are persisted.
 
 ### 8.3 Field set rules (C3)
@@ -598,7 +597,7 @@ Notes:
 
 - `catalog: Option<&dyn CatalogProvider>` reflects C1.1's catalog-optional posture.
 - The two-channel return shape (`Diagnostics` carries warnings and informational items alongside the success or failure case) is unchanged from the previous spec.
-- `compile` reads each model entity's `id` field (`32 §2`/`§2.3`) and records it in `SemanticManifest.stable_ids` against the entity's compile-time lookup id; this propagation is mandatory even when ids were generated under convenience profile.
+- **Identity propagation and generation.** `compile` carries each model entity's `id` (`32 §2`/`§2.3`) straight onto the corresponding manifest entity (it is both the value's `id` field and its map key). For entities with no model-authored identity — `PhysicalSource`, `SemanticBinding`, `SemanticInterface`, implicit Unionsets (`origin = Implicit`), synthesised `Field` semantics, and the top-level `model_id` — `compile` generates a **deterministic, content-derived** `EntityId` (e.g. UUIDv5/v8 over the entity's identity inputs: a source from `(source_type, locator, version_ref)`, a binding from `(data_kind_id, source_id, mapping)`, an interface from its member set, an implicit Unionset from its branch content). Deterministic derivation (not time-based UUIDv7) is mandatory so identical `(model, catalog)` inputs yield byte-identical manifests (I4). `EntityId` is therefore canonical UUID text where authored ids are UUIDv7 and generated ids are a deterministic UUID variant.
 
 ### 9.2 Validation gates (C13)
 
@@ -607,7 +606,7 @@ The compile pass runs five gates. All gates emit **errors** unless explicitly no
 | Gate | Scope | Notes |
 |---|---|---|
 | **G1** | Cycle detection across `SemanticExpr`. | Error. Scoped to expression DAGs; cycle detection across the Relationship graph is a separate gate (G6 candidate, deferred). |
-| **G2** | Semantic-id resolution. | Error. Every `SemanticLeaf`'s `SemanticsId` must resolve in the registry. |
+| **G2** | Semantic resolution. | Error. Every `SemanticLeaf`'s referenced semantic (by `SemanticsName`) must resolve to a registry entry (`EntityId`). |
 | **G3** | Type validation. | Error. Leaves match registry type; calls match function signature; operators match operand types. |
 | **G4** | `PhysicalExpr` binding-side checks. | Error. Referenced `PhysicalExprId` exists; `ColumnRef` resolves in the bound `PhysicalSource.projected_schema`; inferred type matches the bound semantic. |
 | **G5** | Orphan / dead-code detection. | **Error** (escalated from warning per ratification). Unreachable expressions risk propagating into plan as undefined behavior; strict-default starting place. Workflow-friction watch is recorded under deferred threads. |
@@ -672,15 +671,12 @@ Cross-references checked at load:
 | `JoinsetHop.relationship` | Joinset hop | `relationships` *or* `Joinset.scope_local_relationships` |
 | `JoinsetHop.from` / `JoinsetHop.to` | Joinset hop | `data_kinds` |
 | `Joinset.anchor`, `Joinset.members[*]` | Joinset variant | `data_kinds` |
-| `SemanticInterface.{dimensions,measures,metrics,keys,fields}[*]` | interface | `semantics.entries` |
+| `SemanticInterface.{dimensions,measures,metrics,keys,fields}[*]` | interface | `semantics.entries` (by `EntityId`) |
 | `SemanticBitmask.words` (any set bit) | any bitmask | `semantics.entries` (some entry has matching `bit_position`; out-of-range bits are invalid) |
 | `SemanticDefinition.bit_position` uniqueness | bitmap registry | within bitmap |
-| `stable_ids.data_kinds[*]` | stable-id map | `data_kinds` |
-| `stable_ids.semantics[*]` | stable-id map | `semantics.entries` |
-| `stable_ids.interfaces[*]` | stable-id map | `interfaces` |
-| `stable_ids.bindings[*]` | stable-id map | `bindings` |
-| `stable_ids.sources[*]` | stable-id map | `sources` |
-| `stable_ids.relationships[*]` | stable-id map | `relationships` |
+| Every entity's `id` equals its collection key | each collection | self (`data_kinds`/`semantics`/`interfaces`/`bindings`/`sources`/`relationships`) |
+
+All cross-reference targets above are `EntityId`s. Because identity lives on each entity (no side-map), there is no separate `stable_ids` table to validate — a dangling `EntityId` reference is caught by the rows above directly.
 
 Structural violations also surface here as a defense-in-depth twin of compile-time gates:
 
@@ -689,7 +685,7 @@ Structural violations also surface here as a defense-in-depth twin of compile-ti
 - `Grainset.levels.len() >= 2`; distinct grains; coarsest-first ordering
 - `Joinset.members.len() == 2` (binary v1); `Joinset.hops.len() == 1` (binary v1); `Joinset.anchor in members`
 - `SemanticBitmask.words` canonical form (no trailing all-zero words; empty mask is `Vec::new()`)
-- `stable_ids` is complete, UUIDv7-canonical, and globally unique over all values
+- every entity `id` is canonical UUID text and equals its map key; all `id`s plus `model_id` are globally unique across collections
 
 This hardens C13's G1 / G2 / G4 from compile-time-only to compile-time + load-time. A hand-edited or repository-corrupted manifest cannot slip a dangling reference past load. The wire format remains an id-keyed map plus id reference (no OpenAPI-style `$ref` JSON pointers); CX1 preserves the integrity guarantee at less verbosity cost.
 
@@ -702,15 +698,15 @@ Use `Resolved*` only for compile-complete forms where uncertainty is eliminated 
 ## 12. Invariants
 
 - I12.1 Manifest serialization does not contain runtime graph or planner cache state.
-- I12.2 Top-level entity collections are id-keyed maps and do not duplicate ids inside values.
-- I12.2a `stable_ids` contains one UUIDv7-canonical `EntityId` for every named primitive persisted in manifest (`data_kinds`, `semantics`, `interfaces`, `bindings`, `sources`, `relationships`) plus `model_id`.
-- I12.2b `stable_ids` values are globally unique within one manifest.
-- I12.3 `SemanticBitmap.entries[id].bit_position` is unique within a `manifest_epoch`; cross-epoch renumber requires an epoch bump.
+- I12.2 Top-level entity collections are `EntityId`-keyed maps; each value's `id` field equals its key (single identity lane; no per-kind compile-id newtypes; no `stable_ids` side-map).
+- I12.2a Every persisted `DataKind`, `SemanticDefinition`, `SemanticInterface`, `SemanticBinding`, `PhysicalSource`, and `Relationship` carries one `id: EntityId`; all `id`s plus the top-level `model_id` are canonical UUID text and globally unique within one manifest.
+- I12.2b Compile-synthesised ids (sources, bindings, interfaces, implicit Unionsets, synthesised fields, `model_id`) are deterministically derived from content, so identical `(model, catalog)` inputs produce byte-identical manifests (I4). Authored ids are UUIDv7; generated ids are a deterministic UUID variant.
+- I12.3 `SemanticBitmap.entries[id].bit_position` is unique within a `manifest_epoch`; cross-epoch renumber (canonical sort over `EntityId`) requires an epoch bump.
 - I12.4 Every set bit in any `SemanticBitmask` corresponds to some `SemanticDefinition.bit_position` within the same manifest; bitmasks use canonical encoding (no trailing all-zero words, empty mask encoded as `Vec::new()`).
-- I12.5 Every `DataKind.interface_id` references an existing `interfaces` entry. Every `BindingId` in a `Dataset.bindings` references an existing `bindings` entry; every binding in turn references existing `data_kinds`, `sources`, and `expressions.physical` entries.
+- I12.5 Every `DataKind.interface_id` (an `EntityId`) references an existing `interfaces` entry. Every binding `EntityId` in a `Dataset.bindings` references an existing `bindings` entry; every binding in turn references existing `data_kinds`, `sources`, and `expressions.physical` entries.
 - I12.6 `Dataset.bindings.len() >= 1`; `Unionset.branches.len() >= 2`; `Grainset.levels.len() >= 2` with distinct grains in coarsest-first order; `Joinset.members.len() == 2` and `Joinset.hops.len() == 1` (binary v1); `Joinset.anchor in Joinset.members`.
 - I12.7 `Joinset.scope_local_relationships` is bounded to that Joinset's shadow scope; root-scope `relationships` does not contain shadow Relationships.
-- I12.8 `data_kinds` includes implicit Unionsets (multi-source Dataset auto-synthesis) as top-level entries with content-derived hash `data_kind_id` and `origin = Implicit`.
+- I12.8 `data_kinds` includes implicit Unionsets (multi-source Dataset auto-synthesis) as top-level entries with a deterministic content-derived `id` and `origin = Implicit`.
 - I12.9 Grainset same-grain merge — when a level has >= 2 same-grain children, `RoutingUnitRef::Synthesized` references a top-level implicit Unionset; single same-grain child uses `RoutingUnitRef::Inline`.
 - I12.10 `JoinsetHop.hop_coverage` is cumulative across `[0..=i]`; `Joinset` top-level `coverage` equals `hops.last().hop_coverage`.
 - I12.11 `ManifestExpressions.semantic` and `.physical` are independently dedup'd by content; no cross-pool linkage exists at expr level.

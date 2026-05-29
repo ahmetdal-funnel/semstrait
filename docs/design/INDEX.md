@@ -124,7 +124,8 @@ Use `00_overview.md` when you need the governing contract (vocabulary, invariant
 | `Relationship`, composed interface semantics | [`foundations/16_composition.md`](foundations/16_composition.md) |
 | `TemporalShape` and shape semantics | [`foundations/17_temporal_shape.md`](foundations/17_temporal_shape.md) |
 | Canonical entities (`Cardinality`, `Integrity`, `Optional`, `CrossFilter`, derived `JoinType`, `DimensionType`, `AggregationType`, etc.) | [`foundations/18_entities.md`](foundations/18_entities.md) |
-| Named-entity identity (`EntityId`, per-entity `id` field; id-keyed model collections, name-ordered output) | [`apis/32_semstrait_model.md`](apis/32_semstrait_model.md) §2 / §2.3 / §9.0; entity `id` fields in [`foundations/18_entities.md`](foundations/18_entities.md); manifest propagation `33 §4.3.1` |
+| Named-entity identity (`EntityId`, per-entity `id` field; id-keyed model collections, name-ordered output) | [`apis/32_semstrait_model.md`](apis/32_semstrait_model.md) §2 / §2.3 / §9.0; entity `id` fields in [`foundations/18_entities.md`](foundations/18_entities.md) |
+| Manifest single id lane (`EntityId` keys every collection + cross-ref; `bit_position` the lone integer; compile-synthesised ids generated deterministically; no `stable_ids` side-map) | [`apis/33_semstrait_manifest.md`](apis/33_semstrait_manifest.md) §2 / §4.1 / §4.3.1 / §9.1 |
 | `DataKind` taxonomy and trait axes | [`data-kinds/20_taxonomy.md`](data-kinds/20_taxonomy.md) |
 | Typed diagnostics contract and observability policy | [`apis/30_api_contracts.md`](apis/30_api_contracts.md) |
 | Unified API error sum (`SemStraitErrorKind`) | [`apis/38_semstrait_api.md`](apis/38_semstrait_api.md) |
