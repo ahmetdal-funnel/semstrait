@@ -461,7 +461,7 @@ pub enum ResolvedTarget {
 pub struct ResolvedSemanticRef {
     pub owner:      DataKindRef,
     pub element:    SemanticElement,
-    pub binding_id: BindingId,                        // key into manifest `bindings`
+    pub binding_id: EntityId,                         // key into manifest `bindings`
 }
 
 #[non_exhaustive]
@@ -556,10 +556,10 @@ Two-branch decision:
 
 For composition targets (`ResolvedTarget::Explicit(d)` where `d` is Complex, or `ResolvedTarget::Composition(d)`), the planner consumes the graph-built composition entry from `graph.composition_index(d)`:
 
-- **Composition target (explicit or implicit):** `traversed_paths` is materialized during graph build per `16 §10`. Step 3 walks the path edges to confirm every `RelationshipId` resolves in the manifest relationship scope (`manifest.relationships` plus Joinset-local shadows) and packages the per-edge `JoinKeyExprPair` shape strategies consume.
+- **Composition target (explicit or implicit):** `traversed_paths` is materialized during graph build per `16 §10`. Step 3 walks the path edges to confirm every relationship `EntityId` resolves in the manifest relationship scope (`manifest.relationships` plus Joinset-local shadows) and packages the per-edge `JoinKeyExprPair` shape strategies consume.
 - **Simple target:** step 3 is a no-op.
 
-`PLAN_E_2052 SemanticManifestIndexInconsistent` surfaces here when a recorded `RelationshipId` is missing from the expected relationship scope — a manifest/graph integrity bug, not a plan-time failure mode under valid inputs.
+`PLAN_E_2052 SemanticManifestIndexInconsistent` surfaces here when a recorded relationship `EntityId` is missing from the expected relationship scope — a manifest/graph integrity bug, not a plan-time failure mode under valid inputs.
 
 ### 7.5 Step 4 — Strategy dispatch (`20 §5.3`)
 
@@ -989,7 +989,7 @@ pub enum PlanErrorKind {
     AmbiguousImplicitComposition  { constituent_set: Vec<DataKindRef>, candidates: Vec<DataKindRef> },
     NoCompositionPath             { from: DataKindRef, to: DataKindRef },
     CompositionDepthExceeded      { from_kinds: Vec<DataKindRef>, max_depth: usize },
-    CrossCompositionForbidden     { relationship_id: RelationshipId, attempted_direction: String },
+    CrossCompositionForbidden     { relationship_id: EntityId, attempted_direction: String },
     AmbiguousCompositionReference { name: SemanticsName, candidates: Vec<DataKindRef> },
     CompositionAggregationConflict { name: SemanticsName, aggregations: Vec<String> },
     SemanticsNotOnSurface         { name: SemanticsName, surface: DataKindRef },

@@ -152,8 +152,8 @@ GrainsetStrategy::resolve(request, resolved_grainset, manifest):
 ```text
 resolve_cross_grain(request, request_grain, request_semantics,
                     grain_eligible_units, per_unit_covers, resolved_grainset, manifest):
-  # Step 1 — driver selection: most-covering with declaration-order tie-break
-  driver = pick_most_covering_with_decl_order_tiebreak(grain_eligible_units, per_unit_covers)
+  # Step 1 — driver selection: most-covering with name-order tie-break (G-2b; id-first rework)
+  driver = pick_most_covering_with_name_order_tiebreak(grain_eligible_units, per_unit_covers)
   covered = per_unit_covers[driver].clone()
   in_tree_units = [driver]
 
@@ -290,7 +290,7 @@ GrainsetStrategy::resolve(request, resolved_grainset, manifest):
 ## 11. Determinism guarantees
 
 - Effective routing unit ordering is canonical (sorted by grain coarseness ascending; child declaration order within same grain).
-- Driver selection is deterministic: most-covering with declaration-order tie-break (G-2b).
+- Driver selection is deterministic: most-covering with name-order tie-break (G-2b; id-first rework, STATUS item U).
 - Attached unit ordering is declaration order (G-2c) — strict; no greedy-by-coverage-delta in V1.
 - Same-grain pre-merge produces implicit Unionsets in declaration order per `23 §3.1`.
 - All compile-time index lookups (`semantics_to_covering_units`, `join_key_index`) are deterministic builds from declaration-ordered inputs.

@@ -2,7 +2,7 @@
 prereqs: [00, 10, 11, 13, 14, 19]
 authoritative-for:
   - the shared Semantics pools (`dimensions:`, `measures:`, `metrics:`) at the root level and their per-DataKind reference / override grammar
-  - the `Relationship` struct and its companion `RelationshipId` newtype — unified shape used at both root `relationships:` and `JoinsetBody.relationships`
+  - the `Relationship` struct (identified by its `id: EntityId`) — unified shape used at both root `relationships:` and `JoinsetBody.relationships`
   - `JoinType`, `Cardinality`, `Directionality`, `JoinKeyExprPair`
   - the `TemporalShape` type hierarchy — `TemporalShape` struct, `TemporalShapeKind` enum, per-variant `*Body` structs, `ScdType` (v1 roster `{Type1, Type2}`); `Grain` is consumed via `TemporalShape.grain` but the `Grain` enum itself is owned by `13 §3.1`
   - the `Dimension` struct and `DimensionType` roster
@@ -162,8 +162,8 @@ One `Relationship` struct serves both authoring sites: root-level `relationships
 pub struct Relationship {
     /// Named-entity identity (`32 §2.3`). Authored optionally; parse generates
     /// a UUIDv7 when omitted. Storage key in the model's `relationships` map
-    /// (and a `JoinsetBody`'s `relationships` map). Distinct from the
-    /// compile-allocated `RelationshipId` lane (§2.1).
+    /// (and a `JoinsetBody`'s `relationships` map), and the sole identity used
+    /// for relationships across manifest and runtime (§2.1).
     pub id: EntityId,
 
     pub name: String,
@@ -202,19 +202,11 @@ pub struct Relationship {
 }
 ```
 
-Companion runtime handle — a compact `u32` allocated at graph build for traversal-hot-path indexing, **not** a manifest key:
+**Identity is the `id: EntityId` field.** A `Relationship` is identified everywhere — model, manifest, and runtime graph — by its own `id: EntityId`. There is no separate `RelationshipId` newtype. The manifest keys `relationships` by `EntityId` and every relationship reference is an `EntityId` (`33 §4.1`, `§6.7` — `JoinsetHop.relationship` is an `EntityId`); `16 §6`'s `RelationshipPath` is a `Vec<EntityId>`. The planner runtime graph (`34`) builds its own daggy edge handles (`SemanticEdgeId`, `35 §2A`) for hot-path adjacency, but those address the durable relationship by `EntityId` — they are graph-structure positions, not a parallel identity.
 
-```rust
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RelationshipId(pub u32);
-```
+> **Ordering basis (id-first rework).** Relationships are stored model-side in an `EntityId`-keyed map projected in name order (`32 §2`, `§7`), not an author-ordered `Vec`. First-match-wins resolution (`16 §11`) and BFS neighbor iteration (`19 §3.4.3`) therefore proceed in **name order** rather than YAML author order — deterministic and author-meaningful.
 
-`RelationshipId` is a **runtime/graph-build handle**, allocated by the planner runtime (`34`) over the `EntityId`-keyed `relationships` collection in its canonical (name) order. It exists only to give `RelationshipGraph` traversal (`19 §3.4.2`), BFS neighbor iteration (`19 §3.4.3`), and `RelationshipPath` (`16 §6`) compact integer keys with natural `u32` ordering. It is **not** persisted: the manifest identifies and references relationships by `EntityId` (`33 §4.1`, `§6.7` — `JoinsetHop.relationship` is an `EntityId`). `PartialOrd` / `Ord` are derived so the runtime can rely on natural `u32` ordering without unwrapping the newtype.
-
-> **Allocation-order change (id-first rework).** Relationships are stored model-side in an `EntityId`-keyed map projected in name order (`32 §2`, `§7`), not an author-ordered `Vec`. Runtime `RelationshipId` allocation and first-match-wins resolution (`16 §11`) therefore proceed in **name order** rather than YAML author order. Flagged for reconciliation in `STATUS.md`.
-
-`RelationshipId` is purely the runtime lookup lane (`u32`). It is intentionally separate from the durable identity field `id: EntityId` carried on each `Relationship` (`32 §2`), which is what the manifest persists and keys by.
+> **Id-first cascade (STATUS item U.2, landed).** `RelationshipId` is eliminated tree-wide; relationships are identified by `EntityId` everywhere (`16` composition-id derivation + canonical `(EntityId, Direction)` forms, `19 §3.4.5` `PathSignature: Vec<EntityId>`, `33 §6.7` `JoinsetHop.relationship`, `34` planner). Material consequence (ratified): composition `ImplicitId` is now **stable across recompiles** when relationship `EntityId`s are stable (authored/persisted; synthesized ids always stable), strengthening `16 §5.7`.
 
 **Authored vs derived.** `JoinType` is **not** an authoring-layer field. It is derived at compile from `optional` per `§2.9` and carried on the manifest-layer `ResolvedRelationship` (`33 §8.1`).
 

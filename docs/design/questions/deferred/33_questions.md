@@ -71,7 +71,7 @@ purpose: Manifest questions parked for post-v1 ratification or follow-up researc
 
 ## Q-MAN-D04 — Duplicate-authoring diagnostic for primitive collections — DEFERRED
 
-**Status: DEFERRED.** C18.5 (the duplicate-authoring diagnostic that fires when the same `DataKindName` / `RelationshipId` / `BindingId` appears twice in the manifest's primitive collections) was ratified as a build-time validation per the 2026-05-28 cascade. The deferred question is the **diagnostic shape** — specifically, should the error carry both occurrences' source spans (requires keeping span info on the collection-build path), or just the first-occurrence span plus the duplicate name?
+**Status: DEFERRED.** C18.5 (the duplicate-authoring diagnostic that fires when the same entity `EntityId` — formerly `DataKindName` / `RelationshipId` / `BindingId`, now unified per STATUS item U.2 — appears twice in the manifest's primitive collections) was ratified as a build-time validation per the 2026-05-28 cascade. The deferred question is the **diagnostic shape** — specifically, should the error carry both occurrences' source spans (requires keeping span info on the collection-build path), or just the first-occurrence span plus the duplicate name?
 
 **Refs.**
 
@@ -235,21 +235,6 @@ purpose: Manifest questions parked for post-v1 ratification or follow-up researc
 
 ---
 
-## Q-MAN-D12 — `EntityId` UUID-format relaxation for compile-generated ids — DEFERRED
+## Q-MAN-D12 — `EntityId` UUID-format relaxation for compile-generated ids — RATIFIED → moved to `closed/33`
 
-**Status: DEFERRED (pending ratification).** Raised by the manifest single-id-lane unification (STATUS item U.2). The manifest now keys every collection by `EntityId` and generates ids for compile-synthesised entities (sources, bindings, interfaces, implicit Unionsets, synthesised fields, `model_id`). Those generated ids MUST be deterministic/content-derived (not time-based UUIDv7) to preserve I4 — which means `EntityId` can no longer be "UUIDv7-only." The working contract is: authored ids are UUIDv7; compile-generated ids are a deterministic UUID variant (e.g. UUIDv5/UUIDv8 over content), distinguished by the version nibble.
-
-**Refs.**
-
-- `33 §4.3.1` / `§9.1` — generated-id determinism + format relaxation.
-- `32 §2` — `EntityId` type comment (authored UUIDv7 vs generated variant).
-- `32 §6` SR-11 — model-authoring `id` format rule (authored = UUIDv7; unaffected, since model authoring never mints the deterministic compile variant).
-- `00 §9` I4 — determinism invariant the relaxation protects.
-
-**Open axes.**
-
-- **Variant choice.** UUIDv5 (name-based, SHA-1) vs UUIDv8 (custom/free-form) for the deterministic content-derived ids.
-- **Namespace discipline.** What namespace/content tuple seeds each synthesised entity's id (source `(source_type, locator, version_ref)`; binding `(data_kind_id, source_id, mapping)`; interface member set; implicit Unionset branch content; `model_id` from `model_hash`).
-- **Validation surface.** Whether load-time integrity (CX1) enforces the version nibble (authored vs generated) or only canonical-UUID-text shape.
-
-**Next step.** Ratify the variant + namespace discipline in a dedicated pass; until then, `33 §9.1`'s "deterministic UUID variant" wording is the working contract.
+**Status: RATIFIED (see [`../closed/33_questions.md`](../closed/33_questions.md) Q-MAN-D12).** Resolution: compile-generated ids are **UUIDv5** (name-based) with per-entity-type namespace + content seed; authored ids stay UUIDv7; CX1 validates canonical-UUID-text + uniqueness, not the version nibble. Landed in `33 §9.1` / `§4.3.1`, `32 §2`, `18` scope note.

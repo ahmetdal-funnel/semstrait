@@ -34,6 +34,8 @@ The pre-rebase `22 §3.2` finest-grain inheritance rule is retired; `VALID_E_220
 
 **CLOSED (post-thirteenth-pass cascade rebase, 2026-05-03).** Ratified at G-2 (2026-05-03): partial-coverage Requests across grains route through **cross-grain LEFT OUTER JOIN composition** mediated by a `ComposedSemanticInterface` (per `16 §5` / `22 §3.4`). The driver is the most-covering grain-eligible effective routing unit (declaration-order tie-break per G-2b); attached units are added in declaration order (G-2c) and equi-joined on shared `Key`s per `18 §2.5`. No shared `Key`s between two units the planner needs to join is a hard compile error (`COMP_E_2204 GrainsetCrossGrainKeysAbsent`, per G-2d).
 
+> **Superseded ordering basis (id-first rework, STATUS item U / U.2, 2026-05-29).** The G-2b/G-2c tie-break basis changed from **declaration order** to **name order**: model child collections are `EntityId`-keyed and projected name-ordered (`32 §7`), so there is no author/declaration order to tie-break on. The authoritative `22 §4.2`/`§4.3` now reads "name-order tie-break." This historical record is retained as the G-2 ratification; only the ordering axis is superseded.
+
 This supersedes Round-1's "error via `PLAN_E_2201 NoEligibleChild`". The pre-rebase `PLAN_E_2208 GrainsetPartialCoverageNotSupported` reservation is retired.
 
 **Question.** When a Request names Semantics that no **single** child of a Grainset covers Natively/Derivedly — but the **union** of children's Coverage does — should the planner split the Request into per-child sub-Requests and combine the results, or report `PLAN_E_2201 NoEligibleChild` (the Round-1 default)?

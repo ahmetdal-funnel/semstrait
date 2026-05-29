@@ -158,7 +158,7 @@ pub type EntityId = String; // canonical UUID text (lowercase, hyphenated)
 
 Rules:
 
-- `EntityId` values are canonical UUID text. Model-authored ids are UUIDv7 (`32`); compile-synthesised ids are a deterministic UUID variant derived from content (§9.1). The version nibble distinguishes the two flavors.
+- `EntityId` values are canonical UUID text. Model-authored ids are UUIDv7 (`32`); compile-synthesised ids are UUIDv5 (name-based) derived deterministically from content (§9.1). The version nibble (`7` vs `5`) records provenance but is not load-validated beyond canonical-UUID-text shape.
 - Every persisted `DataKind`, `SemanticDefinition`, `SemanticInterface`, `SemanticBinding`, `PhysicalSource`, and `Relationship` carries an `id` equal to its collection key.
 - `EntityId` values are globally unique across all manifest collections, plus the top-level `model_id`.
 - Model-authored entities reuse the entity's model `id`; missing model ids were already resolved at parse per `IdentityProfile` (`32 §9.0.1`), so compile sees every model entity already carrying an `id`.
@@ -345,7 +345,7 @@ Rules:
 ```rust
 DataKindVariant::Unionset {
     mode: UnionMode,
-    branches: Vec<UnionsetBranch>,                 // len >= 2; declaration order
+    branches: Vec<UnionsetBranch>,                 // len >= 2; name order (matches model child sequence, spec 23 §3.1)
 }
 
 #[non_exhaustive]
@@ -359,7 +359,7 @@ Rules:
 
 - `mode` is the `UnionMode { All, Unique }` roster ratified for v1 (spec 23 §2.1).
 - `branches.len() >= 2` per spec 26 R3.
-- Vector preserves YAML declaration order; reordering is a real model edit.
+- Vector follows the model's canonical child sequence — **name order** (spec 23 §3.1; id-first rework). Renaming a branch child is a real model edit.
 - `branch_coverage` records each branch's locally-covered semantics (Native/Derived bits per C5.1 cascade). The complement `top_level_coverage \ branch_coverage` is the implicit NullFill mask, derived at graph-build (spec 23 §1.3 I1) — the manifest does not persist it (C6.2).
 - **Implicit Unionset placement.** Multi-source `Dataset` auto-synthesises a Unionset per spec 21 §3.2; the result is a top-level entry in `data_kinds` with `origin = Implicit` and a deterministic content-derived `id` (spec 23 §2.1 row A). It is **not** a `NestedDataKind`.
 
@@ -597,7 +597,15 @@ Notes:
 
 - `catalog: Option<&dyn CatalogProvider>` reflects C1.1's catalog-optional posture.
 - The two-channel return shape (`Diagnostics` carries warnings and informational items alongside the success or failure case) is unchanged from the previous spec.
-- **Identity propagation and generation.** `compile` carries each model entity's `id` (`32 §2`/`§2.3`) straight onto the corresponding manifest entity (it is both the value's `id` field and its map key). For entities with no model-authored identity — `PhysicalSource`, `SemanticBinding`, `SemanticInterface`, implicit Unionsets (`origin = Implicit`), synthesised `Field` semantics, and the top-level `model_id` — `compile` generates a **deterministic, content-derived** `EntityId` (e.g. UUIDv5/v8 over the entity's identity inputs: a source from `(source_type, locator, version_ref)`, a binding from `(data_kind_id, source_id, mapping)`, an interface from its member set, an implicit Unionset from its branch content). Deterministic derivation (not time-based UUIDv7) is mandatory so identical `(model, catalog)` inputs yield byte-identical manifests (I4). `EntityId` is therefore canonical UUID text where authored ids are UUIDv7 and generated ids are a deterministic UUID variant.
+- **Identity propagation and generation.** `compile` carries each model entity's `id` (`32 §2`/`§2.3`) straight onto the corresponding manifest entity (it is both the value's `id` field and its map key). For entities with no model-authored identity — `PhysicalSource`, `SemanticBinding`, `SemanticInterface`, implicit Unionsets (`origin = Implicit`), synthesised `Field` semantics, and the top-level `model_id` — `compile` generates a **deterministic, content-derived** `EntityId` using **UUIDv5** (RFC 4122 name-based, SHA-1 over namespace + content). Deterministic derivation (not time-based UUIDv7) is mandatory so identical `(model, catalog)` inputs yield byte-identical manifests (I4).
+  - **Per-entity-type namespace + content seed** (so distinct entity classes never collide and the same content reproduces the same id):
+    - `PhysicalSource` → namespace `source`, seed = `(source_type, locator, version_ref)`.
+    - `SemanticBinding` → namespace `binding`, seed = `(data_kind id, source id, canonical mapping encoding)`.
+    - `SemanticInterface` → namespace `interface`, seed = the sorted member-`EntityId` set.
+    - Implicit `Unionset` → namespace `data_kind`, seed = the parent `Dataset`'s structural identity + per-source list.
+    - Synthesised `Field` semantic → namespace `semantic`, seed = `(owning data_kind id, name, role)`.
+    - `model_id` → namespace `model`, seed = `model_hash`.
+  - **Format.** `EntityId` is canonical UUID text: authored ids are UUIDv7 (`32`); generated ids are UUIDv5. The version nibble (`7` vs `5`) records provenance but is informational — CX1 (§10) validates canonical-UUID-text shape and global uniqueness, not the specific version.
 
 ### 9.2 Validation gates (C13)
 
@@ -700,7 +708,7 @@ Use `Resolved*` only for compile-complete forms where uncertainty is eliminated 
 - I12.1 Manifest serialization does not contain runtime graph or planner cache state.
 - I12.2 Top-level entity collections are `EntityId`-keyed maps; each value's `id` field equals its key (single identity lane; no per-kind compile-id newtypes; no `stable_ids` side-map).
 - I12.2a Every persisted `DataKind`, `SemanticDefinition`, `SemanticInterface`, `SemanticBinding`, `PhysicalSource`, and `Relationship` carries one `id: EntityId`; all `id`s plus the top-level `model_id` are canonical UUID text and globally unique within one manifest.
-- I12.2b Compile-synthesised ids (sources, bindings, interfaces, implicit Unionsets, synthesised fields, `model_id`) are deterministically derived from content, so identical `(model, catalog)` inputs produce byte-identical manifests (I4). Authored ids are UUIDv7; generated ids are a deterministic UUID variant.
+- I12.2b Compile-synthesised ids (sources, bindings, interfaces, implicit Unionsets, synthesised fields, `model_id`) are deterministically derived from content via UUIDv5 (per-entity-type namespace + content seed, §9.1), so identical `(model, catalog)` inputs produce byte-identical manifests (I4). Authored ids are UUIDv7; generated ids are UUIDv5.
 - I12.3 `SemanticBitmap.entries[id].bit_position` is unique within a `manifest_epoch`; cross-epoch renumber (canonical sort over `EntityId`) requires an epoch bump.
 - I12.4 Every set bit in any `SemanticBitmask` corresponds to some `SemanticDefinition.bit_position` within the same manifest; bitmasks use canonical encoding (no trailing all-zero words, empty mask encoded as `Vec::new()`).
 - I12.5 Every `DataKind.interface_id` (an `EntityId`) references an existing `interfaces` entry. Every binding `EntityId` in a `Dataset.bindings` references an existing `bindings` entry; every binding in turn references existing `data_kinds`, `sources`, and `expressions.physical` entries.
@@ -746,7 +754,7 @@ The following spec amendments are **implied** by the closed clauses but live in 
 - **Spec 20** — Reflect bitmask-coverage layer cross-references; CCK skeleton (universal `coverage`); Public/Nested split alignment with `DataKind` / `NestedDataKind`.
 - **Spec 21** — Clarify multi-source Dataset auto-synthesis surfaces as a top-level implicit `Unionset` (with `origin = Implicit`), referenced by id from `RoutingUnitRef::Synthesized` when applicable.
 - **Spec 22 §1.3 I8** — Drop "JOIN-tree shape, per-pair JOIN-key index, ComposedSemanticInterface" from `ResolvedGrainset`'s manifest contract (C8.2 cascade).
-- **Spec 23 §2.1 row A** — Confirm implicit-Unionset top-level placement with content-derived `data_kind_id`.
+- **Spec 23 §2.1 row A** — Confirm implicit-Unionset top-level placement with deterministic content-derived `id` (`EntityId`).
 - **Spec 24 §1.4 I8 / §2.4** — Drop "resolved ComposedSemanticInterface" from `ResolvedJoinset`'s manifest contract; retire the `interface: ComposedSemanticInterface { … }` pseudo-shape (C7.4 cascade).
 - **Spec 35** — Add `impl Serialize` / `impl Deserialize` on `Expr<L>` and the leaf families with deterministic ordering (C18.3); manifest depends on these derives.
 

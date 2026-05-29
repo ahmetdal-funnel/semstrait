@@ -325,7 +325,7 @@ Diagnostics accumulate per `10 §5`'s fail-accumulate policy.
 
 **`20`-scope error codes:** `COMP_E_2000`–`COMP_E_2029` — see §8.2. Notably `COMP_E_2005 MissingCoverage` (D4) and `COMP_E_2010 StrategyBindingUnresolved`.
 
-`compile`'s depth-first traversal is deterministic per I4 — siblings processed in YAML-declaration order; the `DataKindIndex` is populated in the same order.
+`compile`'s depth-first traversal is deterministic per I4 — siblings processed in name order (child collections are `EntityId`-keyed but projected name-ordered per `32 §7`, post id-first rework); the `DataKindIndex` is populated in the same order.
 
 ### 6.4 `plan` (stage 4)
 

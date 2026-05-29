@@ -69,7 +69,7 @@ refined-by:
 **Key invariants from `00 §9` that `19` directly upholds:**
 
 - **I1 / I2 / I3** — canonical layers carry no raw SQL, physical types, or engine branching; `PhysicalExpr` is engine-neutral; `FunctionCall` references `CanonicalFn` identities.
-- **I4** — deterministic `SemanticManifest`. `ResolvedExprTable` uses an ordered map keyed by `(SemanticsName, BindingId)`; substitution is pure; path ambiguity resolves by hard error rather than tie-break (§3.4.3).
+- **I4** — deterministic `SemanticManifest`. `ResolvedExprTable` uses an ordered map keyed by `(SemanticsName, EntityId)`; substitution is pure; path ambiguity resolves by hard error rather than tie-break (§3.4.3).
 - **I5** — name resolution at compile time only. Every typed semantic leaf is substituted away at compile time; `PhysicalExpr` values stored in `ResolvedExprTable` carry no `Field` / `Dimension` / `Measure` / `Metric` / `Key` by `14 §3.7`'s structural invariant; plan-time lookups are O(log n) map accesses.
 - **I6** — sync hot path. Phase A resolution is a pure, sync transformation over already-loaded inputs; `plan → optimize → adapt` is synchronous and free of hidden I/O.
 - **I8** — planner-complete `SemanticManifest`. After `compile` seals, every `(name, binding_id)` combination the planner might demand is already in the `ResolvedExprTable`.
@@ -214,7 +214,7 @@ pub struct ResolvedExprTable {
 
 pub struct ResolvedExprKey {
     pub semantics_name: SemanticsName,
-    pub binding_id:     BindingId,
+    pub binding_id:     EntityId,
 }
 
 pub struct ResolvedExprEntry {
@@ -228,20 +228,20 @@ pub struct ResolvedExprEntry {
 
 **Why `BTreeMap`.** Deterministic iteration order for `SemanticManifest` serialization and downstream artifacts (adapter column-projection lists); O(log n) lookup is acceptable because the plan-time hot path is dominated by expression-tree traversal, and typical manifests carry `n` in the low thousands.
 
-**`BindingId`** is a `u32` newtype assigned by `compile` in `SemanticManifest`-level DataKind/Binding iteration order. Not stable across Model edits — internal only; author-facing diagnostics quote `DataKind.name / Binding.name`. `BindingName` is not the key: it's unique only within its owning `Dataset`, not globally.
+**The binding key is an `EntityId`** (the binding's durable id per `15 §2.2` — a deterministic UUIDv5 generated at compile, `33 §9.1`). It is globally unique and stable across Model edits that don't change the binding. Author-facing diagnostics still quote `DataKind.name / Binding.name`; `BindingName` is not the key (unique only within its owning `Dataset`, not globally). The retired `EntityId` u32 handle is no longer used.
 
 **`SemanticsName`** is the canonical identity newtype from `[11 §4](11_names_and_scopes.md)` — one unified global namespace. The **kind** of a Semantics (Dimension / Measure / Metric / Key) is encoded in the variant tag of the authored `SemanticLeaf` and reconciled against the registry during substitution (§3.3).
 
 #### 3.2.2 Determinism
 
-`BTreeMap<ResolvedExprKey, _>` orders lexicographically by `(semantics_name, binding_id)`. Given frozen inputs, substitution is a pure post-order walk; BFS in §3.4 explores neighbors in deterministic `RelationshipId` order; multiple shortest paths surface as `AmbiguousRelationshipPath` (no tie-break). Identical inputs → byte-identical `ResolvedExprTable` (compile-layer evidence for `00 §9` **I4**).
+`BTreeMap<ResolvedExprKey, _>` orders lexicographically by `(semantics_name, binding_id)` (the latter an `EntityId`). Given frozen inputs, substitution is a pure post-order walk; BFS in §3.4 explores neighbors in deterministic **relationship-name order**; multiple shortest paths surface as `AmbiguousRelationshipPath` (no tie-break). Identical inputs → byte-identical `ResolvedExprTable` (compile-layer evidence for `00 §9` **I4**).
 
 #### 3.2.3 Lookup contract
 
 ```rust
 impl ResolvedExprTable {
-    pub fn lookup(&self, name: &SemanticsName, binding_id: BindingId) -> Option<&ResolvedExprEntry>;
-    pub fn lookup_all(&self, name: &SemanticsName) -> impl Iterator<Item = (BindingId, &ResolvedExprEntry)>;
+    pub fn lookup(&self, name: &SemanticsName, binding_id: EntityId) -> Option<&ResolvedExprEntry>;
+    pub fn lookup_all(&self, name: &SemanticsName) -> impl Iterator<Item = (EntityId, &ResolvedExprEntry)>;
     pub fn iter(&self) -> impl Iterator<Item = (&ResolvedExprKey, &ResolvedExprEntry)>;
 }
 ```
@@ -260,7 +260,7 @@ Per-entry diagnostic-reporter carrier (which source `Location`s contributed whic
 
 #### 3.3.1 Overview
 
-For every `(SemanticsName, BindingId)` pair the Model exposes, compile calls `SemanticExpr::resolve` against the Semantics's merged `expr:` tree (the post-Tier-1-merge `SemanticExpr` per `[11 §6.3](11_names_and_scopes.md)`). The implementation is a **post-order walk** over the `Expr<SemanticLeaf>` tree:
+For every `(SemanticsName, EntityId)` pair the Model exposes, compile calls `SemanticExpr::resolve` against the Semantics's merged `expr:` tree (the post-Tier-1-merge `SemanticExpr` per `[11 §6.3](11_names_and_scopes.md)`). The implementation is a **post-order walk** over the `Expr<SemanticLeaf>` tree:
 
 1. For each `Expr<L>::Leaf(leaf)` node, dispatch to the per-leaf-kind rule (§3.3.2). The rule returns either a `PhysicalLeaf` (wrapped in `Expr::Leaf`) or a structural subtree (e.g. an accessor-sugared typed leaf lowers to a `Window`-rooted subtree, which then recurses).
 2. For each structural variant of `Expr<L>` (`BinaryOp`, `Case`, `FunctionCall`, `Aggregate`, `Cast`, `InList`, `Between`, `Like`, `IsNull`, `Coalesce`, `NullIf`, `Window`, `UnaryOp`), recurse on the children, then rebuild the same variant with the resolved children. The structural shape passes through unchanged (§3.3.3).
@@ -414,22 +414,22 @@ Built once at `compile` time after `validate` (so endpoints are known-valid):
 ```rust
 pub struct RelationshipGraph {
     kinds:         BTreeMap<DataKindName, DataKindNode>,
-    relationships: Vec<Relationship>,
-    by_kind:       BTreeMap<DataKindName, Vec<RelationshipId>>, // ascending RelationshipId
+    relationships: BTreeMap<EntityId, Relationship>,
+    by_kind:       BTreeMap<DataKindName, Vec<EntityId>>, // relationship EntityIds, name-ordered
 }
 ```
 
-`RelationshipId` is the `u32` newtype from `[18 §2.1](18_entities.md)`. Stable within a compile; not stable across edits (same rationale as `BindingId`).
+A relationship is referenced by its `EntityId` (`18 §2.1`) — durable and stable across edits. The `by_kind` adjacency vectors are ordered by relationship **name** so neighbor iteration (and thus path enumeration) is deterministic and author-meaningful.
 
 #### 3.4.3 The BFS algorithm
 
-Shortest-path BFS over the `RelationshipGraph` from `from_kind` to `to_kind`. Returns the path's `Vec<RelationshipId>` on a unique hit. The walk records the shortest depth `d` on first reach, then exhausts every path of depth `d`; deeper paths are ignored.
+Shortest-path BFS over the `RelationshipGraph` from `from_kind` to `to_kind`. Returns the path's `Vec<EntityId>` on a unique hit. The walk records the shortest depth `d` on first reach, then exhausts every path of depth `d`; deeper paths are ignored.
 
 - 0 hits → `CompileError::NoRelationshipPath { from, to }`.
 - 1 hit  → success.
 - ≥ 2 hits at depth `d` → `CompileError::AmbiguousRelationshipPath { from, to, paths }` (hard error; no tie-break).
 
-**Why shortest-path + hard ambiguity, not tie-break.** A tie-break (declaration order, lex order) would silently pick one path when the Model expressed two equally-valid intentions; that violates `00 §9` **I4** (determinism) and surprises authors. Ambiguity is an authoring defect that demands explicit relationship-graph disambiguation. Neighbor iteration uses ascending `RelationshipId` to keep the `paths` vector content stable across compiles. Termination follows from the visited-depth map and the bounded `|kinds|` frontier.
+**Why shortest-path + hard ambiguity, not tie-break.** A tie-break (declaration order, lex order) would silently pick one path when the Model expressed two equally-valid intentions; that violates `00 §9` **I4** (determinism) and surprises authors. Ambiguity is an authoring defect that demands explicit relationship-graph disambiguation. Neighbor iteration uses relationship-name order to keep the `paths` vector content stable across compiles (and stable across edits, since it no longer rides a compile-counter). Termination follows from the visited-depth map and the bounded `|kinds|` frontier.
 
 #### 3.4.4 Binding selection for the spliced subtree
 
@@ -442,7 +442,7 @@ pub struct PathSignature {
     pub paths: BTreeSet<RelationshipPath>,
 }
 
-pub struct RelationshipPath(pub Vec<RelationshipId>);
+pub struct RelationshipPath(pub Vec<EntityId>); // chain of relationship EntityIds
 ```
 
 `paths` is a `BTreeSet` so identical relationship chains contributed by multiple leaf sites dedupe deterministically. `path_signature` is `None` when no cross-kind walk occurred (every typed semantic leaf resolved within the current DataKind; no plan-time join needed); `Some(ps)` carries one or more distinct paths whose union the planner materializes as the join subgraph per `[16 §4](16_composition.md)`. Phase A only populates the structure.
@@ -515,7 +515,7 @@ When a Semantics declares `data_type: T` explicitly and the resolved root's `inf
 
 ### 3.8 Per-Binding keying
 
-The `ResolvedExprTable` carries one entry per `(SemanticsName, BindingId)` pair the Model exposes:
+The `ResolvedExprTable` carries one entry per `(SemanticsName, EntityId)` pair the Model exposes:
 
 | DataKind shape | # entries per Semantics name | Notes |
 |---|---|---|
@@ -551,7 +551,7 @@ flowchart TD
 - **`validate` preconditions** (unique DataKind names, valid Relationship endpoints, valid `PhysicalSource`, valid `expr:`/column binding per `[10 §3.2](10_resolution_pipeline.md)`) are presumed; structural leakage past `validate` is `unreachable!`.
 - **Sealed registry** (`[14a §2.1](14a_function_catalog.md)`) consulted read-only in step 6.
 - **Shape inference** from `[11 §6.3](11_names_and_scopes.md)` runs in step 3 and pins the `data_type:` value step 7 reconciles against.
-- **No re-entry.** Topological sort from step 5 guarantees each `(SemanticsName, BindingId)` is resolved exactly once.
+- **No re-entry.** Topological sort from step 5 guarantees each `(SemanticsName, EntityId)` is resolved exactly once.
 
 ### 3.10 Referenced-column harvesting
 
@@ -564,7 +564,7 @@ Each `ResolvedExprEntry.referenced_columns: Vec<String>` is the flat, de-duplica
 - `{…} { accessor: Some(_) }` → after sugar elimination, only the lowered subtree's typed-leaf children contribute (`Parameter` leaves contribute nothing — bound at plan time).
 - Structural variants recurse and union.
 
-Output is de-duplicated (via a `BTreeSet<String>` intermediate) but unsorted — the planner sorts as needed. Column names are **binding-native** (no source / schema qualification); qualification is supplied by the binding's `PhysicalSource` at adapt time. Distinct `BindingId`s keep `Unionset`-style name collisions naturally segregated.
+Output is de-duplicated (via a `BTreeSet<String>` intermediate) but unsorted — the planner sorts as needed. Column names are **binding-native** (no source / schema qualification); qualification is supplied by the binding's `PhysicalSource` at adapt time. Distinct `EntityId`s keep `Unionset`-style name collisions naturally segregated.
 
 ### 3.11 Auto-mapping synthesis pre-step
 

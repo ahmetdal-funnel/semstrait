@@ -3,7 +3,7 @@ prereqs: [00, 11, 13, 14, 14a, 18, 19]
 authoritative-for:
   - compile-time `Binding` process (one per `Dataset` leaf, `binding_id`, `sources`, compile-resolved `semantic_mapping`, `coverage`) and its identity / uniqueness rules
   - the model-as-truth source-shape fields on `Binding` when catalog is absent (`locator`, `source_type`, `projected_schema`, `version_ref`) per `_research/manifest/RATIFICATION_LOG.md` C1.1 / C14.4 / C14.5 / C15.5
-  - binding identity at the manifest boundary — bindings are identified by a deterministically-generated `EntityId` (`33 §7.1`/`§9.1`); any `BindingId` u32 is a compile-internal/runtime handle only, never the manifest identity
+  - binding identity — bindings are identified by a deterministically-generated `EntityId` (`33 §7.1`/`§9.1`) everywhere (compile working set, manifest, runtime); there is no `BindingId` newtype
   - the `PhysicalSource` sum type (`File`, `Table`, `Snapshot`) and the `Schema`, `PartitionColumn`, `CatalogRef` shapes it carries
   - the `FileFormat` enumeration (`Parquet`, `Csv`, `Json`, `Orc`, `Avro`) and the per-format schema-resolution strategy
   - glob-expansion algorithm, ordering determinism, and error model (no-match / catalog-unreachable / partial-schema)
@@ -116,7 +116,7 @@ Model-layer shape:
 ```rust
 #[non_exhaustive]
 pub struct Binding {
-    pub binding_id: BindingId,
+    pub binding_id: EntityId,
     pub sources: Vec<PhysicalSource>,
     pub semantic_mapping: SemanticMapping,
     pub coverage: Option<Coverage>,
@@ -129,21 +129,19 @@ The `#[non_exhaustive]` tag is present to allow a future `post_binding_hook: Opt
 
 ### 2.2 Binding identity (`EntityId`)
 
-A Binding has no model-authored identity, so the manifest identifies it by an `EntityId` generated deterministically at compile (`33 §9.1`). There is no separate `BindingId` newtype in the manifest lane; the manifest `bindings` collection is keyed by this `EntityId` (`33 §7.1`).
+A Binding has no model-authored identity, so it is identified by an `EntityId` generated deterministically at compile (UUIDv5 over `(data_kind id, source id, mapping)`, `33 §9.1`). There is no `BindingId` newtype anywhere — the compile working set, the manifest `bindings` collection (`33 §7.1`), and the runtime all use this `EntityId`.
 
 - **Derivation.** The binding `EntityId` is derived deterministically from the binding's content — `(data_kind_id, source_id, mapping)` — so identical `(model, catalog)` inputs produce identical binding ids (I4).
 - **Cross-run stability — improved.** Because the id is content-derived rather than counter-allocated, it is stable across runs *and* across model edits that don't change the binding (the old counter-allocated handle shifted whenever an earlier `SimpleDataKind` was inserted). Cross-manifest comparison by binding `EntityId` is meaningful when the binding content is unchanged.
 - **Reference shape.** A `SimpleDataKind` owns exactly one Binding; `Dataset.bindings` carries the binding's `EntityId` (`33 §6.4`). The reverse (`source_id -> [binding EntityId]`) is derived at load (`33 §7.1`).
-- **Compact handles are non-persisted.** Any compact integer binding handle (`BindingId` u32) used by the compile working set (§10) or by the planner runtime for hot-path indexing is internal and is **not** the manifest identity; it is never persisted. The manifest persists binding `EntityId`.
+- **Runtime hot-path handles.** Any compact integer index the planner runtime wants for adjacency is a daggy graph handle built at graph build (`34`), addressing the binding by its `EntityId`; no separate integer binding id is persisted or carried.
 - **Serialization.** The binding `EntityId` surfaces directly in the persisted manifest form (`33`) and round-trips through `Repository` unchanged.
 
-> **Cascade note (id unification).** Several compile-internal structures in this doc still reference a `BindingId` u32 (the `Binding`/`ResolvedBinding` `binding_id` field, `19 §3.2`'s `ResolvedExprTable` keyed on `(SemanticsName, BindingId)`). Those describe the *compile working set*, and parts of that description predate `33`'s `ManifestExpressions` rewrite (item T). Reconciling the compile-internal handle fully to `EntityId` (or to a clearly compile-only handle) is tracked as a follow-up in `STATUS.md` item U; the manifest-boundary contract above is authoritative.
-
-**Proposed (Round 1):** the counter resets to `0` per SemanticManifest (per-compile scope). A cross-SemanticManifest namespace (e.g. embedding the SemanticManifest content hash into the ID) is not adopted; it would break the `u32` shape and have no concrete use case. See `questions/open/15_questions.md` Q-MAP-001.
+The earlier Round-1 `u32`-counter proposal (per-compile counter, no cross-manifest namespace) is **superseded**: binding identity is a deterministic content-derived `EntityId` (`33 §9.1`), which is both globally unique and cross-run/cross-edit stable without a counter. `questions/open/15_questions.md` Q-MAP-001 is mooted accordingly.
 
 ### 2.3 Cross-reference: `19 §3.2`'s `ResolvedExprKey`
 
-`19 §3.2`'s `ResolvedExprTable` is keyed on `(SemanticsName, BindingId)` precisely because `15` ratifies `BindingId` as the per-Binding identity. `15 §7.2` describes the SemanticManifest's storage split: the `ResolvedExprTable` stores the physical expression bodies; the `ResolvedColumnMapping.computed: HashMap<SemanticsName, PhysicalExpr>` is a **per-Binding denormalization** that copies the `PhysicalExpr` into the Binding's own hashmap for O(1) access without going through the global table. Whether the SemanticManifest stores the `PhysicalExpr` once (in the table) with the `ResolvedColumnMapping.computed` value being a pointer/index, or twice (once in each structure), is an implementation choice ratified in `33`. From the contract surface of `15`, both structures are populated and both are plan-readable.
+`19 §3.2`'s `ResolvedExprTable` is keyed on `(SemanticsName, EntityId)` precisely because `15` ratifies `EntityId` as the per-Binding identity. `15 §7.2` describes the SemanticManifest's storage split: the `ResolvedExprTable` stores the physical expression bodies; the `ResolvedColumnMapping.computed: HashMap<SemanticsName, PhysicalExpr>` is a **per-Binding denormalization** that copies the `PhysicalExpr` into the Binding's own hashmap for O(1) access without going through the global table. Whether the SemanticManifest stores the `PhysicalExpr` once (in the table) with the `ResolvedColumnMapping.computed` value being a pointer/index, or twice (once in each structure), is an implementation choice ratified in `33`. From the contract surface of `15`, both structures are populated and both are plan-readable.
 
 ### 2.4 Cross-reference: Complex composition
 
@@ -162,7 +160,7 @@ Per `00 §4.1` / `11 §5` / `16 §2`, a `ComplexDataKind` does not own a `Bindin
 ```rust
 #[non_exhaustive]
 pub struct Binding {
-    pub binding_id: BindingId,
+    pub binding_id: EntityId,
     pub sources: Vec<PhysicalSource>,
     pub semantic_mapping: SemanticMapping,
     pub coverage: Option<Coverage>,
@@ -691,10 +689,10 @@ Each branch is an O(1) HashMap probe. The metadata branch performs a second O(1)
 
 ### 7.5 Relation to `19`'s `ResolvedExprTable`
 
-`19 §3.2`'s `ResolvedExprTable` is a **SemanticManifest-global** map from `(SemanticsName, BindingId)` to `PhysicalExpr`. `ResolvedColumnMapping.computed` is a **per-Binding denormalization** of that table, filtered to the Binding's own entries. Both exist:
+`19 §3.2`'s `ResolvedExprTable` is a **SemanticManifest-global** map from `(SemanticsName, EntityId)` to `PhysicalExpr`. `ResolvedColumnMapping.computed` is a **per-Binding denormalization** of that table, filtered to the Binding's own entries. Both exist:
 
 - The global table supports cross-Binding planner work (e.g. `19 §3.4.5` Relationship-path composition via `PathSignature`, where an expression is shared across a Joinset's members).
-- The per-Binding HashMap supports single-Binding planner work (per-`Scan` expression lookup) without the extra `BindingId` in the key.
+- The per-Binding HashMap supports single-Binding planner work (per-`Scan` expression lookup) without the extra `EntityId` in the key.
 
 Whether the two share storage (the `ResolvedColumnMapping.computed` values are pointers into the global table) or are duplicated is a `33`-owned implementation choice. From `15`'s contract surface, both are populated and both are plan-readable; `33` will ratify the storage strategy. **Proposed (Round 1):** duplicate storage by default; the memory overhead is a small constant per binding-semantics pair, and the planner is free of aliasing concerns. See `questions/open/15_questions.md` Q-MAP-006.
 
@@ -704,7 +702,7 @@ The Binding's SemanticManifest-layer counterpart is:
 
 ```rust
 pub struct ResolvedBinding {
-    pub binding_id: BindingId,
+    pub binding_id: EntityId,
     pub sources: Vec<ResolvedPhysicalSource>,
     pub column_mapping: ResolvedColumnMapping,
 }
@@ -915,9 +913,9 @@ The binding-resolution flow lives inside the `compile` stage, between `10 §3.3`
 
 For each `SimpleDataKind` in the validated `SemanticModel`:
 
-### 10.1 Step 1 — `BindingId` allocation
+### 10.1 Step 1 — binding `EntityId` derivation
 
-The `compile` driver assigns the next `BindingId` to the Binding. The counter increments. This step is a single arithmetic operation; it carries no cost.
+The `compile` driver derives the Binding's `EntityId` deterministically (UUIDv5 over `(data_kind id, source id, mapping)` per `33 §9.1`). This is a single hash; it carries negligible cost and is stable across recompiles for unchanged binding content.
 
 ### 10.2 Step 2 — Source resolution (glob expansion + catalog fetch)
 
@@ -986,7 +984,7 @@ Wrap each `PhysicalSource` into a `ResolvedPhysicalSource { source, metadata_val
 
 ### 10.7 Step 7 — SemanticManifest-index contribution
 
-The Binding's `ResolvedBinding` is handed off to the SemanticManifest-index-construction stage. The `ResolvedExprTable` (per `19 §3.4`) absorbs every Computed entry as `(SemanticsName, BindingId) → PhysicalExpr`. The per-DataKind Binding index is populated (`DataKindId → Vec<BindingId>` — vector length 1 for `SimpleDataKind`). These are `33`-owned SemanticManifest structures; `15`'s flow just feeds them.
+The Binding's `ResolvedBinding` is handed off to the SemanticManifest-index-construction stage. The `ResolvedExprTable` (per `19 §3.4`) absorbs every Computed entry as `(SemanticsName, EntityId) → PhysicalExpr`. The per-DataKind Binding index is populated (data-kind `EntityId → Vec<` binding `EntityId>` — vector length 1 for `SimpleDataKind`). These are `33`-owned SemanticManifest structures; `15`'s flow just feeds them.
 
 ### 10.8 Error-handling posture
 
@@ -1077,7 +1075,7 @@ The `CatalogUnavailable (COMP_E_0203)` code sits in the `COMP_E_0200-0299` catal
 
 ### 12.1 `19 §3.2` — `ResolvedExprTable` keying
 
-`19 §3.2` keys its global `ResolvedExprTable` on `(SemanticsName, BindingId)`. `15 §2.2` ratifies the `BindingId`'s shape, allocation, and uniqueness; the two docs are tightly coupled and should be read together. Every ratified property of `BindingId` in §2.2 is honored by `19`'s table construction; conversely, `19`'s requirement that its table's keys are stable-within-a-SemanticManifest is exactly the allocation discipline `15` ratifies.
+`19 §3.2` keys its global `ResolvedExprTable` on `(SemanticsName, EntityId)` (the binding's `EntityId`). `15 §2.2` ratifies binding identity (deterministic UUIDv5, `33 §9.1`); the two docs are tightly coupled and should be read together. `19`'s table keys are stable across recompiles for unchanged binding content, exactly as `15`'s identity derivation guarantees.
 
 ### 12.2 `16` — Coverage at the `ComposedSemanticInterface` level
 
@@ -1135,8 +1133,8 @@ For quick lookup when other docs reference `15`:
 
 | Term                      | Shape (§ref)                                                                                    |
 | ------------------------- | ----------------------------------------------------------------------------------------------- |
-| `Binding`                 | struct §2.1                                                                                     |
-| `BindingId`               | `struct(pub u32)` §2.2                                                                          |
+| `Binding`                 | struct §2.1 (identified by `id: EntityId`)                                                       |
+| binding `EntityId`        | deterministic UUIDv5 §2.2 (`33 §9.1`)                                                            |
 | `PhysicalSource`          | `enum` File/Table/Snapshot §3.1                                                                 |
 | `Schema`                  | struct with `Vec<SchemaColumn>` §3.2                                                            |
 | `SchemaColumn`            | struct `{ name, data_type, nullable }` §3.2                                                     |

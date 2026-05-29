@@ -181,3 +181,16 @@ purpose: Resolved questions originally raised against `foundations/15_mapping_an
 - `15 §7.5` — original per-Binding denormalization (now ID-referenced).
 
 **Resolution rationale.** A manifest-level enum tagging Semantic / Physical was rejected (C12 P2 alternative) because it would regress on IR's type-level invariant per 35:698 / 35:702 — every binding-side lookup would re-introduce a runtime match. Split pools preserve the static-type discipline at every reference site.
+
+---
+
+## Q-MAP-001 — `BindingId` uniqueness (per- vs cross-manifest) — CLOSED / MOOTED (2026-05-29)
+
+**Status: CLOSED — mooted by the id-first rework (STATUS item U.2).** The original question asked whether `BindingId(pub u32)` should be per-manifest (compile-counter) or carry a cross-manifest identity (e.g. content-hash). The eliminate-handles decision dissolves it: there is no `BindingId` newtype. Bindings are identified everywhere by a deterministic content-derived `EntityId` (UUIDv5 over `(data_kind id, source id, mapping)`, `33 §9.1`). That id is globally unique and **cross-run / cross-edit stable** for unchanged binding content, so cross-manifest per-binding comparison — the only real driver for the "cross-manifest" option — works by construction, without a counter or a separate hash scheme.
+
+**Refs.**
+
+- `15 §2.2` — binding identity = deterministic `EntityId`.
+- `19 §3.2` — `ResolvedExprKey { semantics_name, binding_id: EntityId }`.
+- `33 §7.1` / `§9.1` — manifest binding shape + UUIDv5 generation.
+- `14b §OQ-7` — consumer-side cross-link (also mooted).

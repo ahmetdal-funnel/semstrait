@@ -279,7 +279,7 @@ pub trait SemanticGraphRead {
 pub trait SemanticGraphFragmentRead {
     fn key(&self) -> &SegmentKey;
     fn graph(&self) -> &SemanticGraph;
-    fn touched_sources(&self) -> &[SourceId];
+    fn touched_sources(&self) -> &[EntityId];   // -> manifest `sources`
 }
 
 pub trait SemanticInterfaceBitmaskOps {

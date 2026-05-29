@@ -123,8 +123,8 @@ The `id` field is part of the public payload: it is a field on every named-entit
 /// optionally and parse generates a UUIDv7 per missing named entity under the
 /// convenience profile (§9.0.1). The same `EntityId` type is reused by the
 /// manifest (`33`), where compile-synthesised entities carry a deterministic
-/// UUID variant (`33 §9.1`) — so the type admits UUIDv7 (authored) and a
-/// deterministic variant (generated) alike.
+/// UUIDv5 (name-based) id (`33 §9.1`) — so the type admits UUIDv7 (authored)
+/// and UUIDv5 (compile-generated) alike.
 pub type EntityId = String;
 
 #[non_exhaustive]
@@ -183,7 +183,7 @@ impl SemanticModel {
 
 There is no separate identity sidecar. Each named entity carries its own `id: EntityId` (canonical UUIDv7 text) directly on its struct — `DataKindBase` for data kinds (§3.1), and `Dimension` / `Measure` / `Metric` / `Relationship` / `Key` / `Filter` per `18`. That `id` is also the storage key of the collection the entity lives in (§2), so identity, payload, and storage key are one and the same.
 
-The model root itself is addressed by `name`; it carries no separate `id`. Compile (`33`) reads each entity's `id` to build the manifest stable-id propagation map (`33 §4.3.1`); no path-keyed index is materialized at the model layer.
+The model root itself is addressed by `name`; it carries no separate `id` (the manifest mints a deterministic `model_id`, `33 §9.1`). Compile (`33`) carries each entity's `id` straight onto the corresponding manifest entity — identity rides inline, there is no `stable_ids` side-map (`33 §4.3.1`) and no path-keyed index at the model layer.
 
 ---
 
@@ -684,7 +684,7 @@ Every entity collection is keyed by `EntityId`, but the `EntityId` is **never** 
 | `iter_all` / `iter_public` / `iter_simple` / `iter_complex` | iterators                        | Alphabetical by `(variant-tag, name)`; variants in fixed order: Dataset, Grainset, Unionset, Joinset |
 
 
-**Relationship ordering change.** Relationships were previously a `Vec` carrying YAML author order, and first-match-wins (`16 §11`) plus compile-time `RelationshipId` allocation (`18 §2.1`) consumed that author order. With relationships now stored in an `EntityId`-keyed map projected in **name order**, both first-match-wins resolution and `RelationshipId` allocation proceed in name order. This is a deliberate consequence of the id-first rework; `16 §11` and `18 §2.1` are flagged for reconciliation (`STATUS.md`).
+**Relationship ordering change.** Relationships were previously a `Vec` carrying YAML author order, and first-match-wins (`16 §11`) consumed that author order. With relationships now stored in an `EntityId`-keyed map projected in **name order**, first-match-wins resolution and cross-kind BFS neighbor iteration (`19 §3.4.3`) proceed in name order. Relationships are identified by `EntityId` (no `RelationshipId` newtype; `18 §2.1`). This is a deliberate consequence of the id-first rework (`STATUS.md` items U / U.2).
 
 Identity determinism by profile (`§9.0.1`):
 
@@ -743,7 +743,7 @@ Rules:
 - Named-entity IDs may be authored (`id`) or generated; generated IDs MUST still satisfy UUIDv7 canonical format.
 - Dedup of *names* is by explicit scan (`SR-3` / `SR-E-3`); the map key is the `id`, so name collisions are reported, not silently overwritten.
 - Public/nested structural envelopes (§3.3) and nesting rules (`26`) remain unchanged.
-- Compile-owned IDs (`DataKindId`, `RelationshipId`, `SemanticsId`, …) remain out of `semstrait-model` scope; this section does not move those boundaries.
+- Identity is a single `EntityId` lane across model and manifest (`33`); the model does not allocate any separate compile-id newtypes (the former `DataKindId` / `RelationshipId` / `SemanticsId` / `BindingId` are retired). This section does not move that boundary.
 
 ### 9.0.1 Identity profiles
 
@@ -1407,7 +1407,7 @@ The optional `::io` submodule (§10.4) adds async load / dump wrappers. It does 
 ### 10.2 No resolution
 
 Name resolution, reference expansion, and cross-kind path resolution are `compile`'s responsibility (`33`, `11 §7`). `parse` records identifiers verbatim.
-Named-entity `EntityId` values are identity metadata propagated to manifest stability maps (`33 §4.3.1`); they are storage keys, not semantic-name resolution keys. Cross-references inside the model (`ref:`, relationship `from`/`to`) are by name and resolved at compile.
+Named-entity `EntityId` values are carried inline onto the corresponding manifest entities (`33 §4.3.1`, `§9.1`) — they are storage keys, not semantic-name resolution keys, and there is no side-map. Cross-references inside the model (`ref:`, relationship `from`/`to`) are by name and resolved at compile.
 
 ### 10.3 No planning
 
@@ -1591,7 +1591,7 @@ Per I11. `io` is default-off so the historical pure-type consumer of `semstrait-
 
 | Scope                    | Doc                                                                                    | What lives there                                                                                                                                                                                                                                                                                                                                                                                      |
 | ------------------------ | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Canonical entities**   | `[../foundations/18_entities.md](../foundations/18_entities.md)`                       | `**Relationship`, `RelationshipId`, `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, derived `JoinType`, `TemporalShape`, `ScdType`, `Dimension` / `Measure` / `Metric`, `DimensionType` + body structs, `Additivity`, filter taxonomy, `AiContext`, `Keys`, `SemanticMappingValue` shape, root-pool reference / override grammar, `SR-E-`* entity-level rules. Authoritative for every entity struct shape embedded in 32.** |
+| **Canonical entities**   | `[../foundations/18_entities.md](../foundations/18_entities.md)`                       | `**Relationship` (identified by `id: EntityId`), `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, derived `JoinType`, `TemporalShape`, `ScdType`, `Dimension` / `Measure` / `Metric`, `DimensionType` + body structs, `Additivity`, filter taxonomy, `AiContext`, `Keys`, `SemanticMappingValue` shape, root-pool reference / override grammar, `SR-E-`* entity-level rules. Authoritative for every entity struct shape embedded in 32.** |
 | Dataset interior         | `[../data-kinds/21_dataset.md](../data-kinds/21_dataset.md)`                           | Per-Dataset YAML: `dimensions:`, `measures:`, `metrics:`, `filters:`, `keys:`, leaf-only `extras` semantics                                                                                                                                                                                                                                                                                           |
 | Grainset interior        | `[../data-kinds/22_grainset.md](../data-kinds/22_grainset.md)`                         | Per-Grainset YAML: child composition, grain-axis, `temporal:` in extras                                                                                                                                                                                                                                                                                                                               |
 | Unionset interior        | `[../data-kinds/23_unionset.md](../data-kinds/23_unionset.md)`                         | Per-Unionset YAML: children, `mode:`, coverage                                                                                                                                                                                                                                                                                                                                                        |

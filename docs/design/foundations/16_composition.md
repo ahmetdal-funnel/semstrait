@@ -9,7 +9,7 @@ authoritative-for:
   - `UnifiedSemantics` — namespace-aware merge of constituent `SemanticInterface`s
   - `FieldProvenance` / `FieldOwnership` — per-field ownership on a composed surface
   - `CompositionCoverage` — extends `15 §6`'s `Coverage` to the composition level
-  - `RelationshipPath` — the composition-level chain of `RelationshipId` traversals
+  - `RelationshipPath` — the composition-level chain of `EntityId` traversals
   - explicit vs implicit composition — the `Origin` axis, the authoring contract, the implicit-explicit-clash rejection rule
   - implicit-composition enumeration at graph build time — primitives (Relationship graph, per-DataKind coverage, SemanticBitmap) consumed by `SemanticGraph` BFS; cap and canonical-ID scheme as compile-time invariants
   - field-first resolution — the planner's lookup algorithm over the SemanticGraph's build-time composition index (no `compositions:` field on manifest; cf. 33 §4.1, §6.8)
@@ -31,7 +31,7 @@ refined-by:
 
 # 16. Composition
 
-> **Struct ownership (2026-04-17 consolidation; relationship-block rebase 2026-05-12).** The `Relationship` struct, `RelationshipId` newtype, `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, (derived) `JoinType`, and `JoinKeyExprPair` are ratified in [`18_entities.md §2`](./18_entities.md#2-relationship). This doc owns the *composition semantics* on top — placement, scope, traversal, fanout analysis, `ComposedSemanticInterface` construction, field-first resolution. The struct-shape lands in `18`; what the planner does with it lands here. Where body sections below cite `KeyPair`, read `JoinKeyExprPair` (`18 §2.8`); where they cite `ColumnMapping`, read `SemanticMapping` (`18 §10`). The earlier authored `directionality:` field and `Directionality` enum are retired (2026-05-12) — traversal is always bidirectional per §2.4; authors who need to forbid auto-synthesized reverse walks declare an explicit Joinset for the desired direction.
+> **Struct ownership (2026-04-17 consolidation; relationship-block rebase 2026-05-12).** The `Relationship` struct (identified by its `id: EntityId`), `Cardinality`, `Integrity`, `Optional`, `CrossFilter`, (derived) `JoinType`, and `JoinKeyExprPair` are ratified in [`18_entities.md §2`](./18_entities.md#2-relationship). This doc owns the *composition semantics* on top — placement, scope, traversal, fanout analysis, `ComposedSemanticInterface` construction, field-first resolution. The struct-shape lands in `18`; what the planner does with it lands here. Where body sections below cite `KeyPair`, read `JoinKeyExprPair` (`18 §2.8`); where they cite `ColumnMapping`, read `SemanticMapping` (`18 §10`). The earlier authored `directionality:` field and `Directionality` enum are retired (2026-05-12) — traversal is always bidirectional per §2.4; authors who need to forbid auto-synthesized reverse walks declare an explicit Joinset for the desired direction.
 >
 > This document ratifies how multiple `DataKind`s appear as a **single queryable
 > surface**: the `Relationship` edge-type that binds top-level `DataKind`s,
@@ -176,7 +176,7 @@ Five stances govern:
    eager-enumeration cap (`MAX_IMPLICIT_ENUMERATION_COUNT = 2000`)
    protects against pathological models (§10.4).
 4. **One canonical form per composition.** An explicit `Joinset` whose
-   canonical form (sorted `(RelationshipId, direction)` tuples) matches
+   canonical form (sorted `(EntityId, direction)` tuples) matches
    an enumerable implicit `Joinset` is rejected at compile
    (`COMP_E_0414`). Authors differentiate via per-leg overrides,
    filters, or `keys`; otherwise the planner uses the equivalent
@@ -218,7 +218,7 @@ operational `JoinType` is **derived** from `optional` at compile per
 analogue of a foreign-key association, lifted to the semantic layer so
 keys are `Semantics`, not SQL columns.
 
-> **Struct shape**: the `Relationship` struct itself — including its fields (`name`, `from`, `to`, `keys`, `filter`, `cardinality`, `integrity`, `optional`, `cross_filter`, `ai_context`, `description`), the companion `RelationshipId` newtype, the `JoinKeyExprPair` hybrid equi-key grammar, and the `Cardinality` / `Integrity` / `Optional` / `CrossFilter` / (derived) `JoinType` enums — is defined in [`18_entities.md §2`](./18_entities.md#2-relationship). This doc ratifies the *composition semantics* on top (placement, scope, traversal, fanout analysis). Where the body prose below uses `KeyPair`, read `JoinKeyExprPair` per `18 §2.8`.
+> **Struct shape**: the `Relationship` struct itself — including its fields (`name`, `from`, `to`, `keys`, `filter`, `cardinality`, `integrity`, `optional`, `cross_filter`, `ai_context`, `description`), its `id: EntityId` identity field, the `JoinKeyExprPair` hybrid equi-key grammar, and the `Cardinality` / `Integrity` / `Optional` / `CrossFilter` / (derived) `JoinType` enums — is defined in [`18_entities.md §2`](./18_entities.md#2-relationship). This doc ratifies the *composition semantics* on top (placement, scope, traversal, fanout analysis). Where the body prose below uses `KeyPair`, read `JoinKeyExprPair` per `18 §2.8`.
 
 ### 2.1 Placement — global, top-level
 
@@ -255,10 +255,11 @@ namespaced name within the composed surface (e.g.
 
 Fields:
 
-- `id: RelationshipId` — assigned at `compile` in declared-iteration order,
-  `u32` shape, SemanticManifest-wide unique (`19 §3.4.2` owns the assignment). The
-  ID is internal to one SemanticManifest; not stable across recompiles (see
-  `15 §2.2`'s `BindingId` discussion — same stability rationale applies to `RelationshipId`).
+- `id: EntityId` — the relationship's durable identity (`18 §2.1`): the
+  authored model `id` (UUIDv7) or a parse-generated one. Globally unique and
+  **stable across recompiles** (unlike the retired compile-counter handles).
+  It is the sole relationship identity used across model, manifest, and
+  runtime.
 - `from: DataKindRef`, `to: DataKindRef` — named references to top-level
   `DataKind`s. `DataKindRef` is defined in `11 §4` as a newtype over
   `DataKindName`.
@@ -293,9 +294,9 @@ orientation — the planner walks the edge in either direction by default —
 but the convention aids readability and drives `Cardinality`'s
 per-variant naming (`ManyToOne` reads naturally as `from → to`).
 
-**Stable identity.** `RelationshipId` is the primary key every downstream
-layer uses: `19 §3.4.5`'s `PathSignature` carries `Vec<RelationshipId>`,
-`PlanNode::Join` (per `35`) carries a `RelationshipId` as metadata, and
+**Stable identity.** `EntityId` is the primary key every downstream
+layer uses: `19 §3.4.5`'s `PathSignature` carries `Vec<EntityId>`,
+`PlanNode::Join` (per `35`) carries a `EntityId` as metadata, and
 diagnostics reference `relationship_id` for precise blame. Names
 (`from.to` style) are not used as identity — two `Relationship`s between
 the same `DataKindRef` pair differ by `id` even if they declare the same
@@ -378,13 +379,13 @@ need to prevent the planner from auto-synthesizing reverse walks
 
 #### 2.4.1 Symmetric traversal mechanics
 
-Forward and reverse walks share the same `RelationshipId` — they are
+Forward and reverse walks share the same `EntityId` — they are
 the same edge, walked in two directions. The compile-time enumeration
 in `§10.4` normalizes direction at walk time: given a `current_node`
 and an unvisited neighbour `target_node`, the step is flagged
 `reverse: true` when `current_node == Relationship.to && target_node
 == Relationship.from`, and `reverse: false` otherwise. The
-`PathSignature` (`19 §3.4.5`) records the `RelationshipId` alone; the
+`PathSignature` (`19 §3.4.5`) records the `EntityId` alone; the
 direction is reconstructed at plan time by matching `current_node`
 against the stored `from` / `to`.
 
@@ -590,14 +591,14 @@ pub enum PlanNode {
         join_type: JoinType,           // ratified in 16 §4
         predicate: PhysicalExpr,       // resolved from Relationship.keys via 15
         cardinality: Cardinality,      // ratified in 16 §3
-        relationship_id: Option<RelationshipId>, // set for traversal-derived joins
+        relationship_id: Option<EntityId>, // set for traversal-derived joins
         // ...
     },
     // ...
 }
 ```
 
-The `relationship_id` field is `Some(RelationshipId)` when the `Join`
+The `relationship_id` field is `Some(EntityId)` when the `Join`
 node was emitted from a `Relationship` traversal (implicit composition
 or `Joinset`) and `None` when emitted from a direct predicate (e.g. a
 `Unionset`'s internal `UNION ALL` has no `Join` node, so this question
@@ -691,10 +692,10 @@ reconciled under `UnifiedSemantics`, with per-field ownership
 
 ### 5.2 `traversed_paths`
 
-The `RelationshipPath` struct is owned by [`19 §3.4.5`](./19_expression_flow.md#345-pathsignature) — a `#[derive(Ord, PartialOrd, Eq, PartialEq)]` newtype over `Vec<RelationshipId>`. `16` consumes that shape; it does not redefine it.
+The `RelationshipPath` struct is owned by [`19 §3.4.5`](./19_expression_flow.md#345-pathsignature) — a `#[derive(Ord, PartialOrd, Eq, PartialEq)]` newtype over `Vec<EntityId>`. `16` consumes that shape; it does not redefine it.
 
 For `CompositionKind::Joinset` (regardless of `Origin`), this records
-the `RelationshipId` chain that produced the composition. Shape is
+the `EntityId` chain that produced the composition. Shape is
 `Vec<RelationshipPath>`, not a single `RelationshipPath`, because the
 implicit-Joinset enumeration (§10.4) may yield a **tree cover** over
 3+ constituents (Steiner tree) — one `RelationshipPath` per "leg" of
@@ -889,7 +890,7 @@ as `[TD-GRAINSET-IMPLICIT]`.)
 
 **Equivalence under `Origin`.** Two compositions with the same
 `composition_kind`, the same `constituents` set (as an unordered
-set), and the same canonical form (sorted `(RelationshipId,
+set), and the same canonical form (sorted `(EntityId,
 direction)` for Joinset; sorted `Vec<DataKindRef>` for Unionset) are
 **equivalent** by canonical form. The implicit-explicit clash check
 (§10.6) detects when an `Origin::Explicit` composition has the same
@@ -921,12 +922,12 @@ internals); public surface is the 32-byte tag and round-trip equality.
 
 **Canonical form per `composition_kind`:**
 
-- **`Joinset`.** Sorted `Vec<(RelationshipId, Direction)>` — the
+- **`Joinset`.** Sorted `Vec<(EntityId, Direction)>` — the
   set of `Relationship` traversals, each tagged with its direction
-  (forward / reverse). `RelationshipId` is the SemanticManifest-unique
-  ID assigned at compile (per `19 §3.4.2`, stable within one
-  SemanticManifest, not across recompiles — same rationale as `BindingId` per `15 §2.2`). Sort key:
-  `(RelationshipId.0, Direction::Forward < Direction::Reverse)`.
+  (forward / reverse). `EntityId` is the relationship's durable id
+  (`18 §2.1`), stable across recompiles. Sort key:
+  `(EntityId, Direction::Forward < Direction::Reverse)` — lexicographic by
+  `EntityId` text.
 - **`Unionset`.** Sorted `Vec<DataKindRef>` — the set of constituent
   top-level kinds covered by the implicit Unionset, each represented
   by its `DataKindName`. Sort key: `DataKindName` lex order.
@@ -937,12 +938,18 @@ internals); public surface is the 32-byte tag and round-trip equality.
 
 - **Within one SemanticManifest.** `ImplicitId` is fully stable —
   identical canonical forms always hash to identical bytes.
-- **Across recompiles.** `ImplicitId` is **not** stable across
-  recompiles, because `RelationshipId` is not stable (per `15 §2.2`).
-  A model that adds a new `Relationship` will renumber existing
-  `RelationshipId`s, which changes every `ImplicitId` derived from
-  them. This is acceptable — `ImplicitId` is a SemanticManifest-internal
-  identity, never persisted outside the artifact.
+- **Across recompiles.** `ImplicitId` is **stable** across recompiles
+  **when the underlying relationship `EntityId`s are stable** — i.e. relationship
+  ids are authored (`IdentityProfile::StrictRequireProvided`) or persisted and
+  round-tripped. Adding a new `Relationship` does not renumber existing ones, so
+  previously-derived `ImplicitId`s are unchanged. (Strengthened guarantee under
+  the id-first rework, STATUS item U.2 — previously `ImplicitId` was unstable
+  because it rode the retired compile-counter handle.) **Caveat:** under the
+  default `ConvenienceGenerateMissing` profile (`32 §9.0.1`), relationships
+  authored without an `id` receive a fresh UUIDv7 per parse, so their
+  `ImplicitId`s drift across fresh parses unless the generated ids are persisted.
+  Synthesized entities' ids (deterministic UUIDv5) remain stable regardless of
+  profile.
 - **Across runs of the same SemanticManifest.** Stable, because
   `SemanticManifest` is byte-deterministic per `33 §4`'s
   determinism contract.
@@ -1407,7 +1414,7 @@ lookup over both forms via the graph's index.
    compositions from accidentally degenerating into duplicates.
 8. **Implicit-explicit clash → `COMP_E_0414`.** An author-declared
    explicit `Joinset` whose canonical form (sorted
-   `(RelationshipId, direction)` tuples) matches an enumerable
+   `(EntityId, direction)` tuples) matches an enumerable
    implicit Joinset is **rejected at compile** with
    `CompileError::ExplicitImplicitCompositionClash` (§14.1,
    `COMP_E_0414`, §10.6). Authors differentiate the explicit form
@@ -1431,7 +1438,7 @@ At compile, after `RelationshipGraph` construction:
    `Relationship` are walked (per §2.4). Every reachable subset of
    size 2..(`depth + 1`) becomes a candidate.
 3. **Canonicalize** each candidate by sorting its
-   `(RelationshipId, direction)` tuples; duplicates collapse.
+   `(EntityId, direction)` tuples; duplicates collapse.
 4. **Hash** the canonical form into `ImplicitId` (§5.7).
 5. **Materialize** as `ResolvedJoinset { origin: Implicit { id }, … }`
    per `33`.
@@ -1613,14 +1620,15 @@ pub const MAX_IMPLICIT_ENUMERATION_COUNT:   usize = 2000;
   determinism violation.
 
 **Canonicalization (Joinset):** sort the path / tree's
-`(RelationshipId, Direction)` tuples by `(RelationshipId.0,
+`(EntityId, Direction)` tuples by `(EntityId,
 direction)` where `Direction::Forward < Direction::Reverse`. The
 sorted vector is the byte-encoded canonical form input to BLAKE3-256.
 
 **Determinism:** neighbor iteration in `bfs_from` and
-`steiner_enumerate` is sorted by `(RelationshipId.0,
-direction_flag)`; canonical-form sort is total; `BTreeMap` insertion
-order is canonical-form-sorted. The full enumeration is reproducible
+`steiner_enumerate` is in **relationship-name order** (matching `19 §3.4.3`);
+this affects only enumeration/diagnostic ordering since the canonical form
+re-sorts by `(EntityId, Direction)` independently. The canonical-form sort is
+total; `BTreeMap` insertion order is canonical-form-sorted. The full enumeration is reproducible
 byte-for-byte given the same `RelationshipGraph`.
 
 ### 10.5 Implicit-`Unionset` enumeration
@@ -1917,10 +1925,11 @@ Instead:
    on the resolved interface.
 
 Authors using explicit `from:` have opted into a fixed surface; the
-planner honours it. Synthetic implicit-composition names are
-addressable but unstable across recompiles (per §5.7) — we recommend
-authors who want a stable name declare an explicit `Joinset` with at
-least one differentiator.
+planner honours it. Synthetic implicit-composition names are addressable
+and, under the id-first rework, **stable across recompiles** (per §5.7,
+since they derive from stable relationship `EntityId`s) — but authors who
+want an explicitly-controlled name should still declare an explicit
+`Joinset` with at least one differentiator.
 
 ### 11.7 Interaction with `19`'s cross-kind path resolution
 
@@ -1961,7 +1970,7 @@ the author must choose one direction to declare.
 **Detection.** At `validate`, for each `Relationship`, canonicalize
 the `{from, to}` into a sorted pair and the `KeyPair` list into a
 sorted vec; collect into a set; a collision emits
-`ValidateError::DuplicateRelationship { between: (DataKindRef, DataKindRef), relationship_ids: (RelationshipId, RelationshipId) }`.
+`ValidateError::DuplicateRelationship { between: (DataKindRef, DataKindRef), relationship_ids: (EntityId, EntityId) }`.
 
 **Intentional multi-edges.** Authors who want two joins between the
 same pair (e.g. a "primary customer" edge and a "shipping customer"
@@ -2152,7 +2161,7 @@ decisions.
 ### 13.5 Explicit-implicit reconciliation — clash rejection
 
 Under the unified Joinset model, an explicit `Joinset` whose canonical
-form (sorted `(RelationshipId, Direction)` tuples per §5.7) matches
+form (sorted `(EntityId, Direction)` tuples per §5.7) matches
 an enumerable implicit `Joinset` is **rejected at compile** with
 `CompileError::ExplicitImplicitCompositionClash` (§14.1, `COMP_E_0414`).
 Per §10.6, the author-facing message lists candidate
@@ -2332,7 +2341,7 @@ composition-specific code ranges with headroom for future additions.
 `19 §3.4.2`'s `RelationshipGraph` is the shared infrastructure both
 documents consume at compile: `19 §3.4` for expression cross-kind
 resolution, `16 §10.4 / §10.5` for implicit-composition enumeration.
-`19 §3.4.5`'s `PathSignature` (`Vec<RelationshipId>`) is
+`19 §3.4.5`'s `PathSignature` (`Vec<EntityId>`) is
 subset-consistent with `16`'s `traversed_paths` on a composed surface
 — for every `PathSignature` entry inside an expression on a composed
 Request, the path is covered by the composition's `traversed_paths`.
@@ -2343,7 +2352,7 @@ planner setup from manifest primitives per C9.2 / C9.6) — no graph
 traversal at plan.
 
 `16` ratifies what a `Relationship` **is**; `19 §3.4.5`'s `PathSignature`
-`Vec<RelationshipId>` is meaningful against that ratification. Changes
+`Vec<EntityId>` is meaningful against that ratification. Changes
 to `Relationship`'s shape in `16` propagate to `19`'s path semantics.
 
 ### 15.2 `15` — coverage extension
@@ -2354,7 +2363,7 @@ The two documents form a cascade: `15` → Binding-level coverage;
 `16` → composition-level coverage. Authors of nested compositions
 (e.g. `Joinset` over `Unionset`) trace field provenance through both.
 
-`15 §2.2`'s `BindingId` appears in `16`'s planner algorithm as the
+`15 §2.2`'s binding `EntityId` appears in `16`'s planner algorithm as the
 lookup key into per-kind bindings during implicit-composition synthesis.
 
 ### 15.3 `17` — temporal-shape-gated `AsOf` joins
@@ -2427,6 +2436,6 @@ pre-join aggregation preserves correctness.
   point when `Request.from = None`. `34` ratifies the `plan`
   call-graph and the `SemanticGraph` build step that runs §10's
   enumeration; `16` ratifies the specific algorithm step-1 runs.
-- `35` (IR) carries `JoinType`, `Cardinality`, `RelationshipId` on
+- `35` (IR) carries `JoinType`, `Cardinality`, `EntityId` on
   `PlanNode::Join` per `16 §4.4`.
 

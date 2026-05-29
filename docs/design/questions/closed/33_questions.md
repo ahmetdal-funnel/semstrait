@@ -26,3 +26,21 @@ purpose: Resolved questions originally raised against `apis/33_semstrait_manifes
 **Question (closed scope).** Should `ResolvedRelationshipGraph` be a public field on `SemanticManifest` (promoted from `33 §8.2`'s accessor-only posture) or remain behind the accessor?
 
 **Resolution rationale.** Both Round-1 options (accessor-only, public field) presupposed that `ResolvedRelationshipGraph` was a manifest-resident artifact. C17(d) ratifies the inverse posture: manifest is a typed-pool of primitives; graph topology is derived in the planner. The choice question dissolves — there is no field, no accessor; the planner constructs `RelationshipGraph` from `manifest.relationships` on each request. Round-1 accessor-only framing retained for historical reference.
+
+---
+
+## Q-MAN-D12 — `EntityId` UUID-format relaxation for compile-generated ids — CLOSED (2026-05-29)
+
+**Status: CLOSED — ratified.** Raised by the manifest single-id-lane unification (STATUS item U.2): with the manifest keyed entirely by `EntityId` and generating ids for compile-synthesised entities, generated ids MUST be deterministic/content-derived (not time-based UUIDv7) to preserve I4 — so `EntityId` can no longer be "UUIDv7-only."
+
+**Resolution.**
+
+- **Variant.** Compile-generated ids are **UUIDv5** (RFC 4122 name-based, SHA-1 over namespace + content). Authored model ids stay **UUIDv7** (`32`). UUIDv8 was rejected: UUIDv5 is the standard name-based variant, deterministic, and broadly supported.
+- **Namespace discipline.** A distinct per-entity-type namespace plus a content seed (so classes never collide and identical content reproduces the id): `source` ← `(source_type, locator, version_ref)`; `binding` ← `(data_kind id, source id, canonical mapping)`; `interface` ← sorted member-id set; `data_kind` (implicit Unionset) ← parent Dataset structural identity + per-source list; `semantic` (synthesised Field) ← `(owning data_kind id, name, role)`; `model` ← `model_hash`. Ratified at `33 §9.1`.
+- **Validation.** CX1 (`33 §10`) validates canonical-UUID-text shape and global uniqueness only; the version nibble (`7` vs `5`) records provenance but is not load-enforced.
+
+**Refs.**
+
+- `33 §9.1` / `§4.3.1` — generated-id determinism, UUIDv5 + namespaces, format wording.
+- `32 §2` — `EntityId` type comment (UUIDv7 authored / UUIDv5 generated).
+- `00 §9` I4 — determinism invariant the rule protects.

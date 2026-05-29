@@ -72,7 +72,7 @@ The sealed trait hierarchy and shared `DataKind` invariants live in `20`. The Ru
 | **I1** — no raw SQL in canonical layer | The emitted plan tree carries `PlanNode::{Project, Filter, Agg, Union, Join}` with `PhysicalExpr` payloads; no SQL-shaped strings. Adapter rendering (`36`) is the only SQL site. |
 | **I2** — physical types via adapters only | Cross-grain JOIN type-reconciliation uses canonical `DataType` per `13 §2`; no engine types. |
 | **I3** — no engine branching | Zero engine-identity checks in `22`. Every decision reads either resolved manifest indices or per-unit Coverage (compile-derived). |
-| **I4** — SemanticManifest determinism | Effective-routing-unit ordering follows YAML author-declared order across the `datasets:` / `unionsets:` / `joinsets:` arrays (per `32 §6` ordering table). Same-grain pre-merge produces implicit Unionsets in declaration order per `23 §3.1`. Driver selection is most-covering with declaration-order tie-break; attached ordering follows declaration order (G-2c). |
+| **I4** — SemanticManifest determinism | Effective-routing-unit ordering follows **name order** across the `datasets:` / `unionsets:` / `joinsets:` collections (id-keyed, name-ordered projection per `32 §7`, post id-first rework). Same-grain pre-merge produces implicit Unionsets in name order per `23 §3.1`. Driver selection is most-covering with **name-order** tie-break; attached ordering follows name order (G-2c). |
 | **I5** — compile-time resolution | Per-unit Coverage is folded once at compile (§3.2); cross-grain JOIN-tree shape is built at compile from Keys + Coverage; per-Request routing is O(\|units\| × \|Semantics\|) lookups. |
 | **I6** — synchronous hot path | No I/O at any stage of Grainset resolution. |
 | **I8** — planner-complete SemanticManifest | `ResolvedGrainset`'s **manifest contract** persists `GrainsetLevel { grain, routing_unit, level_coverage }` per level (`levels.len() >= 2`, distinct grains, coarsest-first per `33 §6.6`). Cross-grain JOIN-tree shape, per-pair JOIN-key index, and the `ComposedSemanticInterface` are **deferred to graph build** (see Phase 3 amendment below); planner-completeness is preserved because `SemanticGraph` synthesises them deterministically from manifest primitives (per-level coverage + Keys carried on each level's interface) at build time. |
@@ -198,9 +198,9 @@ The `GrainsetBody` carries three child maps — `datasets: BTreeMap<EntityId, Ne
 
 This order is stable (per `32 §7` ordering table — collections are id-keyed but projected name-ordered; intra-variant basis changed from author order to name order with the id-first rework) and is the order:
 
-- Same-grain children are merged (declaration order within the same grain determines their order inside the implicit Unionset's `inputs` per `23 §3.1`).
-- Driver selection's tie-break runs (most-covering first; declaration-order tie-break per G-2b).
-- Attached units are added in cross-grain JOIN-tree construction (declaration-order per G-2c — deterministic).
+- Same-grain children are merged (name order within the same grain determines their order inside the implicit Unionset's `inputs` per `23 §3.1`).
+- Driver selection's tie-break runs (most-covering first; name-order tie-break per G-2b).
+- Attached units are added in cross-grain JOIN-tree construction (name order per G-2c — deterministic).
 
 R2 (no same-variant self-nesting) is type-level absence per `32 §3.2` — a `grainsets:` field does not exist on `GrainsetBody`. R3 (≥ 2 children) is the validate-stage rule per `26 §2.3`. Nested-child name uniqueness within a single Grainset's combined child set is the Grainset author's responsibility; collisions surface via the `26 §4` addressing scheme as ambiguous addresses.
 
@@ -266,7 +266,7 @@ When a Request's Semantics set is fully covered by exactly one effective routing
 
 1. Identify grain-eligible units (units whose `grain ≤ request.grain` per `13 §3.2`'s coarseness order).
 2. Filter to units that fully cover the Request's Semantics set (Coverage `Native` / `Derived` per §3.2).
-3. If exactly one such unit (or multiple with the most-covering equal — declaration-order tie-break per G-2b) → that's the chosen unit.
+3. If exactly one such unit (or multiple with the most-covering equal — name-order tie-break per G-2b) → that's the chosen unit.
 4. Run the chosen unit's Strategy on a unit-narrowed Request.
 5. Wrap with `Project (DATE_TRUNC) + Agg` if `chosen_unit.grain` is finer than `request.grain` AND the rollup is shape-legal per `17 §4`.
 
@@ -279,8 +279,8 @@ When no single grain-eligible unit fully covers the Request's Semantics set, the
 **Algorithm**:
 
 1. Filter to grain-eligible units.
-2. Identify the **driver** = unit covering the largest subset of the Request's Semantics (Native / Derived). Tie-break: declaration order (G-2b).
-3. Greedily add **attached** units in declaration order (G-2c — deterministic over greedy-by-coverage-delta). Each attached unit must:
+2. Identify the **driver** = unit covering the largest subset of the Request's Semantics (Native / Derived). Tie-break: name order (G-2b).
+3. Greedily add **attached** units in name order (G-2c — deterministic over greedy-by-coverage-delta). Each attached unit must:
    - Cover ≥ 1 Semantics not yet covered by driver-or-already-attached units.
    - Share at least one Key (per `18 §2.5`) with the driver (or with an already-attached unit reachable through the JOIN tree).
 4. After all attached units are added, every Request Semantics must be covered. If any remains uncovered → `PLAN_E_2202 GrainsetSemanticsNotCoverableByJoin` (§9).
@@ -448,9 +448,9 @@ Effective routing units: `Day` (single child `paid_media_daily`), `Month` (singl
 
 Coverage: `cost` is provided by both. `Day` unit covers `cost` Natively; `Month` unit covers `cost` Natively.
 
-Most-covering at Month: tie (both cover {report_date, campaign_id, cost}). Tie-break: declaration order → `Day` (it appears first; `paid_media_daily` is index 0).
+Most-covering at Month: tie (both cover {report_date, campaign_id, cost}). Tie-break: name order → `Day` (`paid_media_daily` sorts alphabetically before `paid_media_monthly`).
 
-Wait — but `Day` requires rollup; `Month` is direct. The "most-covering" tie-break breaks before the cost-of-rollup is consulted. V1 picks `Day` (declaration order). Future cost-aware extensions may flip this.
+Wait — but `Day` requires rollup; `Month` is direct. The "most-covering" tie-break breaks before the cost-of-rollup is consulted. V1 picks `Day` (name order). Future cost-aware extensions may flip this.
 
 Single-unit delegation (§4.2): `Day` chosen; rollup wrapper added.
 
@@ -490,8 +490,8 @@ Coverage:
 Reframed Request at `Quarter`:
 
 - All three units grain-eligible (Day → Quarter, Month → Quarter, Quarter → Quarter).
-- Most-covering at Quarter: `Day` and `Month` tied at 3 (both cover {cost, campaign_id, report_date}). Declaration-order tie-break → `Day` is driver.
-- `clicks` uncovered by driver → need attached unit. Greedy declaration order: `Month` is next, but doesn't cover `clicks`. Skip to `Quarter`: covers `clicks` AND shares `campaign_id` Key with `Day`. Attach.
+- Most-covering at Quarter: `Day` and `Month` tied at 3 (both cover {cost, campaign_id, report_date}). Name-order tie-break (`paid_media_daily` < `paid_media_monthly`) → `Day` is driver.
+- `clicks` uncovered by driver → need attached unit. Greedy name order (`paid_media_monthly` < `paid_media_quarterly_clicks`): `Month` is next, but doesn't cover `clicks`. Skip to `Quarter`: covers `clicks` AND shares `campaign_id` Key with `Day`. Attach.
 - After driver + 1 attached, all 4 Semantics covered.
 
 Observable plan shape:
@@ -509,7 +509,7 @@ Project           (final shape — report_date (quarter), campaign_id, cost, cli
 - Effective routing units = one per distinct grain. Same-grain children would pre-merge into an implicit Unionset (`mode: All`, non-strict NullFill per §3.3); the Unionset would be the routing unit.
 - §4.2 single-unit delegation is the common case. Cross-grain JOIN (§4.3) fires only when no single unit covers the full Request.
 - LEFT OUTER JOIN preserves driver's row set. Attached units contribute additional Measures via equi-join on shared Keys (per `18 §2.5`). Per G-2a ratification.
-- Driver = most-covering at the Request grain; declaration-order tie-break (G-2b). Attached added in declaration order (G-2c — deterministic).
+- Driver = most-covering at the Request grain; name-order tie-break (G-2b). Attached added in name order (G-2c — deterministic).
 - `RollupPolicy` is internal-only in V1 (per G-4). Default rollup behavior follows shape rules in `17`.
 - Algorithm body — exact column ordering, `DateTrunc` placement, partial-aggregate staging, JOIN-key index lookup — lives in `34 §<GrainsetStrategy>` (parked in [`../_drafts/34_grainset_strategy.md`](../_drafts/34_grainset_strategy.md)).
 
